@@ -6253,6 +6253,11 @@ module EscapeAnalysis =
                     TypeSystem = typeSystem
                 }
 
+            let resolved =
+                match resolved with
+                | Ok resolved -> resolved
+                | Error failure -> failwith (TypeBindingFailure.describe failure)
+
             match resolved with
             | ConstrainedType.AsNamed receiver
             | ConstrainedType.EnumUnderlying (_, receiver, RetargetedCall.Named) -> state, Some (receiver, callee)
@@ -6327,6 +6332,11 @@ module EscapeAnalysis =
             { state with
                 TypeSystem = typeSystem
             }
+
+        let resolved =
+            match resolved with
+            | Ok resolved -> resolved
+            | Error failure -> failwith (TypeBindingFailure.describe failure)
 
         match resolved with
         | ClassMethodOnValueType.Undecided -> state, DispatchOutcome.Undecided
@@ -6423,6 +6433,11 @@ module EscapeAnalysis =
                         { state with
                             TypeSystem = typeSystem
                         }
+
+                    let resolved =
+                        match resolved with
+                        | Ok resolved -> resolved
+                        | Error failure -> failwith (TypeBindingFailure.describe failure)
 
                     match resolved with
                     | ClassMethodOnValueType.Resolves _ -> state, Some true

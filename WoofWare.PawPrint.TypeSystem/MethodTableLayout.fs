@@ -7,6 +7,11 @@ open Microsoft.Extensions.Logging
 /// Where a method sits in a type *definition's* method table: which slot each declaration owns, what
 /// each vtable slot holds once MethodImpls are applied, and the slots beyond the vtable. Laid out on
 /// the definition, as CoreCLR lays out a method table, from metadata and a load context alone.
+///
+/// A type that laying out a table must bind and that does not -- a base type, the parent of a MethodImpl
+/// declaration, or one a compared signature or constraint names -- is the failure, returned with the
+/// assemblies loaded before it. A table CoreCLR would refuse to build from types that do bind is still
+/// refused with `failwith`.
 [<RequireQualifiedAccess>]
 module MethodTableLayout =
 
@@ -17,7 +22,7 @@ module MethodTableLayout =
         (skipReturnType : bool)
         (caller : TypeConcretization.SignatureComparand)
         (callee : TypeConcretization.SignatureComparand)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * bool
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<bool, TypeBindingFailure>
         =
         let equivalent, ctx =
             TypeConcretization.signaturesEquivalent
@@ -27,9 +32,7 @@ module MethodTableLayout =
                 caller
                 callee
 
-        match equivalent with
-        | Ok equivalent -> ctx, equivalent
-        | Error failure -> failwith (TypeBindingFailure.describe failure)
+        ctx, equivalent
 
     let private methodConstraintsMatch
         (loggerFactory : ILoggerFactory)
@@ -37,7 +40,7 @@ module MethodTableLayout =
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (impl : TypeConcretization.ConstraintComparand)
         (decl : TypeConcretization.ConstraintComparand)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * bool
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<bool, TypeBindingFailure>
         =
         let matches, ctx =
             TypeConcretization.methodConstraintsMatch
@@ -46,37 +49,34 @@ module MethodTableLayout =
                 impl
                 decl
 
-        match matches with
-        | Ok matches -> ctx, matches
-        | Error failure -> failwith (TypeBindingFailure.describe failure)
+        ctx, matches
 
+    /// The identity of the definition `target` names. The assemblies the resolution loaded are kept
+    /// whether or not it succeeds.
     let private resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
-        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<ResolvedTypeIdentity, TypeBindingFailure>
         =
-        let assemblies, assembly, typeInfo =
-            match
-                TypeResolution.resolveTypeFromRef
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    referencedInAssembly
-                    target
-                    typeGenericArgs
-                    ctx.LoadedAssemblies
-            with
-            | assemblies, Ok (assembly, typeInfo) -> assemblies, assembly, typeInfo
-            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
+        let assemblies, resolved =
+            TypeResolution.resolveTypeFromRef
+                loggerFactory
+                dotnetRuntimeDirs
+                referencedInAssembly
+                target
+                ImmutableArray.Empty
+                ctx.LoadedAssemblies
 
         { ctx with
             LoadedAssemblies = assemblies
         },
-        assembly,
-        typeInfo
+        resolved
+        |> Result.map (fun (_, typeInfo) ->
+            ResolvedTypeIdentity.ofDefinitionInAssembly typeInfo.AssemblyFullName typeInfo.TypeDefHandle
+        )
 
     /// Does `candidate`, a non-newslot instance virtual declared on some derived type, fill the
     /// vtable slot currently occupied by `slot`?
@@ -89,20 +89,22 @@ module MethodTableLayout =
     /// either side: a covariant-return override is a genuinely new slot in CoreCLR (Roslyn emits it
     /// `newslot` plus a MethodImpl), so folding it into the base slot by return-assignability would
     /// make `GetMethods` report one method where .NET reports two.
+    ///
+    /// A type either signature names that does not bind is the failure.
     let internal candidateFillsSlot
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (candidate : VtableSlot)
         (slot : VtableSlot)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * bool
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<bool, TypeBindingFailure>
         =
         if candidate.Method.Name <> slot.Method.Name then
             // The one rejection worth making before the signature comparison, because it is the one
             // that discards nearly every (candidate, slot) pair. Everything else the layout rule
             // requires -- the calling convention and `hasThis` in the header, the generic arity, the
             // parameter count -- `signaturesEquivalent` compares first, in that order.
-            ctx, false
+            ctx, Ok false
         else
 
         let comparand (slot : VtableSlot) : TypeConcretization.SignatureComparand =
@@ -295,7 +297,8 @@ module MethodTableLayout =
             SlotOwner.Description = TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) typeInfo
         }
 
-    /// The type a nominal signature element names.
+    /// The type a nominal signature element names. A type reference that does not bind is the
+    /// failure.
     let internal nominalIdentityOfSpelling
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -303,21 +306,17 @@ module MethodTableLayout =
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (assembly : DumpedAssembly)
         (ty : TypeDefn)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * ResolvedTypeIdentity
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<ResolvedTypeIdentity, TypeBindingFailure>
         =
         match ty with
-        | TypeDefn.FromDefinition (identity, _) -> ctx, identity
-        | TypeDefn.FromReference (typeRef, _) ->
-            let ctx, _, resolved =
-                resolveTypeFromRef loggerFactory dotnetRuntimeDirs assembly typeRef ImmutableArray.Empty ctx
-
-            ctx, ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
+        | TypeDefn.FromDefinition (identity, _) -> ctx, Ok identity
+        | TypeDefn.FromReference (typeRef, _) -> resolveTypeFromRef loggerFactory dotnetRuntimeDirs assembly typeRef ctx
         | TypeDefn.PrimitiveType PrimitiveType.Object ->
             // A TypeSpec may spell System.Object as a bare `ELEMENT_TYPE_OBJECT`, which names the same
             // type as the nominal form; CoreCLR resolves the two alike (`CompareElementTypeToToken`,
             // siginfo.cpp:4915).
             let object = ctx.BaseTypes.Object
-            ctx, ResolvedTypeIdentity.ofDefinitionInAssembly object.AssemblyFullName object.TypeDefHandle
+            ctx, Ok (ResolvedTypeIdentity.ofDefinitionInAssembly object.AssemblyFullName object.TypeDefHandle)
         | other ->
             failwith
                 $"%s{operation}: a base type is spelled %O{other}, which names no type definition; an extends clause is a TypeDefOrRefOrSpec, so it resolves to a nominal type or to `object`"
@@ -329,7 +328,8 @@ module MethodTableLayout =
     /// belongs to the base's own definition. These arguments are what re-reads the resulting slots for
     /// comparison against this type's methods.
     ///
-    /// `None` is `System.Object`, which extends nothing.
+    /// `None` is `System.Object`, which extends nothing. A base type reference that does not bind is
+    /// the failure.
     let internal baseOfDefinition
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -338,10 +338,13 @@ module MethodTableLayout =
         (owner : SlotOwner)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : TypeConcretization.ConcretizationContext<DumpedAssembly> *
-          (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option
+          Result<
+              (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option,
+              TypeBindingFailure
+           >
         =
         match typeInfo.BaseType with
-        | None -> ctx, None
+        | None -> ctx, Ok None
         | Some baseTypeInfo ->
 
         let assembly, _ = definitionMetadata operation ctx.LoadedAssemblies owner.Identity
@@ -353,37 +356,30 @@ module MethodTableLayout =
         // rebuilt from the *resolved* type -- for a generic one that is the typical instantiation
         // `G<!0, !1>`, whose variables are G's own rather than this type's, and substituting those
         // into this type's context would re-index another type's variables.
-        let ctx, baseIdentity, arguments =
+        let ctx, spelled =
             match baseTypeInfo with
             | BaseTypeInfo.TypeDef handle ->
                 ctx,
-                ResolvedTypeIdentity.ofDefinitionInAssembly owner.Identity.AssemblyFullName handle,
-                ImmutableArray.Empty
+                Ok (
+                    ResolvedTypeIdentity.ofDefinitionInAssembly owner.Identity.AssemblyFullName handle,
+                    ImmutableArray.Empty
+                )
             | BaseTypeInfo.TypeRef handle ->
-                let ctx, _, resolved =
-                    resolveTypeFromRef
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        assembly
-                        assembly.TypeRefs.[handle]
-                        ImmutableArray.Empty
-                        ctx
-
-                ctx,
-                ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle,
-                ImmutableArray.Empty
+                resolveTypeFromRef loggerFactory dotnetRuntimeDirs assembly assembly.TypeRefs.[handle] ctx
+                |> fun (ctx, identity) -> ctx, identity |> Result.map (fun identity -> identity, ImmutableArray.Empty)
             | BaseTypeInfo.TypeSpec handle ->
-                match assembly.TypeSpecs.[handle].Signature with
-                | TypeDefn.GenericInstantiation (generic, arguments) ->
-                    let ctx, identity =
-                        nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly generic
+                let generic, arguments =
+                    match assembly.TypeSpecs.[handle].Signature with
+                    | TypeDefn.GenericInstantiation (generic, arguments) ->
+                        generic, ImmutableArray.CreateRange arguments
+                    | nominal -> nominal, ImmutableArray.Empty
 
-                    ctx, identity, ImmutableArray.CreateRange arguments
-                | nominal ->
-                    let ctx, identity =
-                        nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly nominal
+                nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly generic
+                |> fun (ctx, identity) -> ctx, identity |> Result.map (fun identity -> identity, arguments)
 
-                    ctx, identity, ImmutableArray.Empty
+        match spelled with
+        | Error failure -> ctx, Error failure
+        | Ok (baseIdentity, arguments) ->
 
         let baseAssembly, baseTypeDefinition =
             definitionMetadata operation ctx.LoadedAssemblies baseIdentity
@@ -401,7 +397,7 @@ module MethodTableLayout =
             (TypeConcretization.SubstitutionContext.forBase owner.AssemblyFullName arguments owner.Substitution)
                 .Arguments
 
-        ctx, Some (baseIdentity, arguments)
+        ctx, Ok (Some (baseIdentity, arguments))
 
     /// The result of `MethodTableBuilder::PlaceVirtualMethods` for one definition, plus the two
     /// things a later pass needs that the vtable alone does not record.
@@ -484,25 +480,29 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (owner : SlotOwner)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * PlacedVtable
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<PlacedVtable, TypeBindingFailure>
         =
         let _, typeInfo = definitionMetadata operation ctx.LoadedAssemblies owner.Identity
 
-        let ctx, baseType =
-            baseOfDefinition loggerFactory dotnetRuntimeDirs operation ctx owner typeInfo
+        match baseOfDefinition loggerFactory dotnetRuntimeDirs operation ctx owner typeInfo with
+        | ctx, Error failure -> ctx, Error failure
+        | ctx, Ok baseType ->
 
         let ctx, parentAndBaseSlots =
             match baseType with
-            | None -> ctx, None
+            | None -> ctx, Ok None
             | Some (baseIdentity, arguments) ->
                 // The parent's table is built once, in the parent's own context: which slot each of its
                 // methods occupies was decided before any argument was supplied, and `CopyParentVtable`
                 // copies the result rather than rebuilding it (methodtablebuilder.cpp:1143). Re-running
                 // that placement here would fold two of the parent's slots together whenever this
                 // type's arguments make two of its distinct declarations coincide.
-                let ctx, parent =
+                match
                     ownerOfDefinition operation ctx.LoadedAssemblies baseIdentity
                     |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
+                with
+                | ctx, Error failure -> ctx, Error failure
+                | ctx, Ok parent ->
 
                 // Matching this type's own methods against those slots is the separate question, and it
                 // does need them read in this type's vocabulary.
@@ -522,13 +522,19 @@ module MethodTableLayout =
                     TypeConcretization.SubstitutionContext.rebase baseIdentity arguments substitution
 
                 ctx,
-                Some (
-                    parent,
-                    List.map rebase parent.Vtable,
-                    parent.Placed |> List.map (fun (slot, i) -> rebase slot, i),
-                    parent.Chain
-                    |> List.map (fun (identity, substitution) -> identity, rebaseSubstitution substitution)
+                Ok (
+                    Some (
+                        parent,
+                        List.map rebase parent.Vtable,
+                        parent.Placed |> List.map (fun (slot, i) -> rebase slot, i),
+                        parent.Chain
+                        |> List.map (fun (identity, substitution) -> identity, rebaseSubstitution substitution)
+                    )
                 )
+
+        match parentAndBaseSlots with
+        | Error failure -> ctx, Error failure
+        | Ok parentAndBaseSlots ->
 
         let baseSlots =
             match parentAndBaseSlots with
@@ -588,165 +594,184 @@ module MethodTableLayout =
         // lays slots out on the generic definition, where the two are distinct, and gives each
         // its own; a search that could see fresh slots would have the second replace the first
         // and the vtable would come out a slot short.
-        let ctx, inherited, freshReversed, placedReversed =
-            ((ctx, baseSlots, [], []), instanceVirtuals)
-            ||> List.fold (fun (ctx, slots, fresh, placed) method ->
-                let candidate =
-                    {
-                        VtableSlot.Method = method
-                        VtableSlot.DeclaredBy = owner
-                    }
+        let place
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (slots : VtableSlot list, fresh : VtableSlot list, placed : (VtableSlot * int) list)
+            (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+              Result<VtableSlot list * VtableSlot list * (VtableSlot * int) list, TypeBindingFailure>
+            =
+            let candidate =
+                {
+                    VtableSlot.Method = method
+                    VtableSlot.DeclaredBy = owner
+                }
 
-                let ctx, matched =
-                    if method.IsNewSlot then
-                        // "If the member is marked with a new slot we do not need to find it in
-                        // the parent" -- it is asking for a slot of its own by construction.
-                        ctx, []
-                    else
-                        // An interface reaches here with no inherited slots, so the search is
-                        // empty and every method it declares appends -- which is exactly what
-                        // upstream's `IsInterface` arm does, an interface having no parent whose
-                        // slots it could reuse. That arm needs no special case here, but it does
-                        // need the unmatched case below to allocate rather than fail: corelib's
-                        // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
-                        // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
-                        // only such method in corelib -- and it takes this path.
-                        ((ctx, []), List.indexed slots)
-                        ||> List.fold (fun (ctx, acc) (i, slot) ->
-                            let ctx, fills =
+            let ctx, matched =
+                if method.IsNewSlot then
+                    // "If the member is marked with a new slot we do not need to find it in
+                    // the parent" -- it is asking for a slot of its own by construction.
+                    ctx, Ok []
+                else
+                    // An interface reaches here with no inherited slots, so the search is
+                    // empty and every method it declares appends -- which is exactly what
+                    // upstream's `IsInterface` arm does, an interface having no parent whose
+                    // slots it could reuse. That arm needs no special case here, but it does
+                    // need the unmatched case below to allocate rather than fail: corelib's
+                    // `INumberBase<T>` declares `System.IUtf8SpanFormattable.TryFormat` as
+                    // `Private, Final, Virtual, HideBySig` with no NewSlot -- measured, the
+                    // only such method in corelib -- and it takes this path.
+                    ([], List.indexed slots)
+                    ||> StateResult.fold
+                            (fun ctx acc (i, slot) ->
                                 candidateFillsSlot loggerFactory dotnetRuntimeDirs ctx candidate slot
+                                |> fun (ctx, fills) ->
+                                    ctx, fills |> Result.map (fun fills -> if fills then i :: acc else acc)
+                            )
+                            ctx
 
-                            ctx, (if fills then i :: acc else acc)
-                        )
+            match matched with
+            | Error failure -> ctx, Error failure
+            | Ok matched ->
 
-                // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
-                // A` declares `new virtual M()` with the identical signature, and `C : B`
-                // overrides it. CoreCLR resolves this in `LoaderFindMethodInParentClass`, and
-                // the tie-break lives in how that lookup's index is built rather than in the
-                // lookup itself: `CreateMethodChainHash` walks the *parent's* slot table in
-                // ascending slot order and inserts each slot's occupant at the **head** of its
-                // name bucket, and `Lookup` returns the first entry in the bucket. So the entry
-                // returned is the one inserted last, i.e. the occupant of the highest matching
-                // slot -- the most-derived declaration, which is also C#'s meaning, since
-                // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
-                // appended as the walk descends, so that is the matching slot with the largest
-                // index; the fold above prepends, so `matched` is already in descending index
-                // order.
-                // Every tie here is genuine, and highest-matching-slot is its answer. Laid out on an
-                // instantiation a tie could instead be an *artifact* -- `A<T>.M(T)` and
-                // `B<T>.M(string)` are distinct declarations that closing at `T = string` makes
-                // identical -- and this walk used to refuse that shape rather than guess. Reading the
-                // definition's variables as themselves removes the possibility, so there is nothing
-                // left to separate.
+            // More than one slot can legitimately match: `A` declares `virtual M()`, `B :
+            // A` declares `new virtual M()` with the identical signature, and `C : B`
+            // overrides it. CoreCLR resolves this in `LoaderFindMethodInParentClass`, and
+            // the tie-break lives in how that lookup's index is built rather than in the
+            // lookup itself: `CreateMethodChainHash` walks the *parent's* slot table in
+            // ascending slot order and inserts each slot's occupant at the **head** of its
+            // name bucket, and `Lookup` returns the first entry in the bucket. So the entry
+            // returned is the one inserted last, i.e. the occupant of the highest matching
+            // slot -- the most-derived declaration, which is also C#'s meaning, since
+            // `C.M` overrides the `M` that `B` introduced and leaves `A`'s alone. Slots are
+            // appended as the walk descends, so that is the matching slot with the largest
+            // index; the fold above prepends, so `matched` is already in descending index
+            // order.
+            // Every tie here is genuine, and highest-matching-slot is its answer. Laid out on an
+            // instantiation a tie could instead be an *artifact* -- `A<T>.M(T)` and
+            // `B<T>.M(string)` are distinct declarations that closing at `T = string` makes
+            // identical -- and this walk used to refuse that shape rather than guess. Reading the
+            // definition's variables as themselves removes the possibility, so there is nothing
+            // left to separate.
+            //
+            // Two slots of the *same* owner can tie too, and that is not illegal metadata: with
+            // `B<T>` declaring both `M(T)` and `M(string)`, a derived `D : B<string>` reading
+            // B's slots sees two `M(string)`s. C# refuses to compile it (CS0462) but the CLR
+            // loads it, and measured against the host on a fabricated image it gives the
+            // reuse-slot override B's *second* slot -- the highest match, the same rule as
+            // above. `TestFabricatedVtableLayout` pins it.
+            match matched with
+            | mostDerived :: _ ->
+                // CoreCLR refuses to load a type whose non-newslot virtual matches a
+                // `final` parent slot: having picked the override candidate out of the
+                // parent chain, `MethodTableBuilder::PlaceVirtualMethods` throws
+                // `IDS_CLASSLOAD_MI_FINAL_DECL` when `IsMdFinal(dwParentAttrs)`
+                // (methodtablebuilder.cpp:5445-5448). The check is against the single method
+                // the lookup returned, which is the most-derived match -- the same slot the
+                // tie-break above selects -- so testing the chosen occupant is upstream's
+                // rule and not an approximation of it.
                 //
-                // Two slots of the *same* owner can tie too, and that is not illegal metadata: with
-                // `B<T>` declaring both `M(T)` and `M(string)`, a derived `D : B<string>` reading
-                // B's slots sees two `M(string)`s. C# refuses to compile it (CS0462) but the CLR
-                // loads it, and measured against the host on a fabricated image it gives the
-                // reuse-slot override B's *second* slot -- the highest match, the same rule as
-                // above. `TestFabricatedVtableLayout` pins it.
-                match matched with
-                | mostDerived :: _ ->
-                    // CoreCLR refuses to load a type whose non-newslot virtual matches a
-                    // `final` parent slot: having picked the override candidate out of the
-                    // parent chain, `MethodTableBuilder::PlaceVirtualMethods` throws
-                    // `IDS_CLASSLOAD_MI_FINAL_DECL` when `IsMdFinal(dwParentAttrs)`
-                    // (methodtablebuilder.cpp:5445-5448). The check is against the single method
-                    // the lookup returned, which is the most-derived match -- the same slot the
-                    // tie-break above selects -- so testing the chosen occupant is upstream's
-                    // rule and not an approximation of it.
-                    //
-                    // Filling the slot anyway would hand out a vtable layout for a type the real
-                    // runtime would refuse to load, and every slot number derived from it would
-                    // then be answering a question about a type that cannot exist. Roslyn cannot
-                    // emit this shape, but -- like the unmatched-override case below -- assembly
-                    // version skew can, by sealing a virtual in a base that a derived assembly
-                    // was already compiled against.
-                    let occupant = List.item mostDerived slots
+                // Filling the slot anyway would hand out a vtable layout for a type the real
+                // runtime would refuse to load, and every slot number derived from it would
+                // then be answering a question about a type that cannot exist. Roslyn cannot
+                // emit this shape, but -- like the unmatched-override case below -- assembly
+                // version skew can, by sealing a virtual in a base that a derived assembly
+                // was already compiled against.
+                let occupant = List.item mostDerived slots
 
-                    if occupant.Method.IsFinal then
-                        failwith
-                            $"%s{operation}: virtual method %s{method.Name} on %s{owner.Description} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+                if occupant.Method.IsFinal then
+                    failwith
+                        $"%s{operation}: virtual method %s{method.Name} on %s{owner.Description} is not marked newslot and matches vtable slot %i{mostDerived}, which is occupied by the final method %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
 
-                    // Matching signatures are not the whole of the layout rule for a *generic*
-                    // method: CoreCLR compares the type parameters' constraints too, and refuses
-                    // to load the type if the override demands more of a type argument than the
-                    // method it overrides did (`MetaSig::CompareMethodConstraints`,
-                    // methodtablebuilder.cpp:5449-5459).
-                    //
-                    // Like the `final` check above, this belongs *after* the most-derived match
-                    // is chosen rather than inside the predicate that finds matches. A base
-                    // chain may hold several slots this candidate matches by signature -- `A`
-                    // declaring `virtual M<T>()`, `B` hiding it with a `new virtual M<T>()` that
-                    // adds a constraint, `C` overriding `B`'s -- and only the one it actually
-                    // fills has any say. Comparing against the others would reject ordinary C#.
-                    //
-                    // Roslyn copies a base method's constraints verbatim onto an override, so a
-                    // genuine override always agrees here; assembly version skew and
-                    // hand-authored IL are what can disagree.
-                    let ctx, constraintsMatch =
-                        if candidate.Method.Generics.IsEmpty then
-                            ctx, true
-                        else
-                            methodConstraintsMatch
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                ctx
-                                (constraintComparand candidate)
-                                (constraintComparand occupant)
+                // Matching signatures are not the whole of the layout rule for a *generic*
+                // method: CoreCLR compares the type parameters' constraints too, and refuses
+                // to load the type if the override demands more of a type argument than the
+                // method it overrides did (`MetaSig::CompareMethodConstraints`,
+                // methodtablebuilder.cpp:5449-5459).
+                //
+                // Like the `final` check above, this belongs *after* the most-derived match
+                // is chosen rather than inside the predicate that finds matches. A base
+                // chain may hold several slots this candidate matches by signature -- `A`
+                // declaring `virtual M<T>()`, `B` hiding it with a `new virtual M<T>()` that
+                // adds a constraint, `C` overriding `B`'s -- and only the one it actually
+                // fills has any say. Comparing against the others would reject ordinary C#.
+                //
+                // Roslyn copies a base method's constraints verbatim onto an override, so a
+                // genuine override always agrees here; assembly version skew and
+                // hand-authored IL are what can disagree.
+                let ctx, constraintsMatch =
+                    if candidate.Method.Generics.IsEmpty then
+                        ctx, Ok true
+                    else
+                        methodConstraintsMatch
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            ctx
+                            (constraintComparand candidate)
+                            (constraintComparand occupant)
 
-                    if not constraintsMatch then
-                        failwith
-                            $"%s{operation}: generic method %s{method.Name} on %s{owner.Description} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+                match constraintsMatch with
+                | Error failure -> ctx, Error failure
+                | Ok constraintsMatch ->
 
-                    ctx,
+                if not constraintsMatch then
+                    failwith
+                        $"%s{operation}: generic method %s{method.Name} on %s{owner.Description} fills vtable slot %i{mostDerived}, held by %s{occupant.Method.Name} declared by %s{occupant.DeclaredBy.Description}, but its type parameters' constraints do not permit it to override that slot; CoreCLR rejects this type at load time with a TypeLoadException rather than laying out a vtable for it"
+
+                ctx,
+                Ok (
                     (slots |> List.mapi (fun j slot -> if j = mostDerived then candidate else slot)),
                     fresh,
                     (candidate, mostDerived) :: placed
-                | [] ->
-                    // "Else, place the method in the next available empty vtable slot"
-                    // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
-                    // marked NewSlot, which skipped the search and is asking for a slot of its
-                    // own, and one *not* marked NewSlot whose search came up empty. Upstream
-                    // makes no distinction between them -- both go to `AddVirtualMethod` -- and
-                    // neither does this.
-                    //
-                    // The second kind is what F# emits constantly: the structural equality and
-                    // comparison members of a union or record are `Public, Final, Virtual,
-                    // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
-                    // IComparer)` match nothing on `Object` and land here. Roslyn never emits
-                    // it -- 0 of corelib's 1470 non-generic classes trigger it, measured.
-                    //
-                    // Appending is the whole of the rule, but it costs a diagnostic: a gap in
-                    // `candidateFillsSlot` shows up as a spurious extra slot rather than a
-                    // failure here, so what catches one is the slot-by-slot comparison against
-                    // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
-                    // layout rather than merely on its length, because a walk that appends one
-                    // slot too many while dropping a real one has the right length.
-                    // `inherited` only ever has entries replaced, so its length is the index of
-                    // the first fresh slot however many have been appended so far.
-                    ctx, slots, candidate :: fresh, (candidate, List.length slots + List.length fresh) :: placed
-            )
+                )
+            | [] ->
+                // "Else, place the method in the next available empty vtable slot"
+                // (methodtablebuilder.cpp:5401). Both kinds of method arrive here: one
+                // marked NewSlot, which skipped the search and is asking for a slot of its
+                // own, and one *not* marked NewSlot whose search came up empty. Upstream
+                // makes no distinction between them -- both go to `AddVirtualMethod` -- and
+                // neither does this.
+                //
+                // The second kind is what F# emits constantly: the structural equality and
+                // comparison members of a union or record are `Public, Final, Virtual,
+                // HideBySig` with no NewSlot, so `Equals(T)` and `CompareTo(object,
+                // IComparer)` match nothing on `Object` and land here. Roslyn never emits
+                // it -- 0 of corelib's 1470 non-generic classes trigger it, measured.
+                //
+                // Appending is the whole of the rule, but it costs a diagnostic: a gap in
+                // `candidateFillsSlot` shows up as a spurious extra slot rather than a
+                // failure here, so what catches one is the slot-by-slot comparison against
+                // the host CLR's own `GetSlot` in TestVirtualMethodSlots -- a check on the
+                // layout rather than merely on its length, because a walk that appends one
+                // slot too many while dropping a real one has the right length.
+                // `inherited` only ever has entries replaced, so its length is the index of
+                // the first fresh slot however many have been appended so far.
+                ctx, Ok (slots, candidate :: fresh, (candidate, List.length slots + List.length fresh) :: placed)
+
+        match ((baseSlots, [], []), instanceVirtuals) ||> StateResult.fold place ctx with
+        | ctx, Error failure -> ctx, Error failure
+        | ctx, Ok (inherited, freshReversed, placedReversed) ->
 
         // The fresh slots were accumulated head-first, so undo that once here rather than
         // copying the accumulated vtable on every append.
         let slots = inherited @ List.rev freshReversed
 
         ctx,
-        {
-            PlacedVtable.Vtable = slots
-            PlacedVtable.Placed = inheritedPlacements @ List.rev placedReversed
-            PlacedVtable.NumParentVirtuals = List.length baseSlots
-            PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _, _) -> parent)
-            PlacedVtable.Owner = owner
-            PlacedVtable.Chain =
-                (owner.Identity, owner.Substitution)
-                :: (
-                    match parentAndBaseSlots with
-                    | None -> []
-                    | Some (_, _, _, chain) -> chain
-                )
-        }
+        Ok
+            {
+                PlacedVtable.Vtable = slots
+                PlacedVtable.Placed = inheritedPlacements @ List.rev placedReversed
+                PlacedVtable.NumParentVirtuals = List.length baseSlots
+                PlacedVtable.Parent = parentAndBaseSlots |> Option.map (fun (parent, _, _, _) -> parent)
+                PlacedVtable.Owner = owner
+                PlacedVtable.Chain =
+                    (owner.Identity, owner.Substitution)
+                    :: (
+                        match parentAndBaseSlots with
+                        | None -> []
+                        | Some (_, _, _, chain) -> chain
+                    )
+            }
 
     /// The instance vtable of the generic definition `identity` -- the layout every instantiation of
     /// it shares.
@@ -756,13 +781,11 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot list
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<VtableSlot list, TypeBindingFailure>
         =
-        let ctx, placed =
-            ownerOfDefinition operation ctx.LoadedAssemblies identity
-            |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
-
-        ctx, placed.Vtable
+        ownerOfDefinition operation ctx.LoadedAssemblies identity
+        |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
+        |> fun (ctx, placed) -> ctx, placed |> Result.map _.Vtable
 
     /// One entry of a type's *content* table: the method a call through this slot actually runs,
     /// together with the slot that method's own type placed it at.
@@ -846,7 +869,7 @@ module MethodTableLayout =
         (table : PlacedVtable)
         (assembly : DumpedAssembly)
         (declaration : MetadataToken)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * DeclarationTarget
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<DeclarationTarget, TypeBindingFailure>
         =
         match declaration with
         | MetadataToken.MethodDef handle ->
@@ -857,12 +880,16 @@ module MethodTableLayout =
             let target = assembly.DefinitionFullName, (Some handle, None)
 
             ctx,
-            (match
-                table.Placed
-                |> List.tryFind (fun (slot, _) -> (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target)
-             with
-             | Some (declaration, slot) -> DeclarationTarget.Names (declaration, slot)
-             | None -> DeclarationTarget.NoSlot)
+            Ok (
+                match
+                    table.Placed
+                    |> List.tryFind (fun (slot, _) ->
+                        (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = target
+                    )
+                with
+                | Some (declaration, slot) -> DeclarationTarget.Names (declaration, slot)
+                | None -> DeclarationTarget.NoSlot
+            )
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
 
@@ -876,19 +903,10 @@ module MethodTableLayout =
             let ctx, parentIdentity =
                 match memberRef.Parent with
                 | MetadataToken.TypeDefinition handle ->
-                    ctx, Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName handle)
+                    ctx, Ok (Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName handle))
                 | MetadataToken.TypeReference handle ->
-                    let ctx, _, resolved =
-                        resolveTypeFromRef
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            assembly
-                            assembly.TypeRefs.[handle]
-                            ImmutableArray.Empty
-                            ctx
-
-                    ctx,
-                    Some (ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle)
+                    resolveTypeFromRef loggerFactory dotnetRuntimeDirs assembly assembly.TypeRefs.[handle] ctx
+                    |> fun (ctx, identity) -> ctx, identity |> Result.map Some
                 | MetadataToken.TypeSpecification handle ->
                     // Only the generic type is wanted, not its arguments: the instantiation is not
                     // compared. `GenericInstantiation` is the only shape that carries arguments at all.
@@ -897,20 +915,19 @@ module MethodTableLayout =
                         | TypeDefn.GenericInstantiation (generic, _) -> generic
                         | nominal -> nominal
 
-                    let ctx, identity =
-                        nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly spelling
-
-                    ctx, Some identity
+                    nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly spelling
+                    |> fun (ctx, identity) -> ctx, identity |> Result.map Some
                 | _ ->
                     // A MemberRef parent may also be a ModuleRef or a MethodDef (the vararg case),
                     // neither of which can name a class ancestor's method.
-                    ctx, None
+                    ctx, Ok None
 
             match parentIdentity with
-            | None ->
+            | Error failure -> ctx, Error failure
+            | Ok None ->
                 // A ModuleRef or MethodDef parent: neither can name a class ancestor's method.
-                ctx, DeclarationTarget.NoSlot
-            | Some parentIdentity ->
+                ctx, Ok DeclarationTarget.NoSlot
+            | Ok (Some parentIdentity) ->
 
             // Is the named type an ancestor?
             //
@@ -937,7 +954,7 @@ module MethodTableLayout =
             | None ->
                 // An interface, or a type unrelated to this one: not a vtable write. This is 4084 of
                 // corelib's 4120 MethodImpl rows.
-                ctx, DeclarationTarget.NoSlot
+                ctx, Ok DeclarationTarget.NoSlot
             | Some (namedIdentity, _) ->
 
             let _, namedTypeInfo =
@@ -988,36 +1005,43 @@ module MethodTableLayout =
                 TypeConcretization.SubstitutionContext.forDefinition namedIdentity namedTypeInfo.Generics.Length
 
             let ctx, matches =
-                ((ctx, []), candidates)
-                ||> List.fold (fun (ctx, acc) (slot, index) ->
-                    let declarationComparand : TypeConcretization.SignatureComparand =
-                        {
-                            Signature = signature
-                            AssemblyFullName = table.Owner.AssemblyFullName
-                            DeclaringTypeGenerics = openContext
-                        }
+                ([], candidates)
+                ||> StateResult.fold
+                        (fun ctx acc (slot, index) ->
+                            let declarationComparand : TypeConcretization.SignatureComparand =
+                                {
+                                    Signature = signature
+                                    AssemblyFullName = table.Owner.AssemblyFullName
+                                    DeclaringTypeGenerics = openContext
+                                }
 
-                    let candidateComparand : TypeConcretization.SignatureComparand =
-                        {
-                            Signature = slot.Method.Signature
-                            AssemblyFullName = slot.DeclaredBy.AssemblyFullName
-                            DeclaringTypeGenerics = openContext
-                        }
+                            let candidateComparand : TypeConcretization.SignatureComparand =
+                                {
+                                    Signature = slot.Method.Signature
+                                    AssemblyFullName = slot.DeclaredBy.AssemblyFullName
+                                    DeclaringTypeGenerics = openContext
+                                }
 
-                    let ctx, equivalent =
-                        signaturesEquivalent
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            ctx
-                            false
-                            declarationComparand
-                            candidateComparand
-
-                    ctx, (if equivalent then (slot, index) :: acc else acc)
-                )
+                            signaturesEquivalent
+                                loggerFactory
+                                dotnetRuntimeDirs
+                                ctx
+                                false
+                                declarationComparand
+                                candidateComparand
+                            |> fun (ctx, equivalent) ->
+                                ctx,
+                                equivalent
+                                |> Result.map (fun equivalent -> if equivalent then (slot, index) :: acc else acc)
+                        )
+                        ctx
 
             match matches with
-            | [ single ] -> ctx, DeclarationTarget.Names single
+            | Error failure -> ctx, Error failure
+            | Ok matches ->
+
+            match matches with
+            | [ single ] -> ctx, Ok (DeclarationTarget.Names single)
             | [] ->
                 // Upstream would search the named ancestor's own bases, so a MemberRef naming `B`
                 // legally resolves to a method `A` introduced, and would then retry permitting COM type
@@ -1109,7 +1133,7 @@ module MethodTableLayout =
         (table : PlacedVtable)
         (parentContent : SlotContent list)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * SlotContent list
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<SlotContent list, TypeBindingFailure>
         =
         let assembly, _ =
             definitionMetadata operation ctx.LoadedAssemblies table.Owner.Identity
@@ -1155,137 +1179,171 @@ module MethodTableLayout =
 
         // `PlaceMethodImpls`. A row whose declaration names an interface method writes the dispatch
         // map and not the vtable, and `declarationSlot` returns `None` for those.
-        let ctx, content, _ =
-            ((ctx, content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
-            ||> List.fold (fun (ctx, content, writtenHere) impl ->
-                let ctx, declared =
-                    declarationSlot loggerFactory dotnetRuntimeDirs operation ctx table assembly impl.Declaration
+        let applyMethodImpl
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (
+                content : SlotContent list,
+                writtenHere :
+                    Map<
+                        int,
+                        string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
+                     >
+            )
+            (impl : MethodImplParsed)
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+              Result<
+                  SlotContent list *
+                  Map<
+                      int,
+                      string * (System.Reflection.Metadata.MethodDefinitionHandle option * SynthesisedMethod option)
+                   >,
+                  TypeBindingFailure
+               >
+            =
+            let ctx, declared =
+                declarationSlot loggerFactory dotnetRuntimeDirs operation ctx table assembly impl.Declaration
 
-                match declared with
-                | DeclarationTarget.NoSlot -> ctx, content, writtenHere
-                | DeclarationTarget.Names (declaration, declaredSlot) ->
+            match declared with
+            | Error failure -> ctx, Error failure
+            | Ok DeclarationTarget.NoSlot -> ctx, Ok (content, writtenHere)
+            | Ok (DeclarationTarget.Names (declaration, declaredSlot)) ->
 
-                // "The body shall be a MethodDef of this type" -- upstream throws
-                // `IDS_CLASSLOAD_MI_ILLEGAL_BODY` (methodtablebuilder.cpp:2415-2421) otherwise, so a
-                // MemberRef body is an invalid image rather than a shape to resolve.
-                let bodyHandle =
-                    match impl.Body with
-                    | MetadataToken.MethodDef handle -> handle
-                    | other ->
-                        failwith
-                            $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}; ECMA-335 requires a MethodDef of the type carrying the row, and CoreCLR rejects anything else at load time"
+            // "The body shall be a MethodDef of this type" -- upstream throws
+            // `IDS_CLASSLOAD_MI_ILLEGAL_BODY` (methodtablebuilder.cpp:2415-2421) otherwise, so a
+            // MemberRef body is an invalid image rather than a shape to resolve.
+            let bodyHandle =
+                match impl.Body with
+                | MetadataToken.MethodDef handle -> handle
+                | other ->
+                    failwith
+                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}; ECMA-335 requires a MethodDef of the type carrying the row, and CoreCLR rejects anything else at load time"
 
-                let body =
-                    table.Placed
-                    |> List.tryFind (fun (slot, _) ->
-                        (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.DefinitionFullName,
-                                                                                       (Some bodyHandle, None))
-                    )
-                    // "Body's parent must be this class": upstream reads the body token's parent and
-                    // throws `IDS_CLASSLOAD_MI_ILLEGAL_BODY` when it is not `GetCl()`
-                    // (methodtablebuilder.cpp:2418-2421). `Placed` spans the whole chain, so without
-                    // this an ancestor's method would be accepted as a body and its slot written.
-                    |> Option.filter (fun (slot, _) -> slot.DeclaredBy.Identity = table.Owner.Identity)
+            let body =
+                table.Placed
+                |> List.tryFind (fun (slot, _) ->
+                    (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.DefinitionFullName,
+                                                                                   (Some bodyHandle, None))
+                )
+                // "Body's parent must be this class": upstream reads the body token's parent and
+                // throws `IDS_CLASSLOAD_MI_ILLEGAL_BODY` when it is not `GetCl()`
+                // (methodtablebuilder.cpp:2418-2421). `Placed` spans the whole chain, so without
+                // this an ancestor's method would be accepted as a body and its slot written.
+                |> Option.filter (fun (slot, _) -> slot.DeclaredBy.Identity = table.Owner.Identity)
 
-                match body with
-                | None ->
-                    // A static body is diverted before `PlaceMethodImpls` (:6445-6446) and never
-                    // reaches a vtable slot; a non-virtual instance body is the load error
-                    // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). Either way this row does not
-                    // write the vtable, and refusing distinguishes the two badly, so skip the
-                    // static case by construction: `Placed` holds only instance virtuals.
-                    let bodyMethod = assembly.Methods.[bodyHandle]
+            match body with
+            | None ->
+                // A static body is diverted before `PlaceMethodImpls` (:6445-6446) and never
+                // reaches a vtable slot; a non-virtual instance body is the load error
+                // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). Either way this row does not
+                // write the vtable, and refusing distinguishes the two badly, so skip the
+                // static case by construction: `Placed` holds only instance virtuals.
+                let bodyMethod = assembly.Methods.[bodyHandle]
 
-                    if bodyMethod.IsStatic then
-                        ctx, content, writtenHere
-                    else
-                        failwith
-                            $"%s{operation}: MethodImpl on %s{table.Owner.Description} names the non-static, non-virtual method %s{bodyMethod.Name} as its body; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL) rather than laying out a method table for it"
-                | Some (bodySlot, bodyHome) ->
+                if bodyMethod.IsStatic then
+                    ctx, Ok (content, writtenHere)
+                else
+                    failwith
+                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} names the non-static, non-virtual method %s{bodyMethod.Name} as its body; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL) rather than laying out a method table for it"
+            | Some (bodySlot, bodyHome) ->
 
-                // `MethodImplCompareSignatures` (:6371-6403): the declaration and the body must have
-                // equivalent signatures, and equivalent generic constraints when the declaration is
-                // generic.
-                //
-                // This guard and the body-locality one above are both unexercised by any test, because
-                // both fire only on metadata CoreCLR refuses to load and `PersistedAssemblyBuilder`
-                // validates its own `DefineMethodOverride` arguments before writing the row. Reaching
-                // them needs an image assembled by hand rather than by the builder. Without this a body of an entirely different shape installs into the slot
-                // and PawPrint lays out a method table for a type CoreCLR refuses to load.
-                //
-                // The return column is compared only when the declaration is on *this* type. Upstream
-                // passes `allowCovariantReturn = FALSE` for a local declaration (:6641, the
-                // `..._ON_LOCAL_METHOD_IMPL` call) and `TRUE` for one on a parent (:6851,
-                // `..._ON_PARENT_METHOD_IMPL`), which is what lets a covariant-return override name
-                // the base method it narrows.
-                let declarationIsOnAnAncestor =
-                    declaration.DeclaredBy.Identity <> table.Owner.Identity
+            // `MethodImplCompareSignatures` (:6371-6403): the declaration and the body must have
+            // equivalent signatures, and equivalent generic constraints when the declaration is
+            // generic.
+            //
+            // This guard and the body-locality one above are both unexercised by any test, because
+            // both fire only on metadata CoreCLR refuses to load and `PersistedAssemblyBuilder`
+            // validates its own `DefineMethodOverride` arguments before writing the row. Reaching
+            // them needs an image assembled by hand rather than by the builder. Without this a body of an entirely different shape installs into the slot
+            // and PawPrint lays out a method table for a type CoreCLR refuses to load.
+            //
+            // The return column is compared only when the declaration is on *this* type. Upstream
+            // passes `allowCovariantReturn = FALSE` for a local declaration (:6641, the
+            // `..._ON_LOCAL_METHOD_IMPL` call) and `TRUE` for one on a parent (:6851,
+            // `..._ON_PARENT_METHOD_IMPL`), which is what lets a covariant-return override name
+            // the base method it narrows.
+            let declarationIsOnAnAncestor =
+                declaration.DeclaredBy.Identity <> table.Owner.Identity
 
-                let comparandOf (slot : VtableSlot) : TypeConcretization.SignatureComparand =
-                    {
-                        Signature = slot.Method.Signature
-                        AssemblyFullName = slot.DeclaredBy.AssemblyFullName
-                        DeclaringTypeGenerics = slot.DeclaredBy.Substitution
-                    }
+            let comparandOf (slot : VtableSlot) : TypeConcretization.SignatureComparand =
+                {
+                    Signature = slot.Method.Signature
+                    AssemblyFullName = slot.DeclaredBy.AssemblyFullName
+                    DeclaringTypeGenerics = slot.DeclaredBy.Substitution
+                }
 
-                let ctx, signaturesMatch =
-                    signaturesEquivalent
+            match
+                signaturesEquivalent
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    ctx
+                    declarationIsOnAnAncestor
+                    (comparandOf declaration)
+                    (comparandOf bodySlot)
+            with
+            | ctx, Error failure -> ctx, Error failure
+            | ctx, Ok signaturesMatch ->
+
+            if not signaturesMatch then
+                failwith
+                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} maps the body %s{bodySlot.Method.Name} onto the declaration %s{declaration.Method.Name} declared by %s{declaration.DeclaredBy.Description}, whose signatures are not equivalent; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_BADSIGNATURE)"
+
+            let ctx, constraintsMatch =
+                if declaration.Method.Generics.IsEmpty then
+                    ctx, Ok true
+                else
+                    methodConstraintsMatch
                         loggerFactory
                         dotnetRuntimeDirs
                         ctx
-                        declarationIsOnAnAncestor
-                        (comparandOf declaration)
-                        (comparandOf bodySlot)
+                        (constraintComparand bodySlot)
+                        (constraintComparand declaration)
 
-                if not signaturesMatch then
-                    failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} maps the body %s{bodySlot.Method.Name} onto the declaration %s{declaration.Method.Name} declared by %s{declaration.DeclaredBy.Description}, whose signatures are not equivalent; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_BADSIGNATURE)"
+            match constraintsMatch with
+            | Error failure -> ctx, Error failure
+            | Ok constraintsMatch ->
 
-                let ctx, constraintsMatch =
-                    if declaration.Method.Generics.IsEmpty then
-                        ctx, true
+            if not constraintsMatch then
+                failwith
+                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} maps the generic body %s{bodySlot.Method.Name} onto the declaration %s{declaration.Method.Name} declared by %s{declaration.DeclaredBy.Description}, but its type parameters' constraints do not permit it; CoreCLR rejects this type at load time with a TypeLoadException"
+
+            // Two rows of *this* type writing one slot is a load error unless they name the same
+            // body: `IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES` (:6335-6345), which is the same-body
+            // tolerance and the different-body refusal. Last-write-wins would quietly lay out a
+            // type the runtime refuses. The record is per-type on purpose -- a derived type
+            // re-MethodImpling a slot its parent already did is ordinary and legal.
+            let bodyIdentity = bodySlot.DeclaredBy.AssemblyFullName, bodySlot.Method.IdentityKey
+
+            match Map.tryFind declaredSlot writtenHere with
+            | Some previous when previous <> bodyIdentity ->
+                failwith
+                    $"%s{operation}: %s{table.Owner.Description} carries two MethodImpls that both write vtable slot %i{declaredSlot} with different bodies; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
+            | _ ->
+
+            ctx,
+            Ok (
+                content
+                |> List.mapi (fun i entry ->
+                    if i = declaredSlot then
+                        {
+                            SlotContent.Occupant = bodySlot
+                            SlotContent.HomeSlot = bodyHome
+                        }
                     else
-                        methodConstraintsMatch
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            ctx
-                            (constraintComparand bodySlot)
-                            (constraintComparand declaration)
-
-                if not constraintsMatch then
-                    failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} maps the generic body %s{bodySlot.Method.Name} onto the declaration %s{declaration.Method.Name} declared by %s{declaration.DeclaredBy.Description}, but its type parameters' constraints do not permit it; CoreCLR rejects this type at load time with a TypeLoadException"
-
-                // Two rows of *this* type writing one slot is a load error unless they name the same
-                // body: `IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES` (:6335-6345), which is the same-body
-                // tolerance and the different-body refusal. Last-write-wins would quietly lay out a
-                // type the runtime refuses. The record is per-type on purpose -- a derived type
-                // re-MethodImpling a slot its parent already did is ordinary and legal.
-                let bodyIdentity = bodySlot.DeclaredBy.AssemblyFullName, bodySlot.Method.IdentityKey
-
-                match Map.tryFind declaredSlot writtenHere with
-                | Some previous when previous <> bodyIdentity ->
-                    failwith
-                        $"%s{operation}: %s{table.Owner.Description} carries two MethodImpls that both write vtable slot %i{declaredSlot} with different bodies; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
-                | _ ->
-
-                ctx,
-                (content
-                 |> List.mapi (fun i entry ->
-                     if i = declaredSlot then
-                         {
-                             SlotContent.Occupant = bodySlot
-                             SlotContent.HomeSlot = bodyHome
-                         }
-                     else
-                         entry
-                 )),
+                        entry
+                ),
                 Map.add declaredSlot bodyIdentity writtenHere
             )
 
+        match
+            ((content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
+            ||> StateResult.fold applyMethodImpl ctx
+        with
+        | ctx, Error failure -> ctx, Error failure
+        | ctx, Ok (content, _) ->
+
         // `SetupMethodTable2`'s loop, skipped for interfaces exactly as upstream skips it (:11318).
         if typeInfo.IsInterface then
-            ctx, content
+            ctx, Ok content
         else
 
         let content = Array.ofList content
@@ -1315,7 +1373,7 @@ module MethodTableLayout =
                         content.[i] <- atHome
                         changed <- true
 
-        ctx, List.ofArray content
+        ctx, Ok (List.ofArray content)
 
     /// The content of every vtable slot of a definition: for each slot, the method a `callvirt`
     /// through it actually runs.
@@ -1330,15 +1388,19 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (table : PlacedVtable)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * SlotContent list
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<SlotContent list, TypeBindingFailure>
         =
         let _, typeInfo =
             definitionMetadata operation ctx.LoadedAssemblies table.Owner.Identity
 
         let ctx, parentContent =
             match table.Parent with
-            | None -> ctx, []
+            | None -> ctx, Ok []
             | Some parent -> contentOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx parent
+
+        match parentContent with
+        | Error failure -> ctx, Error failure
+        | Ok parentContent ->
 
         // The parent's content is read in the parent's own vocabulary; this type's vtable entries have
         // already been rebased into this type's. Only the *occupant* is taken from the parent's
@@ -1366,16 +1428,17 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot list
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<VtableSlot list, TypeBindingFailure>
         =
-        let ctx, table =
+        match
             ownerOfDefinition operation ctx.LoadedAssemblies identity
             |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
+        with
+        | ctx, Error failure -> ctx, Error failure
+        | ctx, Ok table ->
 
-        let ctx, content =
-            contentOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx table
-
-        ctx, content |> List.map (fun entry -> entry.Occupant)
+        contentOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx table
+        |> fun (ctx, content) -> ctx, content |> Result.map (List.map (fun entry -> entry.Occupant))
 
     /// The slot each declaration in a definition's chain owns, base-first: `MethodDesc::GetSlot()`
     /// for every method the chain *places*, which is more than the vtable records.
@@ -1390,13 +1453,11 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * (VtableSlot * int) list
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<(VtableSlot * int) list, TypeBindingFailure>
         =
-        let ctx, placed =
-            ownerOfDefinition operation ctx.LoadedAssemblies identity
-            |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
-
-        ctx, placed.Placed
+        ownerOfDefinition operation ctx.LoadedAssemblies identity
+        |> placeVirtualMethodsOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx
+        |> fun (ctx, placed) -> ctx, placed |> Result.map _.Placed
 
     /// The occupants of the region of a type's method table that follows its vtable, in slot order,
     /// so that the method at index `i` holds slot `numVirtuals + i`.
@@ -1604,19 +1665,21 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * MethodSlotTable
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<MethodSlotTable, TypeBindingFailure>
         =
-        let ctx, virtualSlots =
-            vtableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx identity
+        match vtableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx identity with
+        | ctx, Error failure -> ctx, Error failure
+        | ctx, Ok virtualSlots ->
 
         let owner = ownerOfDefinition operation ctx.LoadedAssemblies identity
         let _, typeInfo = definitionMetadata operation ctx.LoadedAssemblies identity
 
         ctx,
-        {
-            MethodSlotTable.Vtable = virtualSlots
-            MethodSlotTable.BeyondVtable = slotsBeyondVtableOfDefinition operation owner typeInfo
-        }
+        Ok
+            {
+                MethodSlotTable.Vtable = virtualSlots
+                MethodSlotTable.BeyondVtable = slotsBeyondVtableOfDefinition operation owner typeInfo
+            }
 
     /// What identifies a vtable slot's occupant well enough to find it again: the full name of the
     /// assembly that declares the method, paired with the method's within-assembly identity.
@@ -1668,9 +1731,7 @@ module MethodTableLayout =
         (operation : string)
         (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
-        : TypeConcretization.ConcretizationContext<DumpedAssembly> * int
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<int, TypeBindingFailure>
         =
-        let ctx, slots =
-            vtableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx identity
-
-        ctx, List.length slots
+        vtableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx identity
+        |> fun (ctx, slots) -> ctx, slots |> Result.map List.length

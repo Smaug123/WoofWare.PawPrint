@@ -176,10 +176,11 @@ module ConcreteInterfaceDispatch =
                         typeInfo
 
                 match baseOfDefinition with
-                | None ->
+                | Error failure -> state, Error failure
+                | Ok None ->
                     failwith
                         $"%s{operation}: %s{owner.Description} has a base type as an instantiation but none as a definition"
-                | Some (baseIdentity, arguments) ->
+                | Ok (Some (baseIdentity, arguments)) ->
 
                 let inherited =
                     parentMap
@@ -503,8 +504,7 @@ module ConcreteInterfaceDispatch =
     /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
     /// row is that method; a MemberRef is resolved against the owner's own methods by name and
     /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one. A type on the way
-    /// that does not bind is the failure, except in a TypeSpec parent, which
-    /// `ConcreteMethodTable.nominalIdentityOfSpelling` resolves and which still stops the run.
+    /// that does not bind is the failure.
     let internal methodImplBody
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -572,7 +572,6 @@ module ConcreteInterfaceDispatch =
                         state
                         assembly
                         spelling
-                    |> fun (state, identity) -> state, Ok identity
                 | _ -> refuse "whose parent is not a type"
 
             match parentIdentity with
@@ -637,8 +636,7 @@ module ConcreteInterfaceDispatch =
     /// A MethodImpl naming an interface method then maps it to its body, whatever placement found.
     ///
     /// A type the map reaches that does not bind is the failure, returned with what loaded before it;
-    /// only a computed map is memoised. One that building a method table (`ConcreteMethodTable`)
-    /// reaches still stops the run.
+    /// only a computed map is memoised.
     let rec ownDispatchMapOf
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -677,18 +675,18 @@ module ConcreteInterfaceDispatch =
                     parentTypeInfo.TypeAttributes.HasFlag System.Reflection.TypeAttributes.Abstract
                 | None -> false
 
-        let state, table =
-            match
-                ConcreteMethodTable.dispatchTableOfClosed
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    operation
-                    state
-                    typeHandle
-            with
-            | state, Some table -> state, table
-            | _, None -> failwith $"%s{operation}: %s{owner.Description} has no method table"
+        match
+            ConcreteMethodTable.dispatchTableOfClosed
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state
+                typeHandle
+        with
+        | state, Error failure -> state, Error failure
+        | _, Ok None -> failwith $"%s{operation}: %s{owner.Description} has no method table"
+        | state, Ok (Some table) ->
 
         let slotOfOwnMethod (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) : int =
             match table.SlotOfDeclaration.TryGetValue ((method.DeclaringAssemblyFullName, method.IdentityKey)) with
@@ -709,7 +707,7 @@ module ConcreteInterfaceDispatch =
         // The parent's slots as `bmtParent` holds them -- each slot's declaration, not its content --
         // read in this type's vocabulary. Only needed for an interface the parent does not implement,
         // so it is not built until one asks.
-        let parentSlots (state : TypeSystemState) : TypeSystemState * VtableSlot list =
+        let parentSlots (state : TypeSystemState) : TypeSystemState * Result<VtableSlot list, TypeBindingFailure> =
             let state, baseOfDefinition =
                 ConcreteMethodTable.baseOfDefinition
                     loggerFactory
@@ -721,8 +719,9 @@ module ConcreteInterfaceDispatch =
                     typeInfo
 
             match baseOfDefinition with
-            | None -> state, []
-            | Some (baseIdentity, arguments) ->
+            | Error failure -> state, Error failure
+            | Ok None -> state, Ok []
+            | Ok (Some (baseIdentity, arguments)) ->
                 let state, parentVtable =
                     ConcreteMethodTable.vtableOfDefinition
                         loggerFactory
@@ -734,17 +733,19 @@ module ConcreteInterfaceDispatch =
 
                 state,
                 parentVtable
-                |> List.map (fun slot ->
-                    { slot with
-                        VtableSlot.DeclaredBy =
-                            { slot.DeclaredBy with
-                                SlotOwner.Substitution =
-                                    TypeConcretization.SubstitutionContext.rebase
-                                        baseIdentity
-                                        arguments
-                                        slot.DeclaredBy.Substitution
-                            }
-                    }
+                |> Result.map (
+                    List.map (fun slot ->
+                        { slot with
+                            VtableSlot.DeclaredBy =
+                                { slot.DeclaredBy with
+                                    SlotOwner.Substitution =
+                                        TypeConcretization.SubstitutionContext.rebase
+                                            baseIdentity
+                                            arguments
+                                            slot.DeclaredBy.Substitution
+                                }
+                        }
+                    )
                 )
 
         let equivalent
@@ -864,8 +865,12 @@ module ConcreteInterfaceDispatch =
 
                     let state, slots =
                         match parentSlotsIfBuilt with
-                        | Some slots -> state, slots
+                        | Some slots -> state, Ok slots
                         | None -> parentSlots state
+
+                    match slots with
+                    | Error failure -> state, Error failure
+                    | Ok slots ->
 
                     // Backwards through the parent's slots, "to find the most derived method".
                     let candidates =
@@ -1082,7 +1087,6 @@ module ConcreteInterfaceDispatch =
     /// a value type supplies the method itself.
     ///
     /// A type the search reaches that does not bind is the failure, returned with what loaded before it.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let tryFindImplementationSlot
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)

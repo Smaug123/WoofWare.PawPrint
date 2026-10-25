@@ -455,7 +455,7 @@ module internal UnaryMetadataCallOps =
                 named
                 called
 
-        state.WithTypeSystem typeSystem, resolved
+        state.WithTypeSystem typeSystem, BindingStop.bound resolved
 
     /// The refusal of a `constrained.` call or load of `called` on the enum `enum`, where whether
     /// CoreCLR resolves it against the enum's underlying primitive is not known
@@ -1644,7 +1644,7 @@ module internal UnaryMetadataCallOps =
 
                     let state = state.WithTypeSystem typeSystem
 
-                    match resolved with
+                    match BindingStop.bound resolved with
                     | ClassMethodOnValueType.Undecided ->
                         failwith
                             $"refusing %s{describe ()}: the method holds a slot that does not mean the same in the value type's method table, or no slot PawPrint places, so CoreCLR runs whatever the value type's table holds there, if anything"
