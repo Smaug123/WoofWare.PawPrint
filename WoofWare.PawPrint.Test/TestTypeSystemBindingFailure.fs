@@ -193,27 +193,14 @@ module TestTypeSystemBindingFailure =
         |> shouldEqual (Ok false)
 
     [<Test>]
-    let ``priming a type whose base type is absent fails`` () : unit =
+    let ``concretising a type whose base type is absent fails`` () : unit =
         let f = UnmodelledImage.fixture ()
         let derived = f.Analysed.TypeDefs.[f.Shapes.Derived]
 
-        let handle, ctx =
-            TypeConcretization.concretizeTypeDefinition (context f) derived.Identity
-
-        match
-            Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loader f)
-                f.BaseClassTypes
-                (System.Collections.Generic.HashSet ())
-                ctx.LoadedAssemblies
-                ctx.ConcreteTypes
-                handle
-        with
-        | _,
-          _,
-          Some (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
-            ()
-        | _, _, other -> failwith $"expected the base type to be absent, got %A{other}"
+        match TypeConcretization.concretizeTypeDefinition (loader f) (context f) derived.Identity with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))),
+          _ -> ()
+        | other, _ -> failwith $"expected the base type to be absent, got %A{other}"
 
     [<Test>]
     let ``a method reference whose parent's base type is absent names the absent type`` () : unit =

@@ -243,8 +243,9 @@ module StaticVirtualDispatch =
             match
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
             with
-            | state, None -> state, Ok None
-            | state, Some parent -> onChain state parent
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok None
+            | state, Ok (Some parent) -> onChain state parent
 
         match onChain state constrained with
         | state, Error failure -> state, Error failure

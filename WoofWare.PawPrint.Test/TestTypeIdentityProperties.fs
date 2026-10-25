@@ -860,10 +860,12 @@ namespace {scenario.Namespace}
                     let ctx = emptyConcretizationContext [ compiled.Assembly ]
 
                     let firstHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition ctx compiled.Plain.Identity
+                        TypeConcretization.concretizeTypeDefinition (NoAssemblyLoad ()) ctx compiled.Plain.Identity
+                        |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
                     let secondHandle, _ =
-                        TypeConcretization.concretizeTypeDefinition ctx compiled.Plain.Identity
+                        TypeConcretization.concretizeTypeDefinition (NoAssemblyLoad ()) ctx compiled.Plain.Identity
+                        |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
                     firstHandle |> shouldEqual secondHandle
                 )
@@ -1016,10 +1018,18 @@ namespace {scenario.Namespace}
                     let ctx = emptyConcretizationContext [ compiled.Assembly ]
 
                     let firstArgumentHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition ctx compiled.FirstArgument.Identity
+                        TypeConcretization.concretizeTypeDefinition
+                            (NoAssemblyLoad ())
+                            ctx
+                            compiled.FirstArgument.Identity
+                        |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
                     let secondArgumentHandle, ctx =
-                        TypeConcretization.concretizeTypeDefinition ctx compiled.SecondArgument.Identity
+                        TypeConcretization.concretizeTypeDefinition
+                            (NoAssemblyLoad ())
+                            ctx
+                            compiled.SecondArgument.Identity
+                        |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
                     let firstHandle, ctx =
                         TypeConcretization.concretizeType

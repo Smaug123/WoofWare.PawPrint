@@ -786,7 +786,10 @@ module internal UnaryMetadataTokenOps =
                     }
 
                 let closedDeclaringHandle, concretizationCtx =
-                    TypeConcretization.concretizeTypeDefinition concretizationCtx field.DeclaringType.Identity
+                    TypeConcretization.concretizeTypeDefinition
+                        (TypeResolution.directoryLoader loggerFactory state.DotnetRuntimeDirs)
+                        concretizationCtx
+                        field.DeclaringType.Identity
 
                 let state =
                     { state with
@@ -797,7 +800,8 @@ module internal UnaryMetadataTokenOps =
                             }
                     }
 
-                state, Ok (LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed closedDeclaringHandle, h))
+                state,
+                Ok (LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed (BindingStop.bound closedDeclaringHandle), h))
             | MetadataToken.MethodDef h ->
                 let method =
                     activeAssy.Methods.[h]

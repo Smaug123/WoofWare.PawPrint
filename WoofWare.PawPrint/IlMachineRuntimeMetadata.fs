@@ -229,7 +229,7 @@ module IlMachineRuntimeMetadata =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// True iff `ty` references any `GenericTypeParameter` / `GenericMethodParameter`. The
     /// open-generic source cast walk uses this to decide whether a base/interface edge can be
@@ -1593,7 +1593,7 @@ module IlMachineRuntimeMetadata =
         let typeSystem, result =
             TypeSystemState.isEnumValueType loggerFactory state.DotnetRuntimeDirs baseClassTypes state.TypeSystem handle
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.enumUnderlyingHandle` against the machine's type system.
     let enumUnderlyingHandle

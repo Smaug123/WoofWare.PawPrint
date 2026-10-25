@@ -645,14 +645,14 @@ module ConcreteVirtualDispatch =
         /// `ResolvedTypeIdentity`, while concretising a method needs that type's `ConcreteTypeHandle`
         /// -- the instantiation the receiver actually supplies. `None` means some link is not a
         /// registered nominal type, which is the signal to fall back: a structural receiver has no
-        /// class chain to walk.
+        /// class chain to walk. A base type on the chain that does not bind is the failure.
         let concreteChainOfReceiver
             (state : TypeSystemState)
-            : TypeSystemState * (ConcreteTypeHandle * ResolvedTypeIdentity) list option
+            : TypeSystemState * Result<(ConcreteTypeHandle * ResolvedTypeIdentity) list option, TypeBindingFailure>
             =
             let rec go state handle acc =
                 match TypeSystemState.tryGetConcreteTypeInfo state handle with
-                | None -> state, None
+                | None -> state, Ok None
                 | Some (ty, _) ->
                     let acc = (handle, ty.Identity) :: acc
 
@@ -665,7 +665,11 @@ module ConcreteVirtualDispatch =
                             handle
 
                     match baseHandle with
-                    | None -> state, Some (List.rev acc)
+                    | Error failure -> state, Error failure
+                    | Ok baseHandle ->
+
+                    match baseHandle with
+                    | None -> state, Ok (Some (List.rev acc))
                     | Some baseHandle -> go state baseHandle acc
 
             go state dispatchTypeHandle []
@@ -756,11 +760,10 @@ module ConcreteVirtualDispatch =
             // The table says *which MethodDef*. Concretising it needs the instantiation the receiver
             // supplies for the type that declares it, which is that type's handle on the receiver's own
             // chain.
-            let state, chain = concreteChainOfReceiver state
-
-            match chain with
-            | None -> state, Ok None
-            | Some chain ->
+            match concreteChainOfReceiver state with
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok None
+            | state, Ok (Some chain) ->
 
             match
                 chain
@@ -867,7 +870,7 @@ module ConcreteVirtualDispatch =
                     | None -> false
 
                 if matches then
-                    state, level
+                    state, Ok level
                 else
                     let state, baseType =
                         TypeSystemState.resolveBaseConcreteType
@@ -878,12 +881,18 @@ module ConcreteVirtualDispatch =
                             level
 
                     match baseType with
+                    | Error failure -> state, Error failure
+                    | Ok baseType ->
+
+                    match baseType with
                     | Some baseType -> declaringHandleOnChain state baseType
                     | None ->
                         failwith
                             $"interface dispatch of %s{methodToCall.Name}: slot %i{slot} of %O{dispatchTypeHandle} holds a method of %s{occupant.DeclaredBy.Description}, which is not on the receiver's chain"
 
-            let state, implementationHandle = declaringHandleOnChain state dispatchTypeHandle
+            match declaringHandleOnChain state dispatchTypeHandle with
+            | state, Error failure -> state, Error failure
+            | state, Ok implementationHandle ->
 
             if not walkBaseTypes && implementationHandle <> dispatchTypeHandle then
                 // The exact-type probe asks whether the receiver supplies the body itself; an
@@ -929,6 +938,10 @@ module ConcreteVirtualDispatch =
                                 baseClassTypes
                                 state
                                 currentTypeHandle
+
+                        match baseType with
+                        | Error failure -> state, Error failure
+                        | Ok baseType ->
 
                         match baseType with
                         | None -> state, Ok None
@@ -1280,6 +1293,10 @@ module ConcreteVirtualDispatch =
 
             let state, baseType =
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state typeHandle
+
+            match baseType with
+            | Error failure -> state, Error failure
+            | Ok baseType ->
 
             match baseType with
             | None -> state, Ok (visited, [])
