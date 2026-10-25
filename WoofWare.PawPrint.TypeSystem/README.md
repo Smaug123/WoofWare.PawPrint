@@ -17,7 +17,8 @@ It answers four kinds of question:
   interface or `constrained.` call dispatched on a receiver of known type, default interface
   bodies and variance included;
 * what the runtime and the JIT decide about concrete types: whether one can be cast to another,
-  whether a method runs as shared generic code, whether storage holds GC references.
+  whether an instantiation satisfies its type parameters' constraints, whether a method runs as
+  shared generic code, whether storage holds GC references.
 
 `TypeSystemState` holds what all of these are computed over, and the memos they keep. Each module's
 docstrings say what it decides, and which part of CoreCLR it follows.
