@@ -9,13 +9,13 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Analysis
 
-/// The escape analysis against the host's CoreCLR on generic instantiations that a constraint
-/// rejects. A library `Lib` is compiled twice, with its type parameters' constraints and without,
-/// and a client is compiled against the build without them, so that the client's IL spells
+/// The escape analysis against the real runtime under test on generic instantiations that a
+/// constraint rejects. A library `Lib` is compiled twice, with its type parameters' constraints and
+/// without, and a client is compiled against the build without them, so that the client's IL spells
 /// instantiations and method specifications that the build with them rejects. Run against that
-/// build, the host's JIT raises `TypeLoadException` (a type) or `VerificationException` (a
-/// method) before the method naming one runs, or, where it looks the type up at run time, raises
-/// it inside the method; the analysis must say the same.
+/// build, as its own process, the runtime's JIT raises `TypeLoadException` (a type) or
+/// `VerificationException` (a method) before the method naming one runs, or, where it looks the
+/// type up at run time, raises it inside the method; the analysis must say the same.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEscapeAnalysisConstraintViolation =
@@ -301,7 +301,7 @@ module TestEscapeAnalysisConstraintViolation =
         ]
         |> String.concat "\n"
 
-    /// What running a case on the host's CoreCLR does.
+    /// What running a case on the real runtime under test does.
     [<RequireQualifiedAccess>]
     type private Outcome =
         /// Its body runs to the end.
@@ -323,6 +323,81 @@ module TestEscapeAnalysisConstraintViolation =
              |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
             [ text ]
 
+    /// `Client.Driver`, whose `Main` runs each method of `Client.Cases` that its first argument's
+    /// file names, one to a line, and writes to its second argument's file a line for each: its
+    /// name, a tab, and `Runs`, `Caught`, or `Escapes:` and the full name of what escaped it. It
+    /// asks for each method by name alone, since reading the signature of a method whose parameter
+    /// is a violating instantiation loads that type.
+    let private driverSource : string =
+        """
+namespace Client;
+public static class Driver
+{
+    public static void Main(string[] args)
+    {
+        using var writer = new System.IO.StreamWriter(args[1]);
+        foreach (var name in System.IO.File.ReadAllLines(args[0]))
+        {
+            var method = typeof(Cases).GetMethod(name);
+            string outcome;
+            try { outcome = (int)method.Invoke(null, null) == 0 ? "Runs" : "Caught"; }
+            catch (System.Reflection.TargetInvocationException e) { outcome = "Escapes:" + e.InnerException.GetType().FullName; }
+            writer.WriteLine(name + "\t" + outcome);
+        }
+    }
+}
+"""
+
+    /// The client, `source` and the driver, compiled against `references`.
+    let private compileClient (references : byte[] list) (source : string) : byte[] =
+        Roslyn.compileAssembly
+            "Client"
+            OutputKind.ConsoleApplication
+            (references
+             |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+            [ source ; driverSource ]
+
+    /// What running each of the methods `names` of `Client.Cases` does on the framework under
+    /// test's real runtime, as its own process, with `libraries` (each a name and an image) beside
+    /// the client.
+    let private hostOutcomes
+        (libraries : (string * byte[]) list)
+        (clientImage : byte[])
+        (names : string list)
+        : Map<string, Outcome>
+        =
+        let directory =
+            Path.Combine (Path.GetTempPath (), "pawprint-constraints-" + Path.GetRandomFileName ())
+
+        Directory.CreateDirectory directory |> ignore<DirectoryInfo>
+
+        try
+            for name, image in libraries do
+                File.WriteAllBytes (Path.Combine (directory, name + ".dll"), image)
+
+            let clientPath = Path.Combine (directory, "Client.dll")
+            File.WriteAllBytes (clientPath, clientImage)
+            let requested = Path.Combine (directory, "cases.txt")
+            File.WriteAllLines (requested, names)
+            let outcomes = Path.Combine (directory, "outcomes.txt")
+
+            match RealRuntime.executeAssemblyInPlace [| requested ; outcomes |] clientPath with
+            | RealRuntimeResult.NormalExit 0 -> ()
+            | other -> failwith $"the driver ended %A{other}"
+
+            File.ReadAllLines outcomes
+            |> Array.map (fun line ->
+                match line.Split '\t' with
+                | [| name ; "Runs" |] -> name, Outcome.Runs
+                | [| name ; "Caught" |] -> name, Outcome.Caught
+                | [| name ; escaped |] when escaped.StartsWith "Escapes:" ->
+                    name, Outcome.Escapes (escaped.Substring "Escapes:".Length)
+                | _ -> failwith $"the driver wrote %s{line}"
+            )
+            |> Map.ofArray
+        finally
+            RealRuntime.deleteScratchTree directory
+
     let private hostCoreLib () : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -337,8 +412,8 @@ module TestEscapeAnalysisConstraintViolation =
         | Runtime.InteropServices.Architecture.X64 -> JitTarget.X64
         | other -> failwith $"No JIT table describes the host's architecture, %O{other}"
 
-    /// An analysis over the host's CoreLib and `assemblies`, with `bind` applied to the load
-    /// context, allowed every assumption, on a CPU with no instruction sets.
+    /// An analysis over the framework under test's CoreLib and `assemblies`, with `bind` applied to
+    /// the load context, allowed every assumption, on a CPU with no instruction sets.
     let private analysisOver
         (assemblies : DumpedAssembly list)
         (bind : LoadedAssemblies -> LoadedAssemblies)
@@ -384,10 +459,10 @@ module TestEscapeAnalysisConstraintViolation =
                 None
         )
 
-    /// Every case, run on the host's CoreCLR against the constrained `Lib`, and asked of the
-    /// analysis over the same assemblies. Where the host raises a violation before the body runs,
-    /// the analysis must name that exception, or, for a generic method CoreCLR checks with its own
-    /// type variables as arguments, may answer "unknown"; elsewhere it must name neither
+    /// Every case, run on the real runtime under test against the constrained `Lib`, and asked of
+    /// the analysis over the same assemblies. Where the runtime raises a violation before the body
+    /// runs, the analysis must name that exception, or, for a generic method CoreCLR checks with
+    /// its own type variables as arguments, may answer "unknown"; elsewhere it must name neither
     /// exception.
     [<Test>]
     let ``a violated constraint raises before the body runs exactly where the host's JIT raises it`` () : unit =
@@ -395,40 +470,14 @@ module TestEscapeAnalysisConstraintViolation =
 
         let constrained = compile "Lib" [] (librarySource true)
         let unconstrained = compile "Lib" [] (librarySource false)
-        let clientImage = compile "Client" [ unconstrained ] clientSource
+        let clientImage = compileClient [ unconstrained ] clientSource
 
-        let hostOutcomes : Map<string, Outcome> =
-            let context =
-                Runtime.Loader.AssemblyLoadContext ("ConstraintViolations", isCollectible = true)
+        let hostOutcomes =
+            hostOutcomes [ "Lib", constrained ] clientImage (cases |> List.map _.Name)
 
-            context.add_Resolving (
-                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
-                    match name.Name with
-                    | "Lib" -> context.LoadFromStream (new MemoryStream (constrained))
-                    | _ -> null
-                )
-            )
-
-            try
-                let type' =
-                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Cases"
-
-                cases
-                |> List.map (fun case ->
-                    let outcome =
-                        try
-                            match type'.GetMethod(case.Name).Invoke ((null : obj), [||]) with
-                            | :? int as returned when returned = 0 -> Outcome.Runs
-                            | :? int as returned when returned = 1 -> Outcome.Caught
-                            | other -> failwith $"%s{case.Name} returned %O{other}"
-                        with :? TargetInvocationException as e ->
-                            Outcome.Escapes (e.InnerException.GetType().FullName)
-
-                    case.Name, outcome
-                )
-                |> Map.ofList
-            finally
-                context.Unload ()
+        for case in cases do
+            if not (hostOutcomes.ContainsKey case.Name) then
+                failwith $"the driver did not run %s{case.Name}"
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
@@ -549,8 +598,7 @@ public class BothMethod<T> { public static void Touch() { } public static void G
         let unconstrained = compile "Lib" [] (library false)
 
         let clientImage =
-            compile
-                "Client"
+            compileClient
                 [ unconstrained ]
                 """
 namespace Client;
@@ -565,38 +613,8 @@ public static class Cases
         let names = [ "BothInt" ; "BothString" ; "BothMethodInt" ]
         let fileNotFound = "System.IO.FileNotFoundException"
 
-        let hostOutcomes : Map<string, Outcome> =
-            let context =
-                Runtime.Loader.AssemblyLoadContext ("ConstraintAfterMiss", isCollectible = true)
-
-            context.add_Resolving (
-                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
-                    match name.Name with
-                    | "Lib" -> context.LoadFromStream (new MemoryStream (constrained))
-                    | _ -> null
-                )
-            )
-
-            try
-                let type' =
-                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Cases"
-
-                names
-                |> List.map (fun name ->
-                    let outcome =
-                        try
-                            match type'.GetMethod(name).Invoke ((null : obj), [||]) with
-                            | :? int as returned when returned = 0 -> Outcome.Runs
-                            | :? int as returned when returned = 1 -> Outcome.Caught
-                            | other -> failwith $"%s{name} returned %O{other}"
-                        with :? TargetInvocationException as e ->
-                            Outcome.Escapes (e.InnerException.GetType().FullName)
-
-                    name, outcome
-                )
-                |> Map.ofList
-            finally
-                context.Unload ()
+        // `Missing` is not beside the client.
+        let hostOutcomes = hostOutcomes [ "Lib", constrained ] clientImage names
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
