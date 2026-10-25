@@ -6974,7 +6974,7 @@ public static unsafe class Probe
             OutputKind.DynamicallyLinkedLibrary
             []
             [
-                "namespace Provider; public struct Kept { }"
+                "namespace Provider; public struct Kept { } public struct WithBool { public bool B; }"
                 + (if complete then
                        " public struct GoneStruct { } public class GoneClass { }"
                    else
@@ -7250,8 +7250,8 @@ public static unsafe class Uco
         | Unmarked
         /// Its first parameter carries `[MarshalAs(UnmanagedType.I4)]`.
         | MarshalAsI4
-        /// The method carries `[LCIDConversion(0)]`.
-        | LcidConversion
+        /// The method carries `[LCIDConversion(index)]`.
+        | LcidConversion of index : int
         /// Its first parameter is a pointer whose pointee carries a required modifier named
         /// `System.Runtime.CompilerServices.IsCopyConstructed`.
         | CopyConstructedPointee
@@ -7322,7 +7322,7 @@ public static unsafe class Uco
                     |> List.mapi (fun i _ -> if i = 0 then [| copyConstructed |] else [||])
                 | UcoProbeMark.Unmarked
                 | UcoProbeMark.MarshalAsI4
-                | UcoProbeMark.LcidConversion -> parameters |> List.map (fun _ -> [||])
+                | UcoProbeMark.LcidConversion _ -> parameters |> List.map (fun _ -> [||])
 
             let method =
                 v.DefineMethod (
@@ -7349,13 +7349,17 @@ public static unsafe class Uco
                         )
                     )
 
-            if mark = UcoProbeMark.LcidConversion then
+            match mark with
+            | UcoProbeMark.LcidConversion index ->
                 method.SetCustomAttribute (
                     Emit.CustomAttributeBuilder (
                         typeof<Runtime.InteropServices.LCIDConversionAttribute>.GetConstructor [| typeof<int> |],
-                        [| box 0 |]
+                        [| box index |]
                     )
                 )
+            | UcoProbeMark.Unmarked
+            | UcoProbeMark.MarshalAsI4
+            | UcoProbeMark.CopyConstructedPointee -> ()
 
             body (method.GetILGenerator ()) returned local
 
@@ -7453,6 +7457,7 @@ public static unsafe class Uco
             let kept = provider.GetType "Provider.Kept"
             let gone = provider.GetType "Provider.GoneStruct"
             let goneClass = provider.GetType "Provider.GoneClass"
+            let withBool = provider.GetType "Provider.WithBool"
             let v = typeof<Void>
 
             // Each probe: its name, return type, parameters, local, static, [MarshalAs], [LCIDConversion],
@@ -7489,7 +7494,19 @@ public static unsafe class Uco
                     invalid,
                     invalid
                     "MarshalAsInt", v, [ typeof<int> ], None, true, UcoProbeMark.MarshalAsI4, invalid, invalid
-                    "Lcid", v, [ typeof<int> ], None, true, UcoProbeMark.LcidConversion, invalid, invalid
+                    "Lcid", v, [ typeof<int> ], None, true, UcoProbeMark.LcidConversion 0, invalid, invalid
+                    // `GetLCIDParameterIndex` reads -1 as no locale argument.
+                    "LcidNone",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.LcidConversion -1,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    // The value type's verdict refuses it first; the analysis names the later failure,
+                    // and keeps the verdict's opacity (`undecidedBefore`).
+                    "WithBoolThenGone", v, [ withBool ; gone ], None, true, UcoProbeMark.Unmarked, invalid, typeLoad
                     "Instance", v, [ typeof<int> ], None, false, UcoProbeMark.Unmarked, invalid, invalid
                     "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
                     "GoneParam", v, [ gone ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
@@ -7549,6 +7566,10 @@ public static unsafe class Uco
                     UcoCompilation.Compiled
                 ]
 
+            // The probes whose answer is unknown from the entry besides what it names: a value type's
+            // verdict comes before the position that refuses the method.
+            let undecidedBefore = Set.ofList [ "WithBoolThenGone" ; "KeptThenBool" ]
+
             let check (label : string) (disableMarshalling : bool) probes : string list =
                 let image =
                     validityProbes
@@ -7571,7 +7592,7 @@ public static unsafe class Uco
                         let entry = sources |> Set.filter (fun site -> site.StartsWith $"V::%s{name} entry")
 
                         let expectedEntry =
-                            if byAnalysis = unknown then
+                            if byAnalysis = unknown || undecidedBefore.Contains name then
                                 Set.singleton $"V::%s{name} entry ValueTypeMarshallingVerdict"
                             else
                                 Set.empty

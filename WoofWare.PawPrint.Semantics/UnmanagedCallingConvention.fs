@@ -318,3 +318,16 @@ module UnmanagedCallersOnly =
         | ParameterMarshal.Present None -> runtimeMarshalling
         | ParameterMarshal.Present (Some info) ->
             runtimeMarshalling && info.NativeType <> NativeTypeParamInfo.NativeTypeDefault
+
+    /// The index of the parameter that CoreCLR passes the locale ID in, as `GetLCIDParameterIndex`
+    /// reads it from the first of `attributes`, a method's `[LCIDConversion]` applications: the
+    /// blob's one `int` argument, or -1, meaning none, where the method carries none or CoreCLR
+    /// cannot parse the blob (`ParseKnownCaArgs`). Any index but -1 needs marshalling.
+    let lcidParameterIndex (attributes : WoofWare.PawPrint.CustomAttribute list) : int =
+        match attributes with
+        | [] -> -1
+        | first :: _ ->
+            match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Primitive PrimitiveType.Int32 ] first.Value with
+            | Ok ([ CustomAttribFixedArg.I4 index ], _) -> index
+            | Ok _
+            | Error _ -> -1

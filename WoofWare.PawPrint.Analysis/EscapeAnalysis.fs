@@ -3411,15 +3411,14 @@ module EscapeAnalysis =
         (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : EscapeAnalysisState * CallersOnlyValidation
         =
-        let refused (state : EscapeAnalysisState) : EscapeAnalysisState * CallersOnlyValidation =
+        // CoreCLR's refusal: the exception, and what making it runs.
+        let refusal (state : EscapeAnalysisState) : Set<OutsideBodyFact> =
             let name, making = ExceptionMaking.unmanagedCallersOnlyInvalid
             let thrown, run = runtimeRaises state name making
 
-            state,
             OutsideBodyFact.Raises thrown
             :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
             |> Set.ofList
-            |> CallersOnlyValidation.Refused
 
         let loadFails (state : EscapeAnalysisState) (spelling : TypeDefn) =
             match spellingLoadFailure state assembly spelling with
@@ -3459,11 +3458,12 @@ module EscapeAnalysis =
             not method.IsStatic
             || method.Signature.GenericParameterCount <> 0
             || not method.RequiredDeclaringType.Generics.IsEmpty
-            || not
-                (NamedAttribute.ofMethod "System.Runtime.InteropServices.LCIDConversionAttribute" assembly handle)
-                    .IsEmpty
+            || UnmanagedCallersOnly.lcidParameterIndex (
+                NamedAttribute.ofMethod "System.Runtime.InteropServices.LCIDConversionAttribute" assembly handle
+               )
+               <> -1
         then
-            refused state
+            state, CallersOnlyValidation.Refused (refusal state)
         else
 
         let runtimeMarshalling =
@@ -3483,12 +3483,17 @@ module EscapeAnalysis =
 
         let positions = returned :: method.Signature.ParameterTypes |> List.indexed
 
+        // A value type's verdict before the position that refuses the method may refuse it first,
+        // so its opacity stays with the refusal.
         let rec walk
             (state : EscapeAnalysisState)
             (opaque : Set<OutsideBodyFact>)
             (positions : (int * TypeDefn) list)
             : EscapeAnalysisState * CallersOnlyValidation
             =
+            let refusedWith (state : EscapeAnalysisState) (refusal : Set<OutsideBodyFact>) =
+                state, CallersOnlyValidation.Refused (Set.union opaque refusal)
+
             match positions with
             | [] -> state, CallersOnlyValidation.Compiles opaque
             | (sequence, spelling) :: rest ->
@@ -3497,17 +3502,21 @@ module EscapeAnalysis =
                 UnmanagedCallersOnly.marshalAsRequires runtimeMarshalling (marshalOf sequence)
 
             match UnmanagedCallersOnly.signatureTypeMarshalling assembly runtimeMarshalling spelling with
-            | SignatureTypeMarshalling.Required -> refused state
-            | SignatureTypeMarshalling.NotRequired -> if marshalAs then refused state else walk state opaque rest
+            | SignatureTypeMarshalling.Required -> refusedWith state (refusal state)
+            | SignatureTypeMarshalling.NotRequired ->
+                if marshalAs then
+                    refusedWith state (refusal state)
+                else
+                    walk state opaque rest
             | SignatureTypeMarshalling.RequiredOnceLoaded loaded ->
                 match loadFails state loaded with
-                | state, Some failures -> state, CallersOnlyValidation.Refused failures
-                | state, None -> refused state
+                | state, Some failures -> refusedWith state failures
+                | state, None -> refusedWith state (refusal state)
             | SignatureTypeMarshalling.DecidedByLayoutOnceLoaded loaded ->
                 match loadFails state loaded with
-                | state, Some failures -> state, CallersOnlyValidation.Refused failures
+                | state, Some failures -> refusedWith state failures
                 // Whichever its verdict, a `[MarshalAs]` after it needs marshalling.
-                | state, None when marshalAs -> refused state
+                | state, None when marshalAs -> refusedWith state (refusal state)
                 | state, None ->
                     walk state (Set.add (OutsideBodyFact.Opaque Opacity.ValueTypeMarshallingVerdict) opaque) rest
 
