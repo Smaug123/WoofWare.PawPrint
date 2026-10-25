@@ -3834,12 +3834,25 @@ module EscapeAnalysis =
                         | None -> state, failures, [], []
                         | Some (spellingAssembly, signature, operand, delegateMade) ->
 
+                        // A `call` or `ldftn` naming an abstract method itself, CoreCLR refuses as
+                        // it resolves it, before it converts the signature (`abstractCallees`).
+                        let abstractTarget =
+                            match tokenOp, target with
+                            | (UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Ldftn),
+                              Some (CallTarget.Method callee) when (constrainedPrefix index).IsNone ->
+                                match (snd (methodOf state callee.Callee)).Body with
+                                | MethodBody.Abstract -> true
+                                | _ -> false
+                            | _ -> false
+
                         // CoreCLR converts the signature of the method the instruction names, or of
                         // `calli`'s call site, for the JIT before the JIT loads any type of it,
                         // refusing some (`SignatureRefusal`).
                         let refusal =
                             match signature with
-                            | MemberSignature.Method methodSignature when SignatureRefusal.readsMemberSignature operand ->
+                            | MemberSignature.Method methodSignature when
+                                SignatureRefusal.readsMemberSignature operand && not abstractTarget
+                                ->
                                 SignatureRefusal.ofSignature methodSignature
                             | MemberSignature.Method _
                             | MemberSignature.Field _ -> None
