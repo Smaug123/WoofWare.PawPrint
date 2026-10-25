@@ -37,10 +37,10 @@ type ConstraintVerdict =
     /// The first argument, in order, that its parameter's constraints reject.
     | Violated of ConstraintViolation
     /// Up to this parameter every argument satisfies its constraints, and this one's argument, an
-    /// abstract class or an interface, can be cast to a constraint that is an interface with static
-    /// virtual methods. CoreCLR then also requires each of those methods to resolve on the argument
-    /// (typedesc.cpp:1686), which this does not decide; should that pass, later arguments are checked
-    /// in turn.
+    /// abstract class or an interface, can be cast to a constraint that is an interface declaring
+    /// abstract static virtual methods itself. CoreCLR then also requires each of those methods to
+    /// resolve on the argument (typedesc.cpp:1686), which this does not decide; should that pass,
+    /// later arguments are checked in turn.
     | Undecided of parameter : int * required : ConcreteTypeHandle
 
 /// An argument CoreCLR does not admit in any instantiation (`Generics::CheckInstantiation`,
@@ -152,75 +152,23 @@ module ConstraintSatisfaction =
         | None -> false
         | Some (_, typeInfo) -> LoadedTypeInfo.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
 
-    /// `MethodTable::HasVirtualStaticMethods` for an interface: it declares a static virtual method,
-    /// or one of the interfaces it implements, transitively, does (`MethodTableBuilder` sets the flag
-    /// from each interface it expands into the interface map).
-    let private hasVirtualStaticMethods
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : TypeSystemState)
-        (handle : ConcreteTypeHandle)
-        : TypeSystemState * Result<bool, TypeBindingFailure>
-        =
-        let rec walk
-            (state : TypeSystemState)
-            (visited : Set<ConcreteTypeHandle>)
-            (pending : ConcreteTypeHandle list)
-            : TypeSystemState * Result<bool, TypeBindingFailure>
-            =
-            match pending with
-            | [] -> state, Ok false
-            | handle :: rest when visited.Contains handle -> walk state visited rest
-            | handle :: rest ->
-
-            match TypeSystemState.tryGetConcreteTypeInfo state handle with
-            | None -> walk state (visited.Add handle) rest
-            | Some (concrete, typeInfo) ->
-                if
-                    typeInfo.Methods
-                    |> List.exists (fun method -> method.IsStatic && method.IsVirtual)
-                then
-                    state, Ok true
-                else
-
-                let assembly =
-                    state._LoadedAssemblies.ByDefinitionName concrete.Identity.AssemblyFullName
-
-                let state, interfaces =
-                    (state, [], typeInfo.ImplementedInterfaces)
-                    |||> StateResult.fold (fun state found implementation ->
-                        match
-                            TypeSystemState.resolveTypeMetadataToken
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                baseClassTypes
-                                state
-                                assembly
-                                implementation.InterfaceHandle
-                        with
-                        | state, Error failure -> state, Error failure
-                        | state, Ok (spelling, spelledIn) ->
-                            match
-                                TypeSystemState.concretizeType
-                                    loggerFactory
-                                    dotnetRuntimeDirs
-                                    baseClassTypes
-                                    state
-                                    spelledIn.DefinitionFullName
-                                    concrete.Generics
-                                    ImmutableArray.Empty
-                                    spelling
-                            with
-                            | state, Error failure -> state, Error failure
-                            | state, Ok implemented -> state, Ok (implemented :: found)
-                    )
-
-                match interfaces with
-                | Error failure -> state, Error failure
-                | Ok interfaces -> walk state (visited.Add handle) (List.rev interfaces @ rest)
-
-        walk state Set.empty [ handle ]
+    /// Whether a nominal handle names a type that itself declares an abstract static virtual
+    /// method: those of an interface constraint are what CoreCLR asks to resolve on an abstract
+    /// argument (typedesc.cpp:1700, iterating the constraint's own methods), and an interface that
+    /// only inherits one has none.
+    let private declaresStaticAbstract (state : TypeSystemState) (handle : ConcreteTypeHandle) : bool =
+        match TypeSystemState.tryGetConcreteTypeInfo state handle with
+        | None -> false
+        | Some (_, typeInfo) ->
+            typeInfo.Methods
+            |> List.exists (fun method ->
+                method.IsStatic
+                && method.IsVirtual
+                && (method.TryMetadata
+                    |> Option.exists (fun facts ->
+                        facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Abstract
+                    ))
+            )
 
     /// <summary>
     /// Whether <paramref name="arguments" />, closed types, satisfy the constraints of
@@ -349,14 +297,10 @@ module ConstraintSatisfaction =
                         | Some (_, typeInfo) -> typeInfo.IsInterface
                         | None -> false
 
-                    if not (isAbstract argument && isInterface) then
-                        state, Ok None
+                    if isAbstract argument && isInterface && declaresStaticAbstract state required then
+                        state, Ok (Some (ConstraintVerdict.Undecided (index, required)))
                     else
-
-                    match hasVirtualStaticMethods loggerFactory dotnetRuntimeDirs baseClassTypes state required with
-                    | state, Error failure -> state, Error failure
-                    | state, Ok false -> state, Ok None
-                    | state, Ok true -> state, Ok (Some (ConstraintVerdict.Undecided (index, required)))
+                        state, Ok None
             )
 
         let state, verdict =
