@@ -185,8 +185,18 @@ method) may add more:
   reads where they name `CallConvSwift` and no second base convention; every target's JIT compiles
   Swift calls on the Unix runtime the analysis takes. Where CoreCLR cannot read those conventions,
   as it begins to compile the method, it raises, or for `CallConvs = null` kills the process,
-  which the analysis does not name (`Opacity.UnreadableCallingConvention`). A return type of a
-  pointer, byref or function pointer type it loads with what it points to. Of a call of unmanaged
+  which the analysis does not name (`Opacity.UnreadableCallingConvention`). Before any of that, once the
+  return type loads, CoreCLR refuses an `[UnmanagedCallersOnly]` method that is not static, is
+  generic or declared in a generic type, or needs marshalling, with an `InvalidProgramException`,
+  and the JIT loads none of the method's parameters' and locals' types: one carrying
+  `[LCIDConversion]`, or whose return type or a parameter is `bool` or `char`, a reference, a
+  byref, a pointer to a copy-constructed value type, or carries `[MarshalAs]`, with runtime
+  marshalling enabled; a reference or a byref with it disabled. It walks the return type and then
+  the parameters, loading in full each value type and instantiation it meets, so that one
+  missing raises `TypeLoadException` there. Whether a value type that loads needs marshalling it
+  decides by its layout, which the analysis does not model
+  (`Opacity.ValueTypeMarshallingVerdict`). A return type of a pointer, byref or function pointer
+  type it loads with what it points to. Of a call of unmanaged
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also
   loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by

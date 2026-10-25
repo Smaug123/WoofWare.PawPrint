@@ -6974,8 +6974,11 @@ public static unsafe class Probe
             OutputKind.DynamicallyLinkedLibrary
             []
             [
-                "namespace Provider; public struct Kept { }"
-                + (if complete then " public struct GoneStruct { }" else "")
+                "namespace Provider; public struct Kept { } public struct WithBool { public bool B; }"
+                + (if complete then
+                       " public struct GoneStruct { } public class GoneClass { }"
+                   else
+                       "")
             ]
 
     /// How compiling each method of `typeName` named in `methods` ends on the host, with the
@@ -7039,7 +7042,8 @@ public static unsafe class Probe
 
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
-    /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
+    /// names it, otherwise `Raises "System.InvalidProgramException"` where it names that, otherwise
+    /// `Raises "Unknown"` where the answer is unknown, and otherwise
     /// `Compiled`; with the places that make each answer unknown. The analysis is over the test
     /// host's own framework, as `ucoCompilations` compiles on the test host's own CoreCLR.
     let private ucoAnalysed
@@ -7073,8 +7077,12 @@ public static unsafe class Probe
             analysis <- next
 
             let outcome =
-                if (render analysis escapes).Contains "=System.TypeLoadException" then
+                let shown = render analysis escapes
+
+                if shown.Contains "=System.TypeLoadException" then
                     UcoCompilation.Raises "System.TypeLoadException"
+                elif shown.Contains "=System.InvalidProgramException" then
+                    UcoCompilation.Raises "System.InvalidProgramException"
                 elif escapes.Unknown then
                     UcoCompilation.Raises "Unknown"
                 else
@@ -7235,6 +7243,513 @@ public static unsafe class Uco
 
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// What marks an `[UnmanagedCallersOnly]` probe besides its signature.
+    [<RequireQualifiedAccess>]
+    type private UcoProbeMark =
+        | Unmarked
+        /// Its first parameter carries `[MarshalAs(UnmanagedType.I4)]`.
+        | MarshalAsI4
+        /// The method carries `[LCIDConversion(index)]`.
+        | LcidConversion of index : int
+        /// Its first parameter is a pointer whose pointee carries a required modifier named
+        /// `System.Runtime.CompilerServices.IsCopyConstructed`.
+        | CopyConstructedPointee
+
+    /// An assembly `Client` of `[UnmanagedCallersOnly]` methods, each named in `probes` with its
+    /// return type, parameter types, the type of a local it declares if any, whether it is static,
+    /// and its mark; the class `V` declares them, and the generic class `G<T>` one more,
+    /// `InGeneric`, as does the generic method `V.GenericMethod<T>`. Where `disableMarshalling`, the
+    /// assembly carries `[DisableRuntimeMarshalling]`.
+    let private validityProbes
+        (disableMarshalling : bool)
+        (probes : (string * Type * Type list * Type option * bool * UcoProbeMark) list)
+        : byte[]
+        =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+        if disableMarshalling then
+            builder.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<Runtime.CompilerServices.DisableRuntimeMarshallingAttribute>.GetConstructor Type.EmptyTypes,
+                    [||]
+                )
+            )
+
+        let modul = builder.DefineDynamicModule "Client"
+        let v = modul.DefineType ("V", TypeAttributes.Public)
+
+        v.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let unmanagedCallersOnly =
+            Emit.CustomAttributeBuilder (
+                typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                [||]
+            )
+
+        let body (il : Emit.ILGenerator) (returned : Type) (local : Type option) : unit =
+            local |> Option.iter (il.DeclareLocal >> ignore<Emit.LocalBuilder>)
+
+            if returned <> typeof<Void> then
+                il.Emit (Emit.OpCodes.Ldloc, il.DeclareLocal returned)
+
+            il.Emit Emit.OpCodes.Ret
+
+        // `PersistedAssemblyBuilder` puts a parameter's required modifiers before the whole
+        // parameter type; this one is moved onto the pointee once the image is saved.
+        let copyConstructed =
+            let builder =
+                modul.DefineType (
+                    "System.Runtime.CompilerServices.IsCopyConstructed",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            builder.CreateType ()
+
+        for name, returned, parameters, local, isStatic, mark in probes do
+            let attributes =
+                if isStatic then
+                    MethodAttributes.Public ||| MethodAttributes.Static
+                else
+                    MethodAttributes.Public
+
+            let requiredModifiers =
+                match mark with
+                | UcoProbeMark.CopyConstructedPointee ->
+                    parameters
+                    |> List.mapi (fun i _ -> if i = 0 then [| copyConstructed |] else [||])
+                | UcoProbeMark.Unmarked
+                | UcoProbeMark.MarshalAsI4
+                | UcoProbeMark.LcidConversion _ -> parameters |> List.map (fun _ -> [||])
+
+            let method =
+                v.DefineMethod (
+                    name,
+                    attributes,
+                    CallingConventions.Standard,
+                    returned,
+                    null,
+                    null,
+                    Array.ofList parameters,
+                    Array.ofList requiredModifiers,
+                    null
+                )
+
+            method.SetCustomAttribute unmanagedCallersOnly
+
+            if mark = UcoProbeMark.MarshalAsI4 then
+                (method.DefineParameter (1, ParameterAttributes.HasFieldMarshal, "x"))
+                    .SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.InteropServices.MarshalAsAttribute>.GetConstructor
+                                [| typeof<Runtime.InteropServices.UnmanagedType> |],
+                            [| box Runtime.InteropServices.UnmanagedType.I4 |]
+                        )
+                    )
+
+            match mark with
+            | UcoProbeMark.LcidConversion index ->
+                method.SetCustomAttribute (
+                    Emit.CustomAttributeBuilder (
+                        typeof<Runtime.InteropServices.LCIDConversionAttribute>.GetConstructor [| typeof<int> |],
+                        [| box index |]
+                    )
+                )
+            | UcoProbeMark.Unmarked
+            | UcoProbeMark.MarshalAsI4
+            | UcoProbeMark.CopyConstructedPointee -> ()
+
+            body (method.GetILGenerator ()) returned local
+
+        let generic =
+            v.DefineMethod (
+                "GenericMethod",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| typeof<int> |]
+            )
+
+        generic.DefineGenericParameters [| "T" |]
+        |> ignore<Emit.GenericTypeParameterBuilder[]>
+
+        generic.SetCustomAttribute unmanagedCallersOnly
+        body (generic.GetILGenerator ()) typeof<Void> None
+        v.CreateType () |> ignore<Type>
+
+        let g = modul.DefineType ("G`1", TypeAttributes.Public)
+
+        g.DefineGenericParameters [| "T" |]
+        |> ignore<Emit.GenericTypeParameterBuilder[]>
+
+        let inGeneric =
+            g.DefineMethod (
+                "InGeneric",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| typeof<int> |]
+            )
+
+        inGeneric.SetCustomAttribute unmanagedCallersOnly
+        body (inGeneric.GetILGenerator ()) typeof<Void> None
+        g.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        let image = image.ToArray ()
+
+        // A static method returning void and taking one pointer to a value type, the pointer marked:
+        // `DEFAULT 1 VOID CMOD_REQD t PTR VALUETYPE` becomes `DEFAULT 1 VOID PTR CMOD_REQD t VALUETYPE`.
+        let marked =
+            probes
+            |> List.exists (fun (_, _, _, _, _, mark) -> mark = UcoProbeMark.CopyConstructedPointee)
+
+        if marked then
+            let at =
+                [ 0 .. image.Length - 7 ]
+                |> List.filter (fun i ->
+                    image.[i] = 0x00uy
+                    && image.[i + 1] = 0x01uy
+                    && image.[i + 2] = 0x01uy
+                    && image.[i + 3] = 0x1Fuy
+                    && image.[i + 5] = 0x0Fuy
+                    && image.[i + 6] = 0x11uy
+                )
+                |> List.exactlyOne
+
+            let modifier = image.[at + 4]
+            image.[at + 3] <- 0x0Fuy
+            image.[at + 4] <- 0x1Fuy
+            image.[at + 5] <- modifier
+
+        image
+
+    /// CoreCLR refuses to compile an `[UnmanagedCallersOnly]` method that is not static, is generic
+    /// or is declared in a generic type, or whose signature needs marshalling
+    /// (`COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`, an
+    /// `InvalidProgramException`). It decides that after loading the return type and before the JIT
+    /// runs, so the JIT loads none of the parameters' and locals' types; `PInvoke::MarshalingRequired`
+    /// walks the return type and then the parameters, stopping at the first that needs marshalling,
+    /// and loads in full each value type and generic instantiation it reaches, so a missing one
+    /// raises `TypeLoadException` there. With runtime marshalling enabled, `bool`, `char`, a
+    /// reference, a byref, and a parameter with `[MarshalAs]` need marshalling, as does
+    /// `[LCIDConversion]`; with it disabled, only a reference or a byref. A value type needs it by
+    /// its layout, which the analysis does not decide: its answer is unknown from the method's
+    /// entry there (`ValueTypeMarshallingVerdict`). The host compiles each probe, against which the
+    /// analysis reads the host's own image.
+    [<Test>]
+    let ``the JIT refuses an UnmanagedCallersOnly method that is not static, is generic, or needs marshalling, before its own loads``
+        ()
+        : unit
+        =
+        let complete = ucoProvider true
+        let incomplete = ucoProvider false
+        let typeLoad = UcoCompilation.Raises "System.TypeLoadException"
+        let invalid = UcoCompilation.Raises "System.InvalidProgramException"
+        let unknown = UcoCompilation.Raises "Unknown"
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyValidity", isCollectible = true)
+
+        try
+            let provider = context.LoadFromStream (new MemoryStream (complete))
+            let kept = provider.GetType "Provider.Kept"
+            let gone = provider.GetType "Provider.GoneStruct"
+            let goneClass = provider.GetType "Provider.GoneClass"
+            let withBool = provider.GetType "Provider.WithBool"
+            let v = typeof<Void>
+
+            // Each probe: its name, return type, parameters, local, static, [MarshalAs], [LCIDConversion],
+            // what the host's JIT does, and what the analysis says.
+            let enabled =
+                [
+                    "IntParam",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "PointerParam",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "BoolParam", v, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "CharParam", v, [ typeof<char> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "BoolReturn", typeof<bool>, [], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ArrayParam", v, [ typeof<int[]> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ByrefParam",
+                    v,
+                    [ typeof<int>.MakeByRefType () ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    invalid,
+                    invalid
+                    "MarshalAsInt", v, [ typeof<int> ], None, true, UcoProbeMark.MarshalAsI4, invalid, invalid
+                    "Lcid", v, [ typeof<int> ], None, true, UcoProbeMark.LcidConversion 0, invalid, invalid
+                    // `GetLCIDParameterIndex` reads -1 as no locale argument.
+                    "LcidNone",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.LcidConversion -1,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    // The value type's verdict refuses it first; the analysis names the later failure,
+                    // and keeps the verdict's opacity (`undecidedBefore`).
+                    "WithBoolThenGone", v, [ withBool ; gone ], None, true, UcoProbeMark.Unmarked, invalid, typeLoad
+                    "Instance", v, [ typeof<int> ], None, false, UcoProbeMark.Unmarked, invalid, invalid
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "GoneParam", v, [ gone ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolThenGone", v, [ typeof<bool> ; gone ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "GoneThenBool", v, [ gone ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "GoneReturnBool", gone, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolWithGoneLocal", v, [ typeof<bool> ], Some gone, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "IntWithGoneLocal", v, [ typeof<int> ], Some gone, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "ListOfInt",
+                    v,
+                    [ typeof<Collections.Generic.List<int>> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    invalid,
+                    invalid
+                    "KeptThenBool", v, [ kept ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    // The return type loads in full before anything else, though it needs marshalling too.
+                    "GoneClassReturn", goneClass, [ typeof<int> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    invalid,
+                    invalid
+                ]
+
+            let disabled =
+                [
+                    "BoolParam",
+                    v,
+                    [ typeof<bool> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "MarshalAsInt",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.MarshalAsI4,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                ]
+
+            // The probes whose answer is unknown from the entry besides what it names: a value type's
+            // verdict comes before the position that refuses the method.
+            let undecidedBefore = Set.ofList [ "WithBoolThenGone" ; "KeptThenBool" ]
+
+            let check (label : string) (disableMarshalling : bool) probes : string list =
+                let image =
+                    validityProbes
+                        disableMarshalling
+                        (probes
+                         |> List.map (fun (name, returned, parameters, local, isStatic, mark, _, _) ->
+                             name, returned, parameters, local, isStatic, mark
+                         ))
+
+                let names = probes |> List.map (fun (name, _, _, _, _, _, _, _) -> name)
+                let host = ucoCompilations image incomplete "V" names
+                let analysed = ucoAnalysed image incomplete "V" names
+
+                [
+                    for name, _, _, _, _, _, onHost, byAnalysis in probes do
+                        if host.[name] <> onHost then
+                            yield $"%s{label} %s{name}: the host's JIT %A{host.[name]}, not %A{onHost}"
+
+                        let outcome, sources = analysed.[name]
+                        let entry = sources |> Set.filter (fun site -> site.StartsWith $"V::%s{name} entry")
+
+                        let expectedEntry =
+                            if byAnalysis = unknown || undecidedBefore.Contains name then
+                                Set.singleton $"V::%s{name} entry ValueTypeMarshallingVerdict"
+                            else
+                                Set.empty
+
+                        if outcome <> byAnalysis || entry <> expectedEntry then
+                            yield
+                                $"%s{label} %s{name}: the analysis says %A{outcome}, unknown at %A{Set.toList entry}, not %A{byAnalysis}"
+
+                    // The generic method and the method of the generic type, instantiated over `int`.
+                    if not disableMarshalling then
+                        let loaded =
+                            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyGenerics", isCollectible = true)
+
+                        try
+                            let assembly = loaded.LoadFromStream (new MemoryStream (image))
+
+                            let generics =
+                                [
+                                    "GenericMethod",
+                                    ((assembly.GetType "V").GetMethod "GenericMethod").MakeGenericMethod typeof<int>
+                                    "InGeneric",
+                                    ((assembly.GetType "G`1").MakeGenericType typeof<int>).GetMethod "InGeneric"
+                                ]
+
+                            for name, method in generics do
+                                let raised =
+                                    try
+                                        Runtime.CompilerServices.RuntimeHelpers.PrepareMethod (
+                                            method.MethodHandle,
+                                            method.DeclaringType.GetGenericArguments ()
+                                            |> Array.append (method.GetGenericArguments ())
+                                            |> Array.map _.TypeHandle
+                                        )
+
+                                        UcoCompilation.Compiled
+                                    with e ->
+                                        UcoCompilation.Raises (e.GetType().FullName)
+
+                                if raised <> invalid then
+                                    yield $"%s{name}: the host's JIT %A{raised}, not %A{invalid}"
+                        finally
+                            loaded.Unload ()
+
+                        let _, loggerFactory = LoggerFactory.makeTest ()
+
+                        let client =
+                            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+                        let providerAssembly =
+                            Assembly.read loggerFactory (Some "Provider.dll") (new MemoryStream (incomplete))
+
+                        let reference =
+                            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                        let mutable analysis =
+                            analysisOverHostImage
+                                [ client ; providerAssembly ]
+                                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+                        for typeName, name in [ "V", "GenericMethod" ; "G`1", "InGeneric" ] do
+                            let next, escapes =
+                                EscapeAnalysis.escapes analysis (methodNamed client typeName name)
+
+                            analysis <- next
+
+                            if not ((render analysis escapes).Contains "=System.InvalidProgramException") then
+                                yield $"%s{name}: the analysis says %A{Set.toList (render analysis escapes)}"
+                ]
+
+            let failures = check "enabled" false enabled @ check "disabled" true disabled
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
+
+    /// Over the runtime under test's own CoreLib, the analysis names the `InvalidProgramException`
+    /// CoreCLR refuses an `[UnmanagedCallersOnly]` method taking a `bool` with, as each runtime
+    /// makes it (`ExceptionMaking.ResourceMessage`, whose lookup .NET 11 makes differently).
+    [<Test>]
+    let ``on the runtime under test, the analysis names the refusal of an UnmanagedCallersOnly method taking a bool``
+        ()
+        : unit
+        =
+        let source =
+            """
+using System.Runtime.InteropServices;
+
+public static class Uco
+{
+    [UnmanagedCallersOnly] public static void TakesBool(bool b) { }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Roslyn.compileAssembly "Client" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+            |> fun image -> Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "Uco" "TakesBool")
+
+        (render analysis escapes).Contains "=System.InvalidProgramException"
+        |> shouldEqual true
+
+    /// CoreCLR matches a copy-constructor modifier on a pointer's pointee by its namespace and name
+    /// joined with a dot, however the metadata splits the two (`IsTypeRefOrDef`).
+    [<Test>]
+    let ``a copy-constructor modifier is matched by its joined name, however the metadata splits it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Provider.dll") (new MemoryStream (ucoProvider true))
+
+        let anyRef = assembly.TypeRefs.Values |> Seq.head
+
+        let pointerModifiedBy (ns : string) (name : string) : TypeDefn =
+            TypeDefn.Pointer (
+                TypeDefn.Modified
+                    {
+                        Unmodified =
+                            TypeDefn.FromReference (anyRef, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+                        Modifier =
+                            TypeDefn.FromReference (
+                                { anyRef with
+                                    Namespace = ns
+                                    Name = name
+                                },
+                                System.Reflection.Metadata.SignatureTypeKind.Class
+                            )
+                        IsRequired = true
+                    }
+            )
+
+        [
+            "System.Runtime.CompilerServices", "IsCopyConstructed"
+            "", "System.Runtime.CompilerServices.IsCopyConstructed"
+            "System.Runtime", "CompilerServices.IsCopyConstructed"
+            "Microsoft", "VisualC.NeedsCopyConstructorModifier"
+            "System.Runtime.CompilerServices", "IsCopyConstructedNot"
+            "", "IsCopyConstructed"
+        ]
+        |> List.map (fun (ns, name) ->
+            UnmanagedCallersOnly.signatureTypeMarshalling assembly true (pointerModifiedBy ns name)
+        )
+        |> shouldEqual
+            [
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.NotRequired
+                SignatureTypeMarshalling.NotRequired
+            ]
 
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
     /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
