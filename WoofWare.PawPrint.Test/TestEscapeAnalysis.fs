@@ -6989,7 +6989,12 @@ public static unsafe class Probe
             OutputKind.DynamicallyLinkedLibrary
             []
             [
-                "namespace Provider; public struct Kept { } public struct WithBool { public bool B; }"
+                "using System.Runtime.InteropServices; namespace Provider; public struct Kept { } public struct WithBool { public bool B; }"
+                + " public struct Gen<T> { public T X; } public class Outer<T> { public enum E { A } }"
+                + " [StructLayout(LayoutKind.Sequential, Size = 40000)] public struct Big40000 { public byte B; }"
+                + " [StructLayout(LayoutKind.Sequential, Size = 70000)] public struct Big70000 { public byte B; }"
+                + " public struct HoldsString { public string S; }"
+                + " [StructLayout(LayoutKind.Auto)] public struct AutoStruct { public int X; }"
                 + (if complete then
                        " public struct GoneStruct { } public class GoneClass { }"
                    else
@@ -7448,9 +7453,10 @@ public static unsafe class Uco
     /// raises `TypeLoadException` there. With runtime marshalling enabled, `bool`, `char`, a
     /// reference, a byref, and a parameter with `[MarshalAs]` need marshalling, as does
     /// `[LCIDConversion]`; with it disabled, only a reference or a byref. A value type needs it by
-    /// its layout, which the analysis does not decide: its answer is unknown from the method's
-    /// entry there (`ValueTypeMarshallingVerdict`). The host compiles each probe, against which the
-    /// analysis reads the host's own image.
+    /// what its layout facts say (`MarshalingRequired.valueTypeRequires`), and the parameters'
+    /// stack size by its sum, which the analysis bounds from above: where the bound reaches 65536
+    /// bytes, its answer is unknown from the method's entry (`UnmanagedStackSize`). The host compiles
+    /// each probe, against which the analysis reads the host's own image.
     [<Test>]
     let ``the JIT refuses an UnmanagedCallersOnly method that is not static, is generic, or needs marshalling, before its own loads``
         ()
@@ -7471,7 +7477,28 @@ public static unsafe class Uco
             let gone = provider.GetType "Provider.GoneStruct"
             let goneClass = provider.GetType "Provider.GoneClass"
             let withBool = provider.GetType "Provider.WithBool"
+
+            let gen (argument : Type) =
+                (provider.GetType "Provider.Gen`1").MakeGenericType argument
+
+            let nestedEnum =
+                ((provider.GetType "Provider.Outer`1").GetNestedType "E").MakeGenericType typeof<int>
+
+            let big40000 = provider.GetType "Provider.Big40000"
+            let big70000 = provider.GetType "Provider.Big70000"
+            let holdsString = provider.GetType "Provider.HoldsString"
+            let autoStruct = provider.GetType "Provider.AutoStruct"
+            let typedReference = typeof<obj>.Assembly.GetType "System.TypedReference"
+
+            let span =
+                (typeof<obj>.Assembly.GetType "System.Span`1").MakeGenericType typeof<int>
+
             let v = typeof<Void>
+
+            // A probe with one parameter, of this type, unmarked, which the host and the analysis
+            // each compile or refuse as `outcome` says.
+            let taking (name : string) (parameter : Type) outcome =
+                name, v, [ parameter ], None, true, UcoProbeMark.Unmarked, outcome, outcome
 
             // Each probe: its name, return type, parameters, local, static, [MarshalAs], [LCIDConversion],
             // what the host's JIT does, and what the analysis says.
@@ -7517,11 +7544,40 @@ public static unsafe class Uco
                     UcoProbeMark.LcidConversion -1,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
-                    // The value type's verdict refuses it first; the analysis names the later failure,
-                    // and keeps the verdict's opacity (`undecidedBefore`).
-                    "WithBoolThenGone", v, [ withBool ; gone ], None, true, UcoProbeMark.Unmarked, invalid, typeLoad
+                    // The value type's verdict refuses it first, so nothing loads the missing type.
+                    "WithBoolThenGone", v, [ withBool ; gone ], None, true, UcoProbeMark.Unmarked, invalid, invalid
                     "Instance", v, [ typeof<int> ], None, false, UcoProbeMark.Unmarked, invalid, invalid
-                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    taking "KeptParam" kept UcoCompilation.Compiled
+                    taking "WithBoolParam" withBool invalid
+                    taking "HoldsStringParam" holdsString invalid
+                    taking "AutoParam" autoStruct invalid
+                    taking "DateTimeParam" typeof<DateTime> invalid
+                    taking "GenOfInt" (gen typeof<int>) UcoCompilation.Compiled
+                    taking "GenOfBool" (gen typeof<bool>) invalid
+                    taking
+                        "KeyValuePairParam"
+                        typeof<Collections.Generic.KeyValuePair<int, int>>
+                        UcoCompilation.Compiled
+                    // An enum is exempt, but an instantiation must be blittable, and an enum is not.
+                    taking "NestedEnumParam" nestedEnum invalid
+                    taking "Int128Param" typeof<Int128> invalid
+                    taking "NullableParam" typeof<Nullable<int>> invalid
+                    taking "SpanParam" span invalid
+                    taking "Vector128Param" typeof<Runtime.Intrinsics.Vector128<int>> invalid
+                    taking "TypedReferenceParam" typedReference invalid
+                    // The parameters' stack size: one of 40000 bytes fits in 16 bits, two do not, and
+                    // the return type does not count.
+                    taking "Big40000Param" big40000 UcoCompilation.Compiled
+                    "TwoBig40000", v, [ big40000 ; big40000 ], None, true, UcoProbeMark.Unmarked, invalid, unknown
+                    "Big70000Param", v, [ big70000 ], None, true, UcoProbeMark.Unmarked, invalid, unknown
+                    "Big70000Return",
+                    big70000,
+                    [],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
                     "GoneParam", v, [ gone ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
                     "BoolThenGone", v, [ typeof<bool> ; gone ], None, true, UcoProbeMark.Unmarked, invalid, invalid
                     "GoneThenBool", v, [ gone ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
@@ -7568,7 +7624,7 @@ public static unsafe class Uco
                     UcoProbeMark.MarshalAsI4,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
-                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    taking "KeptParam" kept UcoCompilation.Compiled
                     "CopyConstructed",
                     v,
                     [ kept.MakePointerType () ],
@@ -7577,11 +7633,23 @@ public static unsafe class Uco
                     UcoProbeMark.CopyConstructedPointee,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
+                    taking "WithBoolParam" withBool UcoCompilation.Compiled
+                    // A GC pointer, or auto layout anywhere, needs marshalling.
+                    taking "HoldsStringParam" holdsString invalid
+                    taking "AutoParam" autoStruct invalid
+                    taking "DateTimeParam" typeof<DateTime> invalid
+                    taking "GenOfBool" (gen typeof<bool>) UcoCompilation.Compiled
+                    taking "NestedEnumParam" nestedEnum UcoCompilation.Compiled
+                    taking "Int128Param" typeof<Int128> invalid
+                    // Marshalling refuses an instantiation of these definitions whatever they hold.
+                    taking "NullableParam" typeof<Nullable<int>> invalid
+                    taking "SpanParam" span invalid
+                    taking "Vector128Param" typeof<Runtime.Intrinsics.Vector128<int>> invalid
+                    // `ELEMENT_TYPE_TYPEDBYREF` is no primitive of the walk's table.
+                    taking "TypedReferenceParam" typedReference invalid
+                    taking "Big40000Param" big40000 UcoCompilation.Compiled
+                    "TwoBig40000", v, [ big40000 ; big40000 ], None, true, UcoProbeMark.Unmarked, invalid, unknown
                 ]
-
-            // The probes whose answer is unknown from the entry besides what it names: a value type's
-            // verdict comes before the position that refuses the method.
-            let undecidedBefore = Set.ofList [ "WithBoolThenGone" ; "KeptThenBool" ]
 
             let check (label : string) (disableMarshalling : bool) probes : string list =
                 let image =
@@ -7605,8 +7673,8 @@ public static unsafe class Uco
                         let entry = sources |> Set.filter (fun site -> site.StartsWith $"V::%s{name} entry")
 
                         let expectedEntry =
-                            if byAnalysis = unknown || undecidedBefore.Contains name then
-                                Set.singleton $"V::%s{name} entry ValueTypeMarshallingVerdict"
+                            if byAnalysis = unknown then
+                                Set.singleton $"V::%s{name} entry UnmanagedStackSize"
                             else
                                 Set.empty
 
@@ -9433,16 +9501,27 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// A provider whose `Gone` the client of `walkClient` is compiled against, and a version of it
-    /// without that type, which the client runs against.
+    /// A provider whose `Gone` and `GoneStruct` the client of `walkClient` is compiled against, and
+    /// a version of it without those types, which the client runs against.
     let private walkProvider (complete : bool) : byte[] =
         Roslyn.compileOptimizedAssembly
             "Provider"
             OutputKind.DynamicallyLinkedLibrary
             [
                 "namespace Provider; public struct Kept { } public struct WithBool { public bool B; } public class KeptGeneric<T> { }"
-                + (if complete then " public class Gone { }" else "")
+                + (if complete then
+                       " public class Gone { } public struct GoneStruct { }"
+                   else
+                       "")
             ]
+
+    /// An assembly the client of `walkClient` is compiled against, which is not there when it runs.
+    let private walkOptional : Lazy<byte[]> =
+        lazy
+            Roslyn.compileOptimizedAssembly
+                "Optional"
+                OutputKind.DynamicallyLinkedLibrary
+                [ "namespace Optional; public class Thing { }" ]
 
     /// A parameter type of a P/Invoke of `walkClient`.
     [<RequireQualifiedAccess>]
@@ -9453,8 +9532,11 @@ public static unsafe class Calls
         | Kept
         /// `Provider.WithBool`, a struct holding a `bool`.
         | WithBool
+        | GoneStruct
         /// `Provider.KeptGeneric<Provider.Gone>`, a class.
         | GenericOfGone
+        /// `Provider.KeptGeneric<Optional.Thing>`, a class.
+        | GenericOfMissing
 
     /// One P/Invoke of `walkClient`: its name, its parameter types, whether its first parameter is a
     /// pointer whose pointee carries a required modifier named
@@ -9467,19 +9549,22 @@ public static unsafe class Calls
             MarshalAs : Runtime.InteropServices.UnmanagedType option
         }
 
-    /// An assembly `Client`, emitted over `provider`'s types, with runtime marshalling enabled,
-    /// whose class `Calls` declares, for each of `natives`, a P/Invoke `Native<name>` returning
-    /// void and a method `<name>` that calls it in a branch never taken, passing each parameter's
-    /// default value. At most one of `natives` marks its pointee.
-    let private walkClient (provider : Assembly) (natives : WalkNative list) : byte[] =
+    /// An assembly `Client`, emitted over the types of `provider` and `optional`, with runtime
+    /// marshalling enabled, whose class `Calls` declares, for each of `natives`, a P/Invoke
+    /// `Native<name>` returning void and a method `<name>` that calls it in a branch never taken,
+    /// passing each parameter's default value. At most one of `natives` marks its pointee.
+    let private walkClient (provider : Assembly) (optional : Assembly) (natives : WalkNative list) : byte[] =
         let typeOf (parameter : WalkParameter) : Type =
             match parameter with
             | WalkParameter.Int -> typeof<int>
             | WalkParameter.KeptPointer -> (provider.GetType "Provider.Kept").MakePointerType ()
             | WalkParameter.Kept -> provider.GetType "Provider.Kept"
             | WalkParameter.WithBool -> provider.GetType "Provider.WithBool"
+            | WalkParameter.GoneStruct -> provider.GetType "Provider.GoneStruct"
             | WalkParameter.GenericOfGone ->
                 (provider.GetType "Provider.KeptGeneric`1").MakeGenericType (provider.GetType "Provider.Gone")
+            | WalkParameter.GenericOfMissing ->
+                (provider.GetType "Provider.KeptGeneric`1").MakeGenericType (optional.GetType "Optional.Thing")
 
         let builder =
             Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
@@ -9604,13 +9689,15 @@ public static unsafe class Calls
 
         image
 
-    /// Whether compiling each caller in `methods` of `walkClient`'s image raises
-    /// `TypeLoadException` on the host's CoreCLR, against the provider lacking `Gone`, and in the
-    /// escape analysis over the host's own image; failing where the host's answer is not the
-    /// expected one, or the analysis's is not the host's.
-    let private checkWalkCallers (natives : WalkNative list) (expected : (string * bool) list) : unit =
+    /// What compiling each caller in `expected` of `walkClient`'s image raises, of
+    /// `TypeLoadException` and `FileNotFoundException`, on the host's CoreCLR, against the
+    /// provider lacking `Gone` and `GoneStruct` and without `Optional`, and in the escape analysis
+    /// over the host's own image; failing where the host's answer is not the expected one, or the
+    /// analysis's is not the host's.
+    let private checkWalkCallers (natives : WalkNative list) (expected : (string * string option) list) : unit =
         let complete = walkProvider true
         let incomplete = walkProvider false
+        let raisable = [ "System.TypeLoadException" ; "System.IO.FileNotFoundException" ]
 
         let context =
             Runtime.Loader.AssemblyLoadContext ("MarshallingWalkCallers", isCollectible = true)
@@ -9623,17 +9710,21 @@ public static unsafe class Calls
             )
         )
 
-        // The client is emitted over the complete provider, loaded where it can be unloaded.
+        // The client is emitted over the complete provider and `Optional`, loaded where they can
+        // be unloaded.
         let emitting =
             Runtime.Loader.AssemblyLoadContext ("MarshallingWalkEmitting", isCollectible = true)
 
         let image =
             try
-                walkClient (emitting.LoadFromStream (new MemoryStream (complete))) natives
+                walkClient
+                    (emitting.LoadFromStream (new MemoryStream (complete)))
+                    (emitting.LoadFromStream (new MemoryStream (walkOptional.Force ())))
+                    natives
             finally
                 emitting.Unload ()
 
-        let hostRaises : Map<string, bool> =
+        let hostRaises : Map<string, string option> =
             try
                 let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
 
@@ -9642,9 +9733,9 @@ public static unsafe class Calls
                     let raises =
                         try
                             calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
-                            false
-                        with :? TargetInvocationException as e when (e.InnerException :? TypeLoadException) ->
-                            true
+                            None
+                        with :? TargetInvocationException as e ->
+                            Some (e.InnerException.GetType().FullName)
 
                     name, raises
                 )
@@ -9672,7 +9763,7 @@ public static unsafe class Calls
             [
                 for name, raises in expected do
                     if hostRaises.[name] <> raises then
-                        yield $"%s{name}: the host raises TypeLoadException %b{hostRaises.[name]}, not %b{raises}"
+                        yield $"%s{name}: the host raises %A{hostRaises.[name]}, not %A{raises}"
 
                     let next, escapes =
                         EscapeAnalysis.escapes analysis (methodNamed client "Calls" name)
@@ -9680,7 +9771,11 @@ public static unsafe class Calls
                     analysis <- next
                     let shown = render analysis escapes
 
-                    if shown.Contains "=System.TypeLoadException" <> raises then
+                    let escaping =
+                        raisable
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    if escaping <> Option.toList raises then
                         yield $"%s{name}: the analysis says %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
 
@@ -9724,9 +9819,40 @@ public static unsafe class Calls
                     (Some Runtime.InteropServices.UnmanagedType.I4)
             ]
             [
-                "CopyConstructedThenGenericOfGone", false
-                "PointerThenGenericOfGone", true
-                "MarshalAsThenGenericOfGone", false
+                "CopyConstructedThenGenericOfGone", None
+                "PointerThenGenericOfGone", Some "System.TypeLoadException"
+                "MarshalAsThenGenericOfGone", None
+            ]
+
+    /// As the test before: a value type the walk loads needs marshalling where its layout facts say
+    /// (`MarshalingRequired.valueTypeRequires`), so the walk ends at a struct holding a `bool`, with
+    /// runtime marshalling enabled, and goes on past an empty one. And where a value type fails to
+    /// load, the walk raises that failure, loading nothing after it.
+    [<Test>]
+    let ``the marshalling walk of a P/Invoke call ends at a value type that needs marshalling or fails to load``
+        ()
+        : unit
+        =
+        let native (name : string) (parameters : WalkParameter list) : WalkNative =
+            {
+                Name = name
+                Parameters = parameters
+                CopyConstructedPointee = false
+                MarshalAs = None
+            }
+
+        checkWalkCallers
+            [
+                native "WithBoolThenGenericOfGone" [ WalkParameter.WithBool ; WalkParameter.GenericOfGone ]
+                native "KeptThenGenericOfGone" [ WalkParameter.Kept ; WalkParameter.GenericOfGone ]
+                native "KeptThenGenericOfMissing" [ WalkParameter.Kept ; WalkParameter.GenericOfMissing ]
+                native "GoneStructThenGenericOfMissing" [ WalkParameter.GoneStruct ; WalkParameter.GenericOfMissing ]
+            ]
+            [
+                "WithBoolThenGenericOfGone", None
+                "KeptThenGenericOfGone", Some "System.TypeLoadException"
+                "KeptThenGenericOfMissing", Some "System.IO.FileNotFoundException"
+                "GoneStructThenGenericOfMissing", Some "System.TypeLoadException"
             ]
 
     /// CoreCLR sums the stack size of an `[UnmanagedCallersOnly]` method's parameters as it walks
