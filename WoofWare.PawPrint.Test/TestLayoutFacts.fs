@@ -828,6 +828,7 @@ module TestLayoutFacts =
     /// `SelfNest<SelfNest<T>>`, and `WrapNest<T>` a `WrapNest<Wrap<T>>`; `HoldsSelfNest` and
     /// `HoldsWrapNest` hold each at `int`. `UsesHolder` holds a `Holder<UsesHolder>`, which holds
     /// only an `int`. `HoldsExpandingEnum` holds an `Outer<int>.E`, an enum over `Outer<Wrap<int>>.E`.
+    /// `HoldsSwapped` holds a `Pair<Swap<int>, int>`, which reaches `Pair<int, Swap<int>>` and ends.
     let private oddCorpus : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "OddTypes", typeof<obj>.Assembly)
@@ -851,6 +852,18 @@ module TestLayoutFacts =
             genericStruct "WrapNest" (fun t tb -> tb.MakeGenericType (wrap.MakeGenericType (t :> Type)))
 
         let holder = genericStruct "Holder" (fun _ _ -> typeof<int>)
+
+        // `Pair<T, U> { T X; }` and `Swap<T> { Pair<T, Swap<T>> X; }`: `Pair<Swap<int>, int>`
+        // reaches `Pair<int, Swap<int>>`, whose arguments hold both of its own, but only crosswise.
+        let pair =
+            let tb = md.DefineType ("Pair", sequential, typeof<ValueType>)
+            let parameters = tb.DefineGenericParameters [| "T" ; "U" |]
+            tb.DefineField ("X", parameters.[0], FieldAttributes.Public) |> ignore
+            tb.CreateType () |> ignore
+            tb
+
+        let swap =
+            genericStruct "Swap" (fun t tb -> pair.MakeGenericType (t :> Type, tb.MakeGenericType (t :> Type)))
 
         // `Outer<T>.E`, an enum whose field is `Outer<Wrap<T>>.E`. An enum may be generic only
         // through the type it is nested in.
@@ -884,6 +897,7 @@ module TestLayoutFacts =
                 "HoldsWrapNest", (fun _ -> wrapNest.MakeGenericType typeof<int>)
                 "UsesHolder", (fun tb -> holder.MakeGenericType (tb :> Type))
                 "HoldsExpandingEnum", (fun _ -> expandingEnum.MakeGenericType typeof<int>)
+                "HoldsSwapped", (fun _ -> pair.MakeGenericType (swap.MakeGenericType typeof<int>, typeof<int>))
             ] do
             let tb = md.DefineType (name, sequential, typeof<ValueType>)
             tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
@@ -962,7 +976,13 @@ module TestLayoutFacts =
 
             let outcomes =
                 (enumNames |> List.collect (fun name -> [ name ; "Holds" + name ]))
-                @ [ "HoldsSelfNest" ; "HoldsWrapNest" ; "UsesHolder" ; "HoldsExpandingEnum" ]
+                @ [
+                    "HoldsSelfNest"
+                    "HoldsWrapNest"
+                    "UsesHolder"
+                    "HoldsExpandingEnum"
+                    "HoldsSwapped"
+                ]
                 |> List.map (fun name ->
                     // The host may refuse the type as soon as it is named.
                     let hostType =
@@ -1038,6 +1058,7 @@ module TestLayoutFacts =
                     "HoldsWrapNest", false
                     "UsesHolder", true
                     "HoldsExpandingEnum", false
+                    "HoldsSwapped", true
                 ]
         finally
             context.Unload ()
