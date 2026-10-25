@@ -83,6 +83,25 @@ type Assumption =
     /// names does not settle the check (`MetadataAccess`). This assumption stands in for no
     /// method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
     | MembersAccessible
+    /// Every field is written only by instructions of the assemblies' images that name it and that
+    /// CoreCLR's access checks let the writing method name it from: `stfld` and `stsfld`, and
+    /// stores through the address `ldflda` or `ldsflda` takes. Then a private field, or an internal
+    /// one of an assembly that makes no other assembly its friend, is written only by its own
+    /// assembly's IL, so what it holds is what that IL stores in it, or null. This holds when
+    /// nothing writes a field through reflection (`FieldInfo.SetValue`, `TypedReference`), an
+    /// `[UnsafeAccessor]`, a pointer or `Unsafe` made from another location, or a memory copy over
+    /// its object; when no code the program makes as it runs writes it (a `DynamicMethod`, which
+    /// may name the private fields of the type it is associated with, or a `Reflection.Emit`
+    /// assembly); and when no assembly asks CoreCLR to ignore access checks to the field's
+    /// (`IgnoresAccessChecksToAttribute`).
+    /// This assumption stands in for no method's body, so `Assumption.raises` and
+    /// `Assumption.constructs` list nothing for it. The analysis follows a field under it only
+    /// where nothing but such an instruction can reach the field (`EscapeAnalysis.followsField`
+    /// says which), and a load of a field it follows relies on it, whether or not what the field
+    /// holds changes the answer. Without this, a virtual call on what a field holds dispatches on
+    /// the field's declared type: on .NET 10's CoreLib, twelve methods are known with it that are
+    /// "unknown" without, `Random`'s parameterless constructor among them.
+    | FieldsWrittenVisibly
 
 [<RequireQualifiedAccess>]
 module Assumption =
@@ -97,6 +116,7 @@ module Assumption =
                 Assumption.JitOptimises
                 Assumption.DynamicCastsAsDocumented
                 Assumption.MembersAccessible
+                Assumption.FieldsWrittenVisibly
             ]
 
     let private corelib : string = "System.Private.CoreLib"
@@ -145,7 +165,8 @@ module Assumption =
                 exceptionName "System.StackOverflowException"
             ]
         | Assumption.JitOptimises
-        | Assumption.MembersAccessible -> []
+        | Assumption.MembersAccessible
+        | Assumption.FieldsWrittenVisibly -> []
         | Assumption.DynamicCastsAsDocumented ->
             [
                 // What the documentation asks for, and what CoreLib throws in its place.
@@ -175,7 +196,21 @@ module Assumption =
         | Assumption.CoreLibTypeInitializers
         | Assumption.JitOptimises
         | Assumption.DynamicCastsAsDocumented
-        | Assumption.MembersAccessible -> []
+        | Assumption.MembersAccessible
+        | Assumption.FieldsWrittenVisibly -> []
+
+    /// Whether what an answer relies on this assumption for is what values hold, rather than what a
+    /// method raises, so that no handler stops a failure of it: a method that relies on it, or calls
+    /// one that does, relies on it wherever the method runs.
+    let concernsValues (assumption : Assumption) : bool =
+        match assumption with
+        | Assumption.FieldsWrittenVisibly -> true
+        | Assumption.NamedTypesLoad
+        | Assumption.StackTracePreserved
+        | Assumption.CoreLibTypeInitializers
+        | Assumption.JitOptimises
+        | Assumption.DynamicCastsAsDocumented
+        | Assumption.MembersAccessible -> false
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
     /// method is one some assumption names: for a QCall, by class, name and entry point; for IL, by

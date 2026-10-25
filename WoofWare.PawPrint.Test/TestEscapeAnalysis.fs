@@ -751,9 +751,14 @@ public static class SR
         }
 
     /// The assumptions that constructing a CoreLib exception relies on: asking for its message runs
-    /// `SR`'s type initializer, and the lookup may throw a type initializer's own exception again.
+    /// `SR`'s type initializer, the lookup may throw a type initializer's own exception again, and
+    /// it dispatches on what fields of CoreLib's hold.
     let private constructing : Assumption list =
-        [ Assumption.CoreLibTypeInitializers ; Assumption.StackTracePreserved ]
+        [
+            Assumption.CoreLibTypeInitializers
+            Assumption.StackTracePreserved
+            Assumption.FieldsWrittenVisibly
+        ]
 
     let private expectations : Expectation list =
         let ioe = "=System.InvalidOperationException"
@@ -1065,10 +1070,12 @@ public static class SR
                 Sources = Some []
             }
             // Whatever the lookup raises is caught.
+            // The handler absorbs what an assumption's contract leaves out, but not what the call
+            // relies on of what fields hold, which the analysis takes to reach every caller.
             { expect "Fixture.Messages" "Swallowed" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some [ Assumption.FieldsWrittenVisibly ]
             }
             { expect "Fixture.Messages" "Rethrown" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
@@ -1083,7 +1090,7 @@ public static class SR
             }
             { expect "Fixture.Messages" "RethrownThenAbsorbed" with
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some [ Assumption.FieldsWrittenVisibly ]
             }
             { expect "Fixture.Messages" "OutOfMemoryCaught" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
@@ -1914,11 +1921,19 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises` and `MembersAccessible` stand in for no method.
+        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
-        |> shouldEqual (Assumption.all - set [ Assumption.JitOptimises ; Assumption.MembersAccessible ])
+        |> shouldEqual (
+            Assumption.all
+            - set
+                [
+                    Assumption.JitOptimises
+                    Assumption.MembersAccessible
+                    Assumption.FieldsWrittenVisibly
+                ]
+        )
 
         // Each stands in for one method, but the one about CoreLib's type initializers, which
         // stands in for each of them.
@@ -1929,7 +1944,8 @@ public static class SR
             | Assumption.StackTracePreserved
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises
-            | Assumption.MembersAccessible -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.MembersAccessible
+            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -10136,8 +10152,9 @@ namespace Provider;
 
 static class Init
 {
-    // Of no class the analysis can tell, so that what its `ToString` raises is unknown.
-    static object s_value;
+    // Of no class the analysis can tell, being public, so that what its `ToString` raises is
+    // unknown.
+    public static object s_value;
 
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void Run()
@@ -17919,3 +17936,1247 @@ public static class Cases
         match failures with
         | [] -> ()
         | failures -> failures |> List.rev |> String.concat Environment.NewLine |> failwith
+
+
+    /// What one writer of `FieldFlow`'s field stores in it.
+    [<RequireQualifiedAccess>]
+    type private FieldWrite =
+        /// `field = new C<made>()`.
+        | Make of made : int
+        /// `field = null`.
+        | Null
+        /// `field = argument`, which `Run` calls the writer with as `new C<made>()`.
+        | Argument of made : int
+        /// `ldflda field; newobj C<made>; stind.ref`: a store through the field's address.
+        | ThroughAddress of made : int
+        /// `field = new[] { new C<made>() }[0]`: an array's element, which the analysis does not
+        /// follow.
+        | Element of made : int
+
+    /// The accessibility of `FieldFlow`'s field.
+    [<RequireQualifiedAccess>]
+    type private FieldAccess =
+        | Private
+        | Internal
+        | Public
+
+    /// A holder of one field of `FieldFlow.Base`'s type, written by `Writers`, one method each, and
+    /// read by `Read`, which calls `Hit` on what the field holds. `Run(bool, bool, bool)` makes a
+    /// holder, calls the writer at each index whose argument is true, then calls `Read`.
+    type private FieldFlowCase =
+        {
+            Static : bool
+            Access : FieldAccess
+            Writers : FieldWrite list
+        }
+
+    let private fieldFlowClasses : int = 4
+    let private fieldFlowWriters : int = 3
+
+    /// Whether the analysis, allowed `FieldsWrittenVisibly`, must say exactly what the real runtime
+    /// raises: where only the field's own assembly can name it, and every writer stores an object it
+    /// makes or null in it by `stfld` or `stsfld`. Each writer runs alone for some arguments.
+    let private fieldExactlyDecided (case : FieldFlowCase) : bool =
+        case.Access <> FieldAccess.Public
+        && case.Writers
+           |> List.forall (fun write ->
+               match write with
+               | FieldWrite.Make _
+               | FieldWrite.Null -> true
+               | FieldWrite.Argument _
+               | FieldWrite.ThroughAddress _
+               | FieldWrite.Element _ -> false
+           )
+
+    let private fieldFlowGen : FsCheck.Gen<FieldFlowCase> =
+        let made = FsCheck.FSharp.Gen.choose (0, fieldFlowClasses - 1)
+
+        let write =
+            FsCheck.FSharp.Gen.frequency
+                [
+                    4, FsCheck.FSharp.Gen.map FieldWrite.Make made
+                    1, FsCheck.FSharp.Gen.constant FieldWrite.Null
+                    1, FsCheck.FSharp.Gen.map FieldWrite.Argument made
+                    1, FsCheck.FSharp.Gen.map FieldWrite.ThroughAddress made
+                    1, FsCheck.FSharp.Gen.map FieldWrite.Element made
+                ]
+
+        FsCheck.FSharp.Gen.map3
+            (fun isStatic access writers ->
+                {
+                    Static = isStatic
+                    Access = access
+                    Writers = writers
+                }
+            )
+            (FsCheck.FSharp.Gen.elements [ false ; true ])
+            (FsCheck.FSharp.Gen.frequency
+                [
+                    2, FsCheck.FSharp.Gen.constant FieldAccess.Private
+                    2, FsCheck.FSharp.Gen.constant FieldAccess.Internal
+                    1, FsCheck.FSharp.Gen.constant FieldAccess.Public
+                ])
+            (FsCheck.FSharp.Gen.choose (1, fieldFlowWriters)
+             |> FsCheck.FSharp.Gen.bind (fun count -> FsCheck.FSharp.Gen.listOfLength count write))
+
+    /// The image of `FieldFlow`: the classes every case shares, then each case at index `i` as
+    /// `FieldFlow<i>.Holder` and `FieldFlow<i>.Cases.Run`.
+    let private fieldFlowImage (cases : FieldFlowCase list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "FieldFlow", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "FieldFlow"
+
+        let baseType =
+            modul.DefineType ("FieldFlow.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+        let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+        let hit =
+            baseType.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                [||]
+            )
+
+        let classes =
+            [
+                for index in 0 .. fieldFlowClasses - 1 do
+                    let thrown =
+                        modul.DefineType (
+                            $"FieldFlow.E%d{index}",
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            typeof<Exception>
+                        )
+
+                    let thrownConstructor = thrown.DefineDefaultConstructor MethodAttributes.Public
+
+                    let made =
+                        modul.DefineType (
+                            $"FieldFlow.C%d{index}",
+                            TypeAttributes.Public ||| TypeAttributes.Sealed,
+                            baseType
+                        )
+
+                    let constructor =
+                        made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+                    let il = constructor.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Call, baseConstructor)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let overriding =
+                        made.DefineMethod (
+                            "Hit",
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Virtual
+                            ||| MethodAttributes.HideBySig,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = overriding.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+                    il.Emit Emit.OpCodes.Throw
+                    made.DefineMethodOverride (overriding, hit)
+                    yield thrown, made, constructor
+            ]
+
+        let constructorOf (index : int) =
+            let _, _, constructor = classes.[index]
+            constructor
+
+        // `Check` throws `ENull` for null: what it is passed decides its branch, so a field taken
+        // never to be null would rule that out.
+        let nullThrown =
+            modul.DefineType ("FieldFlow.ENull", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Exception>)
+
+        let nullThrownConstructor =
+            nullThrown.DefineDefaultConstructor MethodAttributes.Public
+
+        let checks =
+            modul.DefineType (
+                "FieldFlow.Checks",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            )
+
+        let check =
+            checks.DefineMethod (
+                "Check",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| baseType :> Type |]
+            )
+
+        let il = check.GetILGenerator ()
+        let present = il.DefineLabel ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit (Emit.OpCodes.Brtrue, present)
+        il.Emit (Emit.OpCodes.Newobj, nullThrownConstructor)
+        il.Emit Emit.OpCodes.Throw
+        il.MarkLabel present
+        il.Emit Emit.OpCodes.Ret
+
+        let caseTypes =
+            [
+                for index, case in List.indexed cases do
+                    let holder =
+                        modul.DefineType ($"FieldFlow%d{index}.Holder", TypeAttributes.Public ||| TypeAttributes.Sealed)
+
+                    let holderConstructor = holder.DefineDefaultConstructor MethodAttributes.Public
+
+                    let access =
+                        match case.Access with
+                        | FieldAccess.Private -> FieldAttributes.Private
+                        | FieldAccess.Internal -> FieldAttributes.Assembly
+                        | FieldAccess.Public -> FieldAttributes.Public
+
+                    let field =
+                        holder.DefineField (
+                            "held",
+                            baseType,
+                            (if case.Static then
+                                 access ||| FieldAttributes.Static
+                             else
+                                 access)
+                        )
+
+                    let instanceMethod = MethodAttributes.Public ||| MethodAttributes.HideBySig
+
+                    let writers =
+                        [
+                            for writerIndex, write in List.indexed case.Writers do
+                                let parameters =
+                                    match write with
+                                    | FieldWrite.Argument _ -> [| baseType :> Type |]
+                                    | FieldWrite.Make _
+                                    | FieldWrite.Null
+                                    | FieldWrite.ThroughAddress _
+                                    | FieldWrite.Element _ -> [||]
+
+                                let writer =
+                                    holder.DefineMethod (
+                                        $"Write%d{writerIndex}",
+                                        instanceMethod,
+                                        typeof<Void>,
+                                        parameters
+                                    )
+
+                                let il = writer.GetILGenerator ()
+
+                                if not case.Static then
+                                    il.Emit Emit.OpCodes.Ldarg_0
+
+                                match write with
+                                | FieldWrite.Make made -> il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                | FieldWrite.Null -> il.Emit Emit.OpCodes.Ldnull
+                                | FieldWrite.Argument _ -> il.Emit Emit.OpCodes.Ldarg_1
+                                | FieldWrite.ThroughAddress made ->
+                                    if case.Static then
+                                        il.Emit (Emit.OpCodes.Ldsflda, field)
+                                    else
+                                        il.Emit (Emit.OpCodes.Ldflda, field)
+
+                                    il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                | FieldWrite.Element made ->
+                                    il.Emit Emit.OpCodes.Ldc_I4_1
+                                    il.Emit (Emit.OpCodes.Newarr, baseType)
+                                    il.Emit Emit.OpCodes.Dup
+                                    il.Emit Emit.OpCodes.Ldc_I4_0
+                                    il.Emit (Emit.OpCodes.Newobj, constructorOf made)
+                                    il.Emit Emit.OpCodes.Stelem_Ref
+                                    il.Emit Emit.OpCodes.Ldc_I4_0
+                                    il.Emit Emit.OpCodes.Ldelem_Ref
+
+                                match write, case.Static with
+                                | FieldWrite.ThroughAddress _, _ -> il.Emit Emit.OpCodes.Stind_Ref
+                                | _, true -> il.Emit (Emit.OpCodes.Stsfld, field)
+                                | _, false -> il.Emit (Emit.OpCodes.Stfld, field)
+
+                                // A store through the address of an instance field leaves `this`
+                                // beneath it.
+                                match write, case.Static with
+                                | FieldWrite.ThroughAddress _, false -> il.Emit Emit.OpCodes.Pop
+                                | _ -> ()
+
+                                il.Emit Emit.OpCodes.Ret
+                                yield writer, write
+                        ]
+
+                    let read = holder.DefineMethod ("Read", instanceMethod, typeof<Void>, [||])
+                    let il = read.GetILGenerator ()
+
+                    if case.Static then
+                        il.Emit (Emit.OpCodes.Ldsfld, field)
+                    else
+                        il.Emit Emit.OpCodes.Ldarg_0
+                        il.Emit (Emit.OpCodes.Ldfld, field)
+
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Call, check)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            $"FieldFlow%d{index}.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            Array.replicate fieldFlowWriters typeof<bool>
+                        )
+
+                    let il = run.GetILGenerator ()
+                    let made = il.DeclareLocal holder
+                    il.Emit (Emit.OpCodes.Newobj, holderConstructor)
+                    il.Emit (Emit.OpCodes.Stloc, made)
+
+                    for writerIndex, (writer, write) in List.indexed writers do
+                        let skip = il.DefineLabel ()
+                        il.Emit (Emit.OpCodes.Ldarg, int16 writerIndex)
+                        il.Emit (Emit.OpCodes.Brfalse, skip)
+                        il.Emit (Emit.OpCodes.Ldloc, made)
+
+                        match write with
+                        | FieldWrite.Argument passed -> il.Emit (Emit.OpCodes.Newobj, constructorOf passed)
+                        | FieldWrite.Make _
+                        | FieldWrite.Null
+                        | FieldWrite.ThroughAddress _
+                        | FieldWrite.Element _ -> ()
+
+                        il.Emit (Emit.OpCodes.Call, writer)
+                        il.MarkLabel skip
+
+                    il.Emit (Emit.OpCodes.Ldloc, made)
+                    il.Emit (Emit.OpCodes.Call, read)
+                    il.Emit Emit.OpCodes.Ret
+                    yield holder, cases
+            ]
+
+        baseType.CreateType () |> ignore<Type>
+        nullThrown.CreateType () |> ignore<Type>
+        checks.CreateType () |> ignore<Type>
+
+        for thrown, made, _ in classes do
+            thrown.CreateType () |> ignore<Type>
+            made.CreateType () |> ignore<Type>
+
+        for holder, cases in caseTypes do
+            holder.CreateType () |> ignore<Type>
+            cases.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// What the real runtime raises from each case's `Run` in `image`, over every combination of its
+    /// arguments, as the expectations spell them.
+    let private fieldFlowRaised (image : byte[]) (count : int) : Set<string> list =
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("FieldFlow", isCollectible = true)
+
+        try
+            let loaded = context.LoadFromStream (new MemoryStream (image))
+
+            [
+                for index in 0 .. count - 1 do
+                    let run = loaded.GetType($"FieldFlow%d{index}.Cases").GetMethod ("Run")
+
+                    let raisedWith (combination : int) : string =
+                        let arguments =
+                            Array.init fieldFlowWriters (fun bit -> box ((combination >>> bit) &&& 1 = 1))
+
+                        try
+                            run.Invoke ((null : obj), arguments) |> ignore<obj>
+                            failwith<string> "FieldFlow's Run returned, though every class's Hit throws"
+                        with :? TargetInvocationException as e ->
+                            "=" + e.InnerException.GetType().FullName
+
+                    yield [ 0 .. (1 <<< fieldFlowWriters) - 1 ] |> List.map raisedWith |> Set.ofList
+            ]
+        finally
+            context.Unload ()
+
+    [<Test>]
+    let ``a virtual call on a field dispatches on what its writers store there, as the real runtime does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let property (cases : FieldFlowCase list) : unit =
+            let image = fieldFlowImage cases
+            let raised = fieldFlowRaised image cases.Length
+
+            let fixture =
+                Assembly.read loggerFactory (Some "FieldFlow.dll") (new MemoryStream (image))
+
+            let analysisAllowing (assumptions : Set<Assumption>) =
+                analysisOf
+                    (hostCoreLib ())
+                    (FrameworkUnderTest.runtimeDirs ())
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    assumptions
+                    [ fixture ]
+                    id
+
+            // What the analysis says of each case's `Run`: the exceptions of `FieldFlow`'s classes
+            // and `Check`'s, whether it is unknown, and whether it relied on `FieldsWrittenVisibly`.
+            let answers (assumptions : Set<Assumption>) : (Set<string> * bool * bool) list =
+                ((analysisAllowing assumptions, []), List.indexed cases)
+                ||> List.fold (fun (analysis, answers) (index, _) ->
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture $"FieldFlow%d{index}.Cases" "Run")
+
+                    let ours =
+                        render analysis escapes
+                        |> Set.filter (fun shown -> shown.StartsWith "=FieldFlow.E")
+
+                    analysis,
+                    (ours, escapes.Unknown, escapes.Assumes.Contains Assumption.FieldsWrittenVisibly)
+                    :: answers
+                )
+                |> snd
+                |> List.rev
+
+            let allowed = answers Assumption.all
+            let withheld = answers (Set.remove Assumption.FieldsWrittenVisibly Assumption.all)
+
+            let failures =
+                List.zip3 cases raised (List.zip allowed withheld)
+                |> List.choose (fun (case, raised, ((ours, unknown, assumes), (_, unknownWithheld, _))) ->
+                    if not unknown && not (Set.isSubset raised ours) then
+                        Some
+                            $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says only %A{Set.toList ours}"
+                    elif fieldExactlyDecided case && (unknown || ours <> raised || not assumes) then
+                        Some
+                            $"%A{case}: the real runtime raises %A{Set.toList raised}, the analysis says %A{Set.toList ours}, unknown %b{unknown}, assuming %b{assumes}"
+                    // Where another assembly may write the field, or a writer stores something the
+                    // analysis does not follow, nothing says what the field holds beyond its type.
+                    elif not (fieldExactlyDecided case) && not unknown then
+                        Some $"%A{case}: the analysis decides the call, though it cannot know what the field holds"
+                    // Without the assumption, nothing says what the field holds beyond its type, on
+                    // which `Hit` is abstract.
+                    elif not unknownWithheld then
+                        Some $"%A{case}: without FieldsWrittenVisibly the analysis still decides the call"
+                    else
+                        None
+                )
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+        // A private field each writer makes an object for, or nulls.
+        property
+            [
+                {
+                    Static = false
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Make 1 ; FieldWrite.Make 2 ]
+                }
+                {
+                    Static = true
+                    Access = FieldAccess.Internal
+                    Writers = [ FieldWrite.Make 3 ; FieldWrite.Null ]
+                }
+                // A store through the field's address may store anything.
+                {
+                    Static = true
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Make 1 ; FieldWrite.ThroughAddress 2 ]
+                }
+                // Another assembly may write a public field.
+                {
+                    Static = false
+                    Access = FieldAccess.Public
+                    Writers = [ FieldWrite.Make 0 ]
+                }
+                // What a writer is passed, its callers decide.
+                {
+                    Static = false
+                    Access = FieldAccess.Private
+                    Writers = [ FieldWrite.Argument 3 ]
+                }
+            ]
+
+        FsCheck.Check.One (
+            FsCheck.Config.QuickThrowOnFailure.WithMaxTest 10,
+            FsCheck.FSharp.Prop.forAll
+                (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf fieldFlowGen))
+                property
+        )
+
+    /// An image named `name` with an abstract `Fields.Base`, whose `Hit` `Fields.C1` overrides to
+    /// throw `Fields.E1`, and whatever `emit` adds, given the module, `Base`, `Hit` and `C1`'s
+    /// constructor; with `InternalsVisibleTo` each of `friends`.
+    let private fieldFixture
+        (name : string)
+        (friends : string list)
+        (emit : Emit.ModuleBuilder -> Emit.TypeBuilder -> Emit.MethodBuilder -> Emit.ConstructorBuilder -> unit)
+        : byte[]
+        =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+
+        for friend in friends do
+            builder.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<System.Runtime.CompilerServices.InternalsVisibleToAttribute>.GetConstructor
+                        [| typeof<string> |],
+                    [| box friend |]
+                )
+            )
+
+        let modul = builder.DefineDynamicModule name
+
+        let baseType =
+            modul.DefineType ("Fields.Base", TypeAttributes.Public ||| TypeAttributes.Abstract)
+
+        let baseConstructor = baseType.DefineDefaultConstructor MethodAttributes.Family
+
+        let hit =
+            baseType.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                [||]
+            )
+
+        let thrown =
+            modul.DefineType ("Fields.E1", TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Exception>)
+
+        let thrownConstructor = thrown.DefineDefaultConstructor MethodAttributes.Public
+
+        let made =
+            modul.DefineType ("Fields.C1", TypeAttributes.Public ||| TypeAttributes.Sealed, baseType)
+
+        let constructor =
+            made.DefineConstructor (MethodAttributes.Public, CallingConventions.Standard, [||])
+
+        let il = constructor.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit (Emit.OpCodes.Call, baseConstructor)
+        il.Emit Emit.OpCodes.Ret
+
+        let overriding =
+            made.DefineMethod (
+                "Hit",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.HideBySig,
+                typeof<Void>,
+                [||]
+            )
+
+        let il = overriding.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Newobj, thrownConstructor)
+        il.Emit Emit.OpCodes.Throw
+        made.DefineMethodOverride (overriding, hit)
+
+        emit modul baseType hit constructor
+
+        baseType.CreateType () |> ignore<Type>
+        thrown.CreateType () |> ignore<Type>
+        made.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// What the real runtime raises from `Fields.Cases.Run` in `image`, as the expectations spell it.
+    let private fieldFixtureRaises (name : string) (image : byte[]) : string =
+        let context = System.Runtime.Loader.AssemblyLoadContext (name, isCollectible = true)
+
+        try
+            let run =
+                context.LoadFromStream(new MemoryStream (image)).GetType("Fields.Cases").GetMethod ("Run")
+
+            try
+                run.Invoke ((null : obj), [||]) |> ignore<obj>
+                failwith<string> "Fields.Cases.Run returned, though it must throw"
+            with :? TargetInvocationException as e ->
+                "=" + e.InnerException.GetType().FullName
+        finally
+            context.Unload ()
+
+    /// What the analysis, allowed every assumption, says of `Fields.Cases.Run` in `image`, and what
+    /// the real runtime raises from it, as the expectations spell them.
+    let private fieldFixtureAnswers (name : string) (image : byte[]) : Set<string> * bool * string =
+        let raised = fieldFixtureRaises name image
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Fields.Cases" "Run")
+
+        render analysis escapes, escapes.Unknown, raised
+
+    [<Test>]
+    let ``a field another field of an explicit layout overlaps holds what is stored in either`` () : unit =
+        // `b` lies over `a`, so storing in `a` stores in `b`, which no instruction stores to.
+        let image =
+            fieldFixture
+                "OverlappingFields"
+                []
+                (fun modul baseType hit made ->
+                    let overlap =
+                        modul.DefineType (
+                            "Fields.Overlap",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.ExplicitLayout
+                        )
+
+                    let overlapConstructor = overlap.DefineDefaultConstructor MethodAttributes.Public
+                    let a = overlap.DefineField ("a", baseType, FieldAttributes.Private)
+                    a.SetOffset 0
+                    let b = overlap.DefineField ("b", baseType, FieldAttributes.Private)
+                    b.SetOffset 0
+
+                    let run =
+                        overlap.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, overlapConstructor)
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stfld, a)
+                    il.Emit (Emit.OpCodes.Ldfld, b)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let caseRun =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = caseRun.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Call, run)
+                    il.Emit Emit.OpCodes.Ret
+                    overlap.CreateType () |> ignore<Type>
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        let shown, unknown, raised = fieldFixtureAnswers "OverlappingFields" image
+        raised |> shouldEqual "=Fields.E1"
+
+        if not unknown && not (shown.Contains raised) then
+            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
+
+    [<Test>]
+    let ``an internal field of an assembly with a friend holds what the friend may store`` () : unit =
+        let image =
+            fieldFixture
+                "FriendlyFields"
+                [ "Friend" ]
+                (fun modul baseType hit made ->
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let held =
+                        cases.DefineField ("held", baseType, FieldAttributes.Assembly ||| FieldAttributes.Static)
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stsfld, held)
+                    il.Emit (Emit.OpCodes.Ldsfld, held)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        // `Friend` may store any `Base` in it, so nothing says which class `Hit` dispatches on.
+        let _, unknown, raised = fieldFixtureAnswers "FriendlyFields" image
+        raised |> shouldEqual "=Fields.E1"
+        unknown |> shouldEqual true
+
+    [<Test>]
+    let ``no field CoreCLR's native code binds by name is taken to hold only what IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let typeName (handle : TypeDefinitionHandle) : string =
+            TypeInfo.fullName (fun handle -> corelib.TypeDefs.[handle]) corelib.TypeDefs.[handle]
+
+        let fields =
+            corelib.Fields
+            |> Seq.map (fun (KeyValue (handle, field)) ->
+                (typeName field.DeclaringType.Identity.TypeDefinition.Get, field.Name), handle
+            )
+            |> List.ofSeq
+
+        let mutable analysis = analysisOver [] id
+
+        let follows (handle : FieldDefinitionHandle) : bool =
+            let next, follows =
+                EscapeAnalysis.followsField analysis (FieldKey.make corelib.DefinitionFullName handle)
+
+            analysis <- next
+            follows
+
+        let followedBound =
+            fields
+            |> List.filter (fun (named, _) -> (VmBoundField.all.Force ()).Contains named)
+            |> List.filter (snd >> follows)
+            |> List.map fst
+
+        followedBound |> shouldEqual []
+
+        // The analysis does follow some of CoreLib's fields, or the check above says nothing.
+        fields |> List.exists (snd >> follows) |> shouldEqual true
+
+    /// A store into a field through a member reference naming it, which neither C# nor
+    /// Reflection.Emit writes for a field of a type that is not generic, so the IL is built directly:
+    /// `Write` stores a string in `M.Holder.held` through a member reference whose parent is
+    /// `Holder` itself, and `Read` loads the field by its definition and calls `ToString` on it.
+    [<Test>]
+    let ``a field a member reference may store to holds what that store does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "FieldReferences.dll",
+            metadata.GetOrAddGuid (Guid "6d1e2f3a-4b5c-4d6e-8f90-a1b2c3d4e5f6"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "FieldReferences",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let corelibName = typeof<obj>.Assembly.GetName ()
+
+        let corelibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString corelibName.Name,
+                corelibName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        let toString =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (0, (fun returnType -> returnType.Type().String ()), ignore<ParametersEncoder>)
+
+            metadata.AddMemberReference (
+                (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+                metadata.GetOrAddString "ToString",
+                metadata.GetOrAddBlob blob
+            )
+
+        let objectField =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).Field().Type().Object ()
+            metadata.GetOrAddBlob blob
+
+        let held =
+            metadata.AddFieldDefinition (
+                FieldAttributes.Private ||| FieldAttributes.Static,
+                metadata.GetOrAddString "held",
+                objectField
+            )
+
+        // The holder is the second type definition, after `<Module>`.
+        let holder = MetadataTokens.TypeDefinitionHandle 2
+
+        let heldByReference =
+            metadata.AddMemberReference (
+                (TypeDefinitionHandle.op_Implicit holder : EntityHandle),
+                metadata.GetOrAddString "held",
+                objectField
+            )
+
+        let staticVoid =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returnType -> returnType.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        let write =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.LoadString (metadata.GetOrAddUserString "stored")
+            code.OpCode ILOpCode.Stsfld
+            code.Token (MemberReferenceHandle.op_Implicit heldByReference : EntityHandle)
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let read =
+            let code = InstructionEncoder (BlobBuilder ())
+            code.OpCode ILOpCode.Ldsfld
+            code.Token (FieldDefinitionHandle.op_Implicit held : EntityHandle)
+            code.OpCode ILOpCode.Callvirt
+            code.Token (MemberReferenceHandle.op_Implicit toString : EntityHandle)
+            code.OpCode ILOpCode.Pop
+            code.OpCode ILOpCode.Ret
+            bodies.AddMethodBody code
+
+        let writeMethod =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "Write",
+                staticVoid,
+                write,
+                MetadataTokens.ParameterHandle 1
+            )
+
+        metadata.AddMethodDefinition (
+            MethodAttributes.Public ||| MethodAttributes.Static,
+            MethodImplAttributes.IL,
+            metadata.GetOrAddString "Read",
+            staticVoid,
+            read,
+            MetadataTokens.ParameterHandle 1
+        )
+        |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Class,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            held,
+            writeMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public
+            ||| TypeAttributes.Class
+            ||| TypeAttributes.Abstract
+            ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "M",
+            metadata.GetOrAddString "Holder",
+            (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
+            held,
+            writeMethod
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let image = BlobBuilder ()
+        peBuilder.Serialize image |> ignore<BlobContentId>
+
+        let assembly =
+            Assembly.read loggerFactory (Some "FieldReferences.dll") (new MemoryStream (image.ToArray ()))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let _, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "M.Holder" "Read")
+
+        // `Write` may have stored any object, whose `ToString` may raise anything.
+        escapes.Unknown |> shouldEqual true
+
+    /// A field one of whose writers the analysis takes a contract for, in place of its body: the
+    /// contract says nothing of what the writer stores. CoreLib's type initializers, under
+    /// `CoreLibTypeInitializers`, are such writers; `Encoding`'s stores its default encoding.
+    [<Test>]
+    let ``a field a writer under a contract stores to holds anything of its type`` () : unit =
+        let source =
+            """
+namespace ContractWriters;
+
+public static class Cases
+{
+    public static int Count() => System.Text.Encoding.Default.GetByteCount((string)null);
+}
+"""
+
+        let image =
+            Roslyn.compileOptimizedAssembly "ContractWriters" OutputKind.DynamicallyLinkedLibrary [ source ]
+
+        let raised =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("ContractWriters", isCollectible = true)
+
+            try
+                let count =
+                    context
+                        .LoadFromStream(new MemoryStream (image))
+                        .GetType("ContractWriters.Cases")
+                        .GetMethod ("Count")
+
+                try
+                    count.Invoke ((null : obj), [||]) |> ignore<obj>
+                    "nothing"
+                with :? TargetInvocationException as e ->
+                    "=" + e.InnerException.GetType().FullName
+            finally
+                context.Unload ()
+
+        raised |> shouldEqual "=System.ArgumentNullException"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "ContractWriters.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ fixture ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "ContractWriters.Cases" "Count")
+
+        if not escapes.Unknown && not ((render analysis escapes).Contains raised) then
+            failwith
+                $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList (render analysis escapes)}"
+
+    /// A method that dispatches on what a field holds relies on `FieldsWrittenVisibly` wherever it
+    /// came by the value: inside a handler that catches every exception, or from a callee that
+    /// loaded the field. Were the assumption to fail, the call would dispatch elsewhere, outside
+    /// every handler.
+    [<Test>]
+    let ``what a field holds is relied on wherever the value goes`` () : unit =
+        let source =
+            """
+namespace Relying;
+
+public abstract class Base { public abstract void Hit(); }
+
+// Its `Hit` runs nothing, so that nothing else the call reaches relies on the assumption.
+public sealed class Made : Base { public override void Hit() { } }
+
+public static class Cases
+{
+    private static Base held;
+
+    public static void Write() { held = new Made(); }
+
+    public static Base Get() => held;
+
+    public static void CaughtLoad()
+    {
+        Base local;
+        try { local = held; }
+        catch (System.Exception) { return; }
+        local.Hit();
+    }
+
+    public static void CaughtCall()
+    {
+        Base local;
+        try { local = Get(); }
+        catch (System.Exception) { return; }
+        local.Hit();
+    }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Relying" OutputKind.DynamicallyLinkedLibrary [ source ]
+            |> fun image -> Assembly.read loggerFactory (Some "Relying.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        for name in [ "CaughtLoad" ; "CaughtCall" ] do
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture "Relying.Cases" name)
+
+            analysis <- next
+
+            // The call dispatches on `Made`, which only the assumption says, or on null.
+            if
+                escapes.Unknown
+                || not (escapes.Assumes.Contains Assumption.FieldsWrittenVisibly)
+            then
+                failwith
+                    $"%s{name}: unknown %b{escapes.Unknown}, assuming %A{Set.toList escapes.Assumes}, which must hold FieldsWrittenVisibly"
+
+    /// A field CoreLib's type initializer writes, where the analysis takes `CoreLibTypeInitializers`'s
+    /// contract in place of the initializer: the contract says what the initializer raises, and its
+    /// IL still says what it stores. `Random()` dispatches on what its type's initializer stores.
+    [<Test>]
+    let ``what a type initializer under a contract stores in a field is what its IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let constructor =
+            corelib.Methods
+            |> Seq.find (fun (KeyValue (_, method)) ->
+                let declaring = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+
+                declaring.Namespace = "System"
+                && declaring.Name = "Random"
+                && not declaring.IsNested
+                && method.Name = ".ctor"
+                && method.Signature.ParameterTypes.IsEmpty
+            )
+            |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+        let _, escapes = EscapeAnalysis.escapes (analysisOver [] id) constructor
+        escapes.Unknown |> shouldEqual false
+        escapes.Assumes |> shouldContain Assumption.FieldsWrittenVisibly
+
+    /// A field of a struct an explicit layout embeds: another field of the container may lie over it,
+    /// so that a store in that one is a store in the struct's, though the struct's own layout is
+    /// sequential.
+    [<Test>]
+    let ``a struct's field another field of an explicit layout overlaps holds what is stored in either`` () : unit =
+        let image =
+            fieldFixture
+                "OverlappingStructFields"
+                []
+                (fun modul baseType hit made ->
+                    let payload =
+                        modul.DefineType (
+                            "Fields.Payload",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.SequentialLayout,
+                            typeof<ValueType>
+                        )
+
+                    let held = payload.DefineField ("held", baseType, FieldAttributes.Private)
+
+                    let read =
+                        payload.DefineMethod (
+                            "Read",
+                            MethodAttributes.Public ||| MethodAttributes.HideBySig,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = read.GetILGenerator ()
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit (Emit.OpCodes.Ldfld, held)
+                    il.Emit (Emit.OpCodes.Callvirt, hit)
+                    il.Emit Emit.OpCodes.Ret
+                    payload.CreateType () |> ignore<Type>
+
+                    // `alias` lies over `payload.held`.
+                    let container =
+                        modul.DefineType (
+                            "Fields.Container",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.ExplicitLayout
+                        )
+
+                    let containerConstructor =
+                        container.DefineDefaultConstructor MethodAttributes.Public
+
+                    let inner = container.DefineField ("payload", payload, FieldAttributes.Public)
+                    inner.SetOffset 0
+                    let alias = container.DefineField ("alias", baseType, FieldAttributes.Public)
+                    alias.SetOffset 0
+                    container.CreateType () |> ignore<Type>
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let run =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Newobj, containerConstructor)
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Newobj, made)
+                    il.Emit (Emit.OpCodes.Stfld, alias)
+                    il.Emit (Emit.OpCodes.Ldflda, inner)
+                    il.Emit (Emit.OpCodes.Call, read)
+                    il.Emit Emit.OpCodes.Ret
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        let shown, unknown, raised = fieldFixtureAnswers "OverlappingStructFields" image
+        raised |> shouldEqual "=Fields.E1"
+
+        if not unknown && not (shown.Contains raised) then
+            failwith $"The real runtime raises %s{raised}, which the analysis rules out: %A{Set.toList shown}"
+
+    /// A field of a class with sequential layout, which the interop marshaller writes as a
+    /// formatted class: `Marshal.PtrToStructure` fills it from unmanaged memory, as does a P/Invoke
+    /// that takes the class as an `[Out]` parameter, where no instruction names the field.
+    [<Test>]
+    let ``a field of a class with sequential layout holds what the marshaller writes in it`` () : unit =
+        let marshal (name : string) (parameters : Type[]) : MethodInfo =
+            typeof<System.Runtime.InteropServices.Marshal>.GetMethod (name, parameters)
+
+        let image =
+            fieldFixture
+                "FormattedFields"
+                []
+                (fun modul _ _ _ ->
+                    let formatted =
+                        modul.DefineType (
+                            "Fields.Formatted",
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.SequentialLayout
+                        )
+
+                    let formattedConstructor =
+                        formatted.DefineDefaultConstructor MethodAttributes.Public
+
+                    // No instruction of the image stores to `text`.
+                    let text = formatted.DefineField ("text", typeof<string>, FieldAttributes.Private)
+
+                    let run =
+                        formatted.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = run.GetILGenerator ()
+                    let memory = il.DeclareLocal typeof<IntPtr>
+                    let holder = il.DeclareLocal formatted
+                    // Unmanaged memory the size of the class, holding a pointer to an ANSI string.
+                    il.Emit (Emit.OpCodes.Ldtoken, formatted)
+
+                    il.Emit (
+                        Emit.OpCodes.Call,
+                        typeof<Type>.GetMethod ("GetTypeFromHandle", [| typeof<RuntimeTypeHandle> |])
+                    )
+
+                    il.Emit (Emit.OpCodes.Call, marshal "SizeOf" [| typeof<Type> |])
+                    il.Emit (Emit.OpCodes.Call, marshal "AllocHGlobal" [| typeof<int> |])
+                    il.Emit (Emit.OpCodes.Stloc, memory)
+                    il.Emit (Emit.OpCodes.Ldloc, memory)
+                    il.Emit (Emit.OpCodes.Ldc_I4_0)
+                    il.Emit (Emit.OpCodes.Ldstr, "written by the marshaller")
+                    il.Emit (Emit.OpCodes.Call, marshal "StringToHGlobalAnsi" [| typeof<string> |])
+
+                    il.Emit (
+                        Emit.OpCodes.Call,
+                        marshal "WriteIntPtr" [| typeof<IntPtr> ; typeof<int> ; typeof<IntPtr> |]
+                    )
+                    // The marshaller fills a fresh `Formatted` from it.
+                    il.Emit (Emit.OpCodes.Newobj, formattedConstructor)
+                    il.Emit (Emit.OpCodes.Stloc, holder)
+                    il.Emit (Emit.OpCodes.Ldloc, memory)
+                    il.Emit (Emit.OpCodes.Ldloc, holder)
+                    il.Emit (Emit.OpCodes.Call, marshal "PtrToStructure" [| typeof<IntPtr> ; typeof<obj> |])
+                    // `text.Substring 1000` raises `ArgumentOutOfRangeException`, where a null `text`
+                    // would raise `NullReferenceException`.
+                    il.Emit (Emit.OpCodes.Ldloc, holder)
+                    il.Emit (Emit.OpCodes.Ldfld, text)
+                    il.Emit (Emit.OpCodes.Ldc_I4, 1000)
+                    il.Emit (Emit.OpCodes.Callvirt, typeof<string>.GetMethod ("Substring", [| typeof<int> |]))
+                    il.Emit Emit.OpCodes.Pop
+                    il.Emit Emit.OpCodes.Ret
+
+                    let cases =
+                        modul.DefineType (
+                            "Fields.Cases",
+                            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                        )
+
+                    let caseRun =
+                        cases.DefineMethod (
+                            "Run",
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [||]
+                        )
+
+                    let il = caseRun.GetILGenerator ()
+                    il.Emit (Emit.OpCodes.Call, run)
+                    il.Emit Emit.OpCodes.Ret
+                    formatted.CreateType () |> ignore<Type>
+                    cases.CreateType () |> ignore<Type>
+                )
+
+        // The marshaller did write `text`: the real runtime gets past the load of it.
+        fieldFixtureRaises "FormattedFields" image
+        |> shouldEqual "=System.ArgumentOutOfRangeException"
+
+        // The marshalling is opaque to the analysis, so its answer for `Run` says nothing here; what
+        // it must not do is take `text` to hold only what IL stores in it.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "FormattedFields.dll") (new MemoryStream (image))
+
+        let text =
+            fixture.Fields
+            |> Seq.pick (fun (KeyValue (handle, field)) -> if field.Name = "text" then Some handle else None)
+
+        let _, follows =
+            EscapeAnalysis.followsField (analysisOver [ fixture ] id) (FieldKey.make fixture.DefinitionFullName text)
+
+        follows |> shouldEqual false
