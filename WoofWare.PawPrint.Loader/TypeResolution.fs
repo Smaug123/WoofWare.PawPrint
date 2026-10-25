@@ -637,6 +637,31 @@ module TypeResolution =
         failwith
             $"TypeResolution: generic environment is cyclic. Expanding generic parameter %O{param} requires expanding %O{param} again (already expanding: %s{chain}); its argument is %O{arg}. A generic environment must be well-founded: an argument may not mention, whether directly or through the other arguments, the parameter it is bound to. Callers should be passing closed generic arguments."
 
+    /// The argument the environment binds <paramref name="param" /> to. Guest metadata can name a
+    /// parameter the environment does not hold (`List`1<!0>` read from a non-generic method, say),
+    /// and CoreCLR's `SigPointer::GetTypeVariableThrowing` refuses that with
+    /// <c>BadImageFormatException</c>, which here is unmodelled.
+    let private argumentOf
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (param : ExpandingParam)
+        : Result<TypeDefn, TypeBindingFailure>
+        =
+        let environment, index =
+            match param with
+            | ExpandingParam.Type index -> typeGenericArgs, index
+            | ExpandingParam.Method index -> methodGenericArgs, index
+
+        if 0 <= index && index < environment.Length then
+            Ok environment.[index]
+        else
+            {
+                Diagnostic =
+                    $"The generic parameter %O{param} is out of range of an environment of %d{environment.Length} argument(s); CoreCLR refuses that with BadImageFormatException, which is not modelled"
+            }
+            |> TypeBindingFailure.Unmodelled
+            |> Error
+
     /// <summary>
     /// What <c>substituteGenericsInTypeDefn</c> is being asked, within one fixed generic
     /// environment: a type to substitute into, and the expansion chain in flight while doing it.
@@ -816,21 +841,19 @@ module TypeResolution =
             | assemblies, Ok (_, resolvedInfo) ->
                 assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo)
 
+        // A parameter replaced by its argument, which is substituted in turn.
+        let expand (link : ExpandingParam) =
+            match argumentOf typeGenericArgs methodGenericArgs link with
+            | Error failure -> assemblies, Error failure
+            | Ok arg ->
+                if Set.contains link expanding then
+                    failCyclicEnvironment link arg expanding
+
+                substitute (Set.add link expanding) assemblies arg
+
         match ty with
-        | TypeDefn.GenericTypeParameter idx ->
-            let link = ExpandingParam.Type idx
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link typeGenericArgs.[idx] expanding
-
-            substitute (Set.add link expanding) assemblies typeGenericArgs.[idx]
-        | TypeDefn.GenericMethodParameter idx ->
-            let link = ExpandingParam.Method idx
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link methodGenericArgs.[idx] expanding
-
-            substitute (Set.add link expanding) assemblies methodGenericArgs.[idx]
+        | TypeDefn.GenericTypeParameter idx -> expand (ExpandingParam.Type idx)
+        | TypeDefn.GenericMethodParameter idx -> expand (ExpandingParam.Method idx)
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
             wrapped TypeDefn.OneDimensionalArrayLowerBoundZero elementType
         | TypeDefn.Array (elementType, rank) -> wrapped (fun resolved -> TypeDefn.Array (resolved, rank)) elementType
@@ -927,6 +950,27 @@ module TypeResolution =
                     }
             )
 
+        // A parameter resolved as its argument.
+        let resolveParameter (link : ExpandingParam) =
+            match argumentOf typeGenericArgs methodGenericArgs link with
+            | Error failure -> assemblies, Error failure
+            | Ok arg ->
+                if Set.contains link expanding then
+                    failCyclicEnvironment link arg expanding
+
+                // TODO: this assembly is probably wrong?
+                resolveTypeFromDefnTracked
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    arg
+                    typeGenericArgs
+                    methodGenericArgs
+                    (Set.add link expanding)
+                    memo
+                    assy
+                    assemblies
+
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
             let substitute (assemblies : LoadedAssemblies) (arg : TypeDefn) =
@@ -991,44 +1035,8 @@ module TypeResolution =
                 |> TypeInfo.mapGeneric (fun _ -> failwith "System.Void is not generic")
 
             assemblies, Ok (baseClassTypes.Corelib, ty)
-        | TypeDefn.GenericTypeParameter param ->
-            let arg = typeGenericArgs.[param]
-            let link = ExpandingParam.Type param
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link arg expanding
-
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefnTracked
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                arg
-                typeGenericArgs
-                methodGenericArgs
-                (Set.add link expanding)
-                memo
-                assy
-                assemblies
-        | TypeDefn.GenericMethodParameter param ->
-            let arg = methodGenericArgs.[param]
-            let link = ExpandingParam.Method param
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link arg expanding
-
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefnTracked
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                arg
-                typeGenericArgs
-                methodGenericArgs
-                (Set.add link expanding)
-                memo
-                assy
-                assemblies
+        | TypeDefn.GenericTypeParameter param -> resolveParameter (ExpandingParam.Type param)
+        | TypeDefn.GenericMethodParameter param -> resolveParameter (ExpandingParam.Method param)
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
         | TypeDefn.Array _ ->
             // This is lossy: we return System.Array's TypeInfo, discarding the element type.
@@ -1061,7 +1069,9 @@ module TypeResolution =
     /// generic one comes back open, at its own parameters, whatever the environment. An
     /// instantiation names exactly as many arguments as its definition declares parameters, none
     /// of them a generic definition spelled bare; CoreCLR refuses either with
-    /// <c>TypeLoadException</c>, and here either is unmodelled.
+    /// <c>TypeLoadException</c>, and here either is unmodelled. So is a generic parameter that
+    /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold,
+    /// which CoreCLR refuses with <c>BadImageFormatException</c>.
     /// </para>
     /// <para>
     /// <paramref name="typeGenericArgs" /> and <paramref name="methodGenericArgs" /> must be
