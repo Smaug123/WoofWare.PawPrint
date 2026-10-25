@@ -6,6 +6,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  merge_group:
 
 env:
   DOTNET_NOLOGO: true
@@ -149,12 +150,13 @@ jobs:
       - name: Run Alejandra
         run: nix develop --command alejandra --check .
 
-  # Pull requests only. A push to main is the squash of a pull request this
-  # check already ran on, against GitHub's merge of that branch into main, so
-  # rerunning it can only disagree through the squash's commit message, which is
-  # edited by hand at merge time and may no longer carry the trailer below. The
-  # steps are skipped rather than the job, because all-required-checks-complete
-  # counts a skipped job as a failure.
+  # Pull requests only. The script needs GitHub's merge of the branch into main,
+  # whose second parent is the branch's head; a merge-queue run or a push to main
+  # checks out a squash, which has one parent. That squash is of a pull request
+  # whose own run already passed this check, so skipping it here misses only a
+  # change to main, made after that run, which alters what the change detaches.
+  # The steps are skipped rather than the job, because
+  # all-required-checks-complete counts a skipped job as a failure.
   check-docstring-attachment:
     runs-on: ubuntu-latest
     steps:
