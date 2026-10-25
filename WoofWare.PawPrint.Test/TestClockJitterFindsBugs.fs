@@ -42,8 +42,8 @@ module TestClockJitterFindsBugs =
 
     let private assy = typeof<RunResult>.Assembly
 
-    let private dotnetRuntimes : ImmutableArray<string> =
-        FrameworkUnderTest.runtimeDirs ()
+    let private dotnetRuntimes () : ImmutableArray<string> =
+        FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
     /// A compiled guest. Compilation is the expensive part of a sweep, so each
     /// of these is a module-level binding and so happens once.
@@ -96,10 +96,10 @@ module TestClockJitterFindsBugs =
         use peImage = new MemoryStream (guest.Image)
 
         let hostConfig =
-            { HostConfig.Default dotnetRuntimes with
+            { HostConfig.Default (dotnetRuntimes ()) with
                 PctSeed = pctSeed
                 Guest =
-                    { GuestConfig.Default dotnetRuntimes with
+                    { GuestConfig.Default (dotnetRuntimes ()) with
                         Kernel =
                             { KernelConfig.Default with
                                 ClockJitter = jitter
@@ -134,7 +134,7 @@ module TestClockJitterFindsBugs =
                     prefixLoggerFactory
                     (Some guest.SourceName)
                     peImage
-                    (GuestConfig.Default dotnetRuntimes)
+                    (GuestConfig.Default (dotnetRuntimes ()))
             with
             | Program.PrefixOutcome.ForkedAt snapshot -> snapshot
             | other ->

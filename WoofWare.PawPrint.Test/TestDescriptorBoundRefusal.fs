@@ -54,7 +54,7 @@ public class Program
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        let runtimes = FrameworkUnderTest.runtimeDirs ()
+        let runtimes = FrameworkUnderTest.runtimeDirsFor SimulatedUnixPlatform.macOsArm64
 
         let config =
             { HostConfig.Default runtimes with

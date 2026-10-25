@@ -5321,7 +5321,7 @@ module TestImpureCases =
             reraise ()
 
     let runTest (case : EndToEndTestCase) : unit =
-        runTestOn (FrameworkUnderTest.runtimeDirs ()) case
+        runTestOn (FrameworkUnderTest.runtimeDirsFor case.KernelConfig.UnixPlatform) case
 
     [<Test>]
     let ``a Darwin guest whose File.Copy reaches fcopyfile stops, naming it`` () : unit =
@@ -5336,7 +5336,10 @@ module TestImpureCases =
             LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileOntoLinkSeeded.cs" ]
 
         use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor SimulatedUnixPlatform.macOsArm64
+
         use peImage = new MemoryStream (image)
 
         let exn =
@@ -5376,7 +5379,9 @@ module TestImpureCases =
             LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileFromUrandomLinux.cs" ]
 
         use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         let run (argv : string list) =
             use peImage = new MemoryStream (image)
@@ -5412,7 +5417,9 @@ module TestImpureCases =
         // of the boundary, and ones whose minor number `%u.%u` cannot read.
         let source = Assembly.getEmbeddedResourceAsString "CopyFileOntoLinkSeeded.cs" assy
         let image = Roslyn.compile [ source ]
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor SimulatedUnixPlatform.linuxX64
 
         let run (release : string) =
             let _messages, loggerFactory =
