@@ -1367,13 +1367,16 @@ module NativeSignature =
                 ||> Seq.fold (fun (state, index) eh ->
                     let token = MetadataToken.ofEntityHandle eh
 
-                    let state, typeDefn, resolvedAssy =
+                    let state, typeDefnResult =
                         IlMachineState.resolveTypeMetadataToken
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             state
                             assembly
                             token
+
+                    let typeDefn, resolvedAssy =
+                        TokenBindingStop.typeToken assembly token typeDefnResult
 
                     let state, concreteHandle =
                         IlMachineState.concretizeType

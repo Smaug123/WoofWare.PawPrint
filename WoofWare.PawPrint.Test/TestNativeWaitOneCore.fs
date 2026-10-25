@@ -65,7 +65,7 @@ public static class Entry
                     failwith
                         $"QCall entry point WaitHandle_WaitOneCore was ambiguous on System.Threading.WaitHandle: %d{methods.Length} matches"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -75,6 +75,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, waitHandleType, method
 

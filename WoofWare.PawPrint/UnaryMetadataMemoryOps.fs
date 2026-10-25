@@ -19,8 +19,11 @@ module internal UnaryMetadataMemoryOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, targetType, assy =
+                let state, targetTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let targetType, assy =
+                    TokenBindingStop.typeToken activeAssy metadataToken targetTypeResult
 
                 // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
                 // so that the zero below is computed the same way for both universes.
@@ -80,8 +83,10 @@ module internal UnaryMetadataMemoryOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, ty, assy =
+                let state, tyResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let ty, assy = TokenBindingStop.typeToken activeAssy metadataToken tyResult
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -153,8 +158,10 @@ module internal UnaryMetadataMemoryOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, ty, assy =
+                let state, tyResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let ty, assy = TokenBindingStop.typeToken activeAssy metadataToken tyResult
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -278,8 +285,10 @@ module internal UnaryMetadataMemoryOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, ty, assy =
+                let state, tyResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let ty, assy = TokenBindingStop.typeToken activeAssy metadataToken tyResult
 
                 IlMachineState.concretizeType
                     loggerFactory

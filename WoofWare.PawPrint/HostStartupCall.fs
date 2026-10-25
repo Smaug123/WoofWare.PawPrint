@@ -142,7 +142,7 @@ module HostStartupCall =
         (state : IlMachineState)
         : IlMachineState * MethodState * ConcreteTypeHandle
         =
-        let state, concretized, declaringType =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -152,6 +152,8 @@ module HostStartupCall =
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretized, declaringType = BindingStop.bound concretizedResult
 
         match
             MethodState.Empty

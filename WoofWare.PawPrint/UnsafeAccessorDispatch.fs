@@ -1192,7 +1192,7 @@ module internal UnsafeAccessorDispatch =
 
             refuseMisalignedTypeVariables ()
 
-            let state, concretizedTarget, _declaringTypeHandle =
+            let state, concretizedTargetResult =
                 ExecutionConcretization.concretizeMethodWithAllGenerics
                     loggerFactory
                     baseClassTypes
@@ -1200,6 +1200,9 @@ module internal UnsafeAccessorDispatch =
                     target
                     accessor.Generics
                     state
+
+            let concretizedTarget, _declaringTypeHandle =
+                BindingStop.bound concretizedTargetResult
 
             let plan =
                 match kind with

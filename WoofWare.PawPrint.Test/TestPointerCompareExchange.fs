@@ -66,7 +66,7 @@ module TestPointerCompareExchange =
                 ]
             )
 
-        let state, methodToCall, _ =
+        let state, methodToCallResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -74,6 +74,8 @@ module TestPointerCompareExchange =
                 raw
                 ImmutableArray.Empty
                 state
+
+        let methodToCall, _ = BindingResult.value methodToCallResult
 
         loggerFactory, state, thread, methodToCall
 

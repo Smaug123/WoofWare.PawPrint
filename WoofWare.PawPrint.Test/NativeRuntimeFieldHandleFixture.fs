@@ -173,7 +173,7 @@ public sealed class GenericHolder<T>
 
         // Concretizing the method also concretizes its parameter types, which is what lets the
         // handler's active-pattern match on the signature succeed at dispatch time.
-        let state, nativeMethod, _ =
+        let state, nativeMethodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -183,6 +183,8 @@ public sealed class GenericHolder<T>
                 corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let nativeMethod, _ = BindingResult.value nativeMethodResult
 
         let holderType = requiredTopLevelType guestAssembly "" "Holder"
 
@@ -209,7 +211,7 @@ public sealed class GenericHolder<T>
     /// `fixture`, driving `entry` instead, over the same guest assembly and the same state, so
     /// that a test can run one native method on the state another has left behind.
     let retarget (entry : NativeEntry) (fixture : Fixture) : Fixture =
-        let state, nativeMethod, _ =
+        let state, nativeMethodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -219,6 +221,8 @@ public sealed class GenericHolder<T>
                 fixture.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 fixture.State
+
+        let nativeMethod, _ = BindingResult.value nativeMethodResult
 
         { fixture with
             Entry = entry

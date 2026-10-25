@@ -110,7 +110,7 @@ public static class Entry
                 | [ method ] -> method
                 | _ -> failwith "donor method ThreadNative_YieldThread not found on System.Threading.Thread"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -120,6 +120,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, method
 

@@ -98,8 +98,11 @@ module internal UnaryMetadataObjectOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, targetType, _targetAssy =
+                let state, targetTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let targetType, _targetAssy =
+                    TokenBindingStop.typeToken activeAssy metadataToken targetTypeResult
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -297,7 +300,7 @@ module internal UnaryMetadataObjectOps =
 
             // String is non-generic, so there are no type generics to substitute, and no
             // `Ctor` overload is itself generic.
-            let state, concretizedCtorImplementation, _ =
+            let state, concretizedCtorImplementationResult =
                 ExecutionConcretization.concretizeMethodWithTypeGenerics
                     loggerFactory
                     baseClassTypes
@@ -307,6 +310,9 @@ module internal UnaryMetadataObjectOps =
                     ctorAssembly.DefinitionFullName
                     ImmutableArray.Empty
                     state
+
+            let concretizedCtorImplementation, _ =
+                BindingStop.bound concretizedCtorImplementationResult
 
             let threadState = state.ThreadState.[thread]
 
@@ -425,6 +431,8 @@ module internal UnaryMetadataObjectOps =
                         mr
                         state
 
+                let resolved = TokenBindingStop.memberReference activeAssy mr resolved
+
                 match resolved with
                 | MemberReferenceResolution.Resolved (_, Choice1Of2 ctor, extractedTypeArgs) ->
                     state, Ok (ctor, Some extractedTypeArgs)
@@ -437,7 +445,7 @@ module internal UnaryMetadataObjectOps =
         | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
         | Ok (ctor, typeArgsFromMetadata) ->
 
-        let state, concretizedCtor, declaringTypeHandle =
+        let state, concretizedCtorResult =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -446,6 +454,8 @@ module internal UnaryMetadataObjectOps =
                 None
                 typeArgsFromMetadata
                 state
+
+        let concretizedCtor, declaringTypeHandle = BindingStop.bound concretizedCtorResult
 
         // No class-initialisation check here: the object is allocated first and the constructor's
         // own prologue runs it, which is the order the CLR uses. Measured on .NET 10, a `.cctor`
@@ -503,13 +513,15 @@ module internal UnaryMetadataObjectOps =
                             failwith $"BUG: metadata token source assembly %O{sourced.SourceAssembly} is not loaded"
                         )
 
-                    let state, spelling, _ =
+                    let state, spellingResult =
                         IlMachineState.resolveTypeMetadataToken
                             loggerFactory
                             baseClassTypes
                             state
                             activeAssy
                             sourced.Token
+
+                    let spelling, _ = TokenBindingStop.typeToken activeAssy sourced.Token spellingResult
 
                     let state, handle =
                         IlMachineState.concretizeType
@@ -664,10 +676,19 @@ module internal UnaryMetadataObjectOps =
                 let state, ty, assy =
                     match metadataToken with
                     | MetadataToken.TypeDefinition h ->
-                        let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                        let state, ty =
+                            IlMachineState.lookupTypeDefn loggerFactory baseClassTypes state activeAssy h
+
+                        let ty = TokenBindingStop.typeToken activeAssy (MetadataToken.TypeDefinition h) ty
                         state, ty, activeAssy
                     | MetadataToken.TypeReference ref ->
-                        IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
+                        let state, resolved =
+                            IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
+
+                        let ty, assy =
+                            TokenBindingStop.typeToken activeAssy (MetadataToken.TypeReference ref) resolved
+
+                        state, ty, assy
                     | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
                     | _ -> failwith $"unexpected token {metadataToken} in Box"
 
@@ -783,8 +804,11 @@ module internal UnaryMetadataObjectOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, targetType, _targetAssy =
+                let state, targetTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let targetType, _targetAssy =
+                    TokenBindingStop.typeToken activeAssy metadataToken targetTypeResult
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -852,8 +876,11 @@ module internal UnaryMetadataObjectOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, targetType, _targetAssy =
+                let state, targetTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let targetType, _targetAssy =
+                    TokenBindingStop.typeToken activeAssy metadataToken targetTypeResult
 
                 IlMachineState.concretizeType
                     loggerFactory
@@ -1073,8 +1100,11 @@ module internal UnaryMetadataObjectOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, targetType, _targetAssy =
+                let state, targetTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let targetType, _targetAssy =
+                    TokenBindingStop.typeToken activeAssy metadataToken targetTypeResult
 
                 IlMachineState.concretizeType
                     loggerFactory

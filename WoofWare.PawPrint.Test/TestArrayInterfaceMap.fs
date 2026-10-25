@@ -163,6 +163,8 @@ module TestArrayInterfaceMap =
             ||> Seq.fold (fun (state, acc) impl ->
                 let state, implTypeDefn, implAssy =
                     IlMachineState.resolveTypeMetadataToken loggerFactory bct state corelib impl.InterfaceHandle
+                    |> BindingResult.bound
+                    |> fun (state, (implTypeDefn, implAssy)) -> state, implTypeDefn, implAssy
 
                 let state, implHandle =
                     IlMachineState.concretizeType

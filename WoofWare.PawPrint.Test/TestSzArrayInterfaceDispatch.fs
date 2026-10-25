@@ -152,7 +152,7 @@ module TestSzArrayInterfaceDispatch =
 
         let arrayHandle = ConcreteTypeHandle.OneDimArrayZero elementHandle
 
-        let state, concretizedMethod, interfaceHandle =
+        let state, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 bct
@@ -160,6 +160,8 @@ module TestSzArrayInterfaceDispatch =
                 case.Method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, interfaceHandle = BindingResult.value concretizedMethodResult
 
         state, arrayHandle, interfaceHandle, argumentHandle, concretizedMethod
 
@@ -298,7 +300,7 @@ module TestSzArrayInterfaceDispatch =
 
                 let mdArrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
 
-                let state, concretizedMethod, mdInterfaceHandle =
+                let state, concretizedMethodResult =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         loggerFactory
                         bct
@@ -306,6 +308,9 @@ module TestSzArrayInterfaceDispatch =
                         case.Method
                         ImmutableArray.Empty
                         state
+
+                let concretizedMethod, mdInterfaceHandle =
+                    BindingResult.value concretizedMethodResult
 
                 // Precondition of the whole exercise: a multi-dim array is never assignable to
                 // one of the five, so this dispatch is unreachable and the carve-out must stay

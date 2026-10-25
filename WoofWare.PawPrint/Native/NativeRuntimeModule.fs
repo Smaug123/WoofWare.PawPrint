@@ -83,7 +83,10 @@ module NativeRuntimeModule =
             ((state, []), rows)
             ||> List.fold (fun (state, acc) handle ->
                 let state, typeDefn =
-                    IlMachineState.lookupTypeDefn ctx.BaseClassTypes state assembly handle
+                    IlMachineState.lookupTypeDefn ctx.LoggerFactory ctx.BaseClassTypes state assembly handle
+
+                let typeDefn =
+                    TokenBindingStop.typeToken assembly (MetadataToken.TypeDefinition handle) typeDefn
 
                 let state, target =
                     IlMachineState.runtimeTypeHandleTargetForTypeToken

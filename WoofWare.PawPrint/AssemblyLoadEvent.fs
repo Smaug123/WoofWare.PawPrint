@@ -82,7 +82,7 @@ module AssemblyLoadEvent =
                 failwith
                     $"System.Runtime.Loader.AssemblyLoadContext has %d{methods.Length} static one-argument methods named OnAssemblyLoad, not the one CoreCLR's METHOD__ASSEMBLYLOADCONTEXT__ON_ASSEMBLY_LOAD names"
 
-        let state, concretized, _declaringType =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -91,6 +91,8 @@ module AssemblyLoadEvent =
                 None
                 None
                 state
+
+        let concretized, _declaringType = BindingStop.bound concretizedResult
 
         // `pAssembly->GetExposedObject()`: the cached object every other route to this assembly
         // reports.

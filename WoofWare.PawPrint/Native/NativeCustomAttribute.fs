@@ -555,7 +555,7 @@ module NativeCustomAttribute =
                                 failwith
                                     $"%s{operation}: TypeNameResolver.GetTypeReferencedByCustomAttribute(string, _) is ambiguous in corelib: %d{ms.Length} overloads"
 
-                    let state, concretizedResolver, _declaringType =
+                    let state, concretizedResolverResult =
                         ExecutionConcretization.concretizeMethodWithAllGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
@@ -563,6 +563,9 @@ module NativeCustomAttribute =
                             resolverMethod
                             ImmutableArray.Empty
                             state
+
+                    let concretizedResolver, _declaringType =
+                        BindingStop.bound concretizedResolverResult
 
                     let moduleAddr =
                         NativeCall.qCallModuleRuntimeModule operation ctx.BaseClassTypes state instruction.Arguments.[0]
@@ -697,7 +700,7 @@ module NativeCustomAttribute =
                 let instanceAddr, state =
                     IlMachineState.allocateManagedObject instantiatedHandle instanceFields state
 
-                let state, concretizedCtor, _declaringTypeHandle =
+                let state, concretizedCtorResult =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
@@ -705,6 +708,8 @@ module NativeCustomAttribute =
                         ctorMetadata
                         (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
                         state
+
+                let concretizedCtor, _declaringTypeHandle = BindingStop.bound concretizedCtorResult
 
                 if MethodInfo.arity concretizedCtor <> List.length fixedArgs then
                     failwith

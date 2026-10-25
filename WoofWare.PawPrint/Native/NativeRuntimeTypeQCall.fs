@@ -901,7 +901,7 @@ module NativeRuntimeTypeQCall =
                             $"%s{operation}: no parameterless .ctor found on %s{typeInfo.Namespace}.%s{typeInfo.Name}"
                     )
 
-                let state, concretizedCtor, _declaringTypeHandle =
+                let state, concretizedCtorResult =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
@@ -909,6 +909,8 @@ module NativeRuntimeTypeQCall =
                         ctor
                         ImmutableArray.Empty
                         state
+
+                let concretizedCtor, _declaringTypeHandle = BindingStop.bound concretizedCtorResult
 
                 // Push the allocated address as the re-entry marker. `callMethod` pops
                 // only the ctor's `this` (which we push next), leaving the marker visible
@@ -1286,7 +1288,10 @@ module NativeRuntimeTypeQCall =
                 match MetadataToken.ofInt typeToken with
                 | MetadataToken.TypeDefinition h ->
                     let state, typeDefn =
-                        IlMachineState.lookupTypeDefn ctx.BaseClassTypes state assembly h
+                        IlMachineState.lookupTypeDefn ctx.LoggerFactory ctx.BaseClassTypes state assembly h
+
+                    let typeDefn =
+                        TokenBindingStop.typeToken assembly (MetadataToken.TypeDefinition h) typeDefn
 
                     IlMachineState.runtimeTypeHandleTargetForTypeToken
                         ctx.LoggerFactory
@@ -1302,8 +1307,11 @@ module NativeRuntimeTypeQCall =
                     // referenced type's own definition must not be substituted via the caller's
                     // type/method instantiation. Caller context is reserved for TypeSpec generic
                     // substitution, applied below by runtimeTypeHandleTargetForTypeToken.
-                    let state, typeDefn, declaringAssembly =
+                    let state, typeDefnResult =
                         IlMachineState.lookupTypeRef ctx.LoggerFactory ctx.BaseClassTypes state assembly h
+
+                    let typeDefn, declaringAssembly =
+                        TokenBindingStop.typeToken assembly (MetadataToken.TypeReference h) typeDefnResult
 
                     IlMachineState.runtimeTypeHandleTargetForTypeToken
                         ctx.LoggerFactory
@@ -1505,7 +1513,7 @@ module NativeRuntimeTypeQCall =
                         )
                         |> ImmutableArray.CreateRange
 
-                    let state, _, resolved, extractedTypeArgs =
+                    let state, resolvedResult =
                         IlMachineState.resolveMemberWithGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
@@ -1515,6 +1523,9 @@ module NativeRuntimeTypeQCall =
                             methodGenericsAsTypeDefn
                             h
                             state
+
+                    let _, resolved, extractedTypeArgs =
+                        TokenBindingStop.memberReference assembly h resolvedResult
 
                     let method =
                         match resolved with
@@ -1545,7 +1556,7 @@ module NativeRuntimeTypeQCall =
                         )
                         |> Tuple.rmap (fun b -> b.ToImmutable ())
 
-                    let state, concretized, _ =
+                    let state, concretizedResult =
                         ExecutionConcretization.concretizeMethodWithAllGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
@@ -1553,6 +1564,8 @@ module NativeRuntimeTypeQCall =
                             method
                             methodInstantiation
                             state
+
+                    let concretized, _ = BindingStop.bound concretizedResult
 
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateConcreteInternalHandle
@@ -1906,13 +1919,16 @@ module NativeRuntimeTypeQCall =
                                     state.LoadedAssembly impl.RelativeToAssembly.FullName
                                     |> Option.defaultValue currentAssy
 
-                                let state, implTypeDefn, implResolvedAssy =
+                                let state, implTypeDefnResult =
                                     IlMachineState.resolveTypeMetadataToken
                                         ctx.LoggerFactory
                                         ctx.BaseClassTypes
                                         state
                                         implAssy
                                         impl.InterfaceHandle
+
+                                let implTypeDefn, implResolvedAssy =
+                                    TokenBindingStop.typeToken implAssy impl.InterfaceHandle implTypeDefnResult
 
                                 let state, implHandle =
                                     IlMachineState.concretizeType
@@ -1950,13 +1966,16 @@ module NativeRuntimeTypeQCall =
                                 state.LoadedAssembly impl.RelativeToAssembly.FullName
                                 |> Option.defaultValue currentAssy
 
-                            let state, implTypeDefn, implResolvedAssy =
+                            let state, implTypeDefnResult =
                                 IlMachineState.resolveTypeMetadataToken
                                     ctx.LoggerFactory
                                     ctx.BaseClassTypes
                                     state
                                     implAssy
                                     impl.InterfaceHandle
+
+                            let implTypeDefn, implResolvedAssy =
+                                TokenBindingStop.typeToken implAssy impl.InterfaceHandle implTypeDefnResult
 
                             if IlMachineState.containsAnyGenericParameter implTypeDefn then
                                 failwith
@@ -2421,7 +2440,7 @@ module NativeRuntimeTypeQCall =
                         failwith $"%s{operation}: ConcreteTypeHandle %O{methodTable} not found in AllConcreteTypes"
                     )
 
-                let state, concretizedCtor, _declaringTypeHandle =
+                let state, concretizedCtorResult =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
@@ -2429,6 +2448,8 @@ module NativeRuntimeTypeQCall =
                         ctor
                         ImmutableArray.Empty
                         state
+
+                let concretizedCtor, _declaringTypeHandle = BindingStop.bound concretizedCtorResult
 
                 let functionPointer (target : FunctionPointerTarget) : CliType =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target))

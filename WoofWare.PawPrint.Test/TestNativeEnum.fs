@@ -138,7 +138,7 @@ public static class Entry
                     failwith
                         $"QCall entry point Enum_GetValuesAndNames was ambiguous on System.Enum: %d{methods.Length} matches"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -148,6 +148,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, enumType, method
 

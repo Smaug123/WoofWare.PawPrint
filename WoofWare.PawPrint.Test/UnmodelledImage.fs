@@ -54,6 +54,24 @@ module internal UnmodelledImage =
             /// `int32 [Nowhere]System.Gone::F`, whose parent is in an assembly no runtime directory
             /// supplies.
             UnboundParentField : MemberReferenceHandle
+            /// `System.Gone`, scoped to `System.Runtime`, which neither declares nor forwards it, so
+            /// that resolving it loads `System.Runtime` before it fails.
+            FacadeAbsent : TypeReferenceHandle
+            /// `System.Collections.Generic.List`1<int32>`.
+            InstantiatedList : TypeSpecificationHandle
+            /// `[Nowhere]System.Gone<int32>`.
+            UnboundInstantiation : TypeSpecificationHandle
+            /// `int32 N.Derived::Count`, declared on the type whose base type is absent.
+            DerivedCount : FieldDefinitionHandle
+            /// `List`1::Clear()`, through the generic definition with no instantiation.
+            OpenListClear : MemberReferenceHandle
+            /// `N.Facaded`, whose base type is `System.Object` named through `System.Runtime`, so
+            /// that resolving its base chain loads `System.Runtime`.
+            Facaded : TypeDefinitionHandle
+            /// `[System.Runtime]System.Nullable`1<int32>`.
+            FacadeNullable : TypeSpecificationHandle
+            /// `[System.Runtime]System.Object::ToString()`.
+            FacadeToString : MemberReferenceHandle
         }
 
     let emit () : byte[] * Shapes =
@@ -101,6 +119,18 @@ module internal UnmodelledImage =
                 Unchecked.defaultof<BlobHandle>
             )
 
+        let runtimeName = System.Reflection.Assembly.Load("System.Runtime").GetName ()
+
+        let runtimeRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString runtimeName.Name,
+                runtimeName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (runtimeName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
         let typeRef (scope : EntityHandle) (ns : string) (name : string) : TypeReferenceHandle =
             metadata.AddTypeReference (scope, metadata.GetOrAddString ns, metadata.GetOrAddString name)
 
@@ -118,6 +148,29 @@ module internal UnmodelledImage =
 
         let list =
             typeRef (AssemblyReferenceHandle.op_Implicit corelibRef) "System.Collections.Generic" "List`1"
+
+        let facadeAbsent =
+            typeRef (AssemblyReferenceHandle.op_Implicit runtimeRef) "System" "Gone"
+
+        let instantiation (generic : TypeReferenceHandle) : TypeSpecificationHandle =
+            let blob = BlobBuilder ()
+
+            let arguments =
+                BlobEncoder(blob)
+                    .TypeSpecificationSignature()
+                    .GenericInstantiation (TypeReferenceHandle.op_Implicit generic, 1, false)
+
+            arguments.AddArgument().Int32 ()
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+
+        let facadeObject =
+            typeRef (AssemblyReferenceHandle.op_Implicit runtimeRef) "System" "Object"
+
+        let facadeNullable =
+            instantiation (typeRef (AssemblyReferenceHandle.op_Implicit runtimeRef) "System" "Nullable`1")
+
+        let instantiatedList = instantiation list
+        let unboundInstantiation = instantiation unbound
 
         let otherModule =
             metadata.AddModuleReference (metadata.GetOrAddString "Other.netmodule")
@@ -176,7 +229,8 @@ module internal UnmodelledImage =
             MethodBodyStreamEncoder(ilStream).AddMethodBody il
 
         // `<Module>` is row 1, `Holder` row 2, which declares `M` and `Takes`, MethodDef rows 1 and
-        // 2, and `Derived` row 3, which declares `Run`, MethodDef row 3.
+        // 2, `Derived` row 3, which declares `Run`, MethodDef row 3, and `Count`, FieldDef row 1, and
+        // `Facaded` row 4, which declares nothing.
         metadata.AddTypeDefinition (
             TypeAttributes.NotPublic,
             Unchecked.defaultof<StringHandle>,
@@ -206,6 +260,19 @@ module internal UnmodelledImage =
                 MetadataTokens.FieldDefinitionHandle 1,
                 MetadataTokens.MethodDefinitionHandle 3
             )
+
+        let facaded =
+            metadata.AddTypeDefinition (
+                TypeAttributes.Public,
+                metadata.GetOrAddString "N",
+                metadata.GetOrAddString "Facaded",
+                TypeReferenceHandle.op_Implicit facadeObject,
+                MetadataTokens.FieldDefinitionHandle 2,
+                MetadataTokens.MethodDefinitionHandle 4
+            )
+
+        let derivedCount =
+            metadata.AddFieldDefinition (FieldAttributes.Public, metadata.GetOrAddString "Count", int32Field)
 
         let m =
             metadata.AddMethodDefinition (
@@ -282,6 +349,20 @@ module internal UnmodelledImage =
         let methodParent =
             metadata.AddMemberReference (MethodDefinitionHandle.op_Implicit m, metadata.GetOrAddString "F", int32Field)
 
+        let openListClear =
+            metadata.AddMemberReference (
+                TypeReferenceHandle.op_Implicit list,
+                metadata.GetOrAddString "Clear",
+                instanceVoidSignature
+            )
+
+        let facadeToString =
+            metadata.AddMemberReference (
+                TypeReferenceHandle.op_Implicit facadeObject,
+                metadata.GetOrAddString "ToString",
+                toStringSignature
+            )
+
         let methodSignature =
             metadata.AddMemberReference (
                 TypeReferenceHandle.op_Implicit objectRef,
@@ -335,6 +416,14 @@ module internal UnmodelledImage =
             NoSuchMethod = noSuchMethod
             AbsentParentMethod = absentParentMethod
             UnboundParentField = unboundParentField
+            FacadeAbsent = facadeAbsent
+            InstantiatedList = instantiatedList
+            UnboundInstantiation = unboundInstantiation
+            DerivedCount = derivedCount
+            OpenListClear = openListClear
+            Facaded = facaded
+            FacadeNullable = facadeNullable
+            FacadeToString = facadeToString
         }
 
     /// The emitted image read, CoreLib, and everything needed to resolve against them.
