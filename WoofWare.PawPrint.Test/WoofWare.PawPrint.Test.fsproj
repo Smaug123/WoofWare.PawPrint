@@ -247,6 +247,7 @@
     <Compile Include="TestMemberReferenceParentLoad.fs" />
     <Compile Include="TestFieldBindingFailure.fs" />
     <Compile Include="TestEscapeAnalysis.fs" />
+    <Compile Include="TestEscapeAnalysisConstraintViolation.fs" />
     <Compile Include="TestConstrainedType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
