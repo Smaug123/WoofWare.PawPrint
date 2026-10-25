@@ -1,0 +1,5 @@
+# The CoreLib types whose objects CoreCLR's native code lays out as a C++ class, on any supported runtime: each class a DEFINE_CLASS_U row of vm/corelib.h names, and each the C++ of vm/ derives from Object or declares in object.h beside them.
+# TestVmLaidOutClass holds this to every supported runtime's pinned sources.
+# Two tab-separated fields:
+#   type     the type's full name, nesting joined with + and generic arity after a backtick, as Type.FullName spells it
+#   native   the C++ class that lays the type out, as the runtime's sources name it

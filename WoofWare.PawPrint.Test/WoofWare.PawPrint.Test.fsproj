@@ -432,6 +432,7 @@
     <Compile Include="TestNativeContractTable.fs" />
     <Compile Include="TestSharedNativeField.fs" />
     <Compile Include="TestVmBoundField.fs" />
+    <Compile Include="TestVmLaidOutClass.fs" />
     <Compile Include="TestAssumption.fs" />
     <Compile Include="TestObjectGetType.fs" />
     <Compile Include="TestExceptionMaking.fs" />
