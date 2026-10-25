@@ -1,5 +1,6 @@
 elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
 probes.cpp:Allocate	probes.cpp	Allocate
+probes.cpp:Box::Get	probes.cpp	Box::Get
 probes.cpp:Construct	probes.cpp	Construct
 probes.cpp:Convert	probes.cpp	Convert
 probes.cpp:Declared	probes.cpp	Declared

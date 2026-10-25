@@ -3,6 +3,7 @@
 # callee's USR left out.
 undefined	elsewhere.cpp:Diamond
 routine	probes.cpp:Allocate	Allocate	void ()	probes.cpp:85
+routine	probes.cpp:Box::Get	Box<int>::Get	void ()	probes.cpp:196
 routine	probes.cpp:Construct	M::Construct	void ()	probes.cpp:46
 routine	probes.cpp:Convert	Convert	int (Converts)	probes.cpp:178
 undefined	probes.cpp:Declared
@@ -37,6 +38,7 @@ undefined	probes.cpp:rived::Use
 call	Allocate	void ()	probes.cpp:87	-	construct	Made::Made	void (int)	-
 call	Allocate	void ()	probes.cpp:87	-	new	operator new	void *(unsigned long)	-
 call	Allocate	void ()	probes.cpp:88	-	delete	operator delete	void (void *, unsigned long) noexcept	-
+call	Box<int>::Get	void ()	probes.cpp:196	-	direct	Helper	void ()	-
 call	Convert	int (Converts)	probes.cpp:178	-	direct	Converts::operator int	int () const	-
 call	Defaults	void ()	probes.cpp:136	-	direct	Seed	int ()	-
 call	Defaults	void ()	probes.cpp:136	-	direct	TakeDefault	void (int)	-

@@ -328,9 +328,6 @@ public:
       Loc = Op->getOperatorLoc();
     else if (const auto *Ref = dyn_cast<DeclRefExpr>(Callee))
       Loc = Ref->getLocation();
-    // An implicit call, such as of a conversion operator, names no member where it is written.
-    if (Loc.isInvalid())
-      Loc = E->getBeginLoc();
 
     unsigned FirstArg = 0;
     const auto *F = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());

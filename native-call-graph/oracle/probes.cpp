@@ -190,3 +190,8 @@ struct VB { ~VB(); };
 struct Mid : virtual VB { };
 struct Leaf : Mid { ~Leaf(); };
 Leaf::~Leaf() { }
+
+// A member of a class template, which its key names without the template's arguments.
+template <class T> struct Box { void Get(); };
+template <class T> void Box<T>::Get() { Helper(); }
+void UseBox(Box<int>* b) { b->Get(); }
