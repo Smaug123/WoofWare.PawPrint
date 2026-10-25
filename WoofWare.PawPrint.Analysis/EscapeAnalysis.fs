@@ -45,6 +45,14 @@ type Opacity =
     /// <c>CallConvs = null</c>, CoreCLR reads the elements of the null array it parsed, and the
     /// compilation faults in the runtime, which kills the process.
     | UnreadableCallingConvention
+    /// A value type in the signature of an <c>[UnmanagedCallersOnly]</c> method, which CoreCLR loads
+    /// and then, before the JIT compiles the method, judges whether it needs marshalling
+    /// (<c>PInvoke::MarshalingRequired</c>): by whether it is blittable or an enum, valid for
+    /// generic marshalling and free of <c>Int128</c> (with runtime marshalling disabled, by whether
+    /// it holds a reference or has an auto-layout part). Where it does, CoreCLR refuses to compile
+    /// the method (<c>InvalidProgramException</c>) before any of it runs. The analysis does not
+    /// model that verdict.
+    | ValueTypeMarshallingVerdict
     /// A <c>constrained.</c> call on a value type of a class's method that cannot be overridden (it is
     /// final, on a sealed class, or not virtual), where the value type does not declare the method
     /// holding that slot itself and does not derive from the class: CoreCLR boxes the receiver and
@@ -95,7 +103,8 @@ type OpaqueSite =
         /// the analysis follows (<c>NativeBody</c>, <c>AbstractBody</c>, <c>IntrinsicExpansion</c>),
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
-        /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>).
+        /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>,
+        /// <c>ValueTypeMarshallingVerdict</c>).
         Offset : int option
         Reason : Opacity
         /// The method the instruction's token names, where it names one. For a call, that need not
@@ -1099,7 +1108,13 @@ module EscapeAnalysis =
         match making with
         | ExceptionMaking.ParameterlessConstructor -> thrown, [ parameterlessConstructor state name ]
         | ExceptionMaking.ResourceMessage ->
-            thrown, [ parameterlessConstructor state name ; resourceMessageLookup state ]
+            match state.Runtime with
+            | EmulatedRuntime.Net10 -> thrown, [ parameterlessConstructor state name ; resourceMessageLookup state ]
+            // .NET 11 looks the message up through an `[UnmanagedCallersOnly]` method of CoreLib's
+            // (`Environment.GetResourceString`), and ends the process where the constructor or the
+            // lookup raises (`TestExceptionMaking`, parked on .NET 11). The analysis takes the
+            // constructor's raises to escape, as it does for a making by the constructor alone.
+            | EmulatedRuntime.Net11 -> thrown, [ parameterlessConstructor state name ]
         | ExceptionMaking.TypeLoadConstructor -> thrown, [ typeLoadConstructor state name ]
         | ExceptionMaking.Preallocated -> thrown, []
         | ExceptionMaking.InitializerFailure ->
@@ -3372,6 +3387,132 @@ module EscapeAnalysis =
         OutsideBodyFact.Raises thrown
         :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
 
+    /// What CoreCLR decides of a method before its JIT runs, where the method is
+    /// `[UnmanagedCallersOnly]` (`ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`).
+    [<RequireQualifiedAccess>]
+    type private CallersOnlyValidation =
+        /// The JIT runs, and these come first: where a value type's marshalling verdict decides,
+        /// the opacity of that verdict.
+        | Compiles of Set<OutsideBodyFact>
+        /// CoreCLR refuses to compile the method, raising this, before any of it runs and before
+        /// the JIT loads the types of its parameters and locals.
+        | Refused of Set<OutsideBodyFact>
+
+    /// What CoreCLR decides of `method`, of `assembly`, before the JIT runs: nothing where it is
+    /// not `[UnmanagedCallersOnly]`, nor where loading its return type fails, which comes first
+    /// (`getMethodInfo`). Otherwise it refuses one that is not static, or is generic or declared in
+    /// a generic type, or that needs marshalling (`PInvoke::MarshalingRequired`): one carrying
+    /// `[LCIDConversion]`, or whose return type or a parameter does, walked in that order, loading
+    /// in full each value type and instantiation it meets, so that one failing to load raises there
+    /// instead. A value type's verdict, the analysis does not model (`ValueTypeMarshallingVerdict`).
+    let private callersOnlyValidation
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        : EscapeAnalysisState * CallersOnlyValidation
+        =
+        let refused (state : EscapeAnalysisState) : EscapeAnalysisState * CallersOnlyValidation =
+            let name, making = ExceptionMaking.unmanagedCallersOnlyInvalid
+            let thrown, run = runtimeRaises state name making
+
+            state,
+            OutsideBodyFact.Raises thrown
+            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
+            |> Set.ofList
+            |> CallersOnlyValidation.Refused
+
+        let loadFails (state : EscapeAnalysisState) (spelling : TypeDefn) =
+            match spellingLoadFailure state assembly spelling with
+            | state, None -> state, None
+            | state, Some failure -> state, Some (Set.ofList (bindFailureFacts state failure))
+
+        let returned =
+            match method.Signature.ReturnType with
+            | MethodReturnType.Void -> TypeDefn.Void
+            | MethodReturnType.Returns returned -> returned
+
+        let returnLoadFails (state : EscapeAnalysisState) =
+            match JitTypeLoads.load JitTypePosition.OwnReturn returned with
+            | None -> state, false
+            | Some (JitTypeLoad.InFull loaded) ->
+                let state, failure = loadFails state loaded
+                state, failure.IsSome
+            | Some load ->
+                failwith
+                    $"BUG: JitTypeLoads.load answers %O{load} for a method's return type, which loads in full or not at all"
+
+        if not (MethodInfo.isUnmanagedCallersOnly method) then
+            state, CallersOnlyValidation.Compiles Set.empty
+        else
+
+        match returnLoadFails state with
+        | state, true -> state, CallersOnlyValidation.Compiles Set.empty
+        | state, false ->
+
+        let handle =
+            match method with
+            | MethodInfo.Metadata (_, facts) -> facts.Handle
+            | MethodInfo.Synthesised _ ->
+                failwith "BUG: a synthesised method carries [UnmanagedCallersOnly], which only metadata can apply"
+
+        if
+            not method.IsStatic
+            || method.Signature.GenericParameterCount <> 0
+            || not method.RequiredDeclaringType.Generics.IsEmpty
+            || not
+                (NamedAttribute.ofMethod "System.Runtime.InteropServices.LCIDConversionAttribute" assembly handle)
+                    .IsEmpty
+        then
+            refused state
+        else
+
+        let runtimeMarshalling =
+            (NamedAttribute.ofAssembly "System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute" assembly)
+                .IsEmpty
+
+        let marshalling = MethodInfo.parameterMarshalling method
+
+        // Where a sequence number names no Param row, or several, CoreCLR reads the parameter as
+        // having no `[MarshalAs]`, or refuses the signature (`CollateParamTokens`), which is not
+        // modelled.
+        let marshalOf (sequence : int) : ParameterMarshal =
+            marshalling
+            |> List.tryFind (fun (row, _) -> row = sequence)
+            |> Option.map snd
+            |> Option.defaultValue ParameterMarshal.Absent
+
+        let positions = returned :: method.Signature.ParameterTypes |> List.indexed
+
+        let rec walk
+            (state : EscapeAnalysisState)
+            (opaque : Set<OutsideBodyFact>)
+            (positions : (int * TypeDefn) list)
+            : EscapeAnalysisState * CallersOnlyValidation
+            =
+            match positions with
+            | [] -> state, CallersOnlyValidation.Compiles opaque
+            | (sequence, spelling) :: rest ->
+
+            let marshalAs =
+                UnmanagedCallersOnly.marshalAsRequires runtimeMarshalling (marshalOf sequence)
+
+            match UnmanagedCallersOnly.signatureTypeMarshalling assembly runtimeMarshalling spelling with
+            | SignatureTypeMarshalling.Required -> refused state
+            | SignatureTypeMarshalling.NotRequired -> if marshalAs then refused state else walk state opaque rest
+            | SignatureTypeMarshalling.RequiredOnceLoaded loaded ->
+                match loadFails state loaded with
+                | state, Some failures -> state, CallersOnlyValidation.Refused failures
+                | state, None -> refused state
+            | SignatureTypeMarshalling.DecidedByLayoutOnceLoaded loaded ->
+                match loadFails state loaded with
+                | state, Some failures -> state, CallersOnlyValidation.Refused failures
+                // Whichever its verdict, a `[MarshalAs]` after it needs marshalling.
+                | state, None when marshalAs -> refused state
+                | state, None ->
+                    walk state (Set.add (OutsideBodyFact.Opaque Opacity.ValueTypeMarshallingVerdict) opaque) rest
+
+        walk state Set.empty positions
+
     /// The exceptions an operation of the runtime's own can raise (`runtimeRaises`). Its contract
     /// says under which conditions on its arguments; the analysis does not track their values, so
     /// each may be raised.
@@ -3791,6 +3932,11 @@ module EscapeAnalysis =
         match SignatureRefusal.ofSignature method.Signature with
         | Some refusal -> state, outsideOnly (Set.ofList (signatureRefusalFacts state refusal))
         | None ->
+
+        match callersOnlyValidation state assembly method with
+        // Nothing of the body runs, and the JIT loads none of its types.
+        | state, CallersOnlyValidation.Refused refusal -> state, outsideOnly refusal
+        | state, CallersOnlyValidation.Compiles validation ->
 
         let ops = body.Instructions |> Array.ofList
 
@@ -4568,7 +4714,7 @@ module EscapeAnalysis =
             ]
 
         let state, localFailures =
-            ((state, conventionFailures), ownTypes)
+            ((state, Set.union validation conventionFailures), ownTypes)
             ||> List.fold (fun (state, failures) (position, spelling) ->
                 match JitTypeLoads.load position spelling with
                 | None -> state, failures

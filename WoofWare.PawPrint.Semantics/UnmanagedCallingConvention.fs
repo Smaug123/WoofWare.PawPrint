@@ -165,6 +165,26 @@ module UnmanagedCallingConvention =
         | CallersOnlyConvention.Unreadable _
         | CallersOnlyConvention.NullArray -> false
 
+/// What CoreCLR's `PInvoke::MarshalingRequired` (`vm/dllimport.cpp`) makes of one type of the
+/// signature of an `[UnmanagedCallersOnly]` method, which needs no marshalling to be valid
+/// (`COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage`).
+[<RequireQualifiedAccess>]
+type SignatureTypeMarshalling =
+    /// It needs no marshalling, unless the parameter carries `[MarshalAs]`
+    /// (`UnmanagedCallersOnly.marshalAsRequires`).
+    | NotRequired
+    /// It needs marshalling, which CoreCLR decides without loading anything.
+    | Required
+    /// CoreCLR loads this type in full (`GetTypeHandleThrowing`), and then finds it needs
+    /// marshalling: it instantiates a class.
+    | RequiredOnceLoaded of loaded : TypeDefn
+    /// CoreCLR loads this value type in full, and then decides by what it holds and how it is laid
+    /// out: it needs marshalling where it is not blittable and not an enum (or, with runtime
+    /// marshalling disabled, where it holds a reference or has an auto-layout part), where it is
+    /// not valid for generic marshalling, or where it holds an `Int128` (or, on .NET 11, a decimal
+    /// floating-point type).
+    | DecidedByLayoutOnceLoaded of loaded : TypeDefn
+
 /// What CoreCLR refuses of an `[UnmanagedCallersOnly]` method, which only native code may call.
 [<RequireQualifiedAccess>]
 module UnmanagedCallersOnly =
@@ -177,3 +197,124 @@ module UnmanagedCallersOnly =
         match runtime with
         | EmulatedRuntime.Net10 -> true
         | EmulatedRuntime.Net11 -> false
+
+    /// The modifiers `MarshalingRequired` looks for on a value type a pointer points to, which make
+    /// the pointer need marshalling where runtime marshalling is enabled.
+    let private copyConstructorModifiers : Set<string * string> =
+        Set.ofList
+            [
+                "Microsoft.VisualC", "NeedsCopyConstructorModifier"
+                "System.Runtime.CompilerServices", "IsCopyConstructed"
+            ]
+
+    /// The namespace and name of a type `assembly` spells by a reference or a definition.
+    let private spelledName (assembly : DumpedAssembly) (spelling : TypeDefn) : (string * string) option =
+        match spelling with
+        | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
+        | TypeDefn.FromDefinition (identity, _) when identity.AssemblyFullName = assembly.DefinitionFullName ->
+            let definition = assembly.TypeDefs.[identity.TypeDefinition.Get]
+            Some (definition.Namespace, definition.Name)
+        | _ -> None
+
+    /// The names of the required modifiers on `spelling`, outermost first, and what they modify.
+    let rec private requiredModifiers
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : (string * string) list * TypeDefn
+        =
+        match spelling with
+        | TypeDefn.Modified modified ->
+            let names, unmodified = requiredModifiers assembly modified.Unmodified
+
+            let own =
+                if modified.IsRequired then
+                    Option.toList (spelledName assembly modified.Modifier)
+                else
+                    []
+
+            own @ names, unmodified
+        | spelling -> [], spelling
+
+    /// What `PInvoke::MarshalingRequired` makes of `spelling`, a type of the signature of an
+    /// `[UnmanagedCallersOnly]` method of `assembly` (its return type, `TypeDefn.Void` for none, or a
+    /// parameter's), where runtime marshalling is enabled for `assembly` or not (it carries no
+    /// `[DisableRuntimeMarshalling]`, `Module::IsRuntimeMarshallingEnabled`). It reads past custom
+    /// modifiers, as `PeekElemType` does.
+    let signatureTypeMarshalling
+        (assembly : DumpedAssembly)
+        (runtimeMarshalling : bool)
+        (spelling : TypeDefn)
+        : SignatureTypeMarshalling
+        =
+        match TypeDefn.stripCustomModifiers spelling with
+        | TypeDefn.Void -> SignatureTypeMarshalling.NotRequired
+        | TypeDefn.PrimitiveType primitive ->
+            match primitive with
+            | PrimitiveType.Boolean
+            | PrimitiveType.Char ->
+                if runtimeMarshalling then
+                    SignatureTypeMarshalling.Required
+                else
+                    SignatureTypeMarshalling.NotRequired
+            | PrimitiveType.String
+            | PrimitiveType.Object
+            | PrimitiveType.TypedReference -> SignatureTypeMarshalling.Required
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64
+            | PrimitiveType.Single
+            | PrimitiveType.Double
+            | PrimitiveType.IntPtr
+            | PrimitiveType.UIntPtr -> SignatureTypeMarshalling.NotRequired
+        | TypeDefn.Pointer pointee ->
+            let modifiers, pointee = requiredModifiers assembly pointee
+
+            let pointsToValueType =
+                match pointee with
+                | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+                | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.ValueType) -> true
+                | _ -> false
+
+            if
+                runtimeMarshalling
+                && pointsToValueType
+                && modifiers |> List.exists copyConstructorModifiers.Contains
+            then
+                SignatureTypeMarshalling.Required
+            else
+                SignatureTypeMarshalling.NotRequired
+        | TypeDefn.FunctionPointer _ -> SignatureTypeMarshalling.NotRequired
+        | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+        | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.ValueType) as valueType ->
+            SignatureTypeMarshalling.DecidedByLayoutOnceLoaded valueType
+        | TypeDefn.GenericInstantiation (root, _) as instantiation ->
+            match TypeDefn.stripCustomModifiers root with
+            | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+            | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.ValueType) ->
+                SignatureTypeMarshalling.DecidedByLayoutOnceLoaded instantiation
+            | _ -> SignatureTypeMarshalling.RequiredOnceLoaded instantiation
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Byref _
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Pinned _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> SignatureTypeMarshalling.Required
+        | TypeDefn.Modified _ -> failwith "BUG: stripCustomModifiers left a modifier"
+
+    /// Whether a parameter's `[MarshalAs]`, as its FieldMarshal row says, makes it need marshalling
+    /// where runtime marshalling is enabled or not: where it is, any blob CoreCLR fails to parse or
+    /// that names a native type other than `NATIVE_TYPE_DEFAULT` does (`ParseNativeTypeInfo`);
+    /// where it is disabled, CoreCLR does not read it.
+    let marshalAsRequires (runtimeMarshalling : bool) (marshal : ParameterMarshal) : bool =
+        match marshal with
+        | ParameterMarshal.Absent -> false
+        | ParameterMarshal.Present None -> runtimeMarshalling
+        | ParameterMarshal.Present (Some info) ->
+            runtimeMarshalling && info.NativeType <> NativeTypeParamInfo.NativeTypeDefault

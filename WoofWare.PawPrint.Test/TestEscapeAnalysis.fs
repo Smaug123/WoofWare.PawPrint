@@ -7555,6 +7555,38 @@ public static unsafe class Uco
         finally
             context.Unload ()
 
+    /// Over the runtime under test's own CoreLib, the analysis names the `InvalidProgramException`
+    /// CoreCLR refuses an `[UnmanagedCallersOnly]` method taking a `bool` with, as each runtime
+    /// makes it (`ExceptionMaking.ResourceMessage`, whose lookup .NET 11 makes differently).
+    [<Test>]
+    let ``on the runtime under test, the analysis names the refusal of an UnmanagedCallersOnly method taking a bool``
+        ()
+        : unit
+        =
+        let source =
+            """
+using System.Runtime.InteropServices;
+
+public static class Uco
+{
+    [UnmanagedCallersOnly] public static void TakesBool(bool b) { }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Roslyn.compileAssembly "Client" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+            |> fun image -> Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "Uco" "TakesBool")
+
+        (render analysis escapes).Contains "=System.InvalidProgramException"
+        |> shouldEqual true
+
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
     /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
     /// matters), a static `Plain` without the attribute, and, each returning the delegate it makes
