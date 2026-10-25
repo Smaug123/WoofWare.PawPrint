@@ -404,7 +404,8 @@ exceptions that may escape.
 An assembly that is not there at all, where a type was missing from one that is, is reported as
 `FileNotFoundException` wherever the JIT loads a type in it that a token, a local, a `catch`
 clause, the method's own signature, the signature of a method it calls or takes the address of,
-or the type of a field it accesses names, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
+or the type of a field it accesses names, or that binding a member reference compares in its
+signature, and as "unknown": before raising that, the runtime runs the program's `AssemblyLoadContext.Resolving` and
 `AppDomain.AssemblyResolve` handlers, which may throw (the runtime then raises a `FileLoadException`
 wrapping what they threw), or load an assembly in its place whose code then runs.
 

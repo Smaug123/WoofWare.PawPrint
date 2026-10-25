@@ -632,6 +632,10 @@ public static class Uses
                             match target with
                             | FieldReferenceTarget.Defined (assembly, field) ->
                                 Binding.Field assembly.Fields.[field].Name
+                            | FieldReferenceTarget.SignatureAssemblyUnavailable reference when
+                                reference.Name.Name = "Optional"
+                                ->
+                                Binding.Throws fileNotFound
                             | other -> Binding.Throws $"%A{other}"
 
                         let _, bound =

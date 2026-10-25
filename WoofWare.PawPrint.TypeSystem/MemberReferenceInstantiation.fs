@@ -320,7 +320,8 @@ module MemberReferenceInstantiation =
 
                 let failure = FieldReferenceFailure.ParentTypeMissing (typeName, searchedIn)
                 bound state assy.Name (Choice2Of2 (FieldReferenceBinding.Fails failure)) ImmutableArray.Empty
-            | FieldReferenceTarget.ParentAssemblyUnavailable reference ->
+            | FieldReferenceTarget.ParentAssemblyUnavailable reference
+            | FieldReferenceTarget.SignatureAssemblyUnavailable reference ->
                 fails state (MemberBindingFailure.TypeUnbound (TypeBindingFailure.AssemblyUnavailable reference))
             | FieldReferenceTarget.DependsOnInstantiation ->
                 unmodelled
