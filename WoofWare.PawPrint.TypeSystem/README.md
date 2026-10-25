@@ -18,7 +18,8 @@ It answers four kinds of question:
   bodies and variance included;
 * what the runtime and the JIT decide about concrete types: whether one can be cast to another,
   whether an instantiation satisfies its type parameters' constraints, whether a method runs as
-  shared generic code, whether storage holds GC references.
+  shared generic code, whether storage holds GC references, and what the type loader records about
+  a value type's layout for marshalling.
 
 `TypeSystemState` holds what all of these are computed over, and the memos they keep. Each module's
 docstrings say what it decides, and which part of CoreCLR it follows.
