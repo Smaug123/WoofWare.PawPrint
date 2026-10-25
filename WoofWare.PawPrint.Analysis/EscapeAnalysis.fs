@@ -7956,12 +7956,17 @@ module EscapeAnalysis =
             let assumes = Set.union assumes (facts.Relies |> List.map snd |> Set.ofList)
 
             // A requested abort can arise anywhere in the body, and no handler stops it, since a
-            // catch raises it again at its end (`Assumption.NoThreadAborts`).
+            // catch raises it again at its end (`Assumption.NoThreadAborts`). Where CoreCLR cannot
+            // allocate the abort's exception, it raises its preallocated `OutOfMemoryException`
+            // instead (`CLRException::GetBestException`), which a handler catches as usual; but the
+            // abort can arise where no handler of the body protects it, as in a handler's own code.
             let types, assumes =
                 if state.Assumptions.Contains Assumption.NoThreadAborts then
                     types, Set.add Assumption.NoThreadAborts assumes
                 else
-                    Set.add (ThrownType.Exactly (corelibType state "System.Threading" "ThreadAbortException")) types,
+                    types
+                    |> Set.add (ThrownType.Exactly (corelibType state "System.Threading" "ThreadAbortException"))
+                    |> Set.add (ThrownType.Exactly (corelibType state "System" "OutOfMemoryException")),
                     assumes
 
             state,

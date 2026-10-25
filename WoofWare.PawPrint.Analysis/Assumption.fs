@@ -118,8 +118,10 @@ type Assumption =
     /// code, on a method's first call through the prestub, on return from a P/Invoke
     /// (`JIT_PInvokeEndRarePath`), and where a wait or a lock checks for interruption
     /// (`Thread::HandleThreadInterrupt`, `AwareLock::TryEnter`). A handler that catches it raises it
-    /// again at its end unless it calls `Thread.ResetAbort`, so no handler stops it. Without this
-    /// assumption, every method can let `ThreadAbortException` escape. It stands in for no method's
+    /// again at its end unless it calls `Thread.ResetAbort`, so no handler stops it. Where CoreCLR
+    /// cannot allocate the abort's exception, it raises its preallocated `OutOfMemoryException`
+    /// instead. Without this assumption, every method can let `ThreadAbortException` and
+    /// `OutOfMemoryException` escape. It stands in for no method's
     /// body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
     | NoThreadAborts
 
