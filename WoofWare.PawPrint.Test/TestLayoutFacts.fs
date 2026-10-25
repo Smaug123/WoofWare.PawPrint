@@ -827,7 +827,7 @@ module TestLayoutFacts =
     /// Generic structs that hold an instantiation of themselves by value: `SelfNest<T>` holds a
     /// `SelfNest<SelfNest<T>>`, and `WrapNest<T>` a `WrapNest<Wrap<T>>`; `HoldsSelfNest` and
     /// `HoldsWrapNest` hold each at `int`. `UsesHolder` holds a `Holder<UsesHolder>`, which holds
-    /// only an `int`.
+    /// only an `int`. `HoldsExpandingEnum` holds an `Outer<int>.E`, an enum over `Outer<Wrap<int>>.E`.
     let private oddCorpus : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "OddTypes", typeof<obj>.Assembly)
@@ -852,11 +852,38 @@ module TestLayoutFacts =
 
         let holder = genericStruct "Holder" (fun _ _ -> typeof<int>)
 
+        // `Outer<T>.E`, an enum whose field is `Outer<Wrap<T>>.E`. An enum may be generic only
+        // through the type it is nested in.
+        let expandingEnum =
+            let outer =
+                md.DefineType ("Outer", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+            outer.DefineGenericParameters [| "T" |] |> ignore
+
+            let e =
+                outer.DefineNestedType ("E", TypeAttributes.NestedPublic ||| TypeAttributes.Sealed, typeof<Enum>)
+
+            let parameters = e.DefineGenericParameters [| "T" |]
+
+            e.DefineField (
+                "value__",
+                e.MakeGenericType (wrap.MakeGenericType (parameters.[0] :> Type)),
+                FieldAttributes.Public
+                ||| FieldAttributes.SpecialName
+                ||| FieldAttributes.RTSpecialName
+            )
+            |> ignore
+
+            outer.CreateType () |> ignore
+            e.CreateType () |> ignore
+            e
+
         for name, field in
             [
                 "HoldsSelfNest", (fun (_ : TypeBuilder) -> selfNest.MakeGenericType typeof<int>)
                 "HoldsWrapNest", (fun _ -> wrapNest.MakeGenericType typeof<int>)
                 "UsesHolder", (fun tb -> holder.MakeGenericType (tb :> Type))
+                "HoldsExpandingEnum", (fun _ -> expandingEnum.MakeGenericType typeof<int>)
             ] do
             let tb = md.DefineType (name, sequential, typeof<ValueType>)
             tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
@@ -935,7 +962,7 @@ module TestLayoutFacts =
 
             let outcomes =
                 (enumNames |> List.collect (fun name -> [ name ; "Holds" + name ]))
-                @ [ "HoldsSelfNest" ; "HoldsWrapNest" ; "UsesHolder" ]
+                @ [ "HoldsSelfNest" ; "HoldsWrapNest" ; "UsesHolder" ; "HoldsExpandingEnum" ]
                 |> List.map (fun name ->
                     // The host may refuse the type as soon as it is named.
                     let hostType =
@@ -1010,6 +1037,7 @@ module TestLayoutFacts =
                     "HoldsSelfNest", false
                     "HoldsWrapNest", false
                     "UsesHolder", true
+                    "HoldsExpandingEnum", false
                 ]
         finally
             context.Unload ()
