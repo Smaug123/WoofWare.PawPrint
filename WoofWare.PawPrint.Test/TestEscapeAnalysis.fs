@@ -7701,6 +7701,56 @@ public static class Uco
         (render analysis escapes).Contains "=System.InvalidProgramException"
         |> shouldEqual true
 
+    /// CoreCLR matches a copy-constructor modifier on a pointer's pointee by its namespace and name
+    /// joined with a dot, however the metadata splits the two (`IsTypeRefOrDef`).
+    [<Test>]
+    let ``a copy-constructor modifier is matched by its joined name, however the metadata splits it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Provider.dll") (new MemoryStream (ucoProvider true))
+
+        let anyRef = assembly.TypeRefs.Values |> Seq.head
+
+        let pointerModifiedBy (ns : string) (name : string) : TypeDefn =
+            TypeDefn.Pointer (
+                TypeDefn.Modified
+                    {
+                        Unmodified =
+                            TypeDefn.FromReference (anyRef, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+                        Modifier =
+                            TypeDefn.FromReference (
+                                { anyRef with
+                                    Namespace = ns
+                                    Name = name
+                                },
+                                System.Reflection.Metadata.SignatureTypeKind.Class
+                            )
+                        IsRequired = true
+                    }
+            )
+
+        [
+            "System.Runtime.CompilerServices", "IsCopyConstructed"
+            "", "System.Runtime.CompilerServices.IsCopyConstructed"
+            "System.Runtime", "CompilerServices.IsCopyConstructed"
+            "Microsoft", "VisualC.NeedsCopyConstructorModifier"
+            "System.Runtime.CompilerServices", "IsCopyConstructedNot"
+            "", "IsCopyConstructed"
+        ]
+        |> List.map (fun (ns, name) ->
+            UnmanagedCallersOnly.signatureTypeMarshalling assembly true (pointerModifiedBy ns name)
+        )
+        |> shouldEqual
+            [
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.NotRequired
+                SignatureTypeMarshalling.NotRequired
+            ]
+
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
     /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
     /// matters), a static `Plain` without the attribute, and, each returning the delegate it makes
