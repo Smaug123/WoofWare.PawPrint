@@ -9847,12 +9847,17 @@ public static unsafe class Calls
                 native "KeptThenGenericOfGone" [ WalkParameter.Kept ; WalkParameter.GenericOfGone ]
                 native "KeptThenGenericOfMissing" [ WalkParameter.Kept ; WalkParameter.GenericOfMissing ]
                 native "GoneStructThenGenericOfMissing" [ WalkParameter.GoneStruct ; WalkParameter.GenericOfMissing ]
+                // A `[MarshalAs]` read after a value type that needs no marshalling ends the walk.
+                { native "MarshalAsKeptThenGenericOfGone" [ WalkParameter.Kept ; WalkParameter.GenericOfGone ] with
+                    MarshalAs = Some Runtime.InteropServices.UnmanagedType.Struct
+                }
             ]
             [
                 "WithBoolThenGenericOfGone", None
                 "KeptThenGenericOfGone", Some "System.TypeLoadException"
                 "KeptThenGenericOfMissing", Some "System.IO.FileNotFoundException"
                 "GoneStructThenGenericOfMissing", Some "System.TypeLoadException"
+                "MarshalAsKeptThenGenericOfGone", None
             ]
 
     /// CoreCLR sums the stack size of an `[UnmanagedCallersOnly]` method's parameters as it walks

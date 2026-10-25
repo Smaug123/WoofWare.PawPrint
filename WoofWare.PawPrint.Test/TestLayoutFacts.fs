@@ -146,6 +146,9 @@ module TestLayoutFacts =
         /// `[InlineArray(length)]` over one field, of sequential layout as C# emits it. CoreCLR refuses
         /// explicit layout on one, and the host refuses some of auto layout as corrupt metadata.
         | InlineArray of Kind * length : int * CharSetChoice
+        /// A struct of explicit layout holding one `int`, at this offset. Not generated: only
+        /// `Size bounds hold for large value types` uses it.
+        | FarField of offset : int
 
     and private Field =
         {
@@ -209,7 +212,8 @@ module TestLayoutFacts =
         | Kind.Struct _
         | Kind.Generic _
         | Kind.FixedBuffer _
-        | Kind.InlineArray _ -> [ UnmanagedType.Struct ; UnmanagedType.I4 ]
+        | Kind.InlineArray _
+        | Kind.FarField _ -> [ UnmanagedType.Struct ; UnmanagedType.I4 ]
 
     /// Per-case weights, themselves generated, so that runs cover sparse and dense regimes.
     type private Bias =
@@ -353,6 +357,7 @@ module TestLayoutFacts =
         | Kind.Generic (_, argument) -> sizeBound argument
         | Kind.FixedBuffer (_, length, _) -> round16 (4 * length)
         | Kind.InlineArray (element, length, _) -> length * sizeBound element
+        | Kind.FarField offset -> round16 (offset + 4)
 
     let private charSetAttributes (charSet : CharSetChoice) : TypeAttributes =
         match charSet with
@@ -483,6 +488,12 @@ module TestLayoutFacts =
                 tb.DefineField ("FixedElementField", elementType, FieldAttributes.Public)
                 |> ignore
 
+                tb.CreateType ()
+            | Kind.FarField offset ->
+                let tb =
+                    md.DefineType (fresh "Far", structAttributes Layout.Explicit CharSetChoice.Ansi, typeof<ValueType>)
+
+                (tb.DefineField ("F", typeof<int>, FieldAttributes.Public)).SetOffset offset
                 tb.CreateType ()
             | Kind.InlineArray (element, length, charSet) ->
                 let elementType = typeOf element
@@ -817,6 +828,41 @@ module TestLayoutFacts =
 
         blittable.GetValueOrDefault (Some true) |> shouldBeGreaterThan 0
         blittable.GetValueOrDefault (Some false) |> shouldBeGreaterThan 0
+
+    /// Value types far larger than any the generator makes, each large by one of the means the size
+    /// bound reads: an `[InlineArray]`'s length, an explicit field offset, and padding between
+    /// fields. `check` fails where the host's size is beyond the bound. A declared `ClassSize` is
+    /// another means, which `PersistedAssemblyBuilder` drops (it writes no ClassLayout row), so the
+    /// `[UnmanagedCallersOnly]` probes of `TestEscapeAnalysis` cover it with Roslyn-compiled structs.
+    [<Test>]
+    let ``Size bounds hold for large value types`` () : unit =
+        let sized =
+            [
+                Kind.InlineArray (Kind.Named typeof<int64>, 1000, CharSetChoice.Ansi)
+                Kind.FarField 50000
+                // Each `long` after a `byte` is aligned past seven bytes of padding.
+                Kind.Struct
+                    {
+                        Layout = Layout.Sequential
+                        CharSet = CharSetChoice.Ansi
+                        Fields =
+                            [ typeof<byte> ; typeof<int64> ]
+                            |> List.replicate 20
+                            |> List.concat
+                            |> List.map (fun t ->
+                                {
+                                    Kind = Kind.Named t
+                                    MarshalAs = None
+                                }
+                            )
+                    }
+            ]
+            |> List.mapi (fun i top ->
+                let host, facts = check $"LayoutFactsLarge%d{i}" top
+                fst host.Sizes, facts.SizeUpperBound
+            )
+
+        sized |> List.map fst |> shouldEqual [ 8000 ; 50004 ; 320 ]
 
     let private enumNames : string list =
         [
