@@ -8944,6 +8944,8 @@ public static unsafe class Natives
     public static extern void HResultTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere"), LCIDConversion(0)]
     public static extern void LocaleTakesGenericOfGone(int locale, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), LCIDConversion(-1)]
+    public static extern void NoLocaleTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
     public static extern void BoolThenGenericOfGone(bool b, Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
@@ -9029,6 +9031,7 @@ public static unsafe class Calls
     public static void LastError() { if (never) Natives.LastErrorTakesGenericOfGone(null); }
     public static void HResult() { if (never) Natives.HResultTakesGenericOfGone(null); }
     public static void Locale() { if (never) Natives.LocaleTakesGenericOfGone(0, null); }
+    public static void NoLocale() { if (never) Natives.NoLocaleTakesGenericOfGone(null); }
     public static void BoolThen() { if (never) Natives.BoolThenGenericOfGone(false, null); }
     public static void CharThen() { if (never) Natives.CharThenGenericOfGone('a', null); }
     public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
@@ -9155,6 +9158,8 @@ public static unsafe class Calls
                 "Client.Calls", "LastError", false
                 "Client.Calls", "HResult", false
                 "Client.Calls", "Locale", false
+                // CoreCLR reads an index of -1 as converting no locale.
+                "Client.Calls", "NoLocale", true
                 "Client.Calls", "BoolThen", false
                 "Client.Calls", "CharThen", false
                 "Client.Calls", "MarshalledThen", false
