@@ -1664,6 +1664,12 @@ and CliValueType =
             /// time so the context-free `EvalStackValue.ofCliType` can flatten without threading
             /// `BaseClassTypes`/`AllConcreteTypes` through every push site.
             _PrimitiveLikeKind : PrimitiveLikeKind option
+            /// Whether `_Declared` is a CLR enum, flattened or not. Arrives as
+            /// `DeclaredTypeFacts.IsEnum`, and is cached for the same reason `_PrimitiveLikeKind`
+            /// is: the context-free `EvalStackValue.toCliTypeCoerced` must accept the underlying
+            /// primitive into an enum `_PrimitiveLikeKind` leaves wrapped (one over `bool`, `char` or
+            /// a native int), as CIL lets an enum and its underlying type stand for each other.
+            _IsEnum : bool
             /// The alignment CoreCLR stamps on the declared type by name, overriding the one its
             /// fields imply; `None` for every type whose demand is derived, which is almost all of
             /// them. Arrives as `DeclaredTypeFacts.NominalAlignment`, and is cached here for the
@@ -1706,6 +1712,10 @@ and CliValueType =
 
     member this.Declared : ConcreteTypeHandle = this._Declared
     member this.PrimitiveLikeKind : PrimitiveLikeKind option = this._PrimitiveLikeKind
+
+    /// Whether the declared type is a CLR enum, whether or not its storage is flattened
+    /// (`PrimitiveLikeKind`).
+    member this.IsEnum : bool = this._IsEnum
 
     /// Is an enum with this field shape one whose storage PawPrint flattens?
     ///
@@ -3359,6 +3369,7 @@ and CliValueType =
         {
             _Declared = declared
             _PrimitiveLikeKind = CliValueType.ClassifyPrimitiveLike bct allCt declared facts.IsEnum fields
+            _IsEnum = facts.IsEnum
             _NominalAlignment = facts.NominalAlignment
             _InstanceSize = size
             _Storage = CliValueType.StorageFromFields facts.LayoutKind facts.Layout size.Size fields
@@ -3426,6 +3437,7 @@ and CliValueType =
         {
             _Declared = source._Declared
             _PrimitiveLikeKind = source._PrimitiveLikeKind
+            _IsEnum = source._IsEnum
             _NominalAlignment = source._NominalAlignment
             _InstanceSize =
                 {
@@ -4835,6 +4847,7 @@ and CliValueType =
         {
             _Declared = cvt._Declared
             _PrimitiveLikeKind = cvt._PrimitiveLikeKind
+            _IsEnum = cvt._IsEnum
             _NominalAlignment = cvt._NominalAlignment
             _InstanceSize = cvt._InstanceSize
             LayoutKind = cvt.LayoutKind
@@ -4885,6 +4898,18 @@ and CliValueType =
             failwith
                 $"invariant: primitive-like struct %O{cvt._Declared} must have exactly one instance field at offset 0"
 
+    /// Projects the single instance field of an enum, `value__` at offset 0 (ECMA-335 II.14.3),
+    /// whether or not its storage is flattened. Gated on the enum classification so it cannot
+    /// misfire on user-defined single-field structs.
+    static member EnumValueField (cvt : CliValueType) : CliField =
+        if not cvt._IsEnum then
+            failwith $"CliValueType.EnumValueField: %O{cvt._Declared} is not an enum"
+
+        match CliValueType.FieldStorage "CliValueType.EnumValueField" cvt with
+        | [ x ] when x.Name = "value__" && x.Offset = 0 -> CliConcreteField.ToCliField x
+        | _ ->
+            failwith $"invariant: enum %O{cvt._Declared} must have exactly one instance field, `value__`, at offset 0"
+
     /// Produce a new value type with `target`'s shape (declared type, primitive-like classification,
     /// field layout, declared offsets) but with each field's contents replaced by the result of
     /// `coerceContents targetContents sourceContents`. Fields are paired positionally; name and
@@ -4918,6 +4943,7 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _IsEnum = target._IsEnum
                 _NominalAlignment = target._NominalAlignment
                 _InstanceSize = target._InstanceSize
                 _Storage = CliValueTypeStorage.RawBytes (Array.copy sourceBytes)
@@ -4960,6 +4986,7 @@ and CliValueType =
             {
                 _Declared = target._Declared
                 _PrimitiveLikeKind = target._PrimitiveLikeKind
+                _IsEnum = target._IsEnum
                 _NominalAlignment = target._NominalAlignment
                 _InstanceSize = target._InstanceSize
                 _Storage =
@@ -5034,6 +5061,7 @@ and CliValueType =
                 {
                     _Declared = template._Declared
                     _PrimitiveLikeKind = template._PrimitiveLikeKind
+                    _IsEnum = template._IsEnum
                     _NominalAlignment = template._NominalAlignment
                     _InstanceSize = template._InstanceSize
                     _Storage = CliValueTypeStorage.RawBytes (Array.copy bytes)
@@ -5081,6 +5109,7 @@ and CliValueType =
                     {
                         _Declared = template._Declared
                         _PrimitiveLikeKind = template._PrimitiveLikeKind
+                        _IsEnum = template._IsEnum
                         _NominalAlignment = template._NominalAlignment
                         _InstanceSize = template._InstanceSize
                         _Storage =
