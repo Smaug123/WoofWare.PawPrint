@@ -6,12 +6,12 @@ open System.IO
 /// `vm/corelib.h`: each `DEFINE_FIELD`, by which the VM finds a field to read or write, and each
 /// `DEFINE_FIELD_U`, which checks that a managed field lies where a field of a native object does.
 /// The VM may write any of them where no instruction names it, as `CastCache::Initialize` stores
-/// the cast cache's table in `CastHelpers.s_table`. It is a lower bound on what the VM writes, not
-/// the whole of it: the VM reaches a field through the C++ layout of its class (`vm/object.h`)
-/// whether or not a row checks it, as `ReflectFieldObject::SetKeepAlive` writes
-/// `RuntimeFieldInfoStub.m_keepalive`, for which `corelib.h` has no row. The rows of every supported
-/// runtime at once, from the embedded `VmBoundFields.tsv`, which `TestVmBoundField` holds to each
-/// runtime's `corelib.h`.
+/// the cast cache's table in `CastHelpers.s_table`. It is not the whole of what the VM writes: the
+/// VM reaches an instance field through the C++ layout of its class (`vm/object.h`) whether or not
+/// a row checks it, as `ReflectMethodObject::SetKeepAlive` writes `RuntimeMethodInfoStub.m_keepalive`,
+/// for which `corelib.h` has no row; `VmLaidOutClass` is the classes it lays out so. The rows of
+/// every supported runtime at once, from the embedded `VmBoundFields.tsv`, which `TestVmBoundField`
+/// holds to each runtime's `corelib.h`.
 [<RequireQualifiedAccess>]
 module VmBoundField =
 
