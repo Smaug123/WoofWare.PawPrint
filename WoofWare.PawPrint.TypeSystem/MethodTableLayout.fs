@@ -27,7 +27,9 @@ module MethodTableLayout =
                 caller
                 callee
 
-        ctx, equivalent
+        match equivalent with
+        | Ok equivalent -> ctx, equivalent
+        | Error failure -> failwith (TypeBindingFailure.describe failure)
 
     let private methodConstraintsMatch
         (loggerFactory : ILoggerFactory)
@@ -44,7 +46,9 @@ module MethodTableLayout =
                 impl
                 decl
 
-        ctx, matches
+        match matches with
+        | Ok matches -> ctx, matches
+        | Error failure -> failwith (TypeBindingFailure.describe failure)
 
     let private resolveTypeFromRef
         (loggerFactory : ILoggerFactory)

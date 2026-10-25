@@ -110,7 +110,7 @@ module IlMachineStateExecution =
 
         match result with
         | VirtualImplementation.Found implementation ->
-            let typeSystem, implementation, _ =
+            let typeSystem, implementationResult =
                 MethodConcretisation.concretizeMethodWithAllGenerics
                     loggerFactory
                     state.DotnetRuntimeDirs
@@ -119,6 +119,8 @@ module IlMachineStateExecution =
                     implementation.Definition
                     implementation.MethodGenerics
                     typeSystem
+
+            let implementation, _ = BindingStop.bound implementationResult
 
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Runs implementation
         | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, ResolvedVirtualCall.NotOverridden

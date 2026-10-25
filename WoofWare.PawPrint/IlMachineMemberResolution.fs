@@ -226,7 +226,7 @@ module IlMachineMemberResolution =
           TypeDefn ImmutableArray
         =
         // TODO: do we need to initialise the parent class here?
-        let typeSystem, declaringAssembly, member', targetTypeGenerics =
+        let typeSystem, binding =
             MemberReferenceInstantiation.resolveMemberWithGenerics
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -236,6 +236,11 @@ module IlMachineMemberResolution =
                 methodGenerics
                 m
                 state.TypeSystem
+
+        let declaringAssembly, member', targetTypeGenerics =
+            match binding with
+            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
+            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
 
         state.WithTypeSystem typeSystem, declaringAssembly, member', targetTypeGenerics
 
@@ -256,7 +261,7 @@ module IlMachineMemberResolution =
         =
         let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
-        let typeSystem, declaringAssembly, member', targetTypeGenerics =
+        let typeSystem, binding =
             MemberReferenceInstantiation.resolveMember
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -266,6 +271,11 @@ module IlMachineMemberResolution =
                 executing.Generics
                 m
                 state.TypeSystem
+
+        let declaringAssembly, member', targetTypeGenerics =
+            match binding with
+            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
+            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
 
         let state = state.WithTypeSystem typeSystem
 

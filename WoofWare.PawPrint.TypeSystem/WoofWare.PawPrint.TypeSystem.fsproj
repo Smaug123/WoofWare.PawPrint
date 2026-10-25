@@ -21,6 +21,7 @@
         <!-- Domain keeps this helper internal; compiling the one source into each assembly keeps a
              single definition without making it Domain API. -->
         <Compile Include="..\WoofWare.PawPrint.Domain\ImmutableArray.fs" Link="ImmutableArray.fs" />
+        <Compile Include="BindingStop.fs" />
         <Compile Include="TypeConcretisation.fs" />
         <Compile Include="VtableSlot.fs" />
         <Compile Include="MethodTableLayout.fs" />

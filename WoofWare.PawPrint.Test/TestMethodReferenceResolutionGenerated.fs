@@ -965,6 +965,8 @@ module TestMethodReferenceResolutionGenerated =
                         ImmutableArray.Empty
                         ty
 
+                let handle = BindingResult.value handle
+
                 acc.Add handle
                 ctx, acc
             )
@@ -981,7 +983,10 @@ module TestMethodReferenceResolutionGenerated =
                     arguments
             | _ -> arguments
 
-        Some (TypeConcretization.concretizeSubstitution ctx loader closed)
+        Some (
+            TypeConcretization.concretizeSubstitution ctx loader closed
+            |> fun (closed, ctx) -> BindingResult.value closed, ctx
+        )
 
     let private askReflection (m : Module) (token : int) : Oracle =
         try

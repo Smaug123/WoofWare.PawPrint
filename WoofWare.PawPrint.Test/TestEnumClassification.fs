@@ -213,6 +213,8 @@ module TestEnumClassification =
                     ImmutableArray.Empty
                     (TypeDefn.PrimitiveType prim)
 
+            let handle = BindingResult.value handle
+
             handle |> shouldEqual (handleFor ti)
 
         for _, prim in flattenable do

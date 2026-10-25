@@ -124,7 +124,7 @@ module ExecutionConcretization =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        let typeSystem, method, declaringTypeHandle =
+        let typeSystem, methodResult =
             MethodConcretisation.concretizeMethodWithAllGenerics
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -133,6 +133,8 @@ module ExecutionConcretization =
                 methodToCall
                 methodGenerics
                 state.TypeSystem
+
+        let method, declaringTypeHandle = BindingStop.bound methodResult
 
         state.WithTypeSystem typeSystem, method, declaringTypeHandle
 
@@ -150,7 +152,7 @@ module ExecutionConcretization =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        let typeSystem, method, declaringTypeHandle =
+        let typeSystem, methodResult =
             MethodConcretisation.concretizeMethodWithTypeGenerics
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -161,6 +163,8 @@ module ExecutionConcretization =
                 callingAssemblyFullName
                 currentExecutingMethodGenerics
                 state.TypeSystem
+
+        let method, declaringTypeHandle = BindingStop.bound methodResult
 
         state.WithTypeSystem typeSystem, method, declaringTypeHandle
 
@@ -197,6 +201,8 @@ module ExecutionConcretization =
                         ImmutableArray.Empty // No type generics for the concretization context
                         ImmutableArray.Empty // No method generics for the concretization context
                         args.[i]
+
+                let handle = BindingStop.bound handle
 
                 handles.Add handle
 
@@ -357,6 +363,8 @@ module ExecutionConcretization =
                 contextTypeGenerics
                 contextMethodGenerics
                 declaringTypeDefn
+
+        let declaringHandle = BindingStop.bound declaringHandle
 
         let state =
             { state with
