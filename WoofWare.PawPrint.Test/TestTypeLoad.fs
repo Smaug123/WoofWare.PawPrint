@@ -26,7 +26,8 @@ module TestTypeLoad =
         | Loads
         | Fails of exceptionName : string
 
-    /// The provider. Types whose names begin `Gone` it declares only where `complete`.
+    /// The provider. Types whose names begin `Gone` it declares only where `complete`, and only
+    /// there does `LosesIGone` implement `IGone`.
     let private providerSource (complete : bool) : string =
         let gone =
             """
@@ -45,6 +46,10 @@ public class KeptGeneric<T> { }
 public interface IKeptGeneric<T> { }
 public struct KeptGenericStruct<T> { }
 """
+        + (if complete then
+               "public class LosesIGone : IGone { }\n"
+           else
+               "public class LosesIGone { }\n")
         + (if complete then gone else "")
 
     /// An assembly the client is compiled against, which is not there when it is loaded.
@@ -369,6 +374,10 @@ public class ConstrainedToIGoneBase<T> where T : Provider.IGone { }
 public class DerivesConstrainedToIGoneBase<X> : ConstrainedToIGoneBase<X> where X : Optional.IThing, Provider.IGone { }
 public interface InterfaceExtendingGone<U> : Provider.IGone { }
 public class SecondInterfaceOverGoneBase<T> where T : Provider.IKept, InterfaceExtendingGone<Provider.Kept> { }
+public unsafe class ConstrainedToInterfaceOfModifiedGone<T> where T : Provider.IKeptGeneric<delegate* unmanaged[Cdecl]<Provider.GoneStruct>[]> { }
+public unsafe class ConstrainedToInterfaceOfModifiedKept<T> where T : Provider.IKeptGeneric<delegate* unmanaged[Cdecl]<Provider.KeptStruct>[]> { }
+public unsafe class ConstrainedToInterfaceOfInParameterGone<T> where T : Provider.IKeptGeneric<delegate*<in Provider.GoneStruct, void>[]> { }
+public unsafe class ConstrainedToInterfaceOfInParameterKept<T> where T : Provider.IKeptGeneric<delegate*<in Provider.KeptStruct, void>[]> { }
 """
 
     let private curatedConstrainedNames : string list =
@@ -405,6 +414,10 @@ public class SecondInterfaceOverGoneBase<T> where T : Provider.IKept, InterfaceE
             "InterfaceOfGoneAfterVariable<,>"
             "DerivesConstrainedToIGoneBase<>"
             "SecondInterfaceOverGoneBase<>"
+            "ConstrainedToInterfaceOfModifiedGone<>"
+            "ConstrainedToInterfaceOfModifiedKept<>"
+            "ConstrainedToInterfaceOfInParameterGone<>"
+            "ConstrainedToInterfaceOfInParameterKept<>"
         ]
 
     [<Test>]
@@ -912,6 +925,86 @@ public class SecondInterfaceOverGoneBase<T> where T : Provider.IKept, InterfaceE
             TypeDefn.FromReference (client.TypeRefs.[handle], SignatureTypeKind.Unknown)
         | MetadataToken.TypeSpecification handle -> client.TypeSpecs.[handle].Signature
         | other -> failwith $"Tokens.Get%d{index} loads the token of %O{other}, which is not a type"
+
+    /// Constructed types a `typeof` spells, whose generic arguments CoreCLR loads each in full,
+    /// constraints and all, before the next (`SigPointer::GetTypeHandleThrowing`). The argument's
+    /// constraint names `IGone`, which `LosesIGone`, as it is loaded, does not implement, so the
+    /// argument's own dependencies do not reach it.
+    [<Test>]
+    let ``a generic argument a type token spells is loaded in full before the next`` () : unit =
+        let declarations =
+            """
+public class Pair<A, B> { }
+public class ConstrainedToIGone<T> where T : Provider.IGone { }
+"""
+
+        let names =
+            [
+                "Pair<ConstrainedToIGone<Provider.LosesIGone>, Optional.Thing>"
+                "Pair<Optional.Thing, ConstrainedToIGone<Provider.LosesIGone>>"
+                "ConstrainedToIGone<Provider.LosesIGone>[]"
+                "Pair<Provider.Kept, ConstrainedToIGone<Provider.LosesIGone>>"
+            ]
+
+        let client = compileClient declarations names
+        let host = hostOutcomes client names
+
+        let pawPrint =
+            missesOf hostCoreLib.Value client (fun client -> List.init names.Length (spelledBy client)) false
+            |> List.map (fun miss ->
+                match miss with
+                | None -> Outcome.Loads
+                | Some (TypeLoad.LoadMiss.TypeAbsent _) -> Outcome.Fails "TypeLoadException"
+                | Some (TypeLoad.LoadMiss.AssemblyUnavailable _) -> Outcome.Fails "FileNotFoundException"
+                | Some (TypeLoad.LoadMiss.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
+            )
+
+        let disagreements =
+            List.zip3 names host pawPrint
+            |> List.choose (fun (name, host, pawPrint) ->
+                if host = pawPrint then
+                    None
+                else
+                    Some $"%s{name}: the host %A{host}, PawPrint %A{pawPrint}"
+            )
+
+        if not disagreements.IsEmpty then
+            failwith (String.concat Environment.NewLine disagreements)
+
+        host
+        |> shouldEqual
+            [
+                Outcome.Fails "TypeLoadException"
+                Outcome.Fails "FileNotFoundException"
+                Outcome.Fails "TypeLoadException"
+                Outcome.Fails "TypeLoadException"
+            ]
+
+    /// CoreCLR misreads a multidimensional array in the signature of a type parameter's first
+    /// constraint (`DoAccessibilityCheckForConstraintSignature` reads past the element type before
+    /// walking it), which `TypeLoad` refuses to follow.
+    [<Test>]
+    let ``a multidimensional array in a constraint's signature is unmodelled`` () : unit =
+        let declarations =
+            "public class ConstrainedToInterfaceOfGoneMatrix<T> where T : Provider.IKeptGeneric<Provider.Gone[,]> { }"
+
+        let names = [ "ConstrainedToInterfaceOfGoneMatrix<>" ]
+        let client = compileClient declarations names
+
+        hostOutcomes client names
+        |> shouldEqual [ Outcome.Fails "BadImageFormatException" ]
+
+        let spellingsOf (client : DumpedAssembly) =
+            [
+                TypeDefn.FromDefinition (
+                    client.TypeDefs.[definitionNamed client names.Head].Identity,
+                    SignatureTypeKind.Unknown
+                )
+            ]
+
+        match missesOf hostCoreLib.Value client spellingsOf false with
+        | [ Some (TypeLoad.LoadMiss.Unmodelled _) ] -> ()
+        | other -> failwith $"TypeLoad says %A{other}"
 
     /// Loading types in turn, each from the definitions the loads before it brought, finds what
     /// loading each from nothing finds, whatever the order: a definition a load brings without
