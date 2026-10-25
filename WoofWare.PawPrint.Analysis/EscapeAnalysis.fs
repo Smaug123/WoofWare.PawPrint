@@ -4131,15 +4131,33 @@ module EscapeAnalysis =
                             // JIT compiles it, or, for a static target that code shared between
                             // instantiations names through its type variables, as it runs
                             // (`Delegate_Construct`), where the method's own handlers can catch
-                            // the failure. Either is taken to fail the compilation.
-                            let state, delegateFailure =
+                            // the failure. Either is taken to fail the compilation. Where the JIT
+                            // compiles it, .NET 10's CoreCLR first refuses a target the token names
+                            // that is `[UnmanagedCallersOnly]` (`UnmanagedCallersOnly.refusesDelegateTarget`,
+                            // `ExceptionMaking.unmanagedCallersOnlyDelegateTarget`), and walks no
+                            // signature.
+                            let state, delegateFailures =
                                 match loads.Definite, delegateMade with
-                                | None, Some (made, target) -> shuffleThunkFailure state made target
-                                | _ -> state, None
+                                | None, Some (made, target) ->
+                                    let _, targetMethod = methodOf state target
+
+                                    if
+                                        MethodInfo.isUnmanagedCallersOnly targetMethod
+                                        && UnmanagedCallersOnly.refusesDelegateTarget state.Runtime
+                                    then
+                                        let name, making = ExceptionMaking.unmanagedCallersOnlyDelegateTarget
+                                        let thrown, run = runtimeRaises state name making
+
+                                        state,
+                                        OutsideBodyFact.Raises thrown
+                                        :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
+                                    else
+                                        let state, failure = shuffleThunkFailure state made target
+                                        state, raisesOf failure
+                                | _ -> state, []
 
                             let possible =
-                                loads.Possible @ Option.toList delegateFailure
-                                |> List.collect (Some >> raisesOf)
+                                (loads.Possible |> List.collect (Some >> raisesOf)) @ delegateFailures
 
                             let inlined =
                                 match operand with

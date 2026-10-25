@@ -102,6 +102,12 @@ module internal ExceptionMaking =
         | SignatureRefusal.VariableArguments ->
             "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
 
+    /// The exception CoreCLR raises refusing to make a delegate over an `[UnmanagedCallersOnly]`
+    /// method, and how it makes it: `COMDelegate::GetDelegateCtor` throws `NotSupportedException`
+    /// by `COMPlusThrow` with the resource name `NotSupported_UnmanagedCallersOnlyTarget`.
+    let unmanagedCallersOnlyDelegateTarget : string * ExceptionMaking =
+        "System.NotSupportedException", ExceptionMaking.ResourceMessage
+
     /// How CoreCLR makes the exception of a fault one of its own operations raises: the CPU reports
     /// each, and the VM makes the exception (`EEException::CreateThrowable`).
     let ofPrimitiveFault (fault : PrimitiveFault) : ExceptionMaking =
