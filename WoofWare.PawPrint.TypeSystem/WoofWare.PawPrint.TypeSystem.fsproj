@@ -32,6 +32,7 @@
         <Compile Include="CodeSharing.fs" />
         <Compile Include="JitTypeComparison.fs" />
         <Compile Include="GcReferences.fs" />
+        <Compile Include="LayoutFacts.fs" />
         <Compile Include="MemberReferenceInstantiation.fs" />
         <Compile Include="MethodConcretisation.fs" />
         <Compile Include="TypeAssignability.fs" />
