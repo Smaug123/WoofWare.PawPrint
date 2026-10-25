@@ -72,6 +72,11 @@ module internal UnmodelledImage =
             FacadeNullable : TypeSpecificationHandle
             /// `[System.Runtime]System.Object::ToString()`.
             FacadeToString : MemberReferenceHandle
+            /// `GENERICINST class System.Collections.Generic.List`1<class System.Collections.Generic.List`1>`,
+            /// whose argument names the generic definition without instantiating it.
+            ListOfBareList : TypeSpecificationHandle
+            /// `List`1<List`1>::Clear()`, whose parent is <c>ListOfBareList</c>.
+            ListOfBareListClear : MemberReferenceHandle
         }
 
     let emit () : byte[] * Shapes =
@@ -339,6 +344,24 @@ module internal UnmodelledImage =
                 int32Field
             )
 
+        let listOfBareList =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .TypeSpecificationSignature()
+                .GenericInstantiation(TypeReferenceHandle.op_Implicit list, 1, false)
+                .AddArgument()
+                .Type (TypeReferenceHandle.op_Implicit list, false)
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+
+        let listOfBareListClear =
+            metadata.AddMemberReference (
+                TypeSpecificationHandle.op_Implicit listOfBareList,
+                metadata.GetOrAddString "Clear",
+                instanceVoidSignature
+            )
+
         let moduleParent =
             metadata.AddMemberReference (
                 ModuleReferenceHandle.op_Implicit otherModule,
@@ -424,6 +447,8 @@ module internal UnmodelledImage =
             Facaded = facaded
             FacadeNullable = facadeNullable
             FacadeToString = facadeToString
+            ListOfBareList = listOfBareList
+            ListOfBareListClear = listOfBareListClear
         }
 
     /// The emitted image read, CoreLib, and everything needed to resolve against them.
