@@ -184,8 +184,7 @@ module ConstraintSatisfaction =
     /// <c>new()</c>; a byref-like argument without <c>allows ref struct</c>; then each general
     /// constraint in metadata order, which the argument must be castable to
     /// (<c>TypeAssignability</c>, with variance and the array rules, and <c>Nullable</c> not
-    /// unwrapped), except <c>System.Object</c>, which every argument satisfies. A constraint that does
-    /// not bind is the failure.
+    /// unwrapped). A constraint that does not bind is the failure.
     /// </remarks>
     let satisfiesClosed
         (loggerFactory : ILoggerFactory)
@@ -265,10 +264,8 @@ module ConstraintSatisfaction =
                 | state, Error failure -> state, Error failure
                 | state, Ok required ->
 
-                match required with
-                | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, Ok None
-                | _ ->
-
+                // CoreCLR skips a `System.Object` constraint, which every closed argument can be
+                // cast to anyway.
                 match
                     TypeAssignability.isConcreteTypeAssignableTo
                         loggerFactory
