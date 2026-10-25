@@ -91,7 +91,8 @@ module TypeOperand =
     /// <paramref name="spellingAssembly"/>, as <see cref="refusal"/> describes, or <c>None</c>: a
     /// byref, <c>ELEMENT_TYPE_VOID</c>, or a type <see cref="ofDefinition"/> refuses, however it is
     /// named (a TypeSpec of <c>valuetype System.Void</c> included). Custom modifiers do not change
-    /// the type a signature names.
+    /// the type a signature names, nor does <c>pinned</c>, which CoreCLR strips from a TypeSpec too
+    /// (measured: <c>castclass</c> of <c>pinned int32&amp;</c> is refused).
     /// </summary>
     /// <remarks>
     /// <c>resolveToken</c> refuses the type only once it has loaded it, so a type reference the
@@ -110,6 +111,7 @@ module TypeOperand =
         | TypeDefn.Byref _ -> Some TypeOperandRefusal.Byref
         | TypeDefn.Void -> Some TypeOperandRefusal.Void
         | TypeDefn.Modified modified -> ofSpelling baseClassTypes assemblies spellingAssembly modified.Unmodified
+        | TypeDefn.Pinned element -> ofSpelling baseClassTypes assemblies spellingAssembly element
         | TypeDefn.FromDefinition (identity, _) -> ofDefinition baseClassTypes identity
         | TypeDefn.FromReference (typeRef, _) ->
             match LoadedTypeResolution.resolveTypeRef assemblies spellingAssembly ImmutableArray.Empty typeRef with
@@ -123,7 +125,6 @@ module TypeOperand =
         | TypeDefn.Array _
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
         | TypeDefn.Pointer _
-        | TypeDefn.Pinned _
         | TypeDefn.FunctionPointer _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _ -> None
