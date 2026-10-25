@@ -267,23 +267,35 @@ module IntrinsicBody =
         || ns = "System.Runtime.Intrinsics"
         || ns.StartsWith ("System.Runtime.Intrinsics.", System.StringComparison.Ordinal)
 
-    /// What the placeholder `method`, a JIT expansion in `assembly`, asks the JIT for.
-    let private expansionOf (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : JitExpansion =
+    /// The capability query `method` is by its name and signature, whatever its IL: a static,
+    /// parameterless `bool` getter `IsSupported` or `IsHardwareAccelerated` on a CoreLib class in a
+    /// hardware-intrinsic namespace that is not generic.
+    let private queryOf (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : JitExpansion option =
         let definition = assembly.Methods.[method]
         let intrinsicClass = intrinsicClassOf assembly method
 
         let declaringType =
             assembly.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
 
-        // A capability query is a static `bool` getter on a non-generic class. On a generic one
-        // (`Vector128<T>.IsSupported`) the JIT answers about `T`, not about the CPU.
-        let isQuery (name : string) =
-            definition.Name = name
+        // On a generic class (`Vector128<T>.IsSupported`) the JIT answers about `T`, not about the
+        // CPU.
+        let isQuery =
+            assembly.ThisAssemblyDefinition.Name.Name = corelib
+            && isHardwareIntrinsicNamespace intrinsicClass.Namespace
             && definition.IsStatic
             && declaringType.Generics.IsEmpty
             && definition.Signature.ParameterTypes.IsEmpty
             && definition.Signature.GenericParameterCount = 0
             && definition.Signature.ReturnType = MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Boolean)
+
+        match definition.Name with
+        | "get_IsSupported" when isQuery -> Some (JitExpansion.IsSupportedQuery intrinsicClass)
+        | "get_IsHardwareAccelerated" when isQuery -> Some (JitExpansion.IsHardwareAcceleratedQuery intrinsicClass)
+        | _ -> None
+
+    /// What the placeholder `method`, a JIT expansion in `assembly`, asks the JIT for.
+    let private expansionOf (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : JitExpansion =
+        let intrinsicClass = intrinsicClassOf assembly method
 
         if
             assembly.ThisAssemblyDefinition.Name.Name <> corelib
@@ -292,12 +304,10 @@ module IntrinsicBody =
             match IntrinsicPrimitive.recognise assembly method with
             | Some primitive -> JitExpansion.Primitive primitive
             | None -> JitExpansion.Unrecognised
-        elif isQuery "get_IsSupported" then
-            JitExpansion.IsSupportedQuery intrinsicClass
-        elif isQuery "get_IsHardwareAccelerated" then
-            JitExpansion.IsHardwareAcceleratedQuery intrinsicClass
         else
-            JitExpansion.HardwareInstruction intrinsicClass
+            match queryOf assembly method with
+            | Some query -> query
+            | None -> JitExpansion.HardwareInstruction intrinsicClass
 
     /// What CoreCLR executes for the intrinsic `method`, defined in `assembly`. Meaningful only for
     /// a method `isIntrinsic` accepts: for any other, CoreCLR runs the IL whatever it contains.
@@ -409,8 +419,13 @@ module IntrinsicBody =
         | JitExpansion.Unrecognised -> SelfCallExpansion.Unrecognised
 
     /// What every call to `method` returns on a CPU `profile` describes, where that is a constant:
-    /// `method` is a capability query whose IL returns its call to itself. `None` for any other
-    /// method.
+    /// `method` is a capability query, CoreCLR's JIT compiles each call of it to the answer
+    /// `profile` gives, and its IL returns that answer too. The IL either returns its call to
+    /// itself, or is CoreLib's stub returning `false` for a class of another architecture than the
+    /// one CoreLib was built for, which the JIT answers false at every call
+    /// (`lookupNamedIntrinsic`, importercalls.cpp), even when it does not optimise. `None` for any
+    /// other method, and for a stub whose class `profile` claims, as no CPU of CoreLib's
+    /// architecture can.
     let constantResult
         (profile : HardwareIntrinsicsProfile)
         (assembly : DumpedAssembly)
@@ -421,13 +436,27 @@ module IntrinsicBody =
             None
         else
 
-        match classify assembly method, assembly.Methods.[method].Body with
+        let definition = assembly.Methods.[method]
+
+        match classify assembly method, definition.Body with
         | IntrinsicBody.JitExpansion expansion, MethodBody.Il body ->
             // `classify` found a call naming the method itself, and this body's only call is this one.
             match expandSelfCall profile expansion, body.Instructions with
             | SelfCallExpansion.Constant value,
               [ IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, MetadataOperand.FromMetadata _), _
                 IlOp.Nullary NullaryIlOp.Ret, _ ] -> Some value
+            | _ -> None
+        | IntrinsicBody.OwnIl, MethodBody.Il body ->
+            // The VM marks a stub intrinsic, so that the JIT answers a call of it, only by the
+            // stub's own `[Intrinsic]`: it honours its class's only on the architecture CoreLib was
+            // built for (`fIsHardwareIntrinsic`, methodtablebuilder.cpp). Without it a call of the
+            // stub is an ordinary call, whose branch the JIT compiles unless it inlines the stub.
+            match queryOf assembly method, body.Instructions with
+            | Some query, [ IlOp.Nullary NullaryIlOp.LdcI4_0, _ ; IlOp.Nullary NullaryIlOp.Ret, _ ] when
+                MethodInfo.isJITIntrinsic (getMemberRefParentType assembly) assembly.Methods definition
+                && expandSelfCall profile query = SelfCallExpansion.Constant false
+                ->
+                Some false
             | _ -> None
         | _ -> None
 
