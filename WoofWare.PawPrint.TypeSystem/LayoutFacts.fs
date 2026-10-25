@@ -325,11 +325,13 @@ module LayoutFacts =
                   | MethodReturnType.Void -> false
                   | MethodReturnType.Returns returned -> occursIn state needle returned
 
-    /// Whether `concrete` is an instantiation of the same definition as one of `outers`, the types
-    /// the walk is already inside, over arguments that contain all of that one's. Then `D<A>`
-    /// reaches `D<B>`, with `B` built from `A`, and reaches by the same route a `D` built from `B`
-    /// and so on without end: CoreCLR refuses such a type. A nesting such as `Wrap<Wrap<int>>`
-    /// reaches a `D` over less, and is not caught.
+    /// Whether `concrete`, `D<B>`, is an instantiation of the same definition as one of `outers`,
+    /// the types the walk is already inside, `D<A>`, such that each argument of `B` contains the
+    /// argument of `A` in the same position. Then `D<A>` reaches `D<B>` with each argument built
+    /// from its predecessor, and reaches by the same route a `D` built from `B` in the same way, and
+    /// so on without end: CoreCLR refuses such a type. A nesting such as `Wrap<Wrap<int>>` reaches a
+    /// `D` over less, and `Pair<Swap<int>, int>` reaching `Pair<int, Swap<int>>` holds its
+    /// arguments only crosswise; neither is caught. The caller has ruled out `D<B>` being `D<A>`.
     let private expands
         (state : TypeSystemState)
         (outers : ConcreteTypeHandle seq)
@@ -341,8 +343,7 @@ module LayoutFacts =
             match AllConcreteTypes.lookup outer state.ConcreteTypes with
             | Some outerType ->
                 outerType.Identity = concrete.Identity
-                && outerType.Generics
-                   |> Seq.forall (fun argument -> concrete.Generics |> Seq.exists (occursIn state argument))
+                && Seq.forall2 (occursIn state) outerType.Generics concrete.Generics
             | None -> failwith $"LayoutFacts: the concrete handle %O{outer} is not registered"
         )
 
