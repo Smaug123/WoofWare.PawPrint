@@ -19,6 +19,13 @@ jobs:
   # `build` and `test-guest` each run once per supported runtime: `PAWPRINT_TEST_RUNTIME` selects
   # the framework the suite runs its guests on (see `FrameworkUnderTest.fs`). The test host itself
   # runs on the oldest supported runtime on every leg.
+  #
+  # Both build and run the test projects in a checkout holding only the test footprint (see
+  # scripts/footprint.py), so a test that reads a file the footprint does not name fails here
+  # rather than passing on a tree that happens to have it. Both skip that on a pull request that
+  # changes nothing in the footprint: the merge then has the same test inputs as main. The skip is
+  # by step, because all-required-checks-complete counts a skipped job as a failure. Neither
+  # builds the whole solution; nuget-pack does.
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -31,16 +38,43 @@ jobs:
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       with:
-        fetch-depth: 0 # so that NerdBank.GitVersioning has access to history
+        fetch-depth: 0 # for NerdBank.GitVersioning's history, and to compare the merge with main
     - name: Install Nix
       uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
       with:
         extra_nix_config: |
           access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-    - name: Restore dependencies
-      run: nix develop --command dotnet restore
+    # The one definition of this step; the other jobs that skip on it refer to it by alias.
+    - &decide-whether-tests-are-affected
+      name: Decide whether this change can affect the tests
+      id: affected
+      env:
+        # The commit a merge-queue group is built on, and empty for any other event.
+        MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+      run: |
+        # A pull request or a merge-queue group runs the tests only if it changes a path they
+        # read, compared with what it is built on. For a pull request that is the first parent of
+        # GitHub's merge. For a group it is the group's base, not its commit's parent: the two
+        # are one commit when the queue squashes a single pull request, but a rebased or batched
+        # group stacks several commits on the base. A push to main runs everything: that run is
+        # what says main passes, which both skips take on trust.
+        case "${{ github.event_name }}" in
+          pull_request) tests="$(python3 scripts/footprint.py affected --merge HEAD)" ;;
+          merge_group) tests="$(python3 scripts/footprint.py affected "$MERGE_GROUP_BASE" HEAD)" ;;
+          *) tests=true ;;
+        esac
+        echo "tests=$tests" >> "$GITHUB_OUTPUT"
+    - name: Check out the test footprint alone
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      run: python3 scripts/footprint.py clone tests "$RUNNER_TEMP/footprint"
     - name: Build
-      run: nix develop --command dotnet build --no-restore --configuration Release
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      working-directory: ${{ runner.temp }}/footprint
+      run: |
+        projects="$(python3 scripts/footprint.py test-projects)"
+        for project in $projects; do
+          nix develop "$GITHUB_WORKSPACE" --command dotnet build "$project" --configuration Release
+        done
     # Tests the Release binaries the step above produced, rather than rebuilding and
     # testing Debug: a bare `dotnet test` did the latter, so this job threw away its own
     # build and then ran the more expensive configuration. Debug costs ~20% more time and
@@ -57,13 +91,19 @@ jobs:
     # divided between runners by measured cost on CI's 4-vCPU hardware, which isn't
     # proportional to what a developer machine measures.
     - name: Test
-      run: nix develop --command dotnet test --no-build --configuration Release --logger "trx;LogFilePrefix=default" --results-directory TestResults
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      working-directory: ${{ runner.temp }}/footprint
+      run: |
+        projects="$(python3 scripts/footprint.py test-projects)"
+        for project in $projects; do
+          nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --logger "trx;LogFilePrefix=default" --results-directory TestResults
+        done
     - name: Upload test results
-      if: ${{ always() }}
+      if: ${{ always() && steps.affected.outputs.tests == 'true' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: test-results-${{ matrix.runtime }}
-        path: TestResults/*.trx
+        path: ${{ runner.temp }}/footprint/TestResults/*.trx
 
   # The guest-running fixtures, which take longer than the rest of the suite put
   # together. They build for themselves rather than downloading `build`'s binaries: the
@@ -89,24 +129,38 @@ jobs:
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       with:
-        fetch-depth: 0 # so that NerdBank.GitVersioning has access to history
+        fetch-depth: 0 # for NerdBank.GitVersioning's history, and to compare the merge with main
     - name: Install Nix
       uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
       with:
         extra_nix_config: |
           access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-    - name: Restore dependencies
-      run: nix develop --command dotnet restore
+    - *decide-whether-tests-are-affected
+    - name: Check out the test footprint alone
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      run: python3 scripts/footprint.py clone tests "$RUNNER_TEMP/footprint"
     - name: Build
-      run: nix develop --command dotnet build --no-restore --configuration Release
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      working-directory: ${{ runner.temp }}/footprint
+      run: |
+        projects="$(python3 scripts/footprint.py test-projects)"
+        for project in $projects; do
+          nix develop "$GITHUB_WORKSPACE" --command dotnet build "$project" --configuration Release
+        done
     - name: Test (guest-running fixtures)
-      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=${{ matrix.category }}" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
+      if: ${{ steps.affected.outputs.tests == 'true' }}
+      working-directory: ${{ runner.temp }}/footprint
+      run: |
+        projects="$(python3 scripts/footprint.py test-projects)"
+        for project in $projects; do
+          nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --filter "TestCategory=${{ matrix.category }}" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
+        done
     - name: Upload test results
-      if: ${{ always() }}
+      if: ${{ always() && steps.affected.outputs.tests == 'true' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: test-results-${{ matrix.category }}-${{ matrix.runtime }}
-        path: TestResults/*.trx
+        path: ${{ runner.temp }}/footprint/TestResults/*.trx
 
   build-nix:
     runs-on: ubuntu-latest
@@ -186,6 +240,30 @@ jobs:
             exit 0
           fi
           exit "$status"
+
+  # Each package's pathFilters and the test footprint are generated from what the projects say
+  # they read (scripts/footprint.py). `check` fails unless the committed ones are what the projects
+  # say now. `verify packages` packs each package from a checkout of its footprint alone and
+  # requires the result to be byte-identical to the whole tree's, which is what catches a read
+  # the projects do not declare. It is skipped whenever the tests are, which is sound because the
+  # script refuses to generate a package footprint that the test footprint does not cover.
+  check-footprints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # for NerdBank.GitVersioning's history, and to compare the merge with main
+      - name: Install Nix
+        uses: cachix/install-nix-action@08dcb3a5e62fa31e2da3d490afc4176ef55ecd72 # v30
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+      - name: Check the footprints are the ones the projects describe
+        run: nix develop --command python3 scripts/footprint.py check
+      - *decide-whether-tests-are-affected
+      - name: Pack each package from its footprint alone
+        if: ${{ steps.affected.outputs.tests == 'true' }}
+        run: nix develop --command python3 scripts/footprint.py verify packages
 
   flake-check:
     name: Check flake
@@ -352,7 +430,7 @@ jobs:
 
   all-required-checks-complete:
     if: ${{ always() }}
-    needs: [check-dotnet-format, check-nix-format, check-docstring-attachment, build, test-guest, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
+    needs: [check-dotnet-format, check-nix-format, check-docstring-attachment, check-footprints, build, test-guest, build-nix, flake-check, nuget-pack, expected-pack, github-release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - uses: G-Research/common-actions/check-required-lite@2b7dc49cb14f3344fbe6019c14a31165e258c059

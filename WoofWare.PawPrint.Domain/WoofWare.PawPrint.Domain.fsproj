@@ -118,6 +118,11 @@ else
 ]]></Code>
         </Task>
     </UsingTask>
+    <ItemGroup>
+        <!-- PackReadmeWithoutLogo reads the repository's README by path, which evaluating this
+             project does not show, so it is declared here for scripts/footprint.py. -->
+        <FootprintInput Include="..\README.md" />
+    </ItemGroup>
     <Target Name="PackReadmeWithoutLogo" BeforeTargets="_GetPackageFiles">
         <PropertyGroup>
             <!-- IntermediateOutputPath is relative to the project by default but absolute under

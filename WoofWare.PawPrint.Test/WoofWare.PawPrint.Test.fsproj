@@ -538,6 +538,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- What tests read from the repository at run time, which evaluating this project does not
+         show. scripts/footprint.py counts these into the test footprint, and CI runs the suite in a
+         checkout holding only that footprint, so a read missing from here fails there. -->
+    <!-- TestCiSelectsEveryExplicitFixture reads the categories the workflow's runners select. -->
+    <FootprintInput Include="..\.github\workflows\ci.yaml" />
+    <!-- TestPublishedXmlDocumentation reads the solution and every project it lists, and every
+         test that reads the repository finds its root by finding the solution. -->
+    <FootprintInput Include="..\WoofWare.PawPrint.slnx;..\*\*.fsproj;..\*\*.csproj" />
+    <!-- TestFSharpPureCases builds this project. -->
+    <FootprintInput Include="..\WoofWare.PawPrint.Test.FSharpPureCases" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../WoofWare.PawPrint/WoofWare.PawPrint.fsproj"/>
     <ProjectReference Include="../WoofWare.PawPrint.Analysis/WoofWare.PawPrint.Analysis.fsproj"/>
     <ProjectReference Include="../WoofWare.PawPrint.Logging/WoofWare.PawPrint.Logging.fsproj"/>
