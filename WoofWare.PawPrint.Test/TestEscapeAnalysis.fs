@@ -10885,20 +10885,22 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// A client compiled against one version of a provider, run against another lacking one of its
-    /// types and without the assembly `Optional`, naming generic definitions whose type parameters'
-    /// constraints name that type or that assembly. CoreCLR's full load of a type loads its type
-    /// parameters' constraints (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method
-    /// names, fails to compile it, past the method's own `catch`, even in code shared between
-    /// instantiations. The host's CoreCLR, running each method against the same assemblies, says
-    /// which fail.
+    /// A client compiled against one version of a provider, run against another lacking two types
+    /// and without the assembly `Optional`, naming types whose type parameters' constraints, or whose
+    /// generic methods' constraints, name those types or that assembly. CoreCLR's full load of a type
+    /// loads both (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method names, fails to
+    /// compile it, past the method's own `catch`, even in code shared between instantiations. The
+    /// host's CoreCLR, running each method against the same assemblies, says which fail.
     [<Test>]
-    let ``loading a generic type loads its type parameters' constraints`` () : unit =
+    let ``loading a type loads its type parameters' and its generic methods' constraints`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let provider (complete : bool) : string =
             "namespace Provider; public class Kept { } public interface IKeptGeneric<T> { }"
-            + (if complete then " public class Gone { }" else "")
+            + (if complete then
+                   " public class Gone { } public interface IGone { }"
+               else
+                   "")
 
         let optional = "namespace Optional; public class Thing { }"
 
@@ -10910,12 +10912,16 @@ public class ConstrainedToGone<T> where T : Provider.Gone { }
 public class ConstrainedToInterfaceOfGone<T> where T : Provider.IKeptGeneric<Provider.Gone> { }
 public class ConstrainedToMissing<T> where T : Optional.Thing { }
 public class ConstrainedToKept<T> where T : Provider.Kept { }
+public class HasGoneMethod { public static int Fine() => 1; public static void M<U>() where U : Provider.Gone { } }
+public class HasGoneMethodGeneric<T> { public static void M<U>() where U : Provider.IGone { } }
+public class HasMissingMethod { public static int Fine() => 1; public static void M<U>() where U : Optional.Thing { } }
+public class HasKeptMethod { public static int Fine() => 1; public static void M<U>() where U : Provider.Kept { } }
 
 public static class Shared
 {
     public static string OverTypeArgument<T>()
     {
-        try { return typeof(ConstrainedToInterfaceOfGone<>).Name; }
+        try { return typeof(HasGoneMethodGeneric<T>).Name; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
 }
@@ -10940,6 +10946,21 @@ public static class Members
     public static string TokenOfConstrainedToKept()
     {
         try { typeof(ConstrainedToKept<>).ToString(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasGoneMethod()
+    {
+        try { HasGoneMethod.Fine(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasMissingMethod()
+    {
+        try { HasMissingMethod.Fine(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasKeptMethod()
+    {
+        try { HasKeptMethod.Fine(); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
     public static string SharedOverTypeArgument() => Shared.OverTypeArgument<string>();
@@ -10971,8 +10992,13 @@ public static class Members
                 "TokenOfConstrainedToInterfaceOfGone", CallOutcome.Escapes typeLoad
                 "TokenOfConstrainedToMissing", CallOutcome.Escapes fileNotFound
                 "TokenOfConstrainedToKept", CallOutcome.Runs
-                // Code shared between instantiations loads the type a token names when the JIT
-                // compiles it, as unshared code does.
+                // The owner of a method a call names, loaded in full, with its generic methods'
+                // constraints.
+                "CallOnHasGoneMethod", CallOutcome.Escapes typeLoad
+                "CallOnHasMissingMethod", CallOutcome.Escapes fileNotFound
+                "CallOnHasKeptMethod", CallOutcome.Runs
+                // Code shared between instantiations loads a type a token names over its type
+                // variables, and so that type's generic definition, when the JIT compiles it.
                 "SharedOverTypeArgument", CallOutcome.Escapes typeLoad
             ]
 
