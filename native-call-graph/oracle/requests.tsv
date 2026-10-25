@@ -1,6 +1,10 @@
+cunit.c:NotVla	cunit.c	NotVla
+cunit.c:Vla	cunit.c	Vla
 elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
 probes.cpp:Allocate	probes.cpp	Allocate
+probes.cpp:AllocateCleanup	probes.cpp	AllocateCleanup
 probes.cpp:Box::Get	probes.cpp	Box::Get
+probes.cpp:ConstexprInit	probes.cpp	ConstexprInit
 probes.cpp:Construct	probes.cpp	Construct
 probes.cpp:Convert	probes.cpp	Convert
 probes.cpp:Declared	probes.cpp	Declared
@@ -13,12 +17,15 @@ probes.cpp:Diamond	probes.cpp	Diamond
 probes.cpp:Enums	probes.cpp	Enums
 probes.cpp:FunctionPointer	probes.cpp	FunctionPointer
 probes.cpp:Generic	probes.cpp	Generic
+probes.cpp:GenericLambda	probes.cpp	GenericLambda
 probes.cpp:Holds::Holds	probes.cpp	Holds::Holds
 probes.cpp:Lambda	probes.cpp	Lambda
+probes.cpp:LambdaDefault	probes.cpp	LambdaDefault
 probes.cpp:Leaf::~Leaf	probes.cpp	Leaf::~Leaf
 probes.cpp:Macros	probes.cpp	Macros
 probes.cpp:MemberPointer	probes.cpp	MemberPointer
 probes.cpp:NeverInstantiated	probes.cpp	NeverInstantiated
+probes.cpp:NonVirtualDiamond	probes.cpp	NonVirtualDiamond
 probes.cpp:Owner::~Owner	probes.cpp	Owner::~Owner
 probes.cpp:Pasting	probes.cpp	Pasting
 probes.cpp:Pure	probes.cpp	Pure

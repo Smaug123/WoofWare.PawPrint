@@ -1,9 +1,13 @@
 # What generate.py writes for this program, less every USR: the rows by their first field, as
 # generate.py's header describes them, with each routine's USR, a call's routine's USR and its
 # callee's USR left out.
+routine	cunit.c:NotVla	NotVla	int (void)	cunit.c:7
+routine	cunit.c:Vla	Vla	int (int)	cunit.c:3
 undefined	elsewhere.cpp:Diamond
 routine	probes.cpp:Allocate	Allocate	void ()	probes.cpp:85
+routine	probes.cpp:AllocateCleanup	AllocateCleanup	void ()	probes.cpp:202
 routine	probes.cpp:Box::Get	Box<int>::Get	void ()	probes.cpp:196
+routine	probes.cpp:ConstexprInit	ConstexprInit	void ()	probes.cpp:231
 routine	probes.cpp:Construct	M::Construct	void ()	probes.cpp:46
 routine	probes.cpp:Convert	Convert	int (Converts)	probes.cpp:178
 undefined	probes.cpp:Declared
@@ -17,12 +21,15 @@ routine	probes.cpp:Enums	Enums	void ()	probes.cpp:106
 routine	probes.cpp:FunctionPointer	FunctionPointer	void (void (*)())	probes.cpp:20
 routine	probes.cpp:Generic	Generic<A>	void (A *)	probes.cpp:124
 routine	probes.cpp:Generic	Generic<B>	void (B *)	probes.cpp:124
+routine	probes.cpp:GenericLambda	GenericLambda	void (A *)	probes.cpp:222
 routine	probes.cpp:Holds::Holds	Holds::Holds	void ()	probes.cpp:186
 routine	probes.cpp:Lambda	Lambda	void ()	probes.cpp:157
+routine	probes.cpp:LambdaDefault	LambdaDefault	void ()	probes.cpp:244
 routine	probes.cpp:Leaf::~Leaf	Leaf::~Leaf	void () noexcept	probes.cpp:192
 routine	probes.cpp:Macros	Macros	void ()	probes.cpp:97
 routine	probes.cpp:MemberPointer	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94
 uninstantiated	probes.cpp:NeverInstantiated
+routine	probes.cpp:NonVirtualDiamond	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:215
 routine	probes.cpp:Owner::~Owner	Owner::~Owner	void () noexcept	probes.cpp:82
 routine	probes.cpp:Pasting	Pasting	void ()	probes.cpp:144
 routine	probes.cpp:Pure	Pure	void (Abstract *, Interface *)	probes.cpp:61
@@ -36,9 +43,16 @@ routine	probes.cpp:Unevaluated2	Unevaluated2	void (int)	probes.cpp:166
 routine	probes.cpp:WithDefault::WithDefault	WithDefault::WithDefault	void ()	probes.cpp:138
 undefined	probes.cpp:rived::Use
 call	Allocate	void ()	probes.cpp:87	-	construct	Made::Made	void (int)	-
+call	Allocate	void ()	probes.cpp:87	-	delete	operator delete	void (void *, unsigned long) noexcept	-
 call	Allocate	void ()	probes.cpp:87	-	new	operator new	void *(unsigned long)	-
 call	Allocate	void ()	probes.cpp:88	-	delete	operator delete	void (void *, unsigned long) noexcept	-
+call	AllocateCleanup	void ()	probes.cpp:204	-	construct	MayThrow::MayThrow	void ()	-
+call	AllocateCleanup	void ()	probes.cpp:204	-	delete	operator delete	void (void *, unsigned long) noexcept	-
+call	AllocateCleanup	void ()	probes.cpp:204	-	new	operator new	void *(unsigned long)	-
+call	AllocateCleanup	void ()	probes.cpp:205	-	construct	NoThrow::NoThrow	void () noexcept	-
+call	AllocateCleanup	void ()	probes.cpp:205	-	new	operator new	void *(unsigned long)	-
 call	Box<int>::Get	void ()	probes.cpp:196	-	direct	Helper	void ()	-
+call	ConstexprInit	void ()	probes.cpp:236	-	direct	Constant	int ()	-
 call	Convert	int (Converts)	probes.cpp:178	-	direct	Converts::operator int	int () const	-
 call	Defaults	void ()	probes.cpp:136	-	direct	Seed	int ()	-
 call	Defaults	void ()	probes.cpp:136	-	direct	TakeDefault	void (int)	-
@@ -69,11 +83,18 @@ call	FunctionPointer	void (void (*)())	probes.cpp:22	-	indirect	-	void ()	-
 call	FunctionPointer	void (void (*)())	probes.cpp:23	-	direct	Run	void ()	-
 call	Generic<A>	void (A *)	probes.cpp:124	-	direct	A::F	void ()	-
 call	Generic<B>	void (B *)	probes.cpp:124	-	direct	B::F	void ()	-
+call	GenericLambda	void (A *)	probes.cpp:224	-	direct	Helper	void ()	-
+call	GenericLambda	void (A *)	probes.cpp:225	-	direct	GenericLambda(A *)::(anonymous class)::operator()<int>	void (int) const	-
+call	GenericLambda	void (A *)	probes.cpp:226	-	direct	A::F	void ()	-
+call	GenericLambda	void (A *)	probes.cpp:227	-	direct	GenericLambda(A *)::(anonymous class)::operator()<A *>	void (A *) const	-
 call	Holds::Holds	void ()	probes.cpp:186	-	construct	Guard::Guard	void ()	-
 call	Holds::Holds	void ()	probes.cpp:186	-	destruct	Guard::~Guard	void () noexcept	-
 call	Holds::Holds	void ()	probes.cpp:186	-	direct	Helper	void ()	-
 call	Lambda	void ()	probes.cpp:159	-	direct	Helper	void ()	-
 call	Lambda	void ()	probes.cpp:160	-	direct	Lambda()::(anonymous class)::operator()	void () const	-
+call	LambdaDefault	void ()	probes.cpp:247	-	direct	LambdaDefault()::(anonymous class)::operator()	void (int) const	-
+call	LambdaDefault	void ()	probes.cpp:248	-	direct	LambdaDefault()::(anonymous class)::operator()	void (int) const	-
+call	LambdaDefault	void ()	probes.cpp:248	-	direct	Seed	int ()	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	Mid::~Mid	void () noexcept	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	VB::~VB	void () noexcept	-
 call	M::Construct	void ()	probes.cpp:48	-	construct	Made::Made	void (int)	-
@@ -85,6 +106,8 @@ call	Macros	void ()	probes.cpp:102	probes.h:CALL_HELPER	direct	Helper	void ()	-
 call	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94	-	indirect	-	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:32	-	direct	A::F	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:33	-	direct	N::A::F	void ()	-
+call	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:217	-	virtual	NB::V	void ()	-
+call	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:218	-	virtual	NR::V	void ()	-
 call	Owner::~Owner	void () noexcept	probes.cpp:82	-	destruct	Guard::~Guard	void () noexcept	-
 call	Owner::~Owner	void () noexcept	probes.cpp:82	-	direct	Helper	void ()	-
 call	Pasting	void ()	probes.cpp:144	probes.h:PASTE	direct	CallPasted	void ()	-
@@ -95,4 +118,5 @@ call	Shadowing	void (A *, B *)	probes.cpp:14	-	direct	B::F	void ()	-
 call	TakeOwned	void (Owned)	probes.cpp:182	-	destruct	Owned::~Owned	void () noexcept	-
 call	Throws	void ()	probes.cpp:133	-	construct	Made::Made	void (int)	-
 call	Throws	void ()	probes.cpp:133	-	throw	Made	-	-
+call	Vla	int (int)	cunit.c:5	-	direct	Effect	int (void)	-
 call	WithDefault::WithDefault	void ()	probes.cpp:138	-	direct	Seed	int ()	-

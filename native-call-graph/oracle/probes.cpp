@@ -195,3 +195,55 @@ Leaf::~Leaf() { }
 template <class T> struct Box { void Get(); };
 template <class T> void Box<T>::Get() { Helper(); }
 void UseBox(Box<int>* b) { b->Get(); }
+
+// A new whose initializer can throw, which frees its memory if it does, and one whose cannot.
+struct MayThrow { MayThrow(); };
+struct NoThrow { NoThrow() noexcept; };
+void AllocateCleanup()
+{
+    MayThrow* m = new MayThrow;
+    NoThrow* n = new NoThrow;
+    (void)m;
+    (void)n;
+}
+
+// A non-virtual diamond, whose two subobjects of the base each keep their own overrider.
+struct NB { virtual void V(); };
+struct NL : NB { };
+struct NR : NB { void V() override; };
+struct ND : NL, NR { };
+void NonVirtualDiamond(NL* l, NR* r)
+{
+    l->V();
+    r->V();
+}
+
+// Generic lambdas, whose instantiated bodies run, and not their patterns.
+void GenericLambda(A* a)
+{
+    auto f = [](auto x) { if constexpr (sizeof(x) == 4) Helper(); };
+    f(1);
+    auto g = [](auto p) { p->F(); };
+    g(a);
+}
+
+// Initializers that are evaluated as constants, which run nothing, and one that is not.
+void ConstexprInit()
+{
+    constexpr int x = Constant();
+    const int y = Constant();
+    static int z = Constant();
+    int w = Constant();
+    (void)x;
+    (void)y;
+    (void)z;
+    (void)w;
+}
+
+// A lambda's default argument, which runs where a call uses it.
+void LambdaDefault()
+{
+    auto f = [](int n = Seed()) { (void)n; };
+    f(42);
+    f();
+}

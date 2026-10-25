@@ -213,18 +213,25 @@
     ''))
   cases;
 
-  oracle = pkgs.runCommand "native-call-graph-oracle" {nativeBuildInputs = [pkgs.python3];} ''
+  # Copies the oracle's program into ./oracle, enters it, and writes its compilation database.
+  prepareOracle = ''
     cp -r ${./oracle} oracle
     chmod -R u+w oracle
     cd oracle
     root=$PWD
-    args='"--target=x86_64-linux-gnu", "-std=c++17", "-nostdinc", "-nostdinc++", "-c"'
+    cxx='"--target=x86_64-linux-gnu", "-std=c++17", "-nostdinc", "-nostdinc++", "-c"'
+    c='"--target=x86_64-linux-gnu", "-std=c11", "-nostdinc", "-c"'
     cat > compile_commands.json <<EOF
     [
-      {"directory": "$root", "file": "$root/probes.cpp", "output": "probes.o", "arguments": ["clang++", $args, "probes.cpp", "-o", "probes.o"]},
-      {"directory": "$root", "file": "$root/elsewhere.cpp", "output": "elsewhere.o", "arguments": ["clang++", $args, "elsewhere.cpp", "-o", "elsewhere.o"]}
+      {"directory": "$root", "file": "$root/probes.cpp", "output": "probes.o", "arguments": ["clang++", $cxx, "probes.cpp", "-o", "probes.o"]},
+      {"directory": "$root", "file": "$root/elsewhere.cpp", "output": "elsewhere.o", "arguments": ["clang++", $cxx, "elsewhere.cpp", "-o", "elsewhere.o"]},
+      {"directory": "$root", "file": "$root/cunit.c", "output": "cunit.o", "arguments": ["clang", $c, "cunit.c", "-o", "cunit.o"]}
     ]
     EOF
+  '';
+
+  oracle = pkgs.runCommand "native-call-graph-oracle" {nativeBuildInputs = [pkgs.python3];} ''
+    ${prepareOracle}
     python3 ${./generate.py} --tool ${tool}/bin/native-call-graph --db compile_commands.json \
       --requests requests.tsv --root "$root" --header oracle --out graph.tsv
     grep -v '^#' graph.tsv | awk -F '\t' -v OFS='\t' '
