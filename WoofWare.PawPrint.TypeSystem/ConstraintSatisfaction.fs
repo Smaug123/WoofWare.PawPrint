@@ -108,10 +108,10 @@ module ConstraintSatisfaction =
             LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo,
             concrete.Identity = baseClassTypes.Nullable.Identity
 
-    /// `MethodTable::HasExplicitOrImplicitPublicDefaultConstructor`, and not abstract: a value type,
-    /// or a class that is not abstract and declares a public instance constructor whose signature is
-    /// exactly `instance void ()` (`MethodTableBuilder` finds the default constructor so). An array is
-    /// neither.
+    /// Not abstract, and `MethodTable::HasExplicitOrImplicitPublicDefaultConstructor`: a value type,
+    /// or a class declaring a public instance constructor (`RTSpecialName`, named `.ctor`) whose
+    /// signature is exactly `instance void ()` (`MethodTableBuilder` finds the default constructor
+    /// so). An array is neither.
     let private satisfiesParameterlessConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
@@ -121,14 +121,18 @@ module ConstraintSatisfaction =
         match TypeSystemState.tryGetConcreteTypeInfo state argument with
         | None -> false
         | Some (_, typeInfo) ->
-            if LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
-                true
-            elif typeInfo.TypeAttributes.HasFlag System.Reflection.TypeAttributes.Abstract then
+            if typeInfo.TypeAttributes.HasFlag System.Reflection.TypeAttributes.Abstract then
                 false
+            elif LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                true
             else
                 typeInfo.Methods
                 |> List.exists (fun method ->
                     method.Name = ".ctor"
+                    && (method.TryMetadata
+                        |> Option.exists (fun facts ->
+                            facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.RTSpecialName
+                        ))
                     && not method.IsStatic
                     && method.IsPublic
                     && method.Signature.ParameterTypes.IsEmpty
