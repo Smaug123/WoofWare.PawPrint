@@ -7188,6 +7188,254 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// CoreCLR on Unix refuses a signature with a variable argument list, managed or native, as it
+    /// converts one for the JIT (`ConvToJitSig`, `IDS_EE_VARARG_NOT_SUPPORTED`): compiling a method
+    /// whose `call`, `callvirt`, `newobj`, `ldftn`, `ldvirtftn` or `calli` names such a method or
+    /// call site fails with `InvalidProgramException`, past the method's handlers, as does compiling
+    /// such a method itself; `ldtoken` converts no signature. Each caller makes its call in a branch
+    /// never taken; the host's CoreCLR, at tier 0 and fully optimised, says which fail.
+    [<Test>]
+    let ``the JIT refuses a signature with a variable argument list wherever it reads one`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        // C# spells a call of a method with a variable argument list, and of a P/Invoke with one.
+        let source =
+            """
+using System.Runtime.InteropServices;
+
+namespace Arglist;
+
+public class Target
+{
+    public Target(int a, __arglist) { }
+    public Target() { }
+    public static void Static(int a, __arglist) { }
+    public virtual void Virtual(int a, __arglist) { }
+    [DllImport("nowhere")]
+    public static extern void Native(int a, __arglist);
+}
+
+public static class Calls
+{
+    static bool never;
+
+    public static void Call() { if (never) Target.Static(1, __arglist(2)); }
+    public static void CallCaught()
+    {
+        try { if (never) Target.Static(1, __arglist(2)); } catch (System.Exception) { }
+    }
+    public static void Callvirt() { if (never) new Target().Virtual(1, __arglist(2)); }
+    public static void Newobj() { if (never) new Target(1, __arglist(2)); }
+    public static void Native() { if (never) Target.Native(1, __arglist(2)); }
+    public static void NativeCaught()
+    {
+        try { if (never) Target.Native(1, __arglist(2)); } catch (System.Exception) { }
+    }
+}
+"""
+
+        let arglistImage =
+            Roslyn.compileOptimizedAssembly "Arglist" OutputKind.DynamicallyLinkedLibrary [ source ]
+
+        // C# spells no `ldftn`, `ldvirtftn`, `calli` or `ldtoken` of one, so this emits them, each
+        // in a branch never taken.
+        let emittedImage =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Varargs", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Varargs"
+
+            let targets =
+                modul.DefineType ("Varargs.Targets", TypeAttributes.Public ||| TypeAttributes.Class)
+
+            let never =
+                targets.DefineField ("Never", typeof<bool>, FieldAttributes.Public ||| FieldAttributes.Static)
+
+            let staticTarget =
+                targets.DefineMethod (
+                    "Static",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    CallingConventions.VarArgs,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            staticTarget.GetILGenerator().Emit Emit.OpCodes.Ret
+
+            let virtualTarget =
+                targets.DefineMethod (
+                    "Virtual",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot,
+                    CallingConventions.VarArgs ||| CallingConventions.HasThis,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            virtualTarget.GetILGenerator().Emit Emit.OpCodes.Ret
+
+            let constructor = targets.DefineDefaultConstructor MethodAttributes.Public
+
+            let caller (name : string) (caught : bool) (body : Emit.ILGenerator -> unit) : unit =
+                let method =
+                    targets.DefineMethod (
+                        name,
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        Type.EmptyTypes
+                    )
+
+                let il = method.GetILGenerator ()
+                let skip = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Ldsfld, never)
+                il.Emit (Emit.OpCodes.Brfalse, skip)
+
+                if caught then
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+
+                body il
+
+                if caught then
+                    il.BeginCatchBlock typeof<Exception>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+
+                il.MarkLabel skip
+                il.Emit Emit.OpCodes.Ret
+
+            let functionPointer (il : Emit.ILGenerator) : unit =
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Conv_I
+
+                il.EmitCalli (Emit.OpCodes.Calli, CallingConventions.VarArgs, typeof<Void>, [| typeof<int> |], null)
+
+            caller
+                "Address"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldftn, staticTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller
+                "VirtualAddress"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                    il.Emit (Emit.OpCodes.Ldvirtftn, virtualTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller "Indirect" false functionPointer
+            caller "IndirectCaught" true functionPointer
+
+            caller
+                "Token"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldtoken, staticTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            targets.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let invalidProgram = "System.InvalidProgramException"
+
+        // Each method, by its assembly's name and type, and its name; whether the host runs it as a
+        // caller or prepares it as a method compiled by itself; and whether compiling it fails.
+        let methods =
+            [
+                "Arglist", "Arglist.Calls", "Call", false, true
+                "Arglist", "Arglist.Calls", "CallCaught", false, true
+                "Arglist", "Arglist.Calls", "Callvirt", false, true
+                "Arglist", "Arglist.Calls", "Newobj", false, true
+                "Arglist", "Arglist.Calls", "Native", false, true
+                "Arglist", "Arglist.Calls", "NativeCaught", false, true
+                "Arglist", "Arglist.Target", "Static", true, true
+                "Varargs", "Varargs.Targets", "Address", false, true
+                "Varargs", "Varargs.Targets", "VirtualAddress", false, true
+                "Varargs", "Varargs.Targets", "Indirect", false, true
+                "Varargs", "Varargs.Targets", "IndirectCaught", false, true
+                "Varargs", "Varargs.Targets", "Token", false, false
+                "Varargs", "Varargs.Targets", "Static", true, true
+            ]
+
+        let images = Map.ofList [ "Arglist", arglistImage ; "Varargs", emittedImage ]
+
+        // What compiling each method does on the host's CoreCLR, at tier 0 and fully optimised:
+        // the name of the exception, if it fails.
+        let hostOutcomes (collectible : bool) : Map<string * string, string option> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ($"Varargs%b{collectible}", isCollectible = collectible)
+
+            try
+                let loaded =
+                    images
+                    |> Map.map (fun _ image -> context.LoadFromStream (new MemoryStream (image)))
+
+                methods
+                |> List.map (fun (assemblyName, typeName, name, prepared, _) ->
+                    let method = loaded.[assemblyName].GetType(typeName).GetMethod name
+
+                    let outcome =
+                        if prepared then
+                            try
+                                Runtime.CompilerServices.RuntimeHelpers.PrepareMethod method.MethodHandle
+                                None
+                            with e ->
+                                Some (e.GetType().FullName)
+                        else
+                            try
+                                method.Invoke ((null : obj), [||]) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some (e.InnerException.GetType().FullName)
+
+                    (typeName, name), outcome
+                )
+                |> Map.ofList
+            finally
+                if collectible then
+                    context.Unload ()
+
+        let host = [ hostOutcomes false ; hostOutcomes true ]
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let assemblies = images |> Map.map read
+
+        let mutable analysis = analysisOver (assemblies |> Map.toList |> List.map snd) id
+
+        let failures =
+            [
+                for assemblyName, typeName, name, _, refused in methods do
+                    let expected = if refused then Some invalidProgram else None
+
+                    for outcomes in host do
+                        if outcomes.[typeName, name] <> expected then
+                            yield
+                                $"%s{typeName}.%s{name}: the host's outcome is %A{outcomes.[typeName, name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assemblies.[assemblyName] typeName name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains $"=%s{invalidProgram}" <> refused then
+                        yield
+                            $"%s{typeName}.%s{name}: InvalidProgramException escapes %b{not refused} in the analysis, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// A client compiled against one version of a provider, run against another lacking two types
     /// and without the assembly `Optional`, each of whose callers calls unmanaged code (a P/Invoke,
     /// or `calli` by an unmanaged calling convention) whose signature names a type that fails to
