@@ -60,8 +60,8 @@ module TestLayoutFacts =
         [ "Decimal32" ; "Decimal64" ; "Decimal128" ]
         |> List.choose (fun name -> typeof<obj>.Assembly.GetType ("System.Numerics." + name) |> Option.ofObj)
 
-    /// The CoreLib value types generated as fields: every primitive arm of `IsFieldBlittable`, and
-    /// the CoreLib types CoreCLR treats specially.
+    /// The named value types generated as fields: every primitive arm of `IsFieldBlittable`, the
+    /// CoreLib types CoreCLR treats specially, and a struct from another assembly.
     let private valueTypeLeaves : Type list =
         [
             typeof<int>
@@ -76,6 +76,8 @@ module TestLayoutFacts =
             typeof<decimal>
             typeof<DateTime>
             typeof<Int128>
+            // A struct of another assembly, whose base type is named through a facade.
+            typeof<ImmutableArray<int>>
         ]
         @ decimalFloatingPointTypes
 
@@ -804,14 +806,61 @@ module TestLayoutFacts =
         blittable.GetValueOrDefault (Some true) |> shouldBeGreaterThan 0
         blittable.GetValueOrDefault (Some false) |> shouldBeGreaterThan 0
 
-    /// Enums whose one instance field is not of a primitive type, and a struct holding each:
-    /// `SelfEnum`'s field is of `SelfEnum` itself, `CycleA`'s and `CycleB`'s are of each other,
-    /// `EnumOfEnum`'s is of an ordinary enum, and `StructEnum`'s is of a struct.
-    let private oddEnumCorpus : byte[] =
-        let builder =
-            PersistedAssemblyBuilder (AssemblyName "OddEnums", typeof<obj>.Assembly)
+    let private enumNames : string list =
+        [
+            "SelfEnum"
+            "CycleA"
+            "CycleB"
+            "EnumOfEnum"
+            "StructEnum"
+            "ImmutableEnum"
+            "SequentialEnum"
+        ]
 
-        let md = builder.DefineDynamicModule "OddEnums"
+    /// Value types CoreCLR may refuse to load, each with a struct holding it.
+    ///
+    /// Enums whose one instance field is not of a primitive type: `SelfEnum`'s field is of
+    /// `SelfEnum` itself, `CycleA`'s and `CycleB`'s are of each other, `EnumOfEnum`'s is of an
+    /// ordinary enum, `StructEnum`'s is of a struct, and `ImmutableEnum`'s is of a struct in another
+    /// assembly. `SequentialEnum` is over `int` but declares sequential layout.
+    ///
+    /// Generic structs that hold an instantiation of themselves by value: `SelfNest<T>` holds a
+    /// `SelfNest<SelfNest<T>>`, and `WrapNest<T>` a `WrapNest<Wrap<T>>`; `HoldsSelfNest` and
+    /// `HoldsWrapNest` hold each at `int`. `UsesHolder` holds a `Holder<UsesHolder>`, which holds
+    /// only an `int`.
+    let private oddCorpus : byte[] =
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName "OddTypes", typeof<obj>.Assembly)
+
+        let md = builder.DefineDynamicModule "OddTypes"
+        let sequential = structAttributes Layout.Sequential CharSetChoice.Ansi
+
+        let genericStruct (name : string) (field : GenericTypeParameterBuilder -> TypeBuilder -> Type) : TypeBuilder =
+            let tb = md.DefineType (name, sequential, typeof<ValueType>)
+            let parameters = tb.DefineGenericParameters [| "T" |]
+            tb.DefineField ("X", field parameters.[0] tb, FieldAttributes.Public) |> ignore
+            tb.CreateType () |> ignore
+            tb
+
+        let wrap = genericStruct "Wrap" (fun t _ -> t :> Type)
+
+        let selfNest =
+            genericStruct "SelfNest" (fun t tb -> tb.MakeGenericType (tb.MakeGenericType (t :> Type)))
+
+        let wrapNest =
+            genericStruct "WrapNest" (fun t tb -> tb.MakeGenericType (wrap.MakeGenericType (t :> Type)))
+
+        let holder = genericStruct "Holder" (fun _ _ -> typeof<int>)
+
+        for name, field in
+            [
+                "HoldsSelfNest", (fun (_ : TypeBuilder) -> selfNest.MakeGenericType typeof<int>)
+                "HoldsWrapNest", (fun _ -> wrapNest.MakeGenericType typeof<int>)
+                "UsesHolder", (fun tb -> holder.MakeGenericType (tb :> Type))
+            ] do
+            let tb = md.DefineType (name, sequential, typeof<ValueType>)
+            tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
+            tb.CreateType () |> ignore
 
         let ordinary =
             (md.DefineEnum ("Ordinary", TypeAttributes.Public, typeof<int>)).CreateType ()
@@ -823,9 +872,15 @@ module TestLayoutFacts =
         let plain = plain.CreateType ()
 
         let enums =
-            [ "SelfEnum" ; "CycleA" ; "CycleB" ; "EnumOfEnum" ; "StructEnum" ]
+            enumNames
             |> List.map (fun name ->
-                name, md.DefineType (name, TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Enum>)
+                let layout =
+                    if name = "SequentialEnum" then
+                        TypeAttributes.SequentialLayout
+                    else
+                        TypeAttributes.AutoLayout
+
+                name, md.DefineType (name, TypeAttributes.Public ||| TypeAttributes.Sealed ||| layout, typeof<Enum>)
             )
             |> Map.ofList
 
@@ -836,6 +891,8 @@ module TestLayoutFacts =
                 "CycleB", (enums.["CycleA"] :> Type)
                 "EnumOfEnum", ordinary
                 "StructEnum", plain
+                "ImmutableEnum", typeof<ImmutableArray<int>>
+                "SequentialEnum", typeof<int>
             ] do
             enums.[name]
                 .DefineField (
@@ -860,25 +917,25 @@ module TestLayoutFacts =
         builder.Save stream
         stream.ToArray ()
 
-    /// CoreCLR strips an enum-typed field of an enum down to that enum's underlying type
-    /// (`#FieldDescTypeMorph`, methodtablebuilder.cpp), then refuses an enum whose field is still
-    /// not of a primitive type. Where the host loads a type the facts must say what it says, and
-    /// where it refuses one they must be a failure, not a walk without end.
+    /// Where the host loads one of `oddCorpus`'s types the facts must say what it says, and where it
+    /// refuses one they must be a failure, not a walk without end. CoreCLR strips an enum-typed
+    /// field of an enum down to that enum's underlying type (`#FieldDescTypeMorph`,
+    /// methodtablebuilder.cpp), then refuses an enum whose field is still not of a primitive type.
     [<Test>]
-    let ``An enum's field is judged through enums to a primitive, and refused otherwise, as the host does`` () : unit =
-        let context = Runtime.Loader.AssemblyLoadContext ("OddEnums", isCollectible = true)
+    let ``A value type the host refuses to load is a failure, and one it loads agrees`` () : unit =
+        let context = Runtime.Loader.AssemblyLoadContext ("OddTypes", isCollectible = true)
 
         try
-            let hostAssembly = context.LoadFromStream (new MemoryStream (oddEnumCorpus))
+            let hostAssembly = context.LoadFromStream (new MemoryStream (oddCorpus))
 
             let dumped =
-                Assembly.read loggerFactory (Some "OddEnums.dll") (new MemoryStream (oddEnumCorpus))
+                Assembly.read loggerFactory (Some "OddTypes.dll") (new MemoryStream (oddCorpus))
 
             let mutable state = baseState.Force().WithLoadedAssembly dumped
 
             let outcomes =
-                [ "SelfEnum" ; "CycleA" ; "CycleB" ; "EnumOfEnum" ; "StructEnum" ]
-                |> List.collect (fun name -> [ name ; "Holds" + name ])
+                (enumNames |> List.collect (fun name -> [ name ; "Holds" + name ]))
+                @ [ "HoldsSelfNest" ; "HoldsWrapNest" ; "UsesHolder" ]
                 |> List.map (fun name ->
                     // The host may refuse the type as soon as it is named.
                     let hostType =
@@ -926,6 +983,12 @@ module TestLayoutFacts =
                     name, hostLoads
                 )
 
+            // A failure keeps what loaded before it: binding `ImmutableEnum`'s field loaded the
+            // assembly that declares `ImmutableArray`.
+            state.LoadedAssembly typeof<ImmutableArray<int>>.Assembly.FullName
+            |> Option.isSome
+            |> shouldEqual true
+
             // The host draws the line where the comparison above needs it drawn.
             outcomes
             |> shouldEqual
@@ -940,6 +1003,13 @@ module TestLayoutFacts =
                     "HoldsEnumOfEnum", true
                     "StructEnum", false
                     "HoldsStructEnum", false
+                    "ImmutableEnum", false
+                    "HoldsImmutableEnum", false
+                    "SequentialEnum", false
+                    "HoldsSequentialEnum", false
+                    "HoldsSelfNest", false
+                    "HoldsWrapNest", false
+                    "UsesHolder", true
                 ]
         finally
             context.Unload ()
