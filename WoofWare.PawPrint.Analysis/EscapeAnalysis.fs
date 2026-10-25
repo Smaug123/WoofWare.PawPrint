@@ -2309,6 +2309,34 @@ module EscapeAnalysis =
             state, TokenReferent.Other, raisesOf failure
         | _ -> state, TokenReferent.Other, []
 
+    /// What CoreCLR's `CEEInfo::resolveToken` raises refusing a token that binds, for the type it
+    /// names: a byref or `System.Void` (`TypeOperand.ofTypeToken`), refused with
+    /// `InvalidProgramException` for every kind of token but `ldtoken`'s, whose caller must not ask.
+    /// For a member's token the type is the parent its reference names, and for a method
+    /// specification's the parent of the method it instantiates.
+    let rec private resolutionRefusal
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : OutsideBodyFact list
+        =
+        match token with
+        | MetadataToken.MethodSpecification handle ->
+            resolutionRefusal state assembly assembly.MethodSpecs.[handle].Method
+        | _ ->
+
+        let typeToken =
+            match token with
+            | MetadataToken.MemberReference handle -> assembly.Members.[handle].Parent
+            | _ -> token
+
+        match TypeOperand.ofTypeToken state.BaseTypes state.TypeSystem._LoadedAssemblies assembly typeToken with
+        | None -> []
+        // `COMPlusThrow(kInvalidProgramException)` makes it as `EEException::CreateThrowable` does.
+        | Some _ ->
+            let thrown, made = constructedRaise state "System.InvalidProgramException"
+            [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
     /// The signature of the method `token` names, as `assembly` spells it at the token, or a
     /// `calli`'s call-site signature; `None` for a token naming anything else.
     let rec private spelledSignature
@@ -3767,6 +3795,13 @@ module EscapeAnalysis =
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, referent, failures = bindToken state assembly token.Token
 
+                    // A token that binds may still be refused for the type it names.
+                    let failures =
+                        match tokenOp, failures with
+                        | UnaryMetadataTokenIlOp.Ldtoken, _
+                        | _, _ :: _ -> failures
+                        | _, [] -> resolutionRefusal state assembly token.Token
+
                     let target =
                         match referent with
                         | TokenReferent.Method target -> Some target
@@ -4321,6 +4356,12 @@ module EscapeAnalysis =
                 match region with
                 | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
                     let state, _, clauseFailures = bindToken state assembly token
+
+                    let clauseFailures =
+                        match clauseFailures with
+                        | [] -> resolutionRefusal state assembly token
+                        | _ :: _ -> clauseFailures
+
                     state, Set.union failures (Set.ofList clauseFailures)
                 | _ -> state, failures
             )
@@ -5020,8 +5061,9 @@ module EscapeAnalysis =
                             | ResolutionFault.MethodAccess
                             | ResolutionFault.FieldAccess
                             | ResolutionFault.TypeAccess -> true
-                            // Bound at `bind`, above. The JIT refusing to compile the body for
-                            // what a token binds to is `abstractCallees`' and `refusals`'.
+                            // Bound, and refused for the type it names (`resolutionRefusal`), at
+                            // `bind`, above. The JIT refusing to compile the body for what a token
+                            // binds to is `abstractCallees`' and `refusals`'.
                             | ResolutionFault.TokenBinding -> false
                             // Only a `DynamicMethod`'s body has scope entries, and the analysis
                             // reads bodies from metadata.

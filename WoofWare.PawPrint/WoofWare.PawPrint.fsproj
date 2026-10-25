@@ -98,7 +98,6 @@
     <Compile Include="MultiDimArrayAllocation.fs" />
     <Compile Include="IlMachineThreadState.fs" />
     <Compile Include="ArrayConstructor.fs" />
-    <Compile Include="TypeOperand.fs" />
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />
     <Compile Include="ReflectedTypeTarget.fs" />

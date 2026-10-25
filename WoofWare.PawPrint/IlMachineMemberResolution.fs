@@ -28,7 +28,7 @@ type MemberReferenceResolution =
         member' :
             Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
         declaringTypeArguments : TypeDefn ImmutableArray
-    /// The row names its member through a type CoreCLR refuses a token of (`TypeOperand.ofDefinition`),
+    /// The row names its member through a type CoreCLR refuses a token of (`TypeOperand.ofTypeToken`),
     /// so the instruction raises `InvalidProgramException`, with that type's default message, rather
     /// than reaching the member. Never for `ldtoken`, which CoreCLR lets name it.
     | RefusedParent of TypeOperandRefusal
@@ -85,7 +85,7 @@ module IlMachineMemberResolution =
     /// <summary>
     /// Why CoreCLR refuses an instruction whose token is MemberRef row <paramref name="m" /> of
     /// <paramref name="assy" /> for the type the row's parent names, or <c>None</c>: that type is
-    /// the token's in <c>CEEInfo::resolveToken</c>, which refuses it as <c>TypeOperand.ofDefinition</c>
+    /// the token's in <c>CEEInfo::resolveToken</c>, which refuses it as <c>TypeOperand.ofTypeToken</c>
     /// says, after it has found the member.
     /// </summary>
     /// <remarks>
@@ -98,41 +98,7 @@ module IlMachineMemberResolution =
         (state : IlMachineState)
         : TypeOperandRefusal option
         =
-        let ofReference (typeRef : TypeRef) : TypeOperandRefusal option =
-            match
-                LoadedTypeResolution.resolveTypeRef state.TypeSystem._LoadedAssemblies assy ImmutableArray.Empty typeRef
-            with
-            | TypeResolutionResult.Resolved (definedIn, _, resolved) ->
-                TypeOperand.ofDefinition baseClassTypes definedIn.TypeDefs.[resolved.TypeDefHandle].Identity
-            | other ->
-                failwith
-                    $"BUG: the parent of a MemberRef in %s{assy.DefinitionFullName} resolved when the row was resolved, but not now: %O{other}"
-
-        // A TypeSpec parent may spell `void` itself, or name it as a value type. Custom modifiers do
-        // not change the type a signature names. Any other spelling names a type that is not
-        // `System.Void`; a byref, which `resolveToken` would refuse too, has no members to find.
-        let rec ofSpelling (spelling : TypeDefn) : TypeOperandRefusal option =
-            match spelling with
-            | TypeDefn.Void -> Some TypeOperandRefusal.Void
-            | TypeDefn.Modified modified -> ofSpelling modified.Unmodified
-            | TypeDefn.FromDefinition (identity, _) -> TypeOperand.ofDefinition baseClassTypes identity
-            | TypeDefn.FromReference (typeRef, _) -> ofReference typeRef
-            | TypeDefn.PrimitiveType _
-            | TypeDefn.GenericInstantiation _
-            | TypeDefn.Array _
-            | TypeDefn.OneDimensionalArrayLowerBoundZero _
-            | TypeDefn.Pointer _
-            | TypeDefn.Byref _
-            | TypeDefn.Pinned _
-            | TypeDefn.FunctionPointer _
-            | TypeDefn.GenericTypeParameter _
-            | TypeDefn.GenericMethodParameter _ -> None
-
-        match assy.Members.[m].Parent with
-        | MetadataToken.TypeDefinition handle -> TypeOperand.ofDefinition baseClassTypes assy.TypeDefs.[handle].Identity
-        | MetadataToken.TypeReference handle -> ofReference assy.TypeRefs.[handle]
-        | MetadataToken.TypeSpecification handle -> ofSpelling assy.TypeSpecs.[handle].Signature
-        | _ -> None
+        TypeOperand.ofTypeToken baseClassTypes state.TypeSystem._LoadedAssemblies assy assy.Members.[m].Parent
 
     /// `TypeLoadException._resourceId` for a type reference that names nothing:
     /// `IDS_CLASSLOAD_GENERAL` (mscorrc/resource.h), "Could not load type '%1' from assembly '%2'."
