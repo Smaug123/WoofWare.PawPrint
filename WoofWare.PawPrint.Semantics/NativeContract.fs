@@ -233,7 +233,9 @@ module NativeContractTable =
                 | runs ->
                     runs.Split '|'
                     |> Array.map (fun call ->
-                        if call = "ResourceMessage" then NativeCall.ResourceMessage else
+                        if call = "ResourceMessage" then
+                            NativeCall.ResourceMessage
+                        else
 
                         let opening = call.IndexOf '('
 
