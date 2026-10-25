@@ -95,31 +95,37 @@ module TypeOperand =
     /// (measured: <c>castclass</c> of <c>pinned int32&amp;</c> is refused).
     /// </summary>
     /// <remarks>
-    /// <c>resolveToken</c> refuses the type only once it has loaded it, so a type reference the
-    /// spelling names at its top level must already resolve against <paramref name="assemblies"/>.
+    /// <para>
+    /// <c>resolveToken</c> refuses the type only once it has loaded it. A type reference the
+    /// spelling names at its top level, under the full name <c>System.Void</c>, is resolved against
+    /// <paramref name="assemblies"/>, and is the <c>Error</c> where it does not resolve there: only
+    /// loading what it names can tell whether it is CoreLib's. A reference under any other name is
+    /// not, since a reference names a type of its own name through any forwarders.
+    /// </para>
+    /// <para>
     /// A type variable is never refused: no instantiation makes one a byref or <c>System.Void</c>,
     /// neither being a valid type argument (ECMA-335 II.9.4).
+    /// </para>
     /// </remarks>
     let rec ofSpelling
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (assemblies : LoadedAssemblies)
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
-        : TypeOperandRefusal option
+        : Result<TypeOperandRefusal option, TypeRef>
         =
         match spelling with
-        | TypeDefn.Byref _ -> Some TypeOperandRefusal.Byref
-        | TypeDefn.Void -> Some TypeOperandRefusal.Void
+        | TypeDefn.Byref _ -> Ok (Some TypeOperandRefusal.Byref)
+        | TypeDefn.Void -> Ok (Some TypeOperandRefusal.Void)
         | TypeDefn.Modified modified -> ofSpelling baseClassTypes assemblies spellingAssembly modified.Unmodified
         | TypeDefn.Pinned element -> ofSpelling baseClassTypes assemblies spellingAssembly element
-        | TypeDefn.FromDefinition (identity, _) -> ofDefinition baseClassTypes identity
+        | TypeDefn.FromDefinition (identity, _) -> Ok (ofDefinition baseClassTypes identity)
+        | TypeDefn.FromReference (typeRef, _) when typeRef.Namespace <> "System" || typeRef.Name <> "Void" -> Ok None
         | TypeDefn.FromReference (typeRef, _) ->
             match LoadedTypeResolution.resolveTypeRef assemblies spellingAssembly ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (definedIn, _, resolved) ->
-                ofDefinition baseClassTypes definedIn.TypeDefs.[resolved.TypeDefHandle].Identity
-            | other ->
-                failwith
-                    $"BUG: a type reference in %s{spellingAssembly.DefinitionFullName} was to be loaded before its refusal was asked, but it does not resolve: %O{other}"
+                Ok (ofDefinition baseClassTypes definedIn.TypeDefs.[resolved.TypeDefHandle].Identity)
+            | _ -> Error typeRef
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericInstantiation _
         | TypeDefn.Array _
@@ -127,23 +133,24 @@ module TypeOperand =
         | TypeDefn.Pointer _
         | TypeDefn.FunctionPointer _
         | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> None
+        | TypeDefn.GenericMethodParameter _ -> Ok None
 
     /// <summary>
     /// Why CoreCLR refuses a token whose type is the one <paramref name="token"/>, a TypeDef,
-    /// TypeRef or TypeSpec of <paramref name="assembly"/>, names, as <see cref="ofSpelling"/> says;
-    /// <c>None</c> for a token naming no type. For a member's token, that type is the parent its
-    /// reference names, and <c>resolveToken</c> refuses it only once it has found the member.
+    /// TypeRef or TypeSpec of <paramref name="assembly"/>, names, as <see cref="ofSpelling"/> says,
+    /// with its <c>Error</c>; <c>None</c> for a token naming no type. For a member's token, that type
+    /// is the parent its reference names, and <c>resolveToken</c> refuses it only once it has found
+    /// the member.
     /// </summary>
     let ofTypeToken
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (assemblies : LoadedAssemblies)
         (assembly : DumpedAssembly)
         (token : MetadataToken)
-        : TypeOperandRefusal option
+        : Result<TypeOperandRefusal option, TypeRef>
         =
         match token with
-        | MetadataToken.TypeDefinition handle -> ofDefinition baseClassTypes assembly.TypeDefs.[handle].Identity
+        | MetadataToken.TypeDefinition handle -> Ok (ofDefinition baseClassTypes assembly.TypeDefs.[handle].Identity)
         | MetadataToken.TypeReference handle ->
             ofSpelling
                 baseClassTypes
@@ -152,4 +159,4 @@ module TypeOperand =
                 (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
         | MetadataToken.TypeSpecification handle ->
             ofSpelling baseClassTypes assemblies assembly assembly.TypeSpecs.[handle].Signature
-        | _ -> None
+        | _ -> Ok None

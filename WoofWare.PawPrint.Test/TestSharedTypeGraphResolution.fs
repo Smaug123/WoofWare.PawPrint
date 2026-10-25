@@ -269,8 +269,8 @@ module TestSharedTypeGraphResolution =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A bare <c>FromDefinition</c> of a generic type is not a type and no signature can spell it;
-    /// the resolver's convention is that it names that definition instantiated at the ambient
+    /// A bare <c>FromDefinition</c> of a generic type is not a type, and CoreCLR refuses a signature
+    /// that spells one; the resolver's convention is that it names that definition instantiated at the ambient
     /// environment. Resolution reads those arguments straight out of the environment, so unless
     /// substitution is applied to them afterwards they arrive in the answer exactly as the caller
     /// wrote them — <i>including</i> any generic parameters they mention.
@@ -377,15 +377,15 @@ module TestSharedTypeGraphResolution =
                         yield Gen.constant (TypeDefn.GenericMethodParameter i)
 
                     // A *bare* generic definition, as opposed to an instantiation of one. This is
-                    // not a type, and metadata cannot spell it in a signature; the resolver's
+                    // not a type, and CoreCLR refuses a signature that spells it; the resolver's
                     // convention is that it means "this definition, instantiated at the ambient
                     // environment". It has to be drawn, because it is the only shape that puts an
                     // environment entry into the answer without substitution having touched it,
                     // and a generator whose alphabet omits it cannot tell a resolver that
                     // substitutes those entries from one that does not. It is only in range when
                     // the environment has a slot for every parameter of the definition — with
-                    // fewer, resolution indexes past the end of the environment, which is a
-                    // malformed call rather than the question under test.
+                    // fewer, resolution refuses it as unmodelled wherever it is an argument,
+                    // which is not the question under test.
                     if paramCount >= 1 then
                         yield Gen.constant list
 

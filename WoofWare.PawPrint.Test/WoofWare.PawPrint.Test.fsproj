@@ -405,6 +405,7 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedInheritedMemberReference.fs" />
     <Compile Include="TestFabricatedVoidParentMemberReference.fs" />
+    <Compile Include="TestFabricatedCatchClauseRefusal.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
@@ -432,6 +433,8 @@
     <Compile Include="TestCppSource.fs" />
     <Compile Include="TestNativeContractTable.fs" />
     <Compile Include="TestSharedNativeField.fs" />
+    <Compile Include="TestVmBoundField.fs" />
+    <Compile Include="TestVmLaidOutClass.fs" />
     <Compile Include="TestAssumption.fs" />
     <Compile Include="TestObjectGetType.fs" />
     <Compile Include="TestExceptionMaking.fs" />
@@ -535,6 +538,19 @@
     <EmbeddedResource Include="@(Compile)" LogicalName="PawPrintTestSource/%(Filename)%(Extension)" />
     <!-- WoofWare.PawPrint's F# sources, which TestDispatchFailureRatchet scans. -->
     <EmbeddedResource Include="..\WoofWare.PawPrint\**\*.fs" Exclude="..\WoofWare.PawPrint\bin\**;..\WoofWare.PawPrint\obj\**" LogicalName="PawPrintLibrarySource/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What tests read from the repository at run time, which evaluating this project does not
+         show. scripts/footprint.py counts these into the test footprint, and CI runs the suite in a
+         checkout holding only that footprint, so a read missing from here fails there. -->
+    <!-- TestCiSelectsEveryExplicitFixture reads the categories the workflow's runners select. -->
+    <FootprintInput Include="..\.github\workflows\ci.yaml" />
+    <!-- TestPublishedXmlDocumentation reads the solution and every project it lists, and every
+         test that reads the repository finds its root by finding the solution. -->
+    <FootprintInput Include="..\WoofWare.PawPrint.slnx;..\*\*.fsproj;..\*\*.csproj" />
+    <!-- TestFSharpPureCases builds this project. -->
+    <FootprintInput Include="..\WoofWare.PawPrint.Test.FSharpPureCases" />
   </ItemGroup>
 
   <ItemGroup>

@@ -338,6 +338,40 @@ module TestTypeSystemBindingFailure =
         | other -> failwith $"expected Unmodelled, got %A{other}"
 
     [<Test>]
+    let ``an instantiation whose argument is an uninstantiated generic definition is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let fragment = "names the generic definition"
+
+        TypeResolution.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfBareList
+            f.Analysed
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            f.Assemblies
+        |> snd
+        |> unmodelledSaying fragment
+
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfBareList
+            f.Analysed
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> unmodelledSaying fragment
+
+        match bindMember f f.Shapes.ListOfBareListClear with
+        | Error (MemberBindingFailure.TypeUnbound failure) ->
+            (Error failure : Result<unit, TypeBindingFailure>) |> unmodelledSaying fragment
+        | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    [<Test>]
     let ``a failure to bind a member reference names the row`` () : unit =
         let f = UnmodelledImage.fixture ()
 
@@ -531,3 +565,42 @@ module TestTypeSystemBindingFailure =
         coverage.Count Shown.FailsUnavailable |> shouldBeGreaterThan 100
         coverage.Count Shown.FailsUnmodelled |> shouldBeGreaterThan 100
         coverage.Count Shown.RefusedForAModifier |> shouldBeGreaterThan 20
+
+    [<RequireQualifiedAccess>]
+    type private Resolved =
+        | Binds
+        | Fails
+        | RefusedForABareArgument
+
+    [<Test>]
+    let ``the Loader resolves every spelling to a result rather than throwing`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let property (cover : Resolved -> unit) (spelling : Spelling) : bool =
+            match
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    (toTypeDefn f spelling)
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    f.Analysed
+                    f.Assemblies
+                |> snd
+            with
+            | Ok _ -> cover Resolved.Binds
+            | Error (TypeBindingFailure.Unmodelled unmodelled) when
+                unmodelled.Diagnostic.Contains "names the generic definition"
+                ->
+                cover Resolved.RefusedForABareArgument
+            | Error _ -> cover Resolved.Fails
+
+            true
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+
+        coverage.Count Resolved.Binds |> shouldBeGreaterThan 100
+        coverage.Count Resolved.Fails |> shouldBeGreaterThan 100
+        coverage.Count Resolved.RefusedForABareArgument |> shouldBeGreaterThan 5
