@@ -7596,6 +7596,12 @@ public static class Calls
                     if not unexplained.IsEmpty then
                         yield
                             $"%s{typeName}.%s{name}: %A{unexplained} in the analysis, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                    // Nothing of an instruction CoreCLR refuses runs, so nothing it would call is
+                    // unknown.
+                    if expected = Some invalidProgram && escapes.Unknown then
+                        yield
+                            $"%s{typeName}.%s{name}: unknown in the analysis, from %A{snd (EscapeAnalysis.unknownSources analysis (methodNamed assemblies.[assemblyName] typeName name))}"
             ]
 
         if not failures.IsEmpty then
