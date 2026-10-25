@@ -301,57 +301,22 @@ module LayoutFacts =
             else
                 state, Ok Category.Struct
 
-    /// Whether `needle` is `haystack`, or occurs in it: as a generic argument, an element type, or a
-    /// function pointer's parameter or return type, at any depth.
-    let rec private occursIn
-        (state : TypeSystemState)
-        (needle : ConcreteTypeHandle)
-        (haystack : ConcreteTypeHandle)
-        : bool
-        =
-        needle = haystack
-        || match haystack with
-           | ConcreteTypeHandle.Concrete _ ->
-               match AllConcreteTypes.lookup haystack state.ConcreteTypes with
-               | Some concrete -> concrete.Generics |> Seq.exists (occursIn state needle)
-               | None -> failwith $"LayoutFacts: the concrete handle %O{haystack} is not registered"
-           | ConcreteTypeHandle.Byref element
-           | ConcreteTypeHandle.Pointer element
-           | ConcreteTypeHandle.OneDimArrayZero element
-           | ConcreteTypeHandle.Array (element, _) -> occursIn state needle element
-           | ConcreteTypeHandle.FunctionPointer signature ->
-               signature.ParameterTypes |> List.exists (occursIn state needle)
-               || match signature.ReturnType with
-                  | MethodReturnType.Void -> false
-                  | MethodReturnType.Returns returned -> occursIn state needle returned
+    /// The most value types the walk follows, each held by value in the one before, or the most
+    /// enums it strips in a chain. CoreCLR refuses a type that holds itself by value, and one whose
+    /// instantiations grow without end along such a chain (`S<T>` holding `S<S<T>>`). The walk
+    /// recognises the first exactly; for the second it stops at this depth, which no type CoreCLR
+    /// loads has been seen to approach, and says that PawPrint does not model what lies beyond.
+    [<Literal>]
+    let private MaxNesting = 64
 
-    /// Whether `concrete`, `D<B>`, is an instantiation of the same definition as one of `outers`,
-    /// the types the walk is already inside, `D<A>`, such that each argument of `B` contains the
-    /// argument of `A` in the same position. Then `D<A>` reaches `D<B>` with each argument built
-    /// from its predecessor, and reaches by the same route a `D` built from `B` in the same way, and
-    /// so on without end: CoreCLR refuses such a type. A nesting such as `Wrap<Wrap<int>>` reaches a
-    /// `D` over less, and `Pair<Swap<int>, int>` reaching `Pair<int, Swap<int>>` holds its
-    /// arguments only crosswise; neither is caught. The caller has ruled out `D<B>` being `D<A>`.
-    let private expands
-        (state : TypeSystemState)
-        (outers : ConcreteTypeHandle seq)
-        (concrete : ConcreteType<ConcreteTypeHandle>)
-        : bool
-        =
-        outers
-        |> Seq.exists (fun outer ->
-            match AllConcreteTypes.lookup outer state.ConcreteTypes with
-            | Some outerType ->
-                outerType.Identity = concrete.Identity
-                && Seq.forall2 (occursIn state) outerType.Generics concrete.Generics
-            | None -> failwith $"LayoutFacts: the concrete handle %O{outer} is not registered"
-        )
+    let private tooDeep (concrete : ConcreteType<ConcreteTypeHandle>) : TypeBindingFailure =
+        unmodelled
+            $"%O{concrete} is held by value %d{MaxNesting} types deep; PawPrint does not follow a nesting that deep, as an instantiation growing at each level would make it"
 
     /// The internal element type of `handle`, an enum whose row is `typeInfo`: that of its one
     /// instance field, which must be of a CoreLib primitive once an enum-typed field is stripped
     /// down to that enum's own (`#FieldDescTypeMorph`, methodtablebuilder.cpp). `stripping` holds the
-    /// enums already being stripped, whose recurrence, or expansion (see `expands`), CoreCLR refuses
-    /// to load.
+    /// enums already being stripped, whose recurrence is a cycle CoreCLR refuses to load.
     let rec private enumElement
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -380,8 +345,10 @@ module LayoutFacts =
                 unmodelled
                     $"the enum %O{concrete} declares sequential or explicit layout, which CoreCLR refuses to load"
             )
-        elif stripping.Contains handle || expands state stripping concrete then
+        elif stripping.Contains handle then
             refused state
+        elif stripping.Count >= MaxNesting then
+            state, Error (tooDeep concrete)
         else
 
         match typeInfo.Fields |> List.filter (fun field -> not field.IsStatic) with
@@ -441,14 +408,16 @@ module LayoutFacts =
                     $"the enum %O{concrete} has %d{fields.Length} instance fields, not one, which CoreCLR refuses to load"
             )
 
-    /// The facts of `handle`, a value type other than an enum, whose row is `typeInfo`. The
-    /// handles `InProgress` in `seen` are those whose fields the walk is inside.
+    /// The facts of `handle`, a value type other than an enum, whose row is `typeInfo`, reached
+    /// `depth` value types deep. The handles `InProgress` in `seen` are those whose fields the walk
+    /// is inside.
     let rec private factsIn
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (seen : ImmutableDictionary<ConcreteTypeHandle, Status>)
+        (depth : int)
         (handle : ConcreteTypeHandle)
         (concrete : ConcreteType<ConcreteTypeHandle>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -462,20 +431,8 @@ module LayoutFacts =
             Error (unmodelled $"the value type %O{concrete} holds itself by value, which CoreCLR refuses to load")
         | false, _ ->
 
-        let inside =
-            seen
-            |> Seq.choose (fun (KeyValue (outer, status)) ->
-                match status with
-                | Completed _ -> None
-                | InProgress -> Some outer
-            )
-
-        if expands state inside concrete then
-            state,
-            Error (
-                unmodelled
-                    $"the value type %O{concrete} is held by value inside an instantiation of its own definition over less, which CoreCLR refuses to load"
-            )
+        if depth >= MaxNesting then
+            state, Error (tooDeep concrete)
         else
 
         let layoutMask = typeInfo.TypeAttributes &&& TypeAttributes.LayoutMask
@@ -508,7 +465,9 @@ module LayoutFacts =
                 | state, Error failure -> state, Error failure
                 | state, Ok fieldHandle ->
 
-                match fieldElementIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen fieldHandle with
+                match
+                    fieldElementIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen (depth + 1) fieldHandle
+                with
                 | state, Error failure -> state, Error failure
                 | state, Ok (seen, element) -> state, Ok (seen, (field.MarshallingDescriptor, element) :: acc)
             )
@@ -628,6 +587,7 @@ module LayoutFacts =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (seen : ImmutableDictionary<ConcreteTypeHandle, Status>)
+        (depth : int)
         (handle : ConcreteTypeHandle)
         : TypeSystemState * Result<ImmutableDictionary<ConcreteTypeHandle, Status> * FieldElement, TypeBindingFailure>
         =
@@ -668,7 +628,7 @@ module LayoutFacts =
             | state, Ok element -> state, Ok (seen, element)
         | state, Ok Category.Struct ->
 
-        match factsIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen handle concrete typeInfo with
+        match factsIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen depth handle concrete typeInfo with
         | state, Error failure -> state, Error failure
         | state, Ok (seen, facts) ->
             let isDecimal =
@@ -681,7 +641,8 @@ module LayoutFacts =
     /// The layout facts of `handle`, or `None` where it is not a value type: a class, an
     /// interface, an array, a pointer or a byref. A type on the way that does not bind is the
     /// failure, as is a value type CoreCLR would refuse to load for a reason these facts read (such
-    /// as one holding itself by value), returned with what loaded before it.
+    /// as one holding itself by value) and a nesting of value types deeper than the walk follows,
+    /// returned with what loaded before it.
     let ofValueType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -712,6 +673,7 @@ module LayoutFacts =
                 baseClassTypes
                 state
                 ImmutableDictionary.Empty
+                0
                 handle
                 concrete
                 typeInfo
