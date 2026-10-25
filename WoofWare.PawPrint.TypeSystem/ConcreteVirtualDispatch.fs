@@ -958,7 +958,8 @@ module ConcreteVirtualDispatch =
                             (state, [], currentTypeInfo.Methods)
                             |||> StateResult.fold (fun state acc meth ->
                                 match methodMatches currentTy.Generics meth state with
-                                | state, Ok matched -> state, Ok (acc @ [ matched ])
+                                | state, Ok (Some matched) -> state, Ok (matched :: acc)
+                                | state, Ok None -> state, Ok acc
                                 | state, Error failure -> state, Error failure
                             )
 
@@ -966,7 +967,7 @@ module ConcreteVirtualDispatch =
                         | Error failure -> state, Error failure
                         | Ok implementation ->
 
-                        match implementation |> List.choose id with
+                        match List.rev implementation with
                         | [ impl ] -> state, Ok (Some (currentTypeHandle, impl, "Found concrete implementation"))
                         | _ :: _ as implementation ->
                             implementation

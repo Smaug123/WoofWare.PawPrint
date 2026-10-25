@@ -143,7 +143,8 @@ module internal DefaultInterfaceImplementation =
                 (state, [], rows)
                 |||> StateResult.fold (fun state acc row ->
                     match bodyOf state row with
-                    | state, Ok body -> state, Ok (acc @ [ body ])
+                    | state, Ok (Some body) -> state, Ok (body :: acc)
+                    | state, Ok None -> state, Ok acc
                     | state, Error failure -> state, Error failure
                 )
 
@@ -151,7 +152,7 @@ module internal DefaultInterfaceImplementation =
             | Error failure -> state, Error failure
             | Ok bodies ->
 
-            match List.choose id bodies with
+            match List.rev bodies with
             | [] -> state, Ok None
             | bodies ->
                 let state, table =
