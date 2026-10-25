@@ -30,6 +30,8 @@ type LaidOutValueTypeFacts =
         IsDecimalFloatingPointOrHasDecimalFloatingPointFields : bool
         /// `MethodTable::ContainsGCPointers`: see `ValueTypeLayoutFacts.ContainsGcPointers`.
         ContainsGcPointers : bool
+        /// See `ValueTypeLayoutFacts.SizeUpperBound`.
+        SizeUpperBound : int64
     }
 
 /// What CoreCLR's type loader records about one value type that marshalling and the JIT read:
@@ -45,7 +47,7 @@ type ValueTypeLayoutFacts =
     /// parent, `System.Enum`, has none.
     | Enum
     /// A value type of auto layout, which has no layout and no layout flags.
-    | WithoutLayout of containsGcPointers : bool
+    | WithoutLayout of containsGcPointers : bool * sizeUpperBound : int64
     /// A value type of sequential or explicit layout. A sequential type that CoreCLR places as auto
     /// layout because it holds GC pointers still has layout.
     | WithLayout of LaidOutValueTypeFacts
@@ -98,8 +100,19 @@ type ValueTypeLayoutFacts =
     member this.ContainsGcPointers : bool =
         match this with
         | ValueTypeLayoutFacts.Enum -> false
-        | ValueTypeLayoutFacts.WithoutLayout containsGcPointers -> containsGcPointers
+        | ValueTypeLayoutFacts.WithoutLayout (containsGcPointers, _) -> containsGcPointers
         | ValueTypeLayoutFacts.WithLayout facts -> facts.ContainsGcPointers
+
+    /// At least the type's instance size in bytes (`MethodTable::GetNumInstanceFieldBytes`). Each
+    /// field counts with room for the strictest alignment CoreCLR gives
+    /// any type (64 bytes, a `Vector512<T>`'s), and the type counts with room to round up to it; a
+    /// declared `ClassSize` counts where it is larger, and an `[InlineArray]` counts its length of
+    /// such elements. An enum's is 8 bytes, its primitive's at most.
+    member this.SizeUpperBound : int64 =
+        match this with
+        | ValueTypeLayoutFacts.Enum -> 8L
+        | ValueTypeLayoutFacts.WithoutLayout (_, bound) -> bound
+        | ValueTypeLayoutFacts.WithLayout facts -> facts.SizeUpperBound
 
 /// The layout facts of a concrete value type, as CoreCLR's type loader computes them when it loads
 /// the type.
@@ -248,6 +261,71 @@ module LayoutFacts =
         | FieldElement.TypedReference
         | FieldElement.Byref
         | FieldElement.Reference -> false
+
+    /// The strictest alignment CoreCLR gives any field, a `Vector512<T>`'s.
+    [<Literal>]
+    let private MaxAlignment = 64L
+
+    /// A size beyond any CoreCLR lays out, at which the bounds saturate, so that none overflows.
+    [<Literal>]
+    let private SaturatedSize = 1099511627776L
+
+    let private saturate (size : int64) : int64 = min size SaturatedSize
+
+    /// At least the size of a field of `element`.
+    let private elementSizeUpperBound (element : FieldElement) : int64 =
+        match element with
+        | FieldElement.Boolean
+        | FieldElement.OneByte -> 1L
+        | FieldElement.Char
+        | FieldElement.TwoBytes -> 2L
+        | FieldElement.FourBytes
+        | FieldElement.Single -> 4L
+        | FieldElement.EightBytes
+        | FieldElement.Double
+        | FieldElement.NativeInteger
+        | FieldElement.Void
+        | FieldElement.Pointer
+        | FieldElement.FunctionPointer
+        | FieldElement.Byref
+        | FieldElement.Reference -> 8L
+        | FieldElement.TypedReference -> 16L
+        | FieldElement.ValueType (_, facts) -> facts.SizeUpperBound
+
+    /// At least the instance size of a type whose row is `typeInfo` and whose instance fields are
+    /// `fields`, each with its declared offset and its element (`ValueTypeLayoutFacts.SizeUpperBound`).
+    let private sizeUpperBound
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (fields : (int option * FieldElement) list)
+        : int64
+        =
+        // Explicit layout places each field at its offset; any other at most an alignment's
+        // padding after the field before it.
+        let placed =
+            match typeInfo.TypeAttributes &&& TypeAttributes.LayoutMask with
+            | TypeAttributes.ExplicitLayout when fields |> List.forall (fun (offset, _) -> offset.IsSome) ->
+                fields
+                |> List.map (fun (offset, element) -> int64 (Option.get offset) + elementSizeUpperBound element)
+                |> List.fold max 0L
+            | _ ->
+                fields
+                |> List.sumBy (fun (_, element) -> elementSizeUpperBound element + MaxAlignment - 1L)
+                |> saturate
+
+        let declared =
+            match typeInfo.Layout with
+            | Layout.Custom (size, _) -> int64 size
+            | Layout.Default -> 0L
+
+        let one = saturate (max placed declared + MaxAlignment - 1L)
+
+        match typeInfo.InlineArrayLength with
+        | Some length when length > 0 ->
+            if one > SaturatedSize / int64 length then
+                SaturatedSize
+            else
+                int64 length * one
+        | _ -> one
 
     let private unmodelled (diagnostic : string) : TypeBindingFailure =
         TypeBindingFailure.Unmodelled
@@ -469,7 +547,8 @@ module LayoutFacts =
                     fieldElementIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen (depth + 1) fieldHandle
                 with
                 | state, Error failure -> state, Error failure
-                | state, Ok (seen, element) -> state, Ok (seen, (field.MarshallingDescriptor, element) :: acc)
+                | state, Ok (seen, element) ->
+                    state, Ok (seen, (field.MarshallingDescriptor, field.Offset, element) :: acc)
             )
 
         match fields with
@@ -477,6 +556,12 @@ module LayoutFacts =
         | Ok (seen, fields) ->
 
         let fields = List.rev fields
+        let placedFields = fields |> List.map (fun (_, offset, element) -> offset, element)
+
+        let fields =
+            fields |> List.map (fun (descriptor, _, element) -> descriptor, element)
+
+        let sizeBound = sizeUpperBound typeInfo placedFields
 
         let containsGcPointers =
             fields
@@ -502,7 +587,7 @@ module LayoutFacts =
 
         let facts =
             match layoutMask with
-            | TypeAttributes.AutoLayout -> Ok (ValueTypeLayoutFacts.WithoutLayout containsGcPointers)
+            | TypeAttributes.AutoLayout -> Ok (ValueTypeLayoutFacts.WithoutLayout (containsGcPointers, sizeBound))
             | TypeAttributes.SequentialLayout
             | TypeAttributes.ExplicitLayout ->
                 // `HasLayoutMetadata`: the charset off Windows, where `Auto` means ANSI.
@@ -568,6 +653,7 @@ module LayoutFacts =
                                 || fieldFacts
                                    |> List.exists _.IsDecimalFloatingPointOrHasDecimalFloatingPointFields
                             ContainsGcPointers = containsGcPointers
+                            SizeUpperBound = sizeBound
                         }
                 )
             | _ ->

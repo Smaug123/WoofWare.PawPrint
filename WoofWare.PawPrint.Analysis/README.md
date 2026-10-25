@@ -194,11 +194,12 @@ method) may add more:
   marshalling enabled; a reference or a byref with it disabled. It walks the return type and then
   the parameters, loading in full each value type and instantiation it meets, so that one
   missing raises `TypeLoadException` there. Whether a value type that loads needs marshalling it
-  decides by its layout, which the analysis does not model
-  (`Opacity.ValueTypeMarshallingVerdict`). Where none needs marshalling, it still refuses the
-  method if its parameters take more than 65535 bytes of stack; the analysis bounds their size
-  from above, and says where the bound reaches that (`Opacity.UnmanagedStackSize`). A return type of a pointer, byref or function pointer
-  type it loads with what it points to. Of a call of unmanaged
+  decides by what the type loader records of its layout, which TypeSystem computes
+  (`LayoutFacts`) and Semantics judges (`MarshalingRequired.valueTypeRequires`). Where none needs
+  marshalling, it still refuses the method if its parameters take more than 65535 bytes of
+  stack; the analysis bounds their size from above, and says where the bound reaches that
+  (`Opacity.UnmanagedStackSize`). A return type of a pointer, byref or function pointer type it
+  loads with what it points to. Of a call of unmanaged
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also
   loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by
@@ -208,9 +209,11 @@ method) may add more:
   convention and, for `unmanaged`, its modifiers. It does not make the transition there in a
   handler or a `try` with a `catch` or a filter, in an assembly whose `DebuggableAttribute`
   disables optimisation, by Fastcall's convention, or for a P/Invoke that does not preserve its
-  signature, sets the last error or converts a locale, and the walk ends at the first type that needs marshalling by its kind (a
-  class, an array, a byref, `string`, and with runtime marshalling `bool`, `char` or a spelt
-  marshalling); elsewhere the analysis takes those to be loads it may make, as whether the JIT
+  signature, sets the last error or converts a locale, and the walk ends at the first type that
+  needs marshalling: by its kind (a class, an array, a byref, `string`, and with runtime
+  marshalling `bool`, `char`, a pointer to a copy-constructed value type or a spelt
+  marshalling), at a value type by its layout facts as above, or where a value type fails to
+  load; elsewhere the analysis takes those to be loads it may make, as whether the JIT
   makes the transition turns on block weights. A class, a byref's target or, by another
   convention, a pointer's target it does not load there; the stub CoreCLR otherwise makes for the
   call loads them as the call runs, where the caller's handlers can catch the failure. Of a

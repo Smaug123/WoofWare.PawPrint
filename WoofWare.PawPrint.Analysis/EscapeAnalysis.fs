@@ -47,14 +47,6 @@ type Opacity =
     /// <c>CallConvs = null</c>, CoreCLR reads the elements of the null array it parsed, and the
     /// compilation faults in the runtime, which kills the process.
     | UnreadableCallingConvention
-    /// A value type in the signature of an <c>[UnmanagedCallersOnly]</c> method, which CoreCLR loads
-    /// and then, before the JIT compiles the method, judges whether it needs marshalling
-    /// (<c>PInvoke::MarshalingRequired</c>): by whether it is blittable or an enum, valid for
-    /// generic marshalling and free of <c>Int128</c> (with runtime marshalling disabled, by whether
-    /// it holds a reference or has an auto-layout part). Where it does, CoreCLR refuses to compile
-    /// the method (<c>InvalidProgramException</c>) before any of it runs. The analysis does not
-    /// model that verdict.
-    | ValueTypeMarshallingVerdict
     /// An <c>[UnmanagedCallersOnly]</c> method none of whose parameters needs marshalling, where
     /// the stack size of its parameters, which CoreCLR sums as it walks them, may not fit in 16
     /// bits: then CoreCLR refuses to compile the method (<c>InvalidProgramException</c>) before any
@@ -112,7 +104,7 @@ type OpaqueSite =
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
         /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>,
-        /// <c>ValueTypeMarshallingVerdict</c>, <c>UnmanagedStackSize</c>).
+        /// <c>UnmanagedStackSize</c>).
         Offset : int option
         Reason : Opacity
         /// The method the instruction's token names, where it names one. For a call, that need not
@@ -2089,6 +2081,69 @@ module EscapeAnalysis =
             let state, failure = spellingBindFailure state assembly spelling
             state, failure.IsNone
 
+    /// What loading `spelling`, a value type of a signature of `assembly` that CoreCLR's walk for
+    /// whether a call needs marshalling loads in full, gives the walk: that it fails to load
+    /// (`spellingLoadFailure`), or its facts (`LayoutFacts`, `MarshalingFacts`). `Error` says why
+    /// the analysis cannot give either: the spelling names a type variable, or the type system
+    /// cannot lay the type out.
+    let private marshalingVerdict
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * Result<ValueTypeVerdictInput, string>
+        =
+        if mentionsTypeVariable spelling then
+            state, Error $"%O{spelling} names a type variable"
+        else
+
+        match spellingLoadFailure state assembly spelling with
+        | state, Some _ -> state, Ok ValueTypeVerdictInput.FailsToLoad
+        | state, None ->
+
+        match concretizable state assembly spelling with
+        | state, false -> state, Error $"the type system cannot instantiate %O{spelling}"
+        | state, true ->
+
+        let typeSystem, handle =
+            TypeSystemState.concretizeType
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                state.TypeSystem
+                assembly.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                spelling
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        match handle with
+        | Error failure -> state, Error (TypeBindingFailure.describe failure)
+        | Ok handle ->
+
+        let typeSystem, facts =
+            LayoutFacts.ofValueType state.LoggerFactory state.RuntimeDirs state.BaseTypes state.TypeSystem handle
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        match facts, TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem handle with
+        | Error failure, _ -> state, Error (TypeBindingFailure.describe failure)
+        | Ok None, _ -> state, Error $"%O{spelling} is spelled as a value type, and names a class"
+        | Ok (Some facts), Some (concrete, typeInfo) ->
+            state,
+            Ok (
+                ValueTypeVerdictInput.Loads (
+                    MarshalingFacts.ofLayoutFacts state.BaseTypes.Corelib concrete typeInfo facts
+                )
+            )
+        | Ok (Some _), None -> failwith $"BUG: the concrete handle %O{handle} has no TypeDef row"
+
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
         (state : EscapeAnalysisState)
@@ -2538,7 +2593,12 @@ module EscapeAnalysis =
                     let runtimeMarshalling = JitTypeLoads.unmanagedRuntimeMarshalling call
 
                     // The walk's loads are ones the JIT may make or not, so a value type's verdict
-                    // the analysis does not give leaves the walk going on past it.
+                    // the analysis cannot give leaves the walk going on past it.
+                    let verdict (state : EscapeAnalysisState) (spelling : TypeDefn) =
+                        match marshalingVerdict state assembly spelling with
+                        | state, Ok input -> state, input
+                        | state, Error _ -> state, ValueTypeVerdictInput.Undecided
+
                     let state, walk =
                         MarshalingRequired.positions
                             assembly
@@ -2546,7 +2606,7 @@ module EscapeAnalysis =
                             signature
                             (JitTypeLoads.unmanagedParameterMarshalling call)
                         |> MarshalingRequired.start runtimeMarshalling
-                        |> runMarshalingWalk (fun state _ -> state, ValueTypeVerdictInput.Undecided) state
+                        |> runMarshalingWalk verdict state
 
                     state,
                     JitTypeLoads.unmanagedMeetings state.Target call signature walk
@@ -3474,8 +3534,8 @@ module EscapeAnalysis =
     /// `[UnmanagedCallersOnly]` (`ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`).
     [<RequireQualifiedAccess>]
     type private CallersOnlyValidation =
-        /// The JIT runs, and these come first: where a value type's marshalling verdict decides,
-        /// the opacity of that verdict, and where the parameters' stack size may, its opacity.
+        /// The JIT runs, and these come first: where the parameters' stack size may yet refuse the
+        /// method, the opacity of that size.
         | Compiles of Set<OutsideBodyFact>
         /// CoreCLR refuses to compile the method, raising this, before any of it runs and before
         /// the JIT loads the types of its parameters and locals.
@@ -3487,8 +3547,8 @@ module EscapeAnalysis =
     /// a generic type, or that needs marshalling (`PInvoke::MarshalingRequired`): one carrying
     /// `[LCIDConversion]`, or whose return type or a parameter does, walked in that order, loading
     /// in full each value type and instantiation it meets, so that one failing to load raises there
-    /// instead, or whose parameters take too much stack. A value type's verdict, the analysis does
-    /// not model (`ValueTypeMarshallingVerdict`).
+    /// instead and judging each value type by its layout facts (`MarshalingRequired.valueTypeRequires`),
+    /// or whose parameters take too much stack (`Opacity.UnmanagedStackSize`).
     let private callersOnlyValidation
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -3554,10 +3614,14 @@ module EscapeAnalysis =
             (NamedAttribute.ofAssembly "System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute" assembly)
                 .IsEmpty
 
+        // An `[UnmanagedCallersOnly]` method is neither generic nor of a generic type, so its
+        // signature names no type variable.
         let verdict (state : EscapeAnalysisState) (spelling : TypeDefn) =
-            match loadFails state spelling with
-            | state, Some _ -> state, ValueTypeVerdictInput.FailsToLoad
-            | state, None -> state, ValueTypeVerdictInput.Undecided
+            match marshalingVerdict state assembly spelling with
+            | state, Ok input -> state, input
+            | _, Error reason ->
+                failwith
+                    $"The marshalling walk of [UnmanagedCallersOnly] %s{method.Name} loads a value type the analysis cannot judge: %s{reason}"
 
         let state, walk =
             MarshalingRequired.positions
@@ -3568,14 +3632,6 @@ module EscapeAnalysis =
             |> MarshalingRequired.start runtimeMarshalling
             |> runMarshalingWalk verdict state
 
-        // A value type whose verdict is undecided before the walk's end may refuse the method there
-        // first, so its opacity stays with whatever the walk ends in.
-        let undecided =
-            if walk.Undecided.IsEmpty then
-                Set.empty
-            else
-                Set.singleton (OutsideBodyFact.Opaque Opacity.ValueTypeMarshallingVerdict)
-
         let state, failure =
             ((state, None), walk.Loads)
             ||> List.fold (fun (state, failure) (_, spelling) ->
@@ -3585,19 +3641,16 @@ module EscapeAnalysis =
             )
 
         match failure, walk.Ending with
-        | Some failures, _ -> state, CallersOnlyValidation.Refused (Set.union undecided failures)
+        | Some failures, _ -> state, CallersOnlyValidation.Refused failures
         | None, MarshalingEnding.LoadFails position ->
             failwith $"BUG: the marshalling walk's load at position %d{position} failed, but loading it again does not"
-        | None, MarshalingEnding.Required _ ->
-            state, CallersOnlyValidation.Refused (Set.union undecided (refusal state))
+        | None, MarshalingEnding.Required _ -> state, CallersOnlyValidation.Refused (refusal state)
         | None, MarshalingEnding.NoneRequired stackMayOverflow ->
-            let stack =
-                if stackMayOverflow && walk.Undecided.IsEmpty then
-                    Set.singleton (OutsideBodyFact.Opaque Opacity.UnmanagedStackSize)
-                else
-                    Set.empty
-
-            state, CallersOnlyValidation.Compiles (Set.union undecided stack)
+            if stackMayOverflow then
+                state,
+                CallersOnlyValidation.Compiles (Set.singleton (OutsideBodyFact.Opaque Opacity.UnmanagedStackSize))
+            else
+                state, CallersOnlyValidation.Compiles Set.empty
 
     /// The exceptions an operation of the runtime's own can raise (`runtimeRaises`). Its contract
     /// says under which conditions on its arguments; the analysis does not track their values, so
