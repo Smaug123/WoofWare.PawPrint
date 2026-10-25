@@ -10108,6 +10108,15 @@ public static unsafe class Calls
                 false,
                 CallOutcome.Escapes typeLoad
                 "AttributeSwiftModoptSwift", winapi, Some swift, [ swift ], [], false, false, swiftEscapes
+                // The member-function modifier alone names the default convention's variant.
+                "AttributeMemberModoptCdecl",
+                winapi,
+                Some memberFunction,
+                [ cdecl ],
+                [],
+                false,
+                false,
+                CallOutcome.Escapes typeLoad
             ]
 
         let clientImage =
