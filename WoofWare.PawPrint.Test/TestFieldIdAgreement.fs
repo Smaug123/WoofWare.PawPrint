@@ -399,7 +399,7 @@ public class Outer<A>
 
             ((state, acc), presentations)
             ||> List.fold (fun (state, acc) (description, field', typeContext, methodContext) ->
-                let state, accessSiteHandle, _ =
+                let state, accessSiteHandleResult =
                     ExecutionConcretization.concretizeFieldDeclaringType
                         loggerFactory
                         bct
@@ -407,6 +407,8 @@ public class Outer<A>
                         methodContext
                         field'
                         state
+
+                let accessSiteHandle, _ = BindingResult.value accessSiteHandleResult
 
                 if accessSiteHandle <> declaringHandle then
                     state,

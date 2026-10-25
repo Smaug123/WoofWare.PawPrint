@@ -200,7 +200,7 @@ module NativeObjectHeader =
                         4
                         purpose
 
-                let state, concretized, _declaringType =
+                let state, concretizedResult =
                     ExecutionConcretization.concretizeMethodWithTypeGenerics
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
@@ -210,6 +210,8 @@ module NativeObjectHeader =
                         ctx.BaseClassTypes.Corelib.DefinitionFullName
                         ImmutableArray.Empty
                         state
+
+                let concretized, _declaringType = BindingStop.bound concretizedResult
 
                 let pLock, state = HostStartupCall.allocateReferenceLocal offered state
                 let slot, state = HostStartupCall.allocateExceptionSlot state

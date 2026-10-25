@@ -141,7 +141,7 @@ static class Program
             let methodGenerics =
                 key.MethodGenerics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
 
-            let afterState, declaringAssembly, fresh, targetTypeGenerics =
+            let afterState, binding =
                 IlMachineMemberResolution.resolveMemberWithGenerics
                     state.LoggerFactory
                     baseClassTypes
@@ -151,6 +151,9 @@ static class Program
                     methodGenerics
                     (MetadataTokens.MemberReferenceHandle key.MemberRow)
                     state
+
+            let declaringAssembly, fresh, targetTypeGenerics =
+                BindingResult.memberValue assy (MetadataTokens.MemberReferenceHandle key.MemberRow) binding
 
             declaringAssembly.FullName |> shouldEqual memoised.DeclaringAssembly.FullName
 

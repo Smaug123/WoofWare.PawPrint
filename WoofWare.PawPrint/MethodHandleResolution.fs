@@ -202,7 +202,7 @@ module MethodHandleResolution =
             failwith
                 $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} generic parameter(s) but the handle carries %d{methodGenerics.Length} generic argument(s); the managed reflection layer is expected to reject an uninstantiated generic method before the QCall"
 
-        let state, concretized, _declaringTypeHandle =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -210,5 +210,7 @@ module MethodHandleResolution =
                 methodInfo
                 methodGenerics
                 state
+
+        let concretized, _declaringTypeHandle = BindingStop.bound concretizedResult
 
         state, concretized, declaringTypeHandle

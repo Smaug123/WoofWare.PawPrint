@@ -86,6 +86,8 @@ module internal TypeofIntrinsicFold =
                             h
                             state
 
+                    let resolved = TokenBindingStop.memberReference activeAssy h resolved
+
                     match resolved with
                     | MemberReferenceResolution.Resolved (_, Choice1Of2 method, _) ->
                         state, isDeclaredOnCorelibSystemType baseClassTypes method

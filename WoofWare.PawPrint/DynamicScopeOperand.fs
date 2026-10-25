@@ -1177,7 +1177,7 @@ module internal DynamicScopeOperand =
                 failwith<TypeDefn> $"%s{operation}: System.Reflection.Emit.DynamicMethod was unexpectedly generic"
             )
 
-        let state, concretized, _declaringType =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -1186,6 +1186,8 @@ module internal DynamicScopeOperand =
                 None
                 None
                 state
+
+        let concretized, _declaringType = BindingStop.bound concretizedResult
 
         // The caller's evaluation stack already holds the naming instruction's operands, and they
         // must still be there when it re-executes. callMethod pops exactly the one `this` pushed

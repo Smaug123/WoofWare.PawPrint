@@ -19,8 +19,11 @@ module internal UnaryMetadataArrayOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, elementType, assy =
+                let state, elementTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let elementType, assy =
+                    TokenBindingStop.typeToken activeAssy metadataToken elementTypeResult
 
                 // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607)
                 // so that the zero below is computed the same way for both universes.
@@ -151,13 +154,16 @@ module internal UnaryMetadataArrayOps =
         (state : IlMachineState)
         : IlMachineState * ConcreteTypeHandle
         =
-        let state, elementType, assy =
+        let state, elementTypeResult =
             IlMachineState.resolveTypeMetadataToken
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 state
                 ctx.ActiveAssembly
                 ctx.MetadataToken
+
+        let elementType, assy =
+            TokenBindingStop.typeToken ctx.ActiveAssembly ctx.MetadataToken elementTypeResult
 
         let state = state.WithLoadedAssembly assy
 
@@ -210,8 +216,11 @@ module internal UnaryMetadataArrayOps =
             match ctx.TypeOperand with
             | ResolvedTypeOperand.FromScope handle -> state, handle
             | ResolvedTypeOperand.FromMetadata (activeAssy, metadataToken) ->
-                let state, elementType, elementAssy =
+                let state, elementTypeResult =
                     IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy metadataToken
+
+                let elementType, elementAssy =
+                    TokenBindingStop.typeToken activeAssy metadataToken elementTypeResult
 
                 // `cliTypeZeroOf` split into its two halves (IlMachineTypeResolution.fs:586-607).
                 let state = state.WithLoadedAssembly elementAssy

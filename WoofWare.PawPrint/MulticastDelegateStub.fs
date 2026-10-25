@@ -59,7 +59,7 @@ module MulticastDelegateStub =
                     failwith
                         $"%s{operation}: delegate type %s{typeInfo.Namespace}.%s{typeInfo.Name} declares %d{several.Length} instance methods named Invoke; a delegate type has exactly one"
 
-        let state, concretised, _declaringHandle =
+        let state, concretisedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -67,6 +67,8 @@ module MulticastDelegateStub =
                 invoke
                 ImmutableArray.Empty
                 state
+
+        let concretised, _declaringHandle = BindingStop.bound concretisedResult
 
         state, concretised
 

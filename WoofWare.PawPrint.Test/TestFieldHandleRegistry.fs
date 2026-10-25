@@ -697,7 +697,7 @@ public class GenericHolder<T>
                     failwith
                         $"QCall entry point RuntimeTypeHandle_GetFields was ambiguous on System.RuntimeTypeHandle: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -707,6 +707,8 @@ public class GenericHolder<T>
                 fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, runtimeTypeHandleType, method
 
@@ -729,7 +731,7 @@ public class GenericHolder<T>
                 | methods ->
                     failwith $"RuntimeFieldHandle.GetAttributes native method was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -739,6 +741,8 @@ public class GenericHolder<T>
                 fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, runtimeFieldHandleType, method
 

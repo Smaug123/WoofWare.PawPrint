@@ -43,8 +43,11 @@ module ExceptionDispatching =
         =
         match catchType with
         | ExceptionCatchType.FromMetadata catchTypeToken ->
-            let state, catchTypeDefn, catchAssy =
+            let state, catchTypeDefnResult =
                 IlMachineState.resolveTypeMetadataToken loggerFactory baseClassTypes state activeAssy catchTypeToken
+
+            let catchTypeDefn, catchAssy =
+                TokenBindingStop.typeToken activeAssy catchTypeToken catchTypeDefnResult
 
             IlMachineState.concretizeType
                 loggerFactory

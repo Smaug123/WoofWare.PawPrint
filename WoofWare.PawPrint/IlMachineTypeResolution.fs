@@ -374,22 +374,18 @@ module IlMachineTypeResolution =
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : IlMachineState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let typeSystem, assembly, typeInfo =
-            match
-                TypeSystemState.resolveTypeFromRef
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    referencedInAssembly
-                    target
-                    typeGenericArgs
-                    state.TypeSystem
-            with
-            | typeSystem, Ok (assembly, typeInfo) -> typeSystem, assembly, typeInfo
-            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
+        let typeSystem, result =
+            TypeSystemState.resolveTypeFromRef
+                loggerFactory
+                state.DotnetRuntimeDirs
+                referencedInAssembly
+                target
+                typeGenericArgs
+                state.TypeSystem
 
-        state.WithTypeSystem typeSystem, assembly, typeInfo
+        state.WithTypeSystem typeSystem, result
 
     /// `TypeSystemState.resolveType` against the machine's type system.
     let resolveType
@@ -398,16 +394,12 @@ module IlMachineTypeResolution =
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : IlMachineState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let typeSystem, resolvedAssy, typeInfo =
-            match
-                TypeSystemState.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state.TypeSystem
-            with
-            | typeSystem, Ok (resolvedAssy, typeInfo) -> typeSystem, resolvedAssy, typeInfo
-            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure assy.TypeRefs.[ty] assy failure)
+        let typeSystem, result =
+            TypeSystemState.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state.TypeSystem
 
-        state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
+        state.WithTypeSystem typeSystem, result
 
     let resolveTypeFromDefn
         (loggerFactory : ILoggerFactory)
@@ -452,24 +444,20 @@ module IlMachineTypeResolution =
         (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : IlMachineState)
-        : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : IlMachineState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let typeSystem, resolvedAssy, typeInfo =
-            match
-                TypeSystemState.resolveTypeFromSpec
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    baseClassTypes
-                    ty
-                    assy
-                    typeGenericArgs
-                    methodGenericArgs
-                    state.TypeSystem
-            with
-            | typeSystem, Ok (resolvedAssy, typeInfo) -> typeSystem, resolvedAssy, typeInfo
-            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+        let typeSystem, result =
+            TypeSystemState.resolveTypeFromSpec
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                ty
+                assy
+                typeGenericArgs
+                methodGenericArgs
+                state.TypeSystem
 
-        state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
+        state.WithTypeSystem typeSystem, result
 
     /// Resolve a TypeSpecification using concrete type handles from execution context
     let resolveTypeFromSpecConcrete
