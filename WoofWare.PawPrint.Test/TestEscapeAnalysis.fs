@@ -12966,6 +12966,10 @@ public static class Runners
             GoneByref : EntityHandle
             /// `int32&` under `modopt(IsConst)`
             ModifiedByref : EntityHandle
+            /// `pinned int32&`
+            PinnedByref : EntityHandle
+            /// `pinned void`
+            PinnedVoid : EntityHandle
             Exception : EntityHandle
             /// `Object::GetHashCode`
             ObjectGetHashCode : EntityHandle
@@ -13094,6 +13098,17 @@ public static class Runners
                 ValueTypeVoidSpec = typeSpec (fun blob -> SignatureTypeEncoder(blob).Type (voidRef, true))
                 GoneByref = typeSpec (byrefOf (fun element -> element.Type (goneRef, false)))
                 // ECMA-335 II.23.2.7: ELEMENT_TYPE_CMOD_OPT is 0x20, then the modifier's coded index.
+                // ECMA-335 II.23.1.16: ELEMENT_TYPE_PINNED is 0x45.
+                PinnedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        byrefOf _.Int32() blob
+                    )
+                PinnedVoid =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        blob.WriteByte 0x01uy
+                    )
                 ModifiedByref =
                     typeSpec (fun blob ->
                         blob.WriteByte 0x20uy
@@ -13400,6 +13415,15 @@ public static class Runners
             yield
                 "Castclass_ModifiedByref",
                 returning (fun operands -> castclass operands operands.ModifiedByref),
+                Refusal.Raises invalidProgram
+            // Nor does `pinned`, which no TypeSpec should spell.
+            yield
+                "Castclass_PinnedByref",
+                returning (fun operands -> castclass operands operands.PinnedByref),
+                Refusal.Raises invalidProgram
+            yield
+                "Castclass_PinnedVoid",
+                returning (fun operands -> castclass operands operands.PinnedVoid),
                 Refusal.Raises invalidProgram
             // And it finds the member before it refuses its parent: looking up through
             // `System.Void` finds no non-virtual method it inherits.
