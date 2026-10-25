@@ -658,3 +658,121 @@ public static class Outer<U>
                 ConcreteTypeHandle.Array (int32, 2)
             ]
         |> shouldEqual None
+
+    /// Arguments C# cannot declare, against `new()`: an abstract value type, which CoreCLR loads but
+    /// whose abstractness `new()` rejects; and a class whose only parameterless instance `.ctor` is
+    /// not marked `RTSpecialName`, which CoreCLR does not take for a constructor at all.
+    [<Test>]
+    let ``new() rejects an abstract value type, and a .ctor without RTSpecialName, as on the host`` () : unit =
+        let fabricated =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (Reflection.AssemblyName "NewShapes", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "NewShapes"
+
+            let abstractStruct =
+                modul.DefineType (
+                    "AbstractStruct",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Sealed
+                    ||| Reflection.TypeAttributes.Abstract,
+                    typeof<ValueType>
+                )
+
+            abstractStruct.CreateType () |> ignore<Type>
+
+            let notSpecial =
+                modul.DefineType (
+                    "NotSpecialCtor",
+                    Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                )
+
+            let baseConstructor = typeof<obj>.GetConstructor Type.EmptyTypes
+
+            let real =
+                notSpecial.DefineConstructor (
+                    Reflection.MethodAttributes.Public,
+                    Reflection.CallingConventions.Standard,
+                    [| typeof<int> |]
+                )
+
+            do
+                let il = real.GetILGenerator ()
+                il.Emit Reflection.Emit.OpCodes.Ldarg_0
+                il.Emit (Reflection.Emit.OpCodes.Call, baseConstructor)
+                il.Emit Reflection.Emit.OpCodes.Ret
+
+            let ordinary =
+                notSpecial.DefineMethod (
+                    ".ctor",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.HideBySig,
+                    Reflection.CallingConventions.HasThis,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            ordinary.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+            notSpecial.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let hostAssembly = Reflection.Assembly.Load fabricated
+
+        let assembly =
+            use stream = new MemoryStream (fabricated)
+            AssemblyApi.read loggerFactory None stream
+
+        let mutable state = initialState.WithLoadedAssembly assembly
+        let holder = corpusType "H_New`1"
+
+        let failures =
+            [
+                for name in [ "AbstractStruct" ; "NotSpecialCtor" ] do
+                    let typeInfo = assembly.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+                    match
+                        hostVerdict (fun () -> box ((hostType "H_New`1").MakeGenericType (hostAssembly.GetType name)))
+                    with
+                    | Some 0 -> ()
+                    | other -> yield $"H_New<%s{name}>: the host's verdict is %A{other}, not a rejection"
+
+                    let next, handle =
+                        match
+                            TypeSystemState.concretizeType
+                                loggerFactory
+                                HostImage.runtimeDirs
+                                bct
+                                state
+                                assembly.DefinitionFullName
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                (TypeDefn.FromDefinition (
+                                    typeInfo.Identity,
+                                    LoadedTypeInfo.signatureTypeKind bct state._LoadedAssemblies typeInfo
+                                ))
+                        with
+                        | next, Ok handle -> next, handle
+                        | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+
+                    match
+                        ConstraintSatisfaction.satisfiesClosed
+                            loggerFactory
+                            HostImage.runtimeDirs
+                            bct
+                            next
+                            corpus.DefinitionFullName
+                            (ImmutableArray.Create handle)
+                            ImmutableArray.Empty
+                            holder.Generics
+                            [ handle ]
+                    with
+                    | next, Ok (ConstraintVerdict.Violated violation) when
+                        violation.Rule = ConstraintRule.ParameterlessConstructor
+                        ->
+                        state <- next
+                    | _, other -> yield $"H_New<%s{name}>: TypeSystem's verdict is %A{other}"
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
