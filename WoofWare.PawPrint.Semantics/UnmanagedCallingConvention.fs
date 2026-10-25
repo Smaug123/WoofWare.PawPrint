@@ -199,29 +199,31 @@ module UnmanagedCallersOnly =
         | EmulatedRuntime.Net11 -> false
 
     /// The modifiers `MarshalingRequired` looks for on a value type a pointer points to, which make
-    /// the pointer need marshalling where runtime marshalling is enabled.
-    let private copyConstructorModifiers : Set<string * string> =
+    /// the pointer need marshalling where runtime marshalling is enabled, by the full names CoreCLR
+    /// compares (`IsTypeRefOrDef`).
+    let private copyConstructorModifiers : Set<string> =
         Set.ofList
             [
-                "Microsoft.VisualC", "NeedsCopyConstructorModifier"
-                "System.Runtime.CompilerServices", "IsCopyConstructed"
+                "Microsoft.VisualC.NeedsCopyConstructorModifier"
+                "System.Runtime.CompilerServices.IsCopyConstructed"
             ]
 
-    /// The namespace and name of a type `assembly` spells by a reference or a definition.
-    let private spelledName (assembly : DumpedAssembly) (spelling : TypeDefn) : (string * string) option =
+    /// The full name of a type `assembly` spells by a reference or a definition: its namespace and
+    /// name joined with a dot, or its name alone where the namespace is empty, which is how CoreCLR
+    /// compares a name with one the metadata splits (`IsTypeRefOrDef`).
+    let private spelledName (assembly : DumpedAssembly) (spelling : TypeDefn) : string option =
+        let joined (ns : string) (name : string) : string =
+            if ns = "" then name else ns + "." + name
+
         match spelling with
-        | TypeDefn.FromReference (typeRef, _) -> Some (typeRef.Namespace, typeRef.Name)
+        | TypeDefn.FromReference (typeRef, _) -> Some (joined typeRef.Namespace typeRef.Name)
         | TypeDefn.FromDefinition (identity, _) when identity.AssemblyFullName = assembly.DefinitionFullName ->
             let definition = assembly.TypeDefs.[identity.TypeDefinition.Get]
-            Some (definition.Namespace, definition.Name)
+            Some (joined definition.Namespace definition.Name)
         | _ -> None
 
     /// The names of the required modifiers on `spelling`, outermost first, and what they modify.
-    let rec private requiredModifiers
-        (assembly : DumpedAssembly)
-        (spelling : TypeDefn)
-        : (string * string) list * TypeDefn
-        =
+    let rec private requiredModifiers (assembly : DumpedAssembly) (spelling : TypeDefn) : string list * TypeDefn =
         match spelling with
         | TypeDefn.Modified modified ->
             let names, unmodified = requiredModifiers assembly modified.Unmodified
