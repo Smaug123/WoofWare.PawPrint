@@ -137,7 +137,7 @@ module internal UnaryMetadataFieldOps =
 
                     state, Ok field
             | MetadataToken.MemberReference mr ->
-                let state, _, resolved, _ =
+                let state, resolved =
                     IlMachineState.resolveMember
                         (MemberReferenceUse.Other opName)
                         ctx.LoggerFactory
@@ -148,11 +148,16 @@ module internal UnaryMetadataFieldOps =
                         state
 
                 match resolved with
-                | Choice1Of2 method ->
+                | MemberReferenceResolution.RefusedParent refusal ->
+                    failwith
+                        $"BUG: %s{opName}: a field reference bound through %O{refusal}, but neither it nor any type it inherits declares a field, so the reference should have failed to bind"
+                | MemberReferenceResolution.Resolved (_, Choice1Of2 method, _) ->
                     failwith
                         $"%s{opName}: member reference resolved to a method (%s{method.Name}), not a field. This indicates invalid IL or a misresolved token."
-                | Choice2Of2 (FieldReferenceBinding.Bound field) -> state, Ok field
-                | Choice2Of2 (FieldReferenceBinding.Fails failure) -> state, Error failure
+                | MemberReferenceResolution.Resolved (_, Choice2Of2 (FieldReferenceBinding.Bound field), _) ->
+                    state, Ok field
+                | MemberReferenceResolution.Resolved (_, Choice2Of2 (FieldReferenceBinding.Fails failure), _) ->
+                    state, Error failure
             | t -> failwith $"Unexpectedly asked to %s{verb} a non-field: {t}"
 
         match field with

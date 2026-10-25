@@ -129,6 +129,8 @@ module TestConstrainedType =
                     ImmutableArray.Empty
                     spelled
 
+            let handle = BindingResult.value handle
+
             state <- next
             handle
 
@@ -267,6 +269,8 @@ module TestConstrainedType =
                         corelib.TypeDefs.[MetadataTokens.TypeDefinitionHandle host.MetadataToken].Identity,
                         SignatureTypeKind.ValueType
                     ))
+
+            let handle = BindingResult.value handle
 
             state <- next
             handle

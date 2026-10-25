@@ -408,14 +408,14 @@ module internal UnaryMetadataObjectOps =
         | Some (arrayType, sig0) -> executeArrayNewobj ctx state arrayType sig0
         | None ->
 
-        let state, ctor, typeArgsFromMetadata =
+        let state, ctor =
             match metadataToken with
             | MethodDef md ->
                 let method = activeAssy.Methods.[md]
 
-                state, MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method, None
+                state, Ok (MethodInfo.mapTypeGenerics (fun _ -> failwith "non-generic method") method, None)
             | MemberReference mr ->
-                let state, _, method, extractedTypeArgs =
+                let state, resolved =
                     IlMachineState.resolveMember
                         (MemberReferenceUse.Other "newobj")
                         loggerFactory
@@ -425,10 +425,17 @@ module internal UnaryMetadataObjectOps =
                         mr
                         state
 
-                match method with
-                | Choice1Of2 ctor -> state, ctor, Some extractedTypeArgs
-                | Choice2Of2 _field -> failwith "unexpectedly NewObj found a constructor which is a field"
+                match resolved with
+                | MemberReferenceResolution.Resolved (_, Choice1Of2 ctor, extractedTypeArgs) ->
+                    state, Ok (ctor, Some extractedTypeArgs)
+                | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) ->
+                    failwith "unexpectedly NewObj found a constructor which is a field"
+                | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
             | x -> failwith $"Unexpected metadata token for constructor: %O{x}"
+
+        match ctor with
+        | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | Ok (ctor, typeArgsFromMetadata) ->
 
         let state, concretizedCtor, declaringTypeHandle =
             ExecutionConcretization.concretizeMethodForExecution

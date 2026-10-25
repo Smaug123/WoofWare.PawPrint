@@ -246,7 +246,7 @@ public class Outer<A>
                 ImmutableArray.Empty
                 ty
 
-        let loaded, concreteTypes =
+        let loaded, concreteTypes, failure =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 (IlMachineState.loader loggerFactory state)
                 bct
@@ -254,6 +254,8 @@ public class Outer<A>
                 state.TypeSystem._LoadedAssemblies
                 state.TypeSystem.ConcreteTypes
                 handle
+
+        BindingResult.completed failure
 
         let state =
             absorbLoads

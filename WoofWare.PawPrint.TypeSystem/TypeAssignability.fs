@@ -59,7 +59,7 @@ module TypeAssignability =
                                 // RelativeToAssembly is set to the assembly containing the type definition.
                                 assy
 
-                        let state, implTypeDefn, implResolvedAssy =
+                        let state, implTypeDefnResult =
                             TypeSystemState.resolveTypeMetadataToken
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -67,6 +67,8 @@ module TypeAssignability =
                                 state
                                 implAssy
                                 impl.InterfaceHandle
+
+                        let implTypeDefn, implResolvedAssy = BindingStop.bound implTypeDefnResult
 
                         let state, implHandle =
                             TypeSystemState.concretizeType
@@ -78,6 +80,8 @@ module TypeAssignability =
                                 ct.Generics
                                 ImmutableArray.Empty
                                 implTypeDefn
+
+                        let implHandle = BindingStop.bound implHandle
 
                         // Check exact match, then recurse into the interface's own parent interfaces.
                         walk state implHandle

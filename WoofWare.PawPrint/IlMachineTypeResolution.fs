@@ -75,7 +75,7 @@ module IlMachineTypeResolution =
                 methodGenerics
                 ty
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.concretizeMethodSignature` against the machine's type system.
     let concretizeMethodSignature
@@ -99,7 +99,7 @@ module IlMachineTypeResolution =
                 methodGenerics
                 signature
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.concretizeReturnColumn` against the machine's type system.
     let concretizeReturnColumn
@@ -123,7 +123,7 @@ module IlMachineTypeResolution =
                 methodGenerics
                 returnType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.methodConstraintsMatch` against the machine's type system.
     let methodConstraintsMatch
@@ -143,7 +143,7 @@ module IlMachineTypeResolution =
                 impl
                 decl
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.signaturesEquivalent` against the machine's type system.
     let signaturesEquivalent
@@ -165,7 +165,7 @@ module IlMachineTypeResolution =
                 caller
                 callee
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.signaturesEquivalentWithoutSubstitution` against the machine's type system.
     let signaturesEquivalentWithoutSubstitution
@@ -187,7 +187,7 @@ module IlMachineTypeResolution =
                 caller
                 callee
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.substitutionsEquivalent` against the machine's type system.
     let substitutionsEquivalent
@@ -207,7 +207,7 @@ module IlMachineTypeResolution =
                 left
                 right
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
@@ -377,13 +377,17 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let typeSystem, assembly, typeInfo =
-            TypeSystemState.resolveTypeFromRef
-                loggerFactory
-                state.DotnetRuntimeDirs
-                referencedInAssembly
-                target
-                typeGenericArgs
-                state.TypeSystem
+            match
+                TypeSystemState.resolveTypeFromRef
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    referencedInAssembly
+                    target
+                    typeGenericArgs
+                    state.TypeSystem
+            with
+            | typeSystem, Ok (assembly, typeInfo) -> typeSystem, assembly, typeInfo
+            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
 
         state.WithTypeSystem typeSystem, assembly, typeInfo
 
@@ -397,7 +401,11 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let typeSystem, resolvedAssy, typeInfo =
-            TypeSystemState.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state.TypeSystem
+            match
+                TypeSystemState.resolveType loggerFactory state.DotnetRuntimeDirs ty genericArgs assy state.TypeSystem
+            with
+            | typeSystem, Ok (resolvedAssy, typeInfo) -> typeSystem, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure assy.TypeRefs.[ty] assy failure)
 
         state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
 
@@ -447,15 +455,19 @@ module IlMachineTypeResolution =
         : IlMachineState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
         let typeSystem, resolvedAssy, typeInfo =
-            TypeSystemState.resolveTypeFromSpec
-                loggerFactory
-                state.DotnetRuntimeDirs
-                baseClassTypes
-                ty
-                assy
-                typeGenericArgs
-                methodGenericArgs
-                state.TypeSystem
+            match
+                TypeSystemState.resolveTypeFromSpec
+                    loggerFactory
+                    state.DotnetRuntimeDirs
+                    baseClassTypes
+                    ty
+                    assy
+                    typeGenericArgs
+                    methodGenericArgs
+                    state.TypeSystem
+            with
+            | typeSystem, Ok (resolvedAssy, typeInfo) -> typeSystem, resolvedAssy, typeInfo
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         state.WithTypeSystem typeSystem, resolvedAssy, typeInfo
 
@@ -787,6 +799,8 @@ module IlMachineTypeResolution =
                     ImmutableArray.Empty // No type generics in this context
                     ImmutableArray.Empty // No method generics in this context
                     genericArg
+
+            let handle = BindingStop.bound handle
 
             currentCtx <- newCtx
             genericHandles.Add handle

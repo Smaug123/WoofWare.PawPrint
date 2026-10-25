@@ -80,7 +80,9 @@
     <Compile Include="AssemblyGraphShape.fs" />
     <Compile Include="TestAssemblyProbe.fs" />
     <Compile Include="TestTypeResolution.fs" />
+    <Compile Include="UnmodelledImage.fs" />
     <Compile Include="TestUnmodelledBinding.fs" />
+    <Compile Include="TestTypeSystemBindingFailure.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />
@@ -369,6 +371,7 @@
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
     <Compile Include="TestFabricatedClassSlotMethodImpl.fs" />
     <Compile Include="TestFabricatedConstrainedEnumRetarget.fs" />
+    <Compile Include="TestFabricatedWrappedEnumStore.fs" />
     <Compile Include="TestFabricatedUnimplementedInterface.fs" />
     <Compile Include="TestFabricatedConstrainedClassMethod.fs" />
     <Compile Include="TestFabricatedDefaultBodyOrder.fs" />
@@ -399,6 +402,7 @@
     <Compile Include="TestFabricatedLongFormArgLocal.fs" />
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedInheritedMemberReference.fs" />
+    <Compile Include="TestFabricatedVoidParentMemberReference.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />

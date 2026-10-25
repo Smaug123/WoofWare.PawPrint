@@ -914,6 +914,10 @@ module EvalStackValue =
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ofManagedPointer src))
                         | CliRuntimePointer.GcHandlePtr (addr, tag) ->
                             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.GcHandlePtr (addr, tag)))
+                    // A value type nested at offset 0, such as the `System.IntPtr` that is the
+                    // `value__` of an enum over `nint`: step into it, as `ofCliType` does when it
+                    // flattens a primitive-like wrapper, so its native int keeps its provenance.
+                    | CliType.ValueType _ as nested -> toCliTypeCoerced target (ofCliType nested)
                     | _ -> failwith $"TODO: {popped}"
                 | _ -> failwith $"TODO: {popped}"
             | CliNumericType.NativeFloat f -> failwith "todo"
@@ -1116,13 +1120,22 @@ module EvalStackValue =
             | popped ->
                 // A bare primitive popped into a ValueType slot is only legal for primitive-like
                 // wrappers: the BCL handles (IntPtr, RuntimeTypeHandle, ...) flattened on push,
-                // and enums, where CIL freely coerces between the underlying integer on the stack
-                // and the enum slot. Both cases share the same rewrap: clone the target's single-
-                // field skeleton and store the coerced primitive into `value__`/`_value`. A
+                // and enums, where CIL freely coerces between the underlying primitive on the stack
+                // and the enum slot, including the enums over `bool`, `char` and native ints whose
+                // storage is not flattened. Every case shares the same rewrap: clone the target's
+                // single-field skeleton and store the coerced primitive into `value__`/`_value`. A
                 // single-field user-defined struct receiving a bare primitive is invalid IL; fail
                 // loud so the misfire surfaces instead of silently degrading the storage shape.
-                if vt.PrimitiveLikeKind.IsSome then
-                    let field = CliValueType.PrimitiveLikeField vt
+                let field =
+                    if vt.PrimitiveLikeKind.IsSome then
+                        Some (CliValueType.PrimitiveLikeField vt)
+                    elif vt.IsEnum then
+                        Some (CliValueType.EnumValueField vt)
+                    else
+                        None
+
+                match field with
+                | Some field ->
                     let newContents = toCliTypeCoerced field.Contents popped
 
                     let newField =
@@ -1131,8 +1144,7 @@ module EvalStackValue =
                         }
 
                     [ newField ] |> CliValueType.OfFieldsLike vt vt.Layout |> CliType.ValueType
-                else
-                    failwith $"TODO: {popped} into value type {target}"
+                | None -> failwith $"TODO: {popped} into value type {target}"
 
     /// A value type popped into a primitive slot.
     ///

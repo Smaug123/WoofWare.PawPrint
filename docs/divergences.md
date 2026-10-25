@@ -897,6 +897,15 @@ accepted. Measured on .NET 10 for `isinst`, `castclass`, `box`, `unbox`, `unbox.
 scope where a guest can build the operand. As for an abstract method's `call`, the refusal happens
 when the method is compiled, even where the instruction is on a path that would not execute.
 
+A member's token is refused for its reference's parent in the same way, once the member is found.
+Looking a method up through a value type finds the virtual methods it inherits, so a reference to
+`ToString`, `GetHashCode`, `Equals` or `Finalize` through `System.Void` (a TypeRef, or a TypeSpec
+spelling `ELEMENT_TYPE_VOID` or `valuetype System.Void`) is refused under `call`, `callvirt`, `ldftn`
+and `ldvirtftn`, and accepted by `ldtoken`. Measured on .NET 10, against the same references through
+`System.Int32`, which run. A non-virtual inherited method and a constructor are not found through
+`System.Void` at all, and raise `MissingMethodException` instead (measured), and neither it nor
+anything it inherits declares a field.
+
 **PawPrint**: raises the same exception, with the same message, when the instruction *executes*, or
 for a `DynamicMethod`'s `catch` clause when the method is first invoked, as CoreCLR does. A `catch`
 clause in metadata naming either is not refused: it matches no exception. `cpobj`, `mkrefany` and
@@ -911,10 +920,13 @@ rules, or when, and says nothing of `isinst` or `sizeof` of either. No compiler 
 
 **Where this lives in code**: `TypeOperand.refusal`, asked by each type-consuming op through
 `UnaryMetadataIlOpContext.refuseTypeOperand`, by `DynamicMethodExecution.concretize` for a `catch`
-clause, and by `UnaryMetadataObjectOps.executeBox` of an instruction after a byref-like box.
-`TestFabricatedTypeOperandRefusal` pins each instruction over metadata, and
-`DynamicMethodTypeToken.cs` over a `DynamicScope`, each with the instruction reached on every run
-and no handler of its own, where the two runtimes agree.
+clause, and by `UnaryMetadataObjectOps.executeBox` of an instruction after a byref-like box; and
+`TypeOperand.ofDefinition`, asked of a MemberRef's parent by `IlMachineMemberResolution.resolveMember`,
+which answers `MemberReferenceResolution.RefusedParent` for each instruction to raise.
+`TestFabricatedTypeOperandRefusal` pins each instruction over metadata,
+`DynamicMethodTypeToken.cs` over a `DynamicScope`, and `TestFabricatedVoidParentMemberReference`
+each method instruction over a parent of `System.Void`, each with the instruction reached on every
+run and no handler of its own, where the two runtimes agree.
 
 ## A field reference that binds nothing throws when it is reached
 

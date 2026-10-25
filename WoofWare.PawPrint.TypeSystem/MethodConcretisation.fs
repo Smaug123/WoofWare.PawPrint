@@ -21,8 +21,11 @@ module MethodConcretisation =
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : TypeSystemState)
         : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
         // `Concretization.concretizeMethod` reads the definition's metadata, the two handle
         // lists, and of the declaring type only its identity and its generic *arity*; so that
@@ -47,7 +50,7 @@ module MethodConcretisation =
                     }
 
         match key |> Option.bind (fun key -> Map.tryFind key state._ConcretisedMethods) with
-        | Some hit -> state, hit.Method, hit.DeclaringTypeHandle
+        | Some hit -> state, Ok (hit.Method, hit.DeclaringTypeHandle)
         | None ->
 
         let concretizedMethod, newConcreteTypes, newAssemblies =
@@ -65,6 +68,11 @@ module MethodConcretisation =
                 ConcreteTypes = newConcreteTypes
                 _LoadedAssemblies = newAssemblies
             }
+
+        // A failure is not memoised: binding the method again fails the same way.
+        match concretizedMethod with
+        | Error failure -> state, Error failure
+        | Ok concretizedMethod ->
 
         let declaringTypeHandle =
             match
@@ -87,7 +95,7 @@ module MethodConcretisation =
                         DeclaringTypeHandle = declaringTypeHandle
                     }
 
-        state, concretizedMethod, declaringTypeHandle
+        state, Ok (concretizedMethod, declaringTypeHandle)
 
     let concretizeMethodWithTypeGenerics
         (loggerFactory : ILoggerFactory)
@@ -100,34 +108,40 @@ module MethodConcretisation =
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : TypeSystemState)
         : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
 
-        // Concretize method generics if any
-        let state, concretizedMethodGenerics =
-            match methodGenerics with
-            | None -> state, ImmutableArray.Empty
-            | Some generics ->
-                let handles = ImmutableArray.CreateBuilder ()
-                let mutable state = state
+        // Concretize method generics if any, stopping at the first that does not bind
+        let rec concretizeGenerics
+            (state : TypeSystemState)
+            (handles : ConcreteTypeHandle list)
+            (generics : TypeDefn list)
+            : TypeSystemState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
+            =
+            match generics with
+            | [] -> state, Ok (handles |> List.rev |> ImmutableArray.CreateRange)
+            | generic :: rest ->
+                match
+                    TypeSystemState.concretizeType
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        state
+                        callingAssemblyFullName
+                        typeGenerics
+                        currentExecutingMethodGenerics
+                        generic
+                with
+                | state, Ok handle -> concretizeGenerics state (handle :: handles) rest
+                | state, Error failure -> state, Error failure
 
-                for i = 0 to generics.Length - 1 do
-                    let state2, handle =
-                        TypeSystemState.concretizeType
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            state
-                            callingAssemblyFullName
-                            typeGenerics
-                            currentExecutingMethodGenerics
-                            generics.[i]
-
-                    state <- state2
-                    handles.Add handle
-
-                state, handles.ToImmutable ()
+        match concretizeGenerics state [] (methodGenerics |> Option.map List.ofSeq |> Option.defaultValue []) with
+        | state, Error failure -> state, Error failure
+        | state, Ok concretizedMethodGenerics ->
 
         // Now concretize the entire method
         concretizeMethodWithAllGenerics

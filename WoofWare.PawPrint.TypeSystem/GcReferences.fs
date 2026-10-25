@@ -123,7 +123,7 @@ module GcReferences =
                                 ImmutableArray.Empty
                                 field.Signature
 
-                        newState, fieldHandle :: acc
+                        newState, BindingStop.bound fieldHandle :: acc
                 )
 
             // Recurse through the fields, correctly propagating state.

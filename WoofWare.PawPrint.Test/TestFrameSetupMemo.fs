@@ -157,7 +157,7 @@ static class Program
                     assy.Methods.[MetadataTokens.MethodDefinitionHandle row]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                let fresh, concreteTypes, assemblies =
+                let freshResult, concreteTypes, assemblies =
                     Concretization.concretizeMethod
                         state.TypeSystem.ConcreteTypes
                         (IlMachineState.loader state.LoggerFactory state)
@@ -166,6 +166,8 @@ static class Program
                         definition
                         (ImmutableArray.CreateRange key.TypeGenerics)
                         (ImmutableArray.CreateRange key.MethodGenerics)
+
+                let fresh = BindingResult.value freshResult
 
                 fresh.Owner |> shouldEqual memoised.Method.Owner
                 fresh.IdentityKey |> shouldEqual memoised.Method.IdentityKey

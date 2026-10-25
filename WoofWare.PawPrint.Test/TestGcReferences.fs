@@ -68,6 +68,8 @@ module TestGcReferences =
                         ImmutableArray.Empty
                         spelled
 
+                let handle = BindingResult.value handle
+
                 let next, actual =
                     GcReferences.containsReferences loggerFactory HostImage.runtimeDirs bct next handle
 

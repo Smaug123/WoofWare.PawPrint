@@ -157,10 +157,12 @@ public sealed class DerivedGone : BaseRuns
                         SignatureTypeKind.Class
                 ))
 
+        let receiver = BindingResult.value receiver
+
         let method =
             (typeNamed declaringName).Methods |> List.find (fun m -> m.Name = methodName)
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             MethodConcretisation.concretizeMethodWithAllGenerics
                 loggerFactory
                 runtimeDirs
@@ -169,6 +171,8 @@ public sealed class DerivedGone : BaseRuns
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         let _, resolved =
             ConcreteVirtualDispatch.tryResolveVirtualImplementation

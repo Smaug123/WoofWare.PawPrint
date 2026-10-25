@@ -59,6 +59,10 @@ type MethodReferenceTarget =
     /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
     | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
 
+    /// A type the search had to bind does not: one a signature it compared names, or one in the
+    /// parent's base chain; or the parent is a shape PawPrint does not implement binding.
+    | Unbound of TypeBindingFailure
+
 /// <summary>
 /// Which method a MemberRef names, answered at the level of generic definitions: no type is
 /// instantiated, and a reference to a member of <c>List&lt;int&gt;</c> resolves to the method of
@@ -199,7 +203,7 @@ module MethodReferenceResolution =
             (referenceContext : TypeConcretization.SubstitutionContext)
             (searched : SearchedType)
             (entries : VtableSlot list)
-            : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot option
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<VtableSlot option, TypeBindingFailure>
             =
             let referenceComparand : TypeConcretization.SignatureComparand =
                 {
@@ -210,7 +214,7 @@ module MethodReferenceResolution =
 
             let rec go (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>) (entries : VtableSlot list) =
                 match entries with
-                | [] -> ctx, None
+                | [] -> ctx, Ok None
                 | entry :: rest when entry.Method.Name <> name -> go ctx rest
                 | entry :: rest ->
                     let candidateComparand : TypeConcretization.SignatureComparand =
@@ -229,8 +233,9 @@ module MethodReferenceResolution =
                     match
                         TypeConcretization.signaturesEquivalent ctx loader false referenceComparand candidateComparand
                     with
-                    | true, ctx -> ctx, Some entry
-                    | false, ctx -> go ctx rest
+                    | Ok true, ctx -> ctx, Ok (Some entry)
+                    | Ok false, ctx -> go ctx rest
+                    | Error failure, ctx -> ctx, Error failure
 
             go ctx entries
 
@@ -286,12 +291,13 @@ module MethodReferenceResolution =
             let ctx, beyondVtable, vtable = methodTableFromTheEnd ctx searched
 
             match firstMatch ctx referenceContext searched (beyondVtable @ vtable) with
-            | ctx, Some entry ->
+            | ctx, Error failure -> ctx, MethodReferenceTarget.Unbound failure
+            | ctx, Ok (Some entry) ->
                 if inherited && isInstanceInitializer entry then
                     ctx, MethodReferenceTarget.Missing
                 else
                     ctx, definedBy ctx searched entry
-            | ctx, None ->
+            | ctx, Ok None ->
                 let assembly, typeInfo =
                     MethodTableLayout.definitionMetadata operation ctx.LoadedAssemblies searched.Identity
 
@@ -337,15 +343,12 @@ module MethodReferenceResolution =
                 MethodTableLayout.definitionMetadata operation ctx.LoadedAssemblies identity
 
             // Classifying each type on the way walks its base types, so they must all be loaded.
-            let assemblies =
-                match
-                    TypeResolution.tryPrimeBaseChain loggerFactory dotnetRuntimeDirs ctx.LoadedAssemblies assembly ty
-                with
-                | assemblies, None -> assemblies
-                | _, Some failure -> failwith $"%s{operation}: the base chain of the parent does not load: %O{failure}"
-
-            let root = searchedDefinition identity ty.Generics.Length
-            findMethod (withAssemblies ctx assemblies) root.Context root false
+            match TypeResolution.tryPrimeBaseChain loggerFactory dotnetRuntimeDirs ctx.LoadedAssemblies assembly ty with
+            | assemblies, Some failure ->
+                withAssemblies ctx assemblies, MethodReferenceTarget.Unbound (TypeBindingFailure.ofBaseChain failure)
+            | assemblies, None ->
+                let root = searchedDefinition identity ty.Generics.Length
+                findMethod (withAssemblies ctx assemblies) root.Context root false
 
         /// Search an array type: the runtime's accessors, then `System.Array`. The array's own
         /// method table also holds every vtable slot of `System.Array`, but those are exactly what
@@ -369,19 +372,17 @@ module MethodReferenceResolution =
                         match found with
                         | Some _ -> ctx, found
                         | None ->
-                            let equivalent, ctx =
+                            match
                                 TypeConcretization.signaturesEquivalentWithoutSubstitution
                                     ctx
                                     loader
                                     false
                                     (unsubstituted signature)
                                     (unsubstituted candidate)
-
-                            ctx,
-                            (if equivalent then
-                                 Some (MethodReferenceTarget.ArrayMethod (arrayType, accessor))
-                             else
-                                 None)
+                            with
+                            | Ok true, ctx -> ctx, Some (MethodReferenceTarget.ArrayMethod (arrayType, accessor))
+                            | Ok false, ctx -> ctx, None
+                            | Error failure, ctx -> ctx, Some (MethodReferenceTarget.Unbound failure)
                     )
                     (ctx, None)
 
@@ -432,13 +433,16 @@ module MethodReferenceResolution =
             // CoreCLR only checks the signatures agree.
             let method = referencingAssembly.Methods.[handle]
 
-            let equivalent, ctx =
+            match
                 TypeConcretization.signaturesEquivalentWithoutSubstitution
                     ctx
                     loader
                     false
                     (unsubstituted signature)
                     (unsubstituted method.Signature)
+            with
+            | Error failure, ctx -> ctx, MethodReferenceTarget.Unbound failure
+            | Ok equivalent, ctx ->
 
             // Varargs methods may not be generic, so a generic one is not what such a reference
             // names.
@@ -461,4 +465,5 @@ module MethodReferenceResolution =
             withAssemblies ctx assemblies, MethodReferenceTarget.ParentTypeMissing miss
         | assemblies, MemberReferenceParent.AssemblyUnavailable reference ->
             withAssemblies ctx assemblies, MethodReferenceTarget.ParentAssemblyUnavailable reference
-        | _, MemberReferenceParent.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
+        | assemblies, MemberReferenceParent.Unmodelled unmodelled ->
+            withAssemblies ctx assemblies, MethodReferenceTarget.Unbound (TypeBindingFailure.Unmodelled unmodelled)

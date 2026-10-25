@@ -490,7 +490,7 @@ module TestFieldBindingFailure =
         =
         let answer =
             try
-                let _, _, binding, _ =
+                match
                     MemberReferenceInstantiation.resolveMemberWithGenerics
                         loggerFactory
                         runtimeDirs
@@ -500,8 +500,9 @@ module TestFieldBindingFailure =
                         ImmutableArray.Empty
                         handle
                         state
-
-                Ok binding
+                with
+                | _, Ok resolved -> Ok resolved.Member
+                | _, Error failure -> failwith (MemberReferenceInstantiation.describeFailure analysed handle failure)
             with e ->
                 Error e
 

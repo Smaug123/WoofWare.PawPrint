@@ -834,7 +834,7 @@ module internal UnaryMetadataCallOps =
         // resolution; we surface them as `preConcretizedMethodGenerics` so the concretization
         // step below uses them directly rather than re-substituting against the (target type's)
         // generics, which would be the wrong context.
-        let state, methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics =
+        let state, resolution =
             match metadataToken with
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
@@ -863,9 +863,9 @@ module internal UnaryMetadataCallOps =
                         activeAssy.Methods.[token]
                         |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                    state, method, Some spec.Signature, None, None
+                    state, Ok (method, Some spec.Signature, None, None)
                 | MetadataToken.MemberReference ref ->
-                    let state, _, method, extractedTypeArgs =
+                    let state, resolved =
                         IlMachineState.resolveMember
                             (MemberReferenceUse.Other "call")
                             loggerFactory
@@ -875,12 +875,14 @@ module internal UnaryMetadataCallOps =
                             ref
                             state
 
-                    match method with
-                    | Choice2Of2 _field -> failwith "tried to Call a field"
-                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, Some methodGenerics
+                    match resolved with
+                    | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
+                    | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Call a field"
+                    | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
+                        state, Ok (method, None, Some extractedTypeArgs, Some methodGenerics)
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
-                let state, _, method, extractedTypeArgs =
+                let state, resolved =
                     IlMachineState.resolveMember
                         (MemberReferenceUse.Other "call")
                         loggerFactory
@@ -890,17 +892,23 @@ module internal UnaryMetadataCallOps =
                         h
                         state
 
-                match method with
-                | Choice2Of2 _field -> failwith "tried to Call a field"
-                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, None
+                match resolved with
+                | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
+                | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Call a field"
+                | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
+                    state, Ok (method, None, Some extractedTypeArgs, None)
 
             | MetadataToken.MethodDef defn ->
                 match activeAssy.Methods.TryGetValue defn with
                 | true, method ->
                     let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                    state, method, None, None, None
+                    state, Ok (method, None, None, None)
                 | false, _ -> failwith $"could not find method in {activeAssy.Name}"
             | k -> failwith $"Unrecognised kind: %O{k}"
+
+        match resolution with
+        | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | Ok (methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics) ->
 
         // Capture the pending `constrained.` prefix up front and clear it from the current frame,
         // so a stale prefix cannot leak to a later call in the same frame. Nothing reinstalls it:
@@ -1273,7 +1281,7 @@ module internal UnaryMetadataCallOps =
         // `preConcretizedMethodGenerics` so the concretization step uses them directly rather
         // than re-substituting against the target type's generics, which would be the wrong
         // context whenever `spec.Signature` references the caller's class or method generics.
-        let state, methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics =
+        let state, resolution =
             match metadataToken with
             | MetadataToken.MethodSpecification h ->
                 let spec = activeAssy.MethodSpecs.[h]
@@ -1306,7 +1314,7 @@ module internal UnaryMetadataCallOps =
                                 TypeDefn.GenericTypeParameter par.SequenceNumber
                             )
 
-                        state, method, Some spec.Signature, None, None
+                        state, Ok (method, Some spec.Signature, None, None)
                     | Some (method, receiver) ->
                         // The declaring type's instantiation is the receiver's, found by walking
                         // its class chain up to that type; the spec's method generics were
@@ -1342,9 +1350,9 @@ module internal UnaryMetadataCallOps =
                             )
                             |> ImmutableArray.CreateRange
 
-                        state, method, None, Some typeArgs, Some methodGenerics
+                        state, Ok (method, None, Some typeArgs, Some methodGenerics)
                 | MetadataToken.MemberReference ref ->
-                    let state, _, method, extractedTypeArgs =
+                    let state, resolved =
                         IlMachineState.resolveMember
                             (MemberReferenceUse.Other "callvirt")
                             loggerFactory
@@ -1354,12 +1362,15 @@ module internal UnaryMetadataCallOps =
                             ref
                             state
 
-                    match method with
-                    | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                    | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, Some methodGenerics
+                    match resolved with
+                    | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
+                    | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) ->
+                        failwith "tried to Callvirt a field"
+                    | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
+                        state, Ok (method, None, Some extractedTypeArgs, Some methodGenerics)
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
-                let state, _, method, extractedTypeArgs =
+                let state, resolved =
                     IlMachineState.resolveMember
                         (MemberReferenceUse.Other "callvirt")
                         loggerFactory
@@ -1369,17 +1380,23 @@ module internal UnaryMetadataCallOps =
                         h
                         state
 
-                match method with
-                | Choice2Of2 _field -> failwith "tried to Callvirt a field"
-                | Choice1Of2 method -> state, method, None, Some extractedTypeArgs, None
+                match resolved with
+                | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
+                | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Callvirt a field"
+                | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
+                    state, Ok (method, None, Some extractedTypeArgs, None)
 
             | MetadataToken.MethodDef defn ->
                 match activeAssy.Methods.TryGetValue defn with
                 | true, method ->
                     let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                    state, method, None, None, None
+                    state, Ok (method, None, None, None)
                 | false, _ -> failwith $"could not find method in {activeAssy.Name}"
             | k -> failwith $"Unrecognised kind: %O{k}"
+
+        match resolution with
+        | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | Ok (methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics) ->
 
         let state, concretizedMethod, declaringTypeHandle =
             match preConcretizedMethodGenerics with

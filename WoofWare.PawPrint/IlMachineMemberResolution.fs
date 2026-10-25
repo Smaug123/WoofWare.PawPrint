@@ -17,6 +17,22 @@ type MemberReferenceUse =
     /// (`FailIfUninstDefOrRef`).
     | Other of opName : string
 
+/// What `IlMachineMemberResolution.resolveMember` found for a MemberRef row.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type MemberReferenceResolution =
+    /// The member the row names, the assembly declaring it, and the declaring type's generic
+    /// arguments, read from the row's parent.
+    | Resolved of
+        declaringAssembly : AssemblyName *
+        member' :
+            Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
+        declaringTypeArguments : TypeDefn ImmutableArray
+    /// The row names its member through a type CoreCLR refuses a token of (`TypeOperand.ofDefinition`),
+    /// so the instruction raises `InvalidProgramException`, with that type's default message, rather
+    /// than reaching the member. Never for `ldtoken`, which CoreCLR lets name it.
+    | RefusedParent of TypeOperandRefusal
+
 [<RequireQualifiedAccess>]
 module IlMachineMemberResolution =
     /// <summary>
@@ -62,6 +78,58 @@ module IlMachineMemberResolution =
             failwith
                 $"TODO: raise TypeLoadException: %s{opName} names a member through generic type definition %s{definition.Namespace}.%s{definition.Name} with no instantiation, which CoreCLR refuses for every instruction but ldtoken; that is not modelled"
         | _ -> ()
+
+    /// <summary>
+    /// Why CoreCLR refuses an instruction whose token is MemberRef row <paramref name="m" /> of
+    /// <paramref name="assy" /> for the type the row's parent names, or <c>None</c>: that type is
+    /// the token's in <c>CEEInfo::resolveToken</c>, which refuses it as <c>TypeOperand.ofDefinition</c>
+    /// says, after it has found the member.
+    /// </summary>
+    /// <remarks>
+    /// The row must already have been resolved, so that the parent's assembly is loaded.
+    /// </remarks>
+    let private parentRefusal
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assy : DumpedAssembly)
+        (m : MemberReferenceHandle)
+        (state : IlMachineState)
+        : TypeOperandRefusal option
+        =
+        let ofReference (typeRef : TypeRef) : TypeOperandRefusal option =
+            match
+                LoadedTypeResolution.resolveTypeRef state.TypeSystem._LoadedAssemblies assy ImmutableArray.Empty typeRef
+            with
+            | TypeResolutionResult.Resolved (definedIn, _, resolved) ->
+                TypeOperand.ofDefinition baseClassTypes definedIn.TypeDefs.[resolved.TypeDefHandle].Identity
+            | other ->
+                failwith
+                    $"BUG: the parent of a MemberRef in %s{assy.DefinitionFullName} resolved when the row was resolved, but not now: %O{other}"
+
+        // A TypeSpec parent may spell `void` itself, or name it as a value type. Custom modifiers do
+        // not change the type a signature names. Any other spelling names a type that is not
+        // `System.Void`; a byref, which `resolveToken` would refuse too, has no members to find.
+        let rec ofSpelling (spelling : TypeDefn) : TypeOperandRefusal option =
+            match spelling with
+            | TypeDefn.Void -> Some TypeOperandRefusal.Void
+            | TypeDefn.Modified modified -> ofSpelling modified.Unmodified
+            | TypeDefn.FromDefinition (identity, _) -> TypeOperand.ofDefinition baseClassTypes identity
+            | TypeDefn.FromReference (typeRef, _) -> ofReference typeRef
+            | TypeDefn.PrimitiveType _
+            | TypeDefn.GenericInstantiation _
+            | TypeDefn.Array _
+            | TypeDefn.OneDimensionalArrayLowerBoundZero _
+            | TypeDefn.Pointer _
+            | TypeDefn.Byref _
+            | TypeDefn.Pinned _
+            | TypeDefn.FunctionPointer _
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _ -> None
+
+        match assy.Members.[m].Parent with
+        | MetadataToken.TypeDefinition handle -> TypeOperand.ofDefinition baseClassTypes assy.TypeDefs.[handle].Identity
+        | MetadataToken.TypeReference handle -> ofReference assy.TypeRefs.[handle]
+        | MetadataToken.TypeSpecification handle -> ofSpelling assy.TypeSpecs.[handle].Signature
+        | _ -> None
 
     /// `TypeLoadException._resourceId` for a type reference that names nothing:
     /// `IDS_CLASSLOAD_GENERAL` (mscorrc/resource.h), "Could not load type '%1' from assembly '%2'."
@@ -158,7 +226,7 @@ module IlMachineMemberResolution =
           TypeDefn ImmutableArray
         =
         // TODO: do we need to initialise the parent class here?
-        let typeSystem, declaringAssembly, member', targetTypeGenerics =
+        let typeSystem, binding =
             MemberReferenceInstantiation.resolveMemberWithGenerics
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -169,12 +237,18 @@ module IlMachineMemberResolution =
                 m
                 state.TypeSystem
 
+        let declaringAssembly, member', targetTypeGenerics =
+            match binding with
+            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
+            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
+
         state.WithTypeSystem typeSystem, declaringAssembly, member', targetTypeGenerics
 
     /// `MemberReferenceInstantiation.resolveMember` against the machine's type system, in the
     /// generic context of the method `currentThread` is executing. For any use but `ldtoken`,
     /// refuses a row whose parent names a generic definition without an instantiation, as CoreCLR
-    /// refuses it.
+    /// refuses it, and answers `RefusedParent` for a row whose member CoreCLR finds but whose parent
+    /// it refuses the instruction over.
     let resolveMember
         (use' : MemberReferenceUse)
         (loggerFactory : ILoggerFactory)
@@ -183,14 +257,11 @@ module IlMachineMemberResolution =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState *
-          AssemblyName *
-          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
-          TypeDefn ImmutableArray
+        : IlMachineState * MemberReferenceResolution
         =
         let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
-        let typeSystem, declaringAssembly, member', targetTypeGenerics =
+        let typeSystem, binding =
             MemberReferenceInstantiation.resolveMember
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -201,8 +272,15 @@ module IlMachineMemberResolution =
                 m
                 state.TypeSystem
 
+        let declaringAssembly, member', targetTypeGenerics =
+            match binding with
+            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
+            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
+
         let state = state.WithTypeSystem typeSystem
-        let resolved = state, declaringAssembly, member', targetTypeGenerics
+
+        let resolved =
+            state, MemberReferenceResolution.Resolved (declaringAssembly, member', targetTypeGenerics)
 
         match member' with
         // A parent CoreCLR cannot load is the failure the binding already reports.
@@ -226,7 +304,16 @@ module IlMachineMemberResolution =
         | _ -> ()
 
         match use' with
-        | MemberReferenceUse.Ldtoken -> ()
-        | MemberReferenceUse.Other opName -> refuseUninstantiatedParent opName assy m state
+        | MemberReferenceUse.Ldtoken -> resolved
+        | MemberReferenceUse.Other opName ->
+            refuseUninstantiatedParent opName assy m state
 
-        resolved
+            match member' with
+            // A field that binds nothing raises its own failure first, as CoreCLR finds no member
+            // to refuse the parent over.
+            | Choice2Of2 (FieldReferenceBinding.Fails _) -> resolved
+            | Choice1Of2 _
+            | Choice2Of2 (FieldReferenceBinding.Bound _) ->
+                match parentRefusal baseClassTypes assy m state with
+                | Some refusal -> state, MemberReferenceResolution.RefusedParent refusal
+                | None -> resolved

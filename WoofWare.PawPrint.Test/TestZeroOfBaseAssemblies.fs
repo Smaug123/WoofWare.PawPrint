@@ -105,6 +105,8 @@ module TestZeroOfBaseAssemblies =
                 ImmutableArray.Empty
                 valueOptionInt
 
+        let handle = BindingResult.value handle
+
         // Sanity: concretization itself did not need netstandard.
         let netstandardLoadedAfterConcretize =
             concretizeCtx.LoadedAssemblies.DefinitionNames
@@ -132,7 +134,7 @@ module TestZeroOfBaseAssemblies =
         // returned assemblies dict.
         let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
 
-        let loadedAfterHelper, _ =
+        let loadedAfterHelper, _, loadedAfterHelperFailure =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 loadAssembly
                 baseTypes
@@ -140,6 +142,8 @@ module TestZeroOfBaseAssemblies =
                 concretizeCtx.LoadedAssemblies
                 concretizeCtx.ConcreteTypes
                 handle
+
+        BindingResult.completed loadedAfterHelperFailure
 
         // netstandard is now loaded.
         loadedAfterHelper.DefinitionNames
@@ -186,13 +190,15 @@ module TestZeroOfBaseAssemblies =
                 ImmutableArray.Empty
                 valueOptionInt
 
+        let handle = BindingResult.value handle
+
         // Two back-to-back calls (fresh visited each time) must both return
         // assembly dicts containing netstandard, and the second must not throw
         // or attempt any redundant work that would break with a "already loaded"
         // condition. Sharing visited across a single call is required only to
         // bound work within one call; between calls, the dict itself is the
         // idempotence guarantee.
-        let firstRun, firstCtx =
+        let firstRun, firstCtx, firstRunFailure =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 loadAssembly
                 baseTypes
@@ -201,7 +207,9 @@ module TestZeroOfBaseAssemblies =
                 concretizeCtx.ConcreteTypes
                 handle
 
-        let secondRun, _ =
+        BindingResult.completed firstRunFailure
+
+        let secondRun, _, secondRunFailure =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 loadAssembly
                 baseTypes
@@ -209,6 +217,8 @@ module TestZeroOfBaseAssemblies =
                 firstRun
                 firstCtx
                 handle
+
+        BindingResult.completed secondRunFailure
 
         (secondRun.DefinitionNames |> Seq.length)
         |> shouldEqual (firstRun.DefinitionNames |> Seq.length)
@@ -278,6 +288,8 @@ public struct Outer
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (outerTypeDef.Identity, SignatureTypeKind.ValueType))
 
+        let outerHandle = BindingResult.value outerHandle
+
         // Sanity: Outer's own base-chain load does not need netstandard.
         // We measure the state before running the helper, by explicitly
         // loading only the outer's base chain and confirming netstandard is
@@ -300,7 +312,7 @@ public struct Outer
         // Now run the full helper. It must descend into Outer's instance
         // field (FSharpValueOption<int>) and, through that field's base chain,
         // finally load netstandard.
-        let loadedAfterHelper, _ =
+        let loadedAfterHelper, _, loadedAfterHelperFailure =
             Concretization.ensureBaseAssembliesLoadedForConcreteHandle
                 loadAssembly
                 baseTypes
@@ -308,6 +320,8 @@ public struct Outer
                 assembliesAfterOuterBaseChain
                 concretizeCtx.ConcreteTypes
                 outerHandle
+
+        BindingResult.completed loadedAfterHelperFailure
 
         loadedAfterHelper.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
@@ -383,6 +397,8 @@ public struct S<T>
                 ImmutableArray.Empty
                 sIntDefn
 
+        let handle = BindingResult.value handle
+
         // The helper must terminate (i.e. not blow the stack or run forever).
         Concretization.ensureBaseAssembliesLoadedForConcreteHandle
             loadAssembly
@@ -391,7 +407,7 @@ public struct S<T>
             concretizeCtx.LoadedAssemblies
             concretizeCtx.ConcreteTypes
             handle
-        |> ignore<_ * _>
+        |> fun (_, _, failure) -> BindingResult.completed failure
 
     [<Test>]
     let ``priming does not descend into generic arguments of reference types`` () : unit =
@@ -445,6 +461,8 @@ public struct S<T>
                 ImmutableArray.Empty
                 sIntDefn
 
+        let handle = BindingResult.value handle
+
         // Must terminate.
         Concretization.ensureBaseAssembliesLoadedForConcreteHandle
             loadAssembly
@@ -453,7 +471,7 @@ public struct S<T>
             concretizeCtx.LoadedAssemblies
             concretizeCtx.ConcreteTypes
             handle
-        |> ignore<_ * _>
+        |> fun (_, _, failure) -> BindingResult.completed failure
 
     [<Test>]
     let ``concretizeMethod primes method-level generic arguments used only by intrinsics`` () : unit =
@@ -522,6 +540,8 @@ public static class C
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 valueOptionInt
+
+        let valueOptionHandle = BindingResult.value valueOptionHandle
 
         // Sanity: concretization alone did not need netstandard.
         concretizeCtx.LoadedAssemblies.DefinitionNames

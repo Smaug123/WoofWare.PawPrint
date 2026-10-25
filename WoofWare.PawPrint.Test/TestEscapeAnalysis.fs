@@ -7188,68 +7188,227 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// Calls passing a pointer to a type that is gone, of unmanaged code (a P/Invoke, and `calli`
-    /// by an unmanaged calling convention) and of managed code. What the JIT loads of an unmanaged
-    /// call's signature depends on the marshalling CoreCLR decides the call needs, which
-    /// `JitTypeLoads` does not describe, so the analysis takes the caller's compilation to load
-    /// every type of that signature in full, and to fail past the caller's handlers; a managed call
-    /// loads nothing a pointer parameter points to. This is the analysis's upper bound, which the
-    /// host's outcome does not decide.
+    /// A client compiled against one version of a provider, run against another lacking two types
+    /// and without the assembly `Optional`, each of whose callers calls unmanaged code (a P/Invoke,
+    /// or `calli` by an unmanaged calling convention) whose signature names a type that fails to
+    /// load. The JIT loads the return type and each value-type parameter, as of any call. Where it
+    /// makes the transition to unmanaged code in the caller's own code, CoreCLR's walk for whether
+    /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
+    /// loads each pointer's target; a class, a byref's target or, by any other convention, a
+    /// pointer's target, it does not load at all. Whether the JIT makes the transition there the
+    /// analysis does not decide, so it takes those loads to be ones the JIT may make
+    /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
+    /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
+    /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
     [<Test>]
-    let ``a call of unmanaged code is taken to load every type of its signature`` () : unit =
+    let ``a call of unmanaged code loads what marshalling and Swift's convention read of its signature`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let provider (complete : bool) : string =
-            "namespace Provider; public struct Kept { }"
-            + (if complete then " public struct GoneStruct { }" else "")
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let optional = "namespace Optional; public class Thing { }"
 
         let client =
             """
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Client;
 
-public static unsafe class Calls
+public static unsafe class Natives
 {
     [DllImport("nowhere")]
-    static extern void Native(Provider.GoneStruct* x);
+    public static extern void TakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere")]
+    public static extern void TakesGone(Provider.Gone x);
+    [DllImport("nowhere")]
+    public static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void TakesPointerThenGenericOfMissing(Provider.GoneStruct* x, Provider.KeptGeneric<Optional.Thing> y);
+    [DllImport("nowhere")]
+    public static extern Provider.Gone ReturnsGone();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftTakesByrefToGoneStruct(ref Provider.GoneStruct x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void CdeclTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    // Its import's calling-convention bits are cleared after compiling.
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void UnspecifiedTakesPointerToGoneStruct(Provider.GoneStruct* x);
+}
 
-    static void Managed(Provider.GoneStruct* x) { }
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
 
-    public static void CallsNative()
+    public static void PointerToGoneStruct() { if (never) Natives.TakesPointerToGoneStruct(null); }
+    public static void Gone() { if (never) Natives.TakesGone(null); }
+    public static void GenericOfGone() { if (never) Natives.TakesGenericOfGone(null); }
+    public static void PointerThenGenericOfMissing() { if (never) Natives.TakesPointerThenGenericOfMissing(null, null); }
+    public static void ReturnsGone() { if (never) Natives.ReturnsGone(); }
+    public static void SwiftPointerToGoneStruct() { if (never) Natives.SwiftTakesPointerToGoneStruct(null); }
+    public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
+    public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
+    public static void UnspecifiedPointerToGoneStruct() { if (never) Natives.UnspecifiedTakesPointerToGoneStruct(null); }
+    public static void CaughtGenericOfGone()
     {
-        try { Native(null); } catch (System.Exception) { }
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
     }
-    public static void CallsManaged()
+    public static void IndirectPointerToGoneStruct()
     {
-        try { Managed(null); } catch (System.Exception) { }
+        if (never) ((delegate* unmanaged<Provider.GoneStruct*, void>)pointer)(null);
     }
-    public static void CallsUnmanagedPointer()
+    public static void IndirectGenericOfGone()
     {
-        try { delegate* unmanaged<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+        if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
     }
-    public static void CallsManagedPointer()
+    public static void SwiftIndirectPointerToGoneStruct()
     {
-        try { delegate*<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+        if (never) ((delegate* unmanaged[Swift]<Provider.GoneStruct*, void>)pointer)(null);
     }
 }
 """
 
+        // Optimised: the JIT never makes the transition in the caller's code where the assembly's
+        // `DebuggableAttribute` disables its optimisation.
         let compile (name : string) (references : byte[] list) (text : string) : byte[] =
-            Roslyn.compileAssembly
+            Roslyn.compileOptimizedAssemblyWithReferences
                 name
                 OutputKind.DynamicallyLinkedLibrary
                 (references
-                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
                 [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let optionalImage = compile "Optional" [] optional
+        // The image with the calling-convention bits of the P/Invoke named `methodName`'s import
+        // cleared, which C# never emits and CoreCLR reads as `WinApi`.
+        let clearImportConvention (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let method =
+                metadata.MethodDefinitions
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+
+            // A small image's `MemberForwarded` is a two-byte coded index whose tag 1 is a method.
+            let memberForwarded =
+                (MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit method : EntityHandle)
+                 <<< 1)
+                ||| 1
+
+            let rowSize = metadata.GetTableRowSize TableIndex.ImplMap
+
+            let tableStart =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.ImplMap
+
+            let row =
+                [ 0 .. metadata.GetTableRowCount TableIndex.ImplMap - 1 ]
+                |> List.filter (fun row ->
+                    int (BitConverter.ToUInt16 (patched, tableStart + row * rowSize + 2)) = memberForwarded
+                )
+                |> List.exactlyOne
+
+            let offset = tableStart + row * rowSize
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let cleared = flags &&& ~~~(uint16 MethodImportAttributes.CallingConventionMask)
+            Array.blit (BitConverter.GetBytes cleared) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ; optionalImage ] client
+            |> clearImportConvention "UnspecifiedTakesPointerToGoneStruct"
+
+        let typeLoad = "System.TypeLoadException"
+        let fileNotFound = "System.IO.FileNotFoundException"
+
+        // Swift's convention is compiled as such on Arm64 and on x64 other than Windows'.
+        let compilesSwift =
+            not (
+                OperatingSystem.IsWindows ()
+                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+            )
+
+        let swiftEscapes =
+            if compilesSwift then
+                CallOutcome.Escapes typeLoad
+            else
+                CallOutcome.Runs
+
+        // Each caller, what running it does, and what the analysis lets escape it.
+        let methods =
+            [
+                "PointerToGoneStruct", CallOutcome.Runs, []
+                "Gone", CallOutcome.Runs, []
+                "GenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // The walk loads the instantiation; nothing loads what the pointer points to.
+                "PointerThenGenericOfMissing", CallOutcome.Escapes fileNotFound, [ fileNotFound ]
+                "ReturnsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "SwiftPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+                // A byref needs marshalling, so the JIT leaves the transition to the stub.
+                "SwiftByrefToGoneStruct", CallOutcome.Runs, []
+                // The import's convention is not `WinApi`, so CoreCLR reads no `UnmanagedCallConv`.
+                "CdeclPointerToGoneStruct", CallOutcome.Runs, []
+                // An import that names no calling convention CoreCLR reads as naming `WinApi`.
+                "UnspecifiedPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+                // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
+                // analysis does not decide.
+                "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
+                "IndirectPointerToGoneStruct", CallOutcome.Runs, []
+                "IndirectGenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "SwiftIndirectPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedCallTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let outcome =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
 
-        let clientAssembly =
-            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
-
-        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
 
         let reference =
             clientAssembly.AssemblyReferences.Values
@@ -7260,26 +7419,47 @@ public static unsafe class Calls
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
-        let raisesTypeLoad (name : string) : bool =
-            let next, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
-
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let made : Set<string> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
             analysis <- next
-            (render analysis escapes).Contains "=System.TypeLoadException"
+            let next, madeFileNotFound = making analysis fileNotFound
+            analysis <- next
+            Set.union (render analysis madeTypeLoad) madeFileNotFound
 
-        [
-            "CallsNative", raisesTypeLoad "CallsNative"
-            "CallsManaged", raisesTypeLoad "CallsManaged"
-            "CallsUnmanagedPointer", raisesTypeLoad "CallsUnmanagedPointer"
-            "CallsManagedPointer", raisesTypeLoad "CallsManagedPointer"
-        ]
-        |> shouldEqual
+        let failures =
             [
-                "CallsNative", true
-                "CallsManaged", false
-                "CallsUnmanagedPointer", true
-                "CallsManagedPointer", false
+                for name, expected, expectedEscaping in methods do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; fileNotFound ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        (expectedEscaping
+                         |> List.filter (fun expected -> not (List.contains expected escaping))
+                         |> List.map (fun missing -> $"no %s{missing}"))
+                        @ (escaping
+                           |> List.filter (fun escaped ->
+                               not (List.contains escaped expectedEscaping)
+                               && (expectedEscaping.IsEmpty || not (made.Contains $"=%s{escaped}"))
+                           ))
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
     /// A client compiled against one version of a provider, run against another lacking two types,
     /// taking the address of a method whose signature names a type that fails to load. The JIT
