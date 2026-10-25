@@ -10070,8 +10070,9 @@ public static unsafe class Calls
     /// where the JIT may begin the walk, and after the check that the P/Invoke preserves its
     /// signature, but before the check that it sets the last error. So too a P/Invoke whose
     /// conventions the VM refuses. The host's CoreCLR says which callers fail to compile, and with
-    /// what. The host compiles in process, so the analysis reads the host's own image
-    /// (`analysisOverHostImage`).
+    /// what; `JitTypeLoads.unmanagedWalkRefuses` must say the VM may refuse just those P/Invokes
+    /// whose walk the JIT may begin. The host compiles in process, so the analysis reads the host's
+    /// own image (`analysisOverHostImage`).
     [<Test>]
     let ``the JIT refuses a call by Thiscall that passes no argument, and the VM a synchronized P/Invoke`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -10369,6 +10370,40 @@ public static unsafe class Calls
 
                         yield
                             $"%s{typeName}.%s{name}: unknown in the analysis, from %A{sources |> Seq.map (renderSite analysis) |> Set.ofSeq}"
+
+                // Where `JitTypeLoads` says the VM may refuse a P/Invoke as the walk begins, for a call
+                // in optimised code outside any `try`: never where the JIT refuses the call first.
+                let clientAssembly = clients.["Client"]
+
+                let natives =
+                    clientAssembly.TypeDefs.Values
+                    |> Seq.filter (fun ty -> ty.Namespace = "Client" && ty.Name = "Natives")
+                    |> Seq.exactlyOne
+
+                for nativeName, refuses in
+                    [
+                        "SynchronizedTakesGenericOfMissing", true
+                        "SynchronizedSetsLastErrorTakesGenericOfMissing", true
+                        "SynchronizedUnpreservedTakesGenericOfMissing", false
+                        "SynchronizedFastcallTakesGenericOfMissing", false
+                        "SynchronizedThiscallTakesNothing", false
+                        "AttributeThiscallCdeclTakesNothing", true
+                        "AttributeSwiftCdeclTakesGenericOfMissing", true
+                        "TakesGenericOfMissing", false
+                    ] do
+                    let method = natives.Methods |> List.find (fun m -> m.Name = nativeName)
+                    let handle = method.TryMetadata.Value.Handle
+
+                    let call =
+                        {
+                            Convention = UnmanagedCallingConvention.ofPInvoke clientAssembly handle
+                            Placement = UnmanagedCallPlacement.Unprotected
+                            CallerDisablesOptimisation = false
+                            Target = UnmanagedTarget.ofPInvoke clientAssembly handle
+                        }
+
+                    if JitTypeLoads.unmanagedWalkRefuses call method.Signature <> refuses then
+                        yield $"%s{nativeName}: unmanagedWalkRefuses is not %b{refuses}"
             ]
 
         if not failures.IsEmpty then

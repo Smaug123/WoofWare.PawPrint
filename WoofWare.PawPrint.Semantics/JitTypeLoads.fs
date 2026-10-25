@@ -412,20 +412,23 @@ module JitTypeLoads =
         | TypeDefn.Modified _ -> failwith "BUG: TypeDefn.stripCustomModifiers left a modifier"
 
     /// Whether the JIT compiling `call`, a call of unmanaged code whose convention CoreCLR reads,
-    /// may ask the VM to begin its walk of the signature for whether the call needs marshalling,
-    /// which it does only where it may make the transition to unmanaged code in the calling
-    /// method's own code (`impCheckForPInvokeCall`): not for a call in a handler or a protected
-    /// `try`, nor in a method of an assembly that disables optimisation, nor by Fastcall's
-    /// convention or its member-function variant, which only a stub makes the transition for, nor
-    /// of a P/Invoke that takes a variable argument list or does not preserve its signature
+    /// with signature `signature`, may ask the VM to begin its walk of the signature for whether
+    /// the call needs marshalling, which it does only where it may make the transition to
+    /// unmanaged code in the calling method's own code (`impCheckForPInvokeCall`): not for a call
+    /// in a handler or a protected `try`, nor in a method of an assembly that disables
+    /// optimisation, nor by Fastcall's convention or its member-function variant, which only a
+    /// stub makes the transition for, nor by Thiscall's passing no argument, which the JIT refuses
+    /// first (`UnmanagedCallingConvention.refusesThiscallWithoutArguments`), nor of a P/Invoke that
+    /// takes a variable argument list or does not preserve its signature
     /// (`CEEInfo::pInvokeMarshalingRequired`, `PInvoke::MarshalingRequired`).
-    let private beginsWalk (call : UnmanagedCall) : bool =
+    let private beginsWalk (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : bool =
         call.Placement = UnmanagedCallPlacement.Unprotected
         && not call.CallerDisablesOptimisation
         && (
             match call.Convention with
             | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Fastcall, _) -> false
-            | UnmanagedConventionRead.Reads _ -> true
+            | UnmanagedConventionRead.Reads _ ->
+                not (UnmanagedCallingConvention.refusesThiscallWithoutArguments call.Convention signature)
             | UnmanagedConventionRead.MultipleBases
             | UnmanagedConventionRead.Unreadable _
             | UnmanagedConventionRead.NullArray -> false
@@ -434,15 +437,22 @@ module JitTypeLoads =
            | UnmanagedTarget.PInvoke facts -> facts.PreservesSignature && not facts.TakesVariableArguments
            | UnmanagedTarget.FunctionPointer _ -> true
 
-    /// Whether the JIT compiling `call`, a call of unmanaged code, may have the VM refuse, as its
-    /// walk of the signature begins, the calling conventions of the P/Invoke the call calls
-    /// (`PInvokeMarshalling.RefusesConventions`), raising `TypeLoadException` and failing the
-    /// compilation. Whether it begins the walk turns on block weights, so this is a raise it may make
-    /// or not.
-    let unmanagedWalkRefuses (call : UnmanagedCall) : bool =
-        beginsWalk call
+    /// Whether the VM, describing a P/Invoke whose facts are `facts` as it begins the walk of its
+    /// signature, refuses it, raising `TypeLoadException`: it is synchronized, or the VM refuses
+    /// the calling conventions it names.
+    let private describingRefuses (facts : PInvokeMarshalling) : bool =
+        facts.Synchronized || facts.RefusesConventions
+
+    /// Whether the JIT compiling `call`, a call of unmanaged code with signature `signature`, may
+    /// have the VM refuse, as its walk of the signature begins, the P/Invoke the call calls, raising
+    /// `TypeLoadException` and failing the compilation: the P/Invoke is synchronized
+    /// (`PInvokeMarshalling.Synchronized`), or the VM refuses its calling conventions
+    /// (`PInvokeMarshalling.RefusesConventions`). Whether it begins the walk turns on block weights,
+    /// so this is a raise it may make or not.
+    let unmanagedWalkRefuses (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : bool =
+        beginsWalk call signature
         && match call.Target with
-           | UnmanagedTarget.PInvoke facts -> facts.RefusesConventions
+           | UnmanagedTarget.PInvoke facts -> describingRefuses facts
            | UnmanagedTarget.FunctionPointer _ -> false
 
     /// Where the JIT for `target` compiling `call`, a call of unmanaged code, meets the types of
@@ -450,7 +460,9 @@ module JitTypeLoads =
     /// them, for an instruction whose operand `memberPositions` answers `MemberPositions.BySignature`.
     ///
     /// It meets the return type, and then reads the call's convention, which fails the compilation
-    /// where CoreCLR cannot read one (`UnmanagedConventionRead`): then it meets nothing more.
+    /// where CoreCLR cannot read one (`UnmanagedConventionRead`), or where the call passes no
+    /// argument by Thiscall's convention
+    /// (`UnmanagedCallingConvention.refusesThiscallWithoutArguments`): then it meets nothing more.
     /// Otherwise it meets each parameter as any call passes it. Where it may begin the VM's walk of
     /// the signature for whether the call needs marshalling (`unmanagedWalkRefuses` says where that
     /// may refuse the call instead), the walk meets the return type and then each parameter up to
@@ -475,13 +487,17 @@ module JitTypeLoads =
         | UnmanagedConventionRead.MultipleBases
         | UnmanagedConventionRead.Unreadable _
         | UnmanagedConventionRead.NullArray -> returned
+        | UnmanagedConventionRead.Reads _ when
+            UnmanagedCallingConvention.refusesThiscallWithoutArguments call.Convention signature
+            ->
+            returned
         | UnmanagedConventionRead.Reads _ ->
 
         let walks =
-            beginsWalk call
+            beginsWalk call signature
             && match call.Target with
                | UnmanagedTarget.PInvoke facts ->
-                   not facts.RefusesConventions
+                   not (describingRefuses facts)
                    && not facts.SetsLastError
                    && not facts.ConvertsLocale
                | UnmanagedTarget.FunctionPointer _ -> true

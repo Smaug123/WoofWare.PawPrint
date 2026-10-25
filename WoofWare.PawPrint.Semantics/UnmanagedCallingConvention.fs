@@ -448,6 +448,25 @@ module UnmanagedCallingConvention =
         | UnmanagedConventionRead.Unreadable _
         | UnmanagedConventionRead.NullArray -> false
 
+    /// Whether CoreCLR's JIT refuses a call of unmanaged code whose convention CoreCLR reads as
+    /// `read` and whose signature, the method's or the call site's, is `signature`, as it reads the
+    /// convention (`BADCODE("thiscall with 0 arguments")`, `impCheckForPInvokeCall`): by Thiscall's
+    /// convention, or its member-function variant, which is the same, the call must pass an
+    /// argument besides any `this`. The JIT fails the compilation (`CORJIT_BADCODE`), and the VM
+    /// raises `InvalidProgramException`, after the JIT loads the return type and before it meets
+    /// anything else of the signature, wherever the call is.
+    let refusesThiscallWithoutArguments
+        (read : UnmanagedConventionRead)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : bool
+        =
+        match read with
+        | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Thiscall, _) -> signature.ParameterTypes.IsEmpty
+        | UnmanagedConventionRead.Reads _
+        | UnmanagedConventionRead.MultipleBases
+        | UnmanagedConventionRead.Unreadable _
+        | UnmanagedConventionRead.NullArray -> false
+
 /// What CoreCLR's `PInvoke::MarshalingRequired` (`vm/dllimport.cpp`) makes of one type of the
 /// signature of an `[UnmanagedCallersOnly]` method, which needs no marshalling to be valid
 /// (`COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage`).
