@@ -3747,7 +3747,7 @@ module EscapeAnalysis =
                 unbound : Set<int>,
                 bindingFailures : Set<OutsideBodyFact>,
                 raisedWhereInlined : Set<OutsideBodyFact>,
-                refusedSignatures : Set<int>
+                refusedSignatures : Map<int, SignatureRefusal>
             )
             (index : int)
             =
@@ -3833,7 +3833,7 @@ module EscapeAnalysis =
                                 |> Option.map (fun operand -> assembly, MemberSignature.Method signature, operand, None)
 
                         match operand with
-                        | None -> state, failures, [], [], false
+                        | None -> state, failures, [], [], None
                         | Some (spellingAssembly, signature, operand, delegateMade) ->
 
                         // A `call` or `ldftn` naming an abstract method itself, CoreCLR refuses as
@@ -3874,8 +3874,10 @@ module EscapeAnalysis =
                             let possible = loads.Possible |> List.collect (Some >> raisesOf)
 
                             match loads.Definite with
-                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, [], false
-                            | None -> state, failures @ signatureRefusalFacts state refusal, possible, [], true
+                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, [], None
+                            // What it raises the body accounts for where the JIT compiles the
+                            // instruction (`refusedSignatures`).
+                            | None -> state, failures, possible, [], Some refusal
                         | None ->
 
                             let state, loads =
@@ -3906,7 +3908,7 @@ module EscapeAnalysis =
                                 | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested -> possible
                                 | _ -> []
 
-                            state, failures @ raisesOf loads.Definite, possible, inlined, false
+                            state, failures @ raisesOf loads.Definite, possible, inlined, None
 
                     // A token that fails to bind names nothing to instantiate: the JIT throws
                     // before the body runs.
@@ -3960,10 +3962,9 @@ module EscapeAnalysis =
                     unbound,
                     Set.unionMany [ bindingFailures ; Set.ofList failures ; Set.ofList possible ],
                     Set.union raisedWhereInlined (Set.ofList inlined),
-                    (if refusedHere then
-                         Set.add index refusedSignatures
-                     else
-                         refusedSignatures)
+                    (match refusedHere with
+                     | Some refusal -> Map.add index refusal refusedSignatures
+                     | None -> refusedSignatures)
                 | _ -> state, None, unbound, bindingFailures, raisedWhereInlined, refusedSignatures
 
             let targets =
@@ -4316,7 +4317,7 @@ module EscapeAnalysis =
             )
 
         let state, targets, unbound, bindingFailures, raisedWhereInlined, refusedSignatures =
-            ((state, Map.empty, Set.empty, localFailures, Set.empty, Set.empty), [ 0 .. ops.Length - 1 ])
+            ((state, Map.empty, Set.empty, localFailures, Set.empty, Map.empty), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
 
         // Which objects each slot of the stack may hold, by the types the body spells.
@@ -4847,6 +4848,18 @@ module EscapeAnalysis =
                 |> Set.add (OutsideBodyFact.Raises thrown)
                 |> Set.add (OutsideBodyFact.Runs (made, []))
 
+        // Each instruction the JIT compiles naming a signature CoreCLR refuses to hand it
+        // (`SignatureRefusal`), wherever a run would reach it. None of them runs.
+        let outsideBody =
+            ((outsideBody, Set.empty), refusedSignatures)
+            ||> Map.fold (fun (outside, seen) index refusal ->
+                if compiled.Contains (snd ops.[index]) && not (Set.contains refusal seen) then
+                    Set.union outside (Set.ofList (signatureRefusalFacts state refusal)), Set.add refusal seen
+                else
+                    outside, seen
+            )
+            |> fst
+
         // The type the token of the instruction at `index` names, as the body spells it; `None`
         // for one that does not bind, or binds to an open generic definition.
         let typeOperand (state : EscapeAnalysisState) (index : int) : EscapeAnalysisState * SpelledType option =
@@ -4961,7 +4974,7 @@ module EscapeAnalysis =
                     && not (folded.Contains index)
                     && not (abstractCallees.Contains index)
                     // CoreCLR refuses the signature it names, and none of it runs.
-                    && not (refusedSignatures.Contains index)
+                    && not (refusedSignatures.ContainsKey index)
                 then
                     folder targets unbound spellings objectsAt integersAt calleeArguments passedAt acc index
                 else
@@ -4982,6 +4995,7 @@ module EscapeAnalysis =
                     not (executed.Contains offset)
                     || folded.Contains index
                     || unbound.Contains index
+                    || refusedSignatures.ContainsKey index
                 then
                     state, assumed, opaque
                 else
