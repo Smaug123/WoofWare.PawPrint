@@ -663,8 +663,9 @@ module ConcreteVirtualDispatch =
         /// `None` means the shape is outside what this serves and the caller should fall back: an
         /// interface target, whose dispatch goes through the interface map rather than a vtable index;
         /// a non-virtual target; a target with no MethodDef row; a receiver with no class
-        /// chain; `walkBaseTypes = false`, which is the `constrained.` exact-type probe; or a
-        /// declaration owning no slot of its own declaring type.
+        /// chain; `walkBaseTypes = false`, which is the `constrained.` exact-type probe; a
+        /// declaration owning no slot of its own declaring type; or a receiver that does not derive
+        /// from the target's declaring type.
         let tryResolveBySlotTable
             (state : TypeSystemState)
             : TypeSystemState *
@@ -711,7 +712,14 @@ module ConcreteVirtualDispatch =
             | None ->
                 // The target owns no vtable slot anywhere on the receiver's chain -- either it holds
                 // none of its own declaring type's slots, or the receiver does not derive from that
-                // type at all. Valid IL gives neither, so hand the question back rather than guess.
+                // type at all. A `constrained.` call reaches the second: on a value type that inherits
+                // the slot of an overridable method of a class it does not derive from, it boxes the
+                // value type and dispatches on the box (`ConstrainedType.resolveClassMethodOnValueType`,
+                // `ClassMethodOnValueType.Boxes`). The only class a value type and that class both
+                // derive from is `Object`, and a slot beyond `Object`'s vtable is `Undecided` there,
+                // so the target overrides one of `Object`'s virtuals by name and signature, and the
+                // walk the caller falls back to finds what the box's table holds in that slot. Hand
+                // the question back rather than guess.
                 state, None
             | Some slot ->
 
