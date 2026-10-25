@@ -228,6 +228,31 @@ module TypeLoad =
 
         instance @ statics |> List.map (fun field -> field.Signature)
 
+    /// A part of a type definition that `MethodTable::DoFullyLoad` brings to the level it is
+    /// completing along with the definition, spelled in the definition's own assembly, over the
+    /// definition's own type parameters.
+    [<RequireQualifiedAccess>]
+    type FullLoadPart =
+        /// The base class.
+        | Base of TypeDefn
+        /// An interface the definition implements.
+        | Interface of TypeDefn
+        /// The type of a field whose signature is a value type and that has a `FieldDesc` (a literal
+        /// has none). A field of an enum type has a primitive `FieldDesc`, which `DoFullyLoad` does not
+        /// load; telling that it is an enum is the caller's.
+        | ValueTypeField of TypeDefn
+        /// An interface the definition implements, spelled in a way ECMA-335 does not permit, whose
+        /// load PawPrint does not model.
+        | UnmodelledInterface of UnmodelledBinding
+
+    /// Not yet implemented: no parts.
+    let fullLoadParts
+        (_ : DumpedAssembly)
+        (_ : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : FullLoadPart list
+        =
+        []
+
     /// The element types a constructed spelling is loaded through: an array's or pointer's element,
     /// or a function pointer's return and parameter types. `None` for any other spelling.
     let private constructedFrom (spelling : TypeDefn) : TypeDefn list option =
