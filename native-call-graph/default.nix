@@ -242,8 +242,38 @@
     diff -u wanted.tsv actual.tsv
     touch $out
   '';
+  # The tool with its walk wrong: it leaves out the operator delete a throwing new's cleanup
+  # calls. Comparing the walk with clang's IR must refuse it, with the oracle's own expected
+  # graph not consulted.
+  toolWithoutCleanupDeletes = tool.overrideAttrs (old: {
+    pname = "native-call-graph-without-cleanup-deletes";
+    postPatch = ''
+      substituteInPlace callgraph.cpp --replace-fail \
+        'emit(E->getBeginLoc(), "delete", Cleanup, "-");' '(void)Cleanup;'
+    '';
+  });
+
+  crossCheck = pkgs.runCommand "native-call-graph-cross-check" {nativeBuildInputs = [pkgs.python3];} ''
+    ${prepareOracle}
+    if python3 ${./generate.py} --tool ${toolWithoutCleanupDeletes}/bin/native-call-graph \
+      --db compile_commands.json --requests requests.tsv --root "$root" --out graph.tsv 2> refusal.txt; then
+      echo "The IR cross-check accepted a walk that leaves out a throwing new's cleanup." >&2
+      exit 1
+    fi
+    if ! grep -q "AllocateCleanup.*calls what the walk does not name.*operator delete" refusal.txt; then
+      echo "The generator refused the wrong walk, but not for the cleanup it leaves out:" >&2
+      cat refusal.txt >&2
+      exit 1
+    fi
+    touch $out
+  '';
 in {
   inherit tool;
   graphs = lib.mapAttrs' (name: case: lib.nameValuePair "native-call-graph-${name}" case.built) cases;
-  checks = graphChecks // {native-call-graph-oracle = oracle;};
+  checks =
+    graphChecks
+    // {
+      native-call-graph-oracle = oracle;
+      native-call-graph-cross-check = crossCheck;
+    };
 }
