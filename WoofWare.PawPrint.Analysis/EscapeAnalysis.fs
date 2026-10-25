@@ -344,6 +344,10 @@ type internal LocalFacts =
         /// Where an assumption's contract stands in for code the body runs: an exception the
         /// contract does not list may arise there if the assumption fails.
         Assumed : (int * Assumption) list
+        /// Each instruction at which the body comes to rely on an assumption about what a value
+        /// holds (`Assumption.concernsValues`), by offset: a run past it relies on the assumption,
+        /// whatever handlers the body has.
+        Relies : (int * Assumption) list
         /// Each call, and what it passes: each argument, `this` first, or for `newobj` the object
         /// it makes. Empty for a call the JIT emits in place of the body's own.
         Calls : (int * CallSite * SpelledArgument list) list
@@ -389,6 +393,8 @@ type internal LocalFacts =
         Spellings : SpelledType[]
         /// What the body's `ret`s return, over every path to them.
         Returns : StackValue
+        /// What each `stfld` and `stsfld` the body may execute stores, by its offset.
+        Stored : Map<int, StackValue>
         /// The arguments, by index, whose values can decide something of what the body does: what
         /// it passes to a call, a virtual call's receiver among them, what it returns, and what a
         /// branch tests.
@@ -551,6 +557,8 @@ type internal Pending =
     | Return of MethodInstance
     /// What the call at this offset of an instance returns.
     | Call of MethodInstance * offset : int
+    /// What the writers of this field store in it.
+    | Field of FieldKey
 
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
 /// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
@@ -567,6 +575,18 @@ type internal InstanceCalls =
         /// Of `Outside`, what the runtime runs for what compiling the body raises wherever the JIT
         /// compiles its code (`LocalFacts.RaisedWhereInlined`).
         RaisedWhereInlined : MethodInstance list
+    }
+
+/// Where an assembly's own IL writes its fields.
+type internal FieldWrites =
+    {
+        /// Each `stfld` and `stsfld` naming a field of the assembly by its definition, by the
+        /// field's row: the method making it, and its offset.
+        Stores : Map<int, (MethodDefinitionHandle * int) list>
+        /// The rows of the fields whose address an `ldflda` or `ldsflda` of the assembly takes,
+        /// through which anything may store to them, and of those whose name a member reference of
+        /// the assembly spells, which may name one of them.
+        Unfollowed : Set<int>
     }
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
@@ -615,6 +635,14 @@ type EscapeAnalysisState =
             /// The objects each instance returns, as far as it has been asked (`returnsOf`);
             /// `None` where only the declared return type says.
             Returns : Map<MethodInstance, ObjectClasses option>
+            /// The objects each field holds, as far as it has been asked (`fieldContents`); `None`
+            /// where only its declared type says.
+            FieldContents : Map<FieldKey, ObjectClasses option>
+            /// Where the IL of each assembly asked about so far writes its fields (`fieldWrites`).
+            FieldWrites : Map<string, FieldWrites>
+            /// The facts of the IL of each method asked about so far whose body an answer takes a
+            /// contract for in place of that IL (`writerFacts`).
+            OwnFacts : Map<MethodKey, LocalFacts>
             /// The facts of each instance asked about so far (`instanceFacts`).
             InstanceFacts : Map<MethodInstance, LocalFacts>
         }
@@ -792,6 +820,9 @@ module EscapeAnalysis =
             InlinedSummaries = Map.empty
             Bases = Map.empty
             Returns = Map.empty
+            FieldContents = Map.empty
+            FieldWrites = Map.empty
+            OwnFacts = Map.empty
             InstanceFacts = Map.empty
         }
 
@@ -804,6 +835,7 @@ module EscapeAnalysis =
             Summaries = Map.empty
             InlinedSummaries = Map.empty
             Returns = Map.empty
+            FieldContents = Map.empty
             InstanceFacts = Map.empty
         }
 
@@ -2969,7 +3001,17 @@ module EscapeAnalysis =
                                                MetadataOperand.FromMetadata token) ->
                         match token.Token with
                         | MetadataToken.FieldDefinition handle ->
-                            state, Some (ofMemberSignature token.Token assembly.Fields.[handle].Signature)
+                            // What the field's writers store in it, where the analysis can follow them.
+                            match ofMemberSignature token.Token assembly.Fields.[handle].Signature with
+                            | StackValue.Objects objects ->
+                                match Set.toList objects with
+                                | [ SpelledObject.Within declared ] ->
+                                    let field = FieldKey.make assembly.DefinitionFullName handle
+
+                                    state,
+                                    Some (StackValue.Objects (Set.singleton (SpelledObject.Field (field, declared))))
+                                | _ -> state, Some (StackValue.Objects objects)
+                            | other -> state, Some other
                         | MetadataToken.MemberReference handle ->
                             match assembly.Members.[handle].Signature with
                             | MemberSignature.Field (_, ty) -> state, Some (ofMemberSignature token.Token ty)
@@ -3051,7 +3093,8 @@ module EscapeAnalysis =
                     failwith
                         $"BUG: something other than objects was passed as argument %d{index}, which is spelled as one"
             | SpelledObject.Within _
-            | SpelledObject.Returned _ -> [ None ]
+            | SpelledObject.Returned _
+            | SpelledObject.Field _ -> [ None ]
 
         let isNonZero (integer : SpelledInteger) : bool option list =
             match integer with
@@ -3112,6 +3155,137 @@ module EscapeAnalysis =
             | state, None -> state, false
         | _ -> state, false
 
+    /// Where `assembly`'s own IL writes its fields.
+    let private fieldWrites
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        : EscapeAnalysisState * FieldWrites
+        =
+        match state.FieldWrites.TryFind assembly.DefinitionFullName with
+        | Some writes -> state, writes
+        | None ->
+            let rowOf (handle : FieldDefinitionHandle) : int =
+                (FieldKey.make assembly.DefinitionFullName handle).Row
+
+            // A member reference naming a field may name one of the assembly's own, of a generic
+            // type's instantiation, say; which, the analysis does not resolve.
+            let referenced =
+                assembly.Members.Values
+                |> Seq.choose (fun reference ->
+                    match reference.Signature with
+                    | MemberSignature.Field _ -> Some reference.PrettyName
+                    | MemberSignature.Method _ -> None
+                )
+                |> Set.ofSeq
+
+            let named =
+                assembly.Fields
+                |> Seq.filter (fun (KeyValue (_, field)) -> referenced.Contains field.Name)
+                |> Seq.map (fun (KeyValue (handle, _)) -> rowOf handle)
+                |> Set.ofSeq
+
+            let stores, addressed =
+                ((Map.empty, Set.empty), assembly.Methods)
+                ||> Seq.fold (fun (stores, addressed) (KeyValue (handle, method)) ->
+                    match MethodInfo.tryIlBody method with
+                    | None -> stores, addressed
+                    | Some body ->
+                        ((stores, addressed), body.Instructions)
+                        ||> List.fold (fun (stores, addressed) (op, offset) ->
+                            match op with
+                            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Stfld | UnaryMetadataTokenIlOp.Stsfld),
+                                                       MetadataOperand.FromMetadata token) ->
+                                match token.Token with
+                                | MetadataToken.FieldDefinition field ->
+                                    let row = rowOf field
+
+                                    Map.add
+                                        row
+                                        ((handle, offset) :: Option.defaultValue [] (Map.tryFind row stores))
+                                        stores,
+                                    addressed
+                                | _ -> stores, addressed
+                            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldflda | UnaryMetadataTokenIlOp.Ldsflda),
+                                                       MetadataOperand.FromMetadata token) ->
+                                match token.Token with
+                                | MetadataToken.FieldDefinition field -> stores, Set.add (rowOf field) addressed
+                                | _ -> stores, addressed
+                            | _ -> stores, addressed
+                        )
+                )
+
+            let writes =
+                {
+                    Stores = stores
+                    Unfollowed = Set.union named addressed
+                }
+
+            { state with
+                FieldWrites = state.FieldWrites.Add (assembly.DefinitionFullName, writes)
+            },
+            writes
+
+    /// Whether `Assumption.FieldsWrittenVisibly`, where the analysis may take it, says what `field`
+    /// holds: what its own assembly's `stfld`s and `stsfld`s store in it, or null. So it is when
+    /// no other assembly can name the field, it being private, or internal to an assembly that
+    /// makes no other its friend (`InternalsVisibleTo`); its own assembly's IL never takes its
+    /// address; no member reference of that assembly may name it; its type is a class of automatic
+    /// layout: not explicit, where another field can lie over it (a struct's may lie under a field
+    /// of a container of explicit layout that embeds the struct), and not sequential, which the
+    /// interop marshaller writes as a formatted class (`Marshal.PtrToStructure`, a P/Invoke's `[Out]`
+    /// parameter); and, in CoreLib, CoreCLR's native code does not bind it by name (`VmBoundField`),
+    /// which it may write.
+    let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
+        if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
+            state, false
+        else
+
+        let assembly = assemblyOf state field.AssemblyFullName
+        let definition = assembly.Fields.[field.Handle]
+
+        let declaring =
+            assembly.TypeDefs.[definition.DeclaringType.Identity.TypeDefinition.Get]
+
+        let closedToOthers =
+            match definition.Attributes &&& FieldAttributes.FieldAccessMask with
+            | FieldAttributes.Private -> true
+            | FieldAttributes.Assembly
+            | FieldAttributes.FamANDAssem ->
+                match assembly.Friends with
+                | Ok friends -> friends.InternalsVisibleTo.Length = 0
+                | Error _ -> false
+            | _ -> false
+
+        let boundByTheVm =
+            assembly.DefinitionFullName = state.BaseTypes.Corelib.DefinitionFullName
+            && VmBoundField.isBound
+                (TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) declaring)
+                definition.Name
+
+        if
+            not closedToOthers
+            || boundByTheVm
+            || definition.Attributes.HasFlag FieldAttributes.Literal
+            || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes <> TypeLayoutKind.Auto
+        then
+            state, false
+        else
+
+        let state, ofValueType =
+            derivesFrom state definition.DeclaringType.Identity state.BaseTypes.ValueType.Identity
+
+        if ofValueType then
+            state, false
+        else
+
+        let state, writes = fieldWrites state assembly
+        state, not (writes.Unfollowed.Contains field.Row)
+
+    /// Whether the analysis takes `field` to hold only what its assembly's IL stores in it, null among
+    /// that (`followableField`), and the analysis to ask next.
+    let internal followsField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
+        followableField state field
+
     /// Whether every object among `objects` is spelled, in `spellings`, as of a reference type, so
     /// that whether it is null is what a `brtrue` tests of it. An object a call returns that names
     /// no declared type is not.
@@ -3131,6 +3305,7 @@ module EscapeAnalysis =
                 | SpelledObject.Exactly index
                 | SpelledObject.Within index
                 | SpelledObject.Argument (_, index)
+                | SpelledObject.Field (_, index)
                 | SpelledObject.Returned (_, Some index) -> isReference state spellings.[index]
                 | SpelledObject.Returned (_, None) -> state, false
         )
@@ -3157,6 +3332,7 @@ module EscapeAnalysis =
             Raises = []
             Opaque = []
             Assumed = []
+            Relies = []
             Calls = []
             ConstrainedPointers = []
             Rethrows = []
@@ -3165,6 +3341,7 @@ module EscapeAnalysis =
             RaisedWhereInlined = Set.empty
             Spellings = [||]
             Returns = StackValue.Unknown
+            Stored = Map.empty
             Consults = Set.empty
             LookedUp = []
             HelperSites = []
@@ -3506,7 +3683,13 @@ module EscapeAnalysis =
             | MethodBody.Il body -> Runs.Il (body, None)
 
     /// What one body does by itself.
-    let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
+    /// The facts of `key`'s body, where CoreCLR runs `runs` for it (`runsFor`).
+    let private factsOfRuns
+        (state : EscapeAnalysisState)
+        (key : MethodKey)
+        (runs : Runs)
+        : EscapeAnalysisState * LocalFacts
+        =
         let assembly, method = methodOf state key
 
         let contracted
@@ -3519,6 +3702,7 @@ module EscapeAnalysis =
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
+                Relies = []
                 Calls = runs |> List.map (fun (method, passes) -> 0, runtimeRuns method, passes)
                 ConstrainedPointers = []
                 Rethrows = []
@@ -3527,6 +3711,7 @@ module EscapeAnalysis =
                 RaisedWhereInlined = Set.empty
                 Spellings = [||]
                 Returns = StackValue.Unknown
+                Stored = Map.empty
                 Consults = Set.empty
                 LookedUp = []
                 HelperSites = []
@@ -3539,7 +3724,7 @@ module EscapeAnalysis =
             names
             |> List.map (fun name -> ThrownType.Exactly (corelibType state name.Namespace name.Name))
 
-        match runsFor state.Assumptions assembly key with
+        match runs with
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
@@ -4106,6 +4291,7 @@ module EscapeAnalysis =
                                     | SpelledObject.Exactly index -> Some (Some (index, true))
                                     | SpelledObject.Within index
                                     | SpelledObject.Argument (_, index)
+                                    | SpelledObject.Field (_, index)
                                     | SpelledObject.Returned (_, Some index) -> Some (Some (index, false))
                                     | SpelledObject.Returned (_, None) -> None
 
@@ -5126,6 +5312,38 @@ module EscapeAnalysis =
         // the JIT cannot embed the `RuntimeType` as it does an exact type's (`fgMorphCall`,
         // morph.cpp; `CEEInfo::getRuntimeTypePointer`). Only an instance says whether its code is
         // shared (`instanceFacts`). A query of types the JIT folds compares handles instead.
+        // What each `stfld` and `stsfld` a run may execute stores in its field: the value on top of
+        // the stack.
+        let stored =
+            [ 0 .. ops.Length - 1 ]
+            |> List.choose (fun index ->
+                match fst ops.[index] with
+                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Stfld | UnaryMetadataTokenIlOp.Stsfld), _) when
+                    executed.Contains (snd ops.[index])
+                    ->
+                    Some (snd ops.[index], valueAt (snd ops.[index]) 0)
+                | _ -> None
+            )
+            |> Map.ofList
+
+        // A load of a field the analysis follows relies on its writers being the IL that names it.
+        let state, fieldAssumed =
+            ((state, []), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun (state, fieldAssumed) index ->
+                match fst ops.[index] with
+                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldfld | UnaryMetadataTokenIlOp.Ldsfld),
+                                           MetadataOperand.FromMetadata token) when
+                    executed.Contains (snd ops.[index]) && not (unbound.Contains index)
+                    ->
+                    match token.Token with
+                    | MetadataToken.FieldDefinition field ->
+                        match followableField state (FieldKey.make assembly.DefinitionFullName field) with
+                        | state, true -> state, (snd ops.[index], Assumption.FieldsWrittenVisibly) :: fieldAssumed
+                        | state, false -> state, fieldAssumed
+                    | _ -> state, fieldAssumed
+                | _ -> state, fieldAssumed
+            )
+
         let state, lookedUp =
             ((state, []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun (state, lookedUp) index ->
@@ -5436,6 +5654,7 @@ module EscapeAnalysis =
                 |> Seq.map (fun offset -> offset, Assumption.JitOptimises)
                 |> Seq.append (List.rev accessAssumed)
                 |> List.ofSeq
+            Relies = List.rev fieldAssumed
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
             HelperSites = List.rev helperSites
@@ -5448,6 +5667,7 @@ module EscapeAnalysis =
             RaisedWhereInlined = raisedWhereInlined
             Spellings = spellings
             Returns = returns
+            Stored = stored
             Consults = consults
             Branching =
                 Some
@@ -6200,7 +6420,8 @@ module EscapeAnalysis =
         match state.Facts.TryFind key with
         | Some facts -> state, facts
         | None ->
-            let state, facts = factsOf state key
+            let assembly = assemblyOf state key.AssemblyFullName
+            let state, facts = factsOfRuns state key (runsFor state.Assumptions assembly key)
 
             { state with
                 Facts = state.Facts.Add (key, facts)
@@ -6671,6 +6892,7 @@ module EscapeAnalysis =
                             Raises = facts.Raises |> List.filter (fst >> at)
                             Opaque = facts.Opaque |> List.filter (fun (offset, _, _) -> at offset)
                             Assumed = facts.Assumed |> List.filter (fst >> at)
+                            Relies = facts.Relies |> List.filter (fst >> at)
                             Calls = facts.Calls |> List.filter (fun (offset, _, _) -> at offset)
                             LookedUp = facts.LookedUp |> List.filter (fst >> at)
                             // Read only to drop `Calls` at its offsets, which are filtered.
@@ -6686,6 +6908,7 @@ module EscapeAnalysis =
                             RaisedWhereInlined = facts.RaisedWhereInlined
                             Spellings = facts.Spellings
                             Returns = returnedOver branching.Returns executed
+                            Stored = facts.Stored |> Map.filter (fun offset _ -> at offset)
                             Consults = facts.Consults
                             Branching = facts.Branching
                         }
@@ -6835,6 +7058,36 @@ module EscapeAnalysis =
             },
             refined
 
+    /// The IL that says what `instance` stores, where it writes a field (`fieldContents`), and its
+    /// facts: where CoreCLR runs that IL, the instance's own; where an answer takes an assumption's
+    /// contract, or CoreLib's resource lookup or `Object.GetType`, in place of it, those of the IL
+    /// itself, since the contract says what the IL raises, and the IL still stores what it stores.
+    /// `None` where no IL of the method says (a native, or an intrinsic whose IL is not what it
+    /// runs).
+    let private writerFacts
+        (state : EscapeAnalysisState)
+        (instance : MethodInstance)
+        : EscapeAnalysisState * (MethodInstructions<TypeDefn> * LocalFacts) option
+        =
+        let key = instance.Definition
+        let assembly, method = methodOf state key
+
+        match runsFor state.Assumptions assembly key, MethodInfo.tryIlBody method with
+        | Runs.Il (body, _), _ ->
+            let state, facts = instanceFacts state instance
+            state, Some (body, facts)
+        | (Runs.Assumed _ | Runs.ResourceLookup | Runs.ObjectGetType), Some own ->
+            match state.OwnFacts.TryFind key with
+            | Some facts -> state, Some (own, facts)
+            | None ->
+                let state, facts = factsOfRuns state key (Runs.Il (own, None))
+
+                { state with
+                    OwnFacts = state.OwnFacts.Add (key, facts)
+                },
+                Some (own, facts)
+        | _ -> state, None
+
     /// How many classes an object a call returns, or passes, may be of before only the type
     /// declared for it says what it is.
     let private returnedClassesLimit : int = 8
@@ -6893,9 +7146,103 @@ module EscapeAnalysis =
                             failwith
                                 $"BUG: something other than objects was passed as argument %d{index}, which is spelled as one"
                         | None -> ofSpelling state declared false true
+                    | SpelledObject.Field (field, declared) ->
+                        match fieldContents state inProgress field with
+                        | state, Some objects -> state, Some objects
+                        | state, None -> ofSpelling state declared false true
 
                 state, objects |> Option.map (ObjectClasses.union soFar)
         )
+
+    /// The objects `field` holds: null, or what a `stfld` or `stsfld` of its assembly stores in
+    /// it, as each writer's own instance decides, where the analysis follows its writers
+    /// (`followableField`); `None` where only its declared type says, which is also the answer for
+    /// one that depends on a field in `inProgress`.
+    and private fieldContents
+        (state : EscapeAnalysisState)
+        (inProgress : Set<Pending>)
+        (field : FieldKey)
+        : EscapeAnalysisState * ObjectClasses option
+        =
+        match state.FieldContents.TryFind field with
+        | Some known -> state, known
+        | None when inProgress.Contains (Pending.Field field) -> state, None
+        | None ->
+            let state, followable = followableField state field
+
+            let state, contents =
+                if not followable then
+                    state, None
+                else
+                    let assembly = assemblyOf state field.AssemblyFullName
+                    let state, writes = fieldWrites state assembly
+                    let inProgress = Set.add (Pending.Field field) inProgress
+
+                    // Until a writer runs, the field holds null.
+                    let unwritten =
+                        {
+                            Classes = Set.empty
+                            MayBeNull = true
+                        }
+
+                    ((state, Some unwritten), Option.defaultValue [] (writes.Stores.TryFind field.Row))
+                    ||> List.fold (fun (state, soFar) (writer, offset) ->
+                        match soFar with
+                        | None -> state, None
+                        | Some soFar ->
+                            let key = MethodKey.make assembly writer
+                            let _, method = methodOf state key
+
+                            // A generic writer stands for every instantiation of it.
+                            let instance =
+                                if method.DeclaringTypeGenerics.IsEmpty && method.Generics.IsEmpty then
+                                    instanceOf state key [] []
+                                else
+                                    {
+                                        Definition = key
+                                        Arguments = Instantiation.Open
+                                        Passed = Map.empty
+                                    }
+
+                            // The writer's facts say what it stores only where they are of the IL
+                            // whose store this is.
+                            let storedBy (op : IlOp option) : MetadataToken option =
+                                match op with
+                                | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Stfld | UnaryMetadataTokenIlOp.Stsfld),
+                                                                 MetadataOperand.FromMetadata token)) ->
+                                    Some token.Token
+                                | _ -> None
+
+                            let scanned =
+                                MethodInfo.tryIlBody method
+                                |> Option.bind (fun own -> storedBy (own.Locations.TryFind offset))
+
+                            match writerFacts state instance with
+                            | state, None -> state, None
+                            | state, Some (body, _) when
+                                scanned.IsNone || storedBy (body.Locations.TryFind offset) <> scanned
+                                ->
+                                state, None
+                            | state, Some (_, facts) ->
+
+                            match Map.tryFind offset facts.Stored with
+                            | Some (StackValue.Objects objects) ->
+                                match objectTypes state inProgress instance facts objects with
+                                | state, Some stored -> state, Some (ObjectClasses.union soFar stored)
+                                | state, None -> state, None
+                            | Some (StackValue.Integers _ | StackValue.Addresses _ | StackValue.Unknown) -> state, None
+                            // No run of the writer reaches the store.
+                            | None -> state, Some soFar
+                    )
+
+            let contents =
+                contents
+                |> Option.filter (fun contents -> contents.Classes.Count <= returnedClassesLimit)
+
+            { state with
+                FieldContents = state.FieldContents.Add (field, contents)
+            },
+            contents
 
     /// `reached`, as a call in `instance` that passes `passes` (`LocalFacts.Calls`) reaches it:
     /// with the classes of the objects, or the integers, it passes as each argument `reached`'s body
@@ -7596,6 +7943,8 @@ module EscapeAnalysis =
                         | state, false -> state, assumes
                 )
 
+            let assumes = Set.union assumes (facts.Relies |> List.map snd |> Set.ofList)
+
             state,
             {
                 Types = types
@@ -7719,6 +8068,10 @@ module EscapeAnalysis =
                                 ||> Set.fold (fun (state, assumes) assumption ->
                                     if Set.contains assumption assumes then
                                         state, assumes
+                                    // What a callee relies on of what values hold, its caller does
+                                    // too, past every handler.
+                                    elif Assumption.concernsValues assumption then
+                                        state, Set.add assumption assumes
                                     else
                                         match escapesAt state key offset None with
                                         | state, true -> state, Set.add assumption assumes
