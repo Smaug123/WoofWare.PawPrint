@@ -864,7 +864,8 @@ module TypeLoad =
 
     /// `MethodTable::DoFullyLoad` to `CLASS_LOADED` for a type spelled in `spellingAssembly`, once
     /// every type its load reaches has been brought to `CLASS_DEPENDENCIES_LOADED`: as that walk,
-    /// each type definition after what it reaches, with the checks each definition makes at the end.
+    /// each type definition after what it reaches, with the checks each definition makes at the end,
+    /// but not a function pointer's signature.
     and private fullyLoad
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -874,15 +875,20 @@ module TypeLoad =
         (walk : LoadWalk)
         : LoadWalk * LoadMiss option
         =
-        walkSpelling
-            loggerFactory
-            dotnetRuntimeDirs
-            true
-            (fullyLoadDefinition loggerFactory dotnetRuntimeDirs baseClassTypes)
-            (fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly)
-            spellingAssembly
-            spelling
-            walk
+        match spelling with
+        // `TypeDesc::DoFullyLoad` completes a function pointer without its signature's types, which
+        // stay at the level creating it brought them to.
+        | TypeDefn.FunctionPointer _ -> walk, None
+        | _ ->
+            walkSpelling
+                loggerFactory
+                dotnetRuntimeDirs
+                true
+                (fullyLoadDefinition loggerFactory dotnetRuntimeDirs baseClassTypes)
+                (fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly)
+                spellingAssembly
+                spelling
+                walk
 
     /// A type definition's base, its interfaces and the value types of its fields, instance then
     /// static, each to `CLASS_LOADED`; then, outside CoreLib, which skips the checks, its type
