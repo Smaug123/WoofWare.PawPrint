@@ -18813,6 +18813,98 @@ public static class Cases
         // The analysis does follow some of CoreLib's fields, or the check above says nothing.
         fields |> List.exists (snd >> follows) |> shouldEqual true
 
+    /// The fields of the host CoreLib, by declaring type's full name and own name, with each one's
+    /// attributes and handle.
+    let private coreLibFields
+        (corelib : DumpedAssembly)
+        : ((string * string) * FieldAttributes * FieldDefinitionHandle) list
+        =
+        let typeName (handle : TypeDefinitionHandle) : string =
+            TypeInfo.fullName (fun handle -> corelib.TypeDefs.[handle]) corelib.TypeDefs.[handle]
+
+        corelib.Fields
+        |> Seq.map (fun (KeyValue (handle, field)) ->
+            (typeName field.DeclaringType.Identity.TypeDefinition.Get, field.Name), field.Attributes, handle
+        )
+        |> List.ofSeq
+
+    /// `MethodDesc::AllocateStubMethodInfo` (method.cpp) writes `RuntimeMethodInfoStub.m_keepalive`
+    /// through the C++ layout of the stub's class (`ReflectMethodObject::SetKeepAlive`, object.h), and
+    /// `FieldDesc::AllocateStubFieldInfo` (field.cpp) writes `RuntimeFieldInfoStub.m_keepalive` through
+    /// `ReflectFieldObject::SetKeepAlive`, where no instruction names either field and no row of
+    /// corelib.h binds it. (On .NET 10 the field stub also has sequential layout, which the analysis
+    /// refuses on its own; the method stub has automatic layout on every supported runtime.)
+    [<TestCase("System.RuntimeMethodInfoStub")>]
+    [<TestCase("System.RuntimeFieldInfoStub")>]
+    let ``a field CoreCLR writes through its class's native layout is not taken to hold only what IL stores``
+        (stub : string)
+        : unit
+        =
+        let corelib = hostCoreLib ()
+
+        let keepAlive =
+            coreLibFields corelib
+            |> List.pick (fun (named, _, handle) -> if named = (stub, "m_keepalive") then Some handle else None)
+
+        (VmBoundField.all.Force ()).Contains (stub, "m_keepalive") |> shouldEqual false
+
+        let _, follows =
+            EscapeAnalysis.followsField (analysisOver [] id) (FieldKey.make corelib.DefinitionFullName keepAlive)
+
+        follows |> shouldEqual false
+
+    /// A static field is not part of any object, so no C++ layout of its class reaches it: the VM
+    /// finds a static only by name (`VmBoundField`), and `ExecutionContext.Default` is bound by none.
+    [<Test>]
+    let ``a static field of a class CoreCLR lays out natively holds only what IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+        let named = "System.Threading.ExecutionContext", "Default"
+        VmLaidOutClass.isLaidOut (fst named) |> shouldEqual true
+        (VmBoundField.all.Force ()).Contains named |> shouldEqual false
+
+        let _, attributes, handle =
+            coreLibFields corelib |> List.find (fun (candidate, _, _) -> candidate = named)
+
+        attributes.HasFlag FieldAttributes.Static |> shouldEqual true
+
+        let _, follows =
+            EscapeAnalysis.followsField (analysisOver [] id) (FieldKey.make corelib.DefinitionFullName handle)
+
+        follows |> shouldEqual true
+
+    [<Test>]
+    let ``no instance field of a class CoreCLR lays out natively is taken to hold only what IL stores`` () : unit =
+        let corelib = hostCoreLib ()
+        let fields = coreLibFields corelib
+        let mutable analysis = analysisOver [] id
+
+        let follows (handle : FieldDefinitionHandle) : bool =
+            let next, follows =
+                EscapeAnalysis.followsField analysis (FieldKey.make corelib.DefinitionFullName handle)
+
+            analysis <- next
+            follows
+
+        let ofLaidOutClass =
+            fields
+            |> List.filter (fun ((typeName, _), attributes, _) ->
+                VmLaidOutClass.isLaidOut typeName
+                && not (attributes.HasFlag FieldAttributes.Static)
+            )
+
+        // The check says something only if CoreLib declares instance fields of such classes.
+        ofLaidOutClass.IsEmpty |> shouldEqual false
+
+        let followed =
+            ofLaidOutClass
+            |> List.filter (fun (_, _, handle) -> follows handle)
+            |> List.map (fun ((typeName, fieldName), _, _) -> $"%s{typeName}\t%s{fieldName}")
+
+        if not followed.IsEmpty then
+            let followed = String.concat "\n" followed
+
+            failwith $"The analysis follows these instance fields of classes CoreCLR lays out natively:\n%s{followed}"
+
     /// A store into a field through a member reference naming it, which neither C# nor
     /// Reflection.Emit writes for a field of a type that is not generic, so the IL is built directly:
     /// `Write` stores a string in `M.Holder.held` through a member reference whose parent is

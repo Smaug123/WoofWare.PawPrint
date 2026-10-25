@@ -13,7 +13,7 @@ module TestVmBoundField =
 
     /// The namespace each `g_<token>NS` of `vm/namespace.h` spells, by its token: each is a string
     /// literal or another such macro, or several pasted together.
-    let private namespaces (path : string) : Map<string, string> =
+    let namespaces (path : string) : Map<string, string> =
         let defines =
             File.ReadAllLines path
             |> Array.choose (fun line ->

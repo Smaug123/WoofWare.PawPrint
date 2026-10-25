@@ -3229,7 +3229,8 @@ module EscapeAnalysis =
     /// of a container of explicit layout that embeds the struct), and not sequential, which the
     /// interop marshaller writes as a formatted class (`Marshal.PtrToStructure`, a P/Invoke's `[Out]`
     /// parameter); and, in CoreLib, CoreCLR's native code does not bind it by name (`VmBoundField`),
-    /// which it may write.
+    /// which it may write, nor is it an instance field of a class whose objects that code lays out
+    /// as a C++ class of its own (`VmLaidOutClass`), through which it may write any of them.
     let private followableField (state : EscapeAnalysisState) (field : FieldKey) : EscapeAnalysisState * bool =
         if not (state.Assumptions.Contains Assumption.FieldsWrittenVisibly) then
             state, false
@@ -3251,15 +3252,25 @@ module EscapeAnalysis =
                 | Error _ -> false
             | _ -> false
 
-        let boundByTheVm =
+        let inCorelib =
             assembly.DefinitionFullName = state.BaseTypes.Corelib.DefinitionFullName
-            && VmBoundField.isBound
-                (TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) declaring)
-                definition.Name
+
+        let declaringFullName =
+            TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) declaring
+
+        let boundByTheVm =
+            inCorelib && VmBoundField.isBound declaringFullName definition.Name
+
+        // A static field is part of no object, so no C++ layout reaches it.
+        let laidOutByTheVm =
+            inCorelib
+            && not (definition.Attributes.HasFlag FieldAttributes.Static)
+            && VmLaidOutClass.isLaidOut declaringFullName
 
         if
             not closedToOthers
             || boundByTheVm
+            || laidOutByTheVm
             || definition.Attributes.HasFlag FieldAttributes.Literal
             || TypeLayoutKind.ofTypeAttributes declaring.TypeAttributes <> TypeLayoutKind.Auto
         then
