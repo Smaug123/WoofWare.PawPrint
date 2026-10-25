@@ -1,16 +1,19 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+open System.Reflection.Metadata
+
 /// Why CoreCLR refuses a closed type as the operand of an instruction that consumes a type.
 [<RequireQualifiedAccess>]
 type TypeOperandRefusal =
-    /// The operand is this byref type.
-    | Byref of ConcreteTypeHandle
+    /// The operand is a byref type.
+    | Byref
     /// The operand is CoreLib's `System.Void`.
     | Void
 
     override this.ToString () =
         match this with
-        | TypeOperandRefusal.Byref handle -> $"the byref type %O{handle}"
+        | TypeOperandRefusal.Byref -> "a byref type"
         | TypeOperandRefusal.Void -> "System.Void"
 
 [<RequireQualifiedAccess>]
@@ -73,7 +76,7 @@ module TypeOperand =
         : TypeOperandRefusal option
         =
         match handle with
-        | ConcreteTypeHandle.Byref _ -> Some (TypeOperandRefusal.Byref handle)
+        | ConcreteTypeHandle.Byref _ -> Some TypeOperandRefusal.Byref
         | ConcreteTypeHandle.Concrete _ ->
             match AllConcreteTypes.lookup handle concreteTypes with
             | Some ty -> ofDefinition baseClassTypes ty.Identity
@@ -82,3 +85,70 @@ module TypeOperand =
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.FunctionPointer _ -> None
+
+    /// <summary>
+    /// Why CoreCLR refuses a token whose type <paramref name="spelling"/> spells, in
+    /// <paramref name="spellingAssembly"/>, as <see cref="refusal"/> describes, or <c>None</c>: a
+    /// byref, <c>ELEMENT_TYPE_VOID</c>, or a type <see cref="ofDefinition"/> refuses, however it is
+    /// named (a TypeSpec of <c>valuetype System.Void</c> included). Custom modifiers do not change
+    /// the type a signature names.
+    /// </summary>
+    /// <remarks>
+    /// <c>resolveToken</c> refuses the type only once it has loaded it, so a type reference the
+    /// spelling names at its top level must already resolve against <paramref name="assemblies"/>.
+    /// A type variable is never refused: no instantiation makes one a byref or <c>System.Void</c>,
+    /// neither being a valid type argument (ECMA-335 II.9.4).
+    /// </remarks>
+    let rec ofSpelling
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : TypeOperandRefusal option
+        =
+        match spelling with
+        | TypeDefn.Byref _ -> Some TypeOperandRefusal.Byref
+        | TypeDefn.Void -> Some TypeOperandRefusal.Void
+        | TypeDefn.Modified modified -> ofSpelling baseClassTypes assemblies spellingAssembly modified.Unmodified
+        | TypeDefn.FromDefinition (identity, _) -> ofDefinition baseClassTypes identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            match LoadedTypeResolution.resolveTypeRef assemblies spellingAssembly ImmutableArray.Empty typeRef with
+            | TypeResolutionResult.Resolved (definedIn, _, resolved) ->
+                ofDefinition baseClassTypes definedIn.TypeDefs.[resolved.TypeDefHandle].Identity
+            | other ->
+                failwith
+                    $"BUG: a type reference in %s{spellingAssembly.DefinitionFullName} was to be loaded before its refusal was asked, but it does not resolve: %O{other}"
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericInstantiation _
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Pointer _
+        | TypeDefn.Pinned _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> None
+
+    /// <summary>
+    /// Why CoreCLR refuses a token whose type is the one <paramref name="token"/>, a TypeDef,
+    /// TypeRef or TypeSpec of <paramref name="assembly"/>, names, as <see cref="ofSpelling"/> says;
+    /// <c>None</c> for a token naming no type. For a member's token, that type is the parent its
+    /// reference names, and <c>resolveToken</c> refuses it only once it has found the member.
+    /// </summary>
+    let ofTypeToken
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : TypeOperandRefusal option
+        =
+        match token with
+        | MetadataToken.TypeDefinition handle -> ofDefinition baseClassTypes assembly.TypeDefs.[handle].Identity
+        | MetadataToken.TypeReference handle ->
+            ofSpelling
+                baseClassTypes
+                assemblies
+                assembly
+                (TypeDefn.FromReference (assembly.TypeRefs.[handle], SignatureTypeKind.Unknown))
+        | MetadataToken.TypeSpecification handle ->
+            ofSpelling baseClassTypes assemblies assembly assembly.TypeSpecs.[handle].Signature
+        | _ -> None
