@@ -73,7 +73,7 @@ The emulated POSIX kernel is the external NuGet package `WoofWare.PosixKernel` (
 There are two distinct kinds of OS divergence. Do not conflate them.
 
 * *Facts the guest reads about its platform* (kernel release, processor count, clock) are data in the emulated kernel (`SimulatedUnixPlatform`, defaulting to `LinuxX64`), never a host read. Guests branch on them, so a host read would change guest control flow between runs.
-* *Which BCL code path exists at all* is decided by CoreLib's own `#if`s at its compile time (`TARGET_OSX` and so on). PawPrint interprets whichever CoreLib its runtime-dir list resolves, normally the host's, so a macOS dev box runs different guest code from CI and production, which are Linux. The devshell carries each runtime's managed linux-x64 pack for running the production flavour anywhere; `WoofWare.PawPrint.Test/AGENTS.md` says how.
+* *Which BCL code path exists at all* is decided by CoreLib's own `#if`s at its compile time (`TARGET_OSX` and so on). PawPrint interprets whichever CoreLib its runtime-dir list resolves, and the host's own framework is the host's flavour, whatever kernel a guest is configured with. The devshell carries each runtime's managed linux-x64 and osx-arm64 packs, and a test guest runs on the pack of its kernel's flavour on every host; `WoofWare.PawPrint.Test/AGENTS.md` says how.
 
 ## Tests
 

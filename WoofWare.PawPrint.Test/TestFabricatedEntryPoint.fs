@@ -125,7 +125,8 @@ module TestFabricatedEntryPoint =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         use peImage = new MemoryStream (image)
 

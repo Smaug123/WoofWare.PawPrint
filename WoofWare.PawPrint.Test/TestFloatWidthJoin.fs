@@ -28,7 +28,8 @@ module TestFloatWidthJoin =
             failwith $"real runtime terminated with an unhandled exception:\n%s{report}"
         | RealRuntimeResult.Aborted (code, report) -> failwith $"real runtime aborted (%O{code}):\n%s{report}"
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         use peImage = new MemoryStream (image)
 
