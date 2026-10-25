@@ -379,6 +379,9 @@ public unsafe class ConstrainedToInterfaceOfModifiedKept<T> where T : Provider.I
 public unsafe class ConstrainedToInterfaceOfInParameterGone<T> where T : Provider.IKeptGeneric<delegate*<in Provider.GoneStruct, void>[]> { }
 public unsafe class ConstrainedToInterfaceOfInParameterKept<T> where T : Provider.IKeptGeneric<delegate*<in Provider.KeptStruct, void>[]> { }
 public class GoneBeforeMatrixInConstraint<T> where T : Provider.IKeptGeneric<System.Tuple<Provider.Gone, int[,]>> { }
+public class ConstrainedToIGoneLost<T> where T : Provider.IGone { }
+public unsafe class DerivesKeptOfFunctionPointerToConstrained : Provider.KeptGeneric<delegate*<ConstrainedToIGoneLost<Provider.LosesIGone>>[]> { }
+public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<ConstrainedToIGoneLost<Provider.LosesIGone>[]> { }
 """
 
     let private curatedConstrainedNames : string list =
@@ -420,6 +423,8 @@ public class GoneBeforeMatrixInConstraint<T> where T : Provider.IKeptGeneric<Sys
             "ConstrainedToInterfaceOfInParameterGone<>"
             "ConstrainedToInterfaceOfInParameterKept<>"
             "GoneBeforeMatrixInConstraint<>"
+            "DerivesKeptOfFunctionPointerToConstrained"
+            "DerivesKeptOfConstrainedArray"
         ]
 
     [<Test>]
