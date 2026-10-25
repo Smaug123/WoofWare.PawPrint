@@ -2394,18 +2394,19 @@ module EscapeAnalysis =
         }
 
     /// What the JIT's loads of the types of `signature`, the signature of a member which `assembly`
-    /// spells, fail with where it compiles an instruction with operand `operand`
-    /// (`JitTypeLoads.memberPositions`, and `JitTypeLoads.unmanagedMeetings` for a call of unmanaged
-    /// code).
+    /// spells, fail with where it compiles an instruction with operand `operand`, meeting them at
+    /// `positions` (`JitTypeLoads.memberPositions`, or a prefix of those, and
+    /// `JitTypeLoads.unmanagedMeetings` for a call of unmanaged code).
     let private memberSignatureLoads
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (operand : MemberOperand)
+        (positions : MemberPositions)
         (signature : MemberSignature)
         : EscapeAnalysisState * SignatureLoadFailures
         =
         let loads =
-            match JitTypeLoads.memberPositions operand with
+            match positions with
             | MemberPositions.BySignature ->
                 match operand, signature with
                 | MemberOperand.UnmanagedCall convention, MemberSignature.Method signature ->
@@ -3858,10 +3859,31 @@ module EscapeAnalysis =
                             | MemberSignature.Field _ -> None
 
                         match refusal with
-                        | Some refusal -> state, failures @ signatureRefusalFacts state refusal, [], []
+                        | Some refusal ->
+                            // Some loads come before CoreCLR converts the signature: preparing the
+                            // method as a function pointer, for some addresses.
+                            let state, loads =
+                                memberSignatureLoads
+                                    state
+                                    spellingAssembly
+                                    operand
+                                    (MemberPositions.Described (SignatureRefusal.positionsBeforeConversion operand))
+                                    signature
+
+                            let possible = loads.Possible |> List.collect (Some >> raisesOf)
+
+                            match loads.Definite with
+                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, []
+                            | None -> state, failures @ signatureRefusalFacts state refusal, possible, []
                         | None ->
 
-                            let state, loads = memberSignatureLoads state spellingAssembly operand signature
+                            let state, loads =
+                                memberSignatureLoads
+                                    state
+                                    spellingAssembly
+                                    operand
+                                    (JitTypeLoads.memberPositions operand)
+                                    signature
 
                             // Making the delegate, the JIT compiles the `newobj` after the address
                             // instruction. CoreCLR walks the signatures to make its thunk where the

@@ -206,8 +206,10 @@ method) may add more:
   list, managed or native, wherever it converts one for the JIT (`SignatureRefusal`): a `call`,
   `callvirt`, `newobj`, `ldftn` or `ldvirtftn` naming a method with one, or a `calli` whose call
   site has one, fails the compilation of the method holding it with `InvalidProgramException`,
-  past all its handlers and before the JIT loads any type of the signature, and a method with one
-  never compiles at all, so none of its body runs. `ldtoken` converts no signature. The call is
+  past all its handlers and before the JIT loads any type of the signature (CoreCLR prepares a
+  method as a function pointer first for an `ldvirtftn`, or an `ldftn` of a method specification,
+  which may fail before), unless resolving a `call` or `ldftn` of an abstract method refuses that
+  first (`BadImageFormatException`); a method with one never compiles at all, so none of its body runs. `ldtoken` converts no signature. The call is
   not followed;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or

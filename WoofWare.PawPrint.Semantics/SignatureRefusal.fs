@@ -42,3 +42,15 @@ module SignatureRefusal =
         | MemberOperand.Address _ -> true
         | MemberOperand.FieldAccess
         | MemberOperand.Token -> false
+
+    /// The positions of the signature of the member an instruction with operand `operand` names at
+    /// which the JIT meets types before CoreCLR converts the signature, which it does where the JIT
+    /// meets the return type (`JitTypePosition.CalleeReturn`): those at which CoreCLR prepares the
+    /// method as a function pointer first (`FunctionPointerPreparation.BeforeReturnType`, and
+    /// possibly `IfConstraintResolved`), in the order the JIT meets them.
+    let positionsBeforeConversion (operand : MemberOperand) : JitTypePosition list =
+        match JitTypeLoads.memberPositions operand with
+        | MemberPositions.Described positions ->
+            positions
+            |> List.takeWhile (fun position -> position <> JitTypePosition.CalleeReturn)
+        | MemberPositions.Undescribed -> []
