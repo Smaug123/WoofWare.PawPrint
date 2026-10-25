@@ -62,6 +62,40 @@ type ManagedCall =
         Arguments : NativeArgument list
     }
 
+/// Managed code a native method can call, whose exceptions escape the native method to its caller.
+[<RequireQualifiedAccess>]
+type NativeCall =
+    /// A call of this method of CoreLib's.
+    | Method of ManagedCall
+    /// CoreCLR's lookup of one of CoreLib's resource strings by name (`ResMgrGetString`, excep.cpp),
+    /// by which it gives the message to an exception it throws with a resource name, as
+    /// `COMPlusThrow(kind, W("name"))` does. The CoreLib method it calls differs between runtimes:
+    /// .NET 10's `Environment.GetResourceStringLocal(string)`, .NET 11's
+    /// `Environment.GetResourceString(char*, string*, Exception*)`.
+    | ResourceMessage
+
+[<RequireQualifiedAccess>]
+module NativeCall =
+
+    /// The CoreLib method a call runs on `runtime`.
+    let resolve (runtime : EmulatedRuntime) (call : NativeCall) : ManagedCall =
+        match call with
+        | NativeCall.Method call -> call
+        | NativeCall.ResourceMessage ->
+            match runtime with
+            | EmulatedRuntime.Net10 ->
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceStringLocal"
+                    Arguments = [ NativeArgument.Unnamed ]
+                }
+            | EmulatedRuntime.Net11 ->
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceString"
+                    Arguments = List.replicate 3 NativeArgument.Unnamed
+                }
+
 /// A claim about the program under which a native method's contract holds, and which an analyser
 /// must be allowed to make before it relies on the contract.
 [<RequireQualifiedAccess>]
@@ -71,6 +105,11 @@ type NativeAssumption =
     /// each is named by the metadata of a type already loaded, such as a generic parameter's
     /// constraint.
     | NamedTypesLoad
+    /// The metadata of every loaded image is well formed, so that CoreCLR's metadata readers fail
+    /// on none of it: the HRESULT a reader returns for a bad token, a row past a table's end, a
+    /// heap index out of range or a malformed blob, which the native turns into an exception by
+    /// `IfFailThrow` or `ThrowHR`, does not arise.
+    | MetadataWellFormed
 
 /// What a method CoreCLR implements in native code (`NativeMethod`) can do to its caller, as an
 /// analyser needs it. Unrecoverable failures (`StackOverflowException`, `OutOfMemoryException` from
@@ -86,10 +125,10 @@ type NativeContract =
         CanReturn : bool
         /// What is known of its result's nullness.
         Result : ResultNullness
-        /// The calls of CoreLib's methods it can make, each any number of times, besides the
-        /// constructors of the exceptions it raises. The empty list is a positive claim that it
-        /// runs no other managed code.
-        Runs : ManagedCall list
+        /// The managed code it can call, each any number of times, besides the constructors of the
+        /// exceptions it raises. The empty list is a positive claim that it runs no other managed
+        /// code.
+        Runs : NativeCall list
         /// The claims under which all of the above holds. Where one fails, the method may run
         /// other managed code and raise anything.
         Assumes : NativeAssumption list
@@ -194,6 +233,10 @@ module NativeContractTable =
                 | runs ->
                     runs.Split '|'
                     |> Array.map (fun call ->
+                        if call = "ResourceMessage" then
+                            NativeCall.ResourceMessage
+                        else
+
                         let opening = call.IndexOf '('
 
                         if opening < 0 || not (call.EndsWith ')') then
@@ -220,11 +263,12 @@ module NativeContractTable =
                                 )
                                 |> List.ofArray
 
-                        {
-                            DeclaringType = declaringType
-                            Method = method
-                            Arguments = arguments
-                        }
+                        NativeCall.Method
+                            {
+                                DeclaringType = declaringType
+                                Method = method
+                                Arguments = arguments
+                            }
                     )
                     |> List.ofArray
 
@@ -237,6 +281,7 @@ module NativeContractTable =
                         |> Array.map (fun assumption ->
                             match assumption with
                             | "NamedTypesLoad" -> NativeAssumption.NamedTypesLoad
+                            | "MetadataWellFormed" -> NativeAssumption.MetadataWellFormed
                             | other -> fail $"no assumption named %s{other}"
                         )
                         |> List.ofArray
