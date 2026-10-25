@@ -863,8 +863,8 @@ module MethodInfo =
         =
         (requireMetadata operation m).RawSignature
 
-    /// True iff both methods are metadata-backed and share a MethodDef token — that is, they are
-    /// the same *declared* method, ignoring generic instantiation and declaring-type identity.
+    /// True iff both methods are metadata-backed and are one MethodDef of one assembly — that is,
+    /// they are the same *declared* method, ignoring generic instantiation.
     ///
     /// False whenever either is synthesised. A synthesised method has no declaration, so it is
     /// not the same declared method as anything, including another synthesised one; callers that
@@ -876,7 +876,9 @@ module MethodInfo =
         : bool
         =
         match a.TryMetadata, b.TryMetadata with
-        | Some a, Some b -> a.Handle = b.Handle
+        | Some facts, Some factsB ->
+            a.DeclaringAssemblyFullName = b.DeclaringAssemblyFullName
+            && facts.Handle = factsB.Handle
         | None, _
         | _, None -> false
 

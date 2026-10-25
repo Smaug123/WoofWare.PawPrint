@@ -228,6 +228,7 @@
     <Compile Include="TestInternalAlloc.fs" />
     <Compile Include="TestNativeEnum.fs" />
     <Compile Include="TestMethodOwner.fs" />
+    <Compile Include="TestSameDeclaredMethod.fs" />
     <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestFloatWidthJoin.fs" />
