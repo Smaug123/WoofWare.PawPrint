@@ -109,9 +109,9 @@ module ConstraintSatisfaction =
             concrete.Identity = baseClassTypes.Nullable.Identity
 
     /// Not abstract, and `MethodTable::HasExplicitOrImplicitPublicDefaultConstructor`: a value type,
-    /// or a class declaring a public instance constructor (`RTSpecialName`, named `.ctor`) whose
-    /// signature is exactly `instance void ()` (`MethodTableBuilder` finds the default constructor
-    /// so). An array is neither.
+    /// or a class whose default constructor is public. `MethodTableBuilder` takes for the default
+    /// constructor the last instance constructor (`RTSpecialName`, named `.ctor`), in metadata
+    /// order, whose signature is exactly `instance void ()`. An array is neither.
     let private satisfiesParameterlessConstructor
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
@@ -127,19 +127,24 @@ module ConstraintSatisfaction =
                 true
             else
                 typeInfo.Methods
-                |> List.exists (fun method ->
-                    method.Name = ".ctor"
-                    && (method.TryMetadata
-                        |> Option.exists (fun facts ->
-                            facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.RTSpecialName
-                        ))
-                    && not method.IsStatic
-                    && method.IsPublic
-                    && method.Signature.ParameterTypes.IsEmpty
-                    && method.Signature.GenericParameterCount = 0
-                    && method.Signature.ReturnType = MethodReturnType.Void
-                    && method.Signature.Header.Get.CallingConvention = SignatureCallingConvention.Default
+                |> List.choose (fun method ->
+                    match method.TryMetadata with
+                    | Some facts when
+                        method.Name = ".ctor"
+                        && facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.RTSpecialName
+                        && not method.IsStatic
+                        && method.Signature.ParameterTypes.IsEmpty
+                        && method.Signature.GenericParameterCount = 0
+                        && method.Signature.ReturnType = MethodReturnType.Void
+                        && method.Signature.Header.Get.CallingConvention = SignatureCallingConvention.Default
+                        ->
+                        let row : EntityHandle = MethodDefinitionHandle.op_Implicit facts.Handle
+                        Some (System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber row, method)
+                    | _ -> None
                 )
+                |> List.sortBy fst
+                |> List.tryLast
+                |> Option.exists (fun (_, defaultConstructor) -> defaultConstructor.IsPublic)
 
     /// Whether a nominal handle names a byref-like type; no structural handle is one.
     let private isByRefLike
