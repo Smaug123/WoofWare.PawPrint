@@ -509,7 +509,7 @@ module internal UnaryMetadataCallOps =
                 concretizedMethod
                 state.TypeSystem
 
-        state.WithTypeSystem typeSystem, implementation
+        state.WithTypeSystem typeSystem, BindingStop.bound implementation
 
     /// Refuse a `call`/`callvirt` whose arguments violate ECMA-335 III.3.19: each argument must be
     /// assignable to its declared parameter type. Returns `state` unchanged when every argument

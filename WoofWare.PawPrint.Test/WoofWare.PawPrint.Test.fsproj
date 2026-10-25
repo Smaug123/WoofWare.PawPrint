@@ -84,6 +84,7 @@
     <Compile Include="TestUnmodelledBinding.fs" />
     <Compile Include="TestTypeSystemBindingFailure.fs" />
     <Compile Include="TestInterpreterBindingFailure.fs" />
+    <Compile Include="TestDispatchBindingFailure.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />

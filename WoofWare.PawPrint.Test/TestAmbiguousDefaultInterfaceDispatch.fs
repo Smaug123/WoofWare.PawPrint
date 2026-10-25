@@ -192,6 +192,7 @@ module TestAmbiguousDefaultInterfaceDispatch =
             true
             state
         |> snd
+        |> BindingResult.value
 
     [<Test>]
     let ``two equally specific default bodies make dispatch ambiguous`` () : unit =
@@ -341,7 +342,7 @@ public static class Run
                 true
                 state
 
-        match resolved with
+        match BindingResult.value resolved with
         | VirtualImplementation.Found found when
             found.Definition.RequiredDeclaringType.Name = "L"
             || found.Definition.RequiredDeclaringType.Name = "R"

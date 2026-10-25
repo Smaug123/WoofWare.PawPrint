@@ -72,6 +72,7 @@ module TestGcReferences =
 
                 let next, actual =
                     GcReferences.containsReferences loggerFactory HostImage.runtimeDirs bct next handle
+                    |> BindingResult.bound
 
                 state <- next
 

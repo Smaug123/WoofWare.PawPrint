@@ -47,31 +47,31 @@ module GcReferences =
         (state : TypeSystemState)
         (seenSoFar : ImmutableDictionary<ConcreteTypeHandle, Status>)
         (handle : ConcreteTypeHandle)
-        : TypeSystemState * ImmutableDictionary<ConcreteTypeHandle, Status> * bool
+        : TypeSystemState * Result<ImmutableDictionary<ConcreteTypeHandle, Status> * bool, TypeBindingFailure>
         =
         match handle with
         // An array is an object reference.
         | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> state, seenSoFar, true
+        | ConcreteTypeHandle.Array _ -> state, Ok (seenSoFar, true)
         // A byref is a GC-tracked pointer, and CoreCLR counts it: the JIT answers
         // `IsReferenceOrContainsReferences<T>` with `varTypeIsGC(fromType) || fromLayout->HasGCPtr()`
         // (jit/importercalls.cpp:3624), and a layout's `m_gcPtrCount` includes its `TYP_BYREF`
         // slots (jit/layout.cpp:576). Hence the API's documented contract: "a value type that
         // contains references *or by-refs*".
-        | ConcreteTypeHandle.Byref _ -> state, seenSoFar, true
+        | ConcreteTypeHandle.Byref _ -> state, Ok (seenSoFar, true)
         // Unmanaged pointers are not GC-tracked.
         | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> state, seenSoFar, false
+        | ConcreteTypeHandle.FunctionPointer _ -> state, Ok (seenSoFar, false)
         | ConcreteTypeHandle.Concrete _ ->
 
         match seenSoFar.TryGetValue handle with
         | true, InProgress ->
             // We've hit a cycle. Optimistically assume this path does not introduce a reference type.
             // If another path finds a reference type, its 'true' will override this.
-            state, seenSoFar, false
+            state, Ok (seenSoFar, false)
         | true, Completed v ->
             // We've already calculated this; return the memoized result.
-            state, seenSoFar, v
+            state, Ok (seenSoFar, v)
         | false, _ ->
             let concrete =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -82,7 +82,7 @@ module GcReferences =
                 && concrete.Namespace = "System"
                 && primitiveValueTypeNames.Contains concrete.Name
             then
-                state, seenSoFar.Add (handle, Completed false), false
+                state, Ok (seenSoFar.Add (handle, Completed false), false)
             else
 
             let assy =
@@ -95,7 +95,7 @@ module GcReferences =
 
             if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies td) then
                 // Short-circuit: if the type itself is a reference type, we're done.
-                state, seenSoFar.Add (handle, Completed true), true
+                state, Ok (seenSoFar.Add (handle, Completed true), true)
             else
 
             // It's a value type, so we must check its fields.
@@ -106,13 +106,14 @@ module GcReferences =
             // arguments. A field is declared in the same assembly as its declaring type, so that
             // assembly is the resolution scope for the signature's tokens. There is no method
             // generic context: a field signature cannot mention one.
+            // A field whose type does not bind is the walk's failure.
             let stateAfterFieldResolution, nonStaticFields =
-                ((state, []), td.Fields)
-                ||> List.fold (fun (currentState, acc) field ->
+                (state, [], td.Fields)
+                |||> StateResult.fold (fun currentState acc field ->
                     if field.IsStatic then
-                        currentState, acc
+                        currentState, Ok acc
                     else
-                        let newState, fieldHandle =
+                        match
                             TypeSystemState.concretizeType
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -122,46 +123,53 @@ module GcReferences =
                                 concrete.Generics
                                 ImmutableArray.Empty
                                 field.Signature
-
-                        newState, BindingStop.bound fieldHandle :: acc
+                        with
+                        | newState, Ok fieldHandle -> newState, Ok (fieldHandle :: acc)
+                        | newState, Error failure -> newState, Error failure
                 )
+
+            match nonStaticFields with
+            | Error failure -> stateAfterFieldResolution, Error failure
+            | Ok nonStaticFields ->
 
             // Recurse through the fields, correctly propagating state.
-            let finalState, finalSeenSoFar, fieldsContainRefType =
-                ((stateAfterFieldResolution, seenSoFarWithInProgress, false), nonStaticFields)
-                ||> List.fold (fun (currentState, currentSeenSoFar, currentResult) field ->
+            let finalState, walked =
+                (stateAfterFieldResolution, (seenSoFarWithInProgress, false), nonStaticFields)
+                |||> StateResult.fold (fun currentState (currentSeenSoFar, currentResult) field ->
                     if currentResult then
-                        (currentState, currentSeenSoFar, true) // Short-circuit
+                        currentState, Ok (currentSeenSoFar, true) // Short-circuit
                     else
-                        let newState, newSeenSoFar, fieldResult =
-                            containsReferencesIn
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                baseClassTypes
-                                currentState
-                                currentSeenSoFar
-                                field
-
-                        (newState, newSeenSoFar, currentResult || fieldResult)
+                        containsReferencesIn
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            currentState
+                            currentSeenSoFar
+                            field
                 )
+
+            match walked with
+            | Error failure -> finalState, Error failure
+            | Ok (finalSeenSoFar, fieldsContainRefType) ->
 
             // Mark as completed with the final result before returning.
             let finalSeenSoFar = finalSeenSoFar.SetItem (handle, Completed fieldsContainRefType)
 
-            finalState, finalSeenSoFar, fieldsContainRefType
+            finalState, Ok (finalSeenSoFar, fieldsContainRefType)
 
     /// Whether storage of `handle` holds a managed reference or a byref, walking the fields of
     /// value types transitively: true for a reference type, an array or a byref, false for an
-    /// unmanaged pointer or a function pointer.
+    /// unmanaged pointer or a function pointer. A field on the way whose type does not bind is the
+    /// failure, returned with what loaded before it.
     let containsReferences
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (handle : ConcreteTypeHandle)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
-        let state, _, result =
+        let state, result =
             containsReferencesIn loggerFactory dotnetRuntimeDirs baseClassTypes state ImmutableDictionary.Empty handle
 
-        state, result
+        state, result |> Result.map snd

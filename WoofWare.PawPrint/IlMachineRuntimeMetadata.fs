@@ -1928,7 +1928,7 @@ module IlMachineRuntimeMetadata =
                 objType
                 targetType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeAssignability.isConcreteTypeAssignableTo` against the machine's type system.
     let isConcreteTypeAssignableTo
@@ -1948,7 +1948,7 @@ module IlMachineRuntimeMetadata =
                 objType
                 targetType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// The definition a MethodTable-backed nominal target instantiates, and its instantiation as
     /// targets: a closed type's own arguments, a definition's own variables (the typical

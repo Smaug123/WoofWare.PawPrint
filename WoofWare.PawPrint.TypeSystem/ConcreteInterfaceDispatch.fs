@@ -22,7 +22,7 @@ module ConcreteInterfaceDispatch =
 
     /// Resolve one entry of `ownerTy`'s `ImplementedInterfaces` list to the concrete interface
     /// it names, registering that instantiation in the ConcreteTypes registry if it is not
-    /// already there.
+    /// already there. An interface that does not bind is the failure.
     let internal resolveImplementedInterface
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -31,9 +31,10 @@ module ConcreteInterfaceDispatch =
         (impl : WoofWare.PawPrint.InterfaceImplementation)
         (state : TypeSystemState)
         : TypeSystemState *
-          ConcreteTypeHandle *
-          ConcreteType<ConcreteTypeHandle> *
-          TypeInfo<GenericParamFromMetadata, TypeDefn>
+          Result<
+              ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>,
+              TypeBindingFailure
+           >
         =
         let ownerAssy =
             state._LoadedAssemblies.ByDefinitionName ownerTy.Identity.AssemblyFullName
@@ -52,9 +53,11 @@ module ConcreteInterfaceDispatch =
                 implAssy
                 impl.InterfaceHandle
 
-        let implTypeDefn, implResolvedAssy = BindingStop.bound implTypeDefnResult
+        match implTypeDefnResult with
+        | Error failure -> state, Error failure
+        | Ok (implTypeDefn, implResolvedAssy) ->
 
-        let state, implHandle =
+        match
             TypeSystemState.concretizeType
                 loggerFactory
                 dotnetRuntimeDirs
@@ -64,11 +67,12 @@ module ConcreteInterfaceDispatch =
                 ownerTy.Generics
                 ImmutableArray.Empty
                 implTypeDefn
-
-        let implHandle = BindingStop.bound implHandle
+        with
+        | state, Error failure -> state, Error failure
+        | state, Ok implHandle ->
 
         match TypeSystemState.tryGetConcreteTypeInfo state implHandle with
-        | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
+        | Some (implTy, typeInfo) -> state, Ok (implHandle, implTy, typeInfo)
         | None -> failwith $"Interface implementation handle %O{implHandle} was not registered or has no TypeDef row"
 
     /// One entry of a type's interface map (`bmtInterfaceEntry`), with the two flags
@@ -139,7 +143,7 @@ module ConcreteInterfaceDispatch =
         (operation : string)
         (state : TypeSystemState)
         (typeHandle : ConcreteTypeHandle)
-        : TypeSystemState * InterfaceMapEntry list
+        : TypeSystemState * Result<InterfaceMapEntry list, TypeBindingFailure>
         =
         let ty, typeInfo =
             match TypeSystemState.tryGetConcreteTypeInfo state typeHandle with
@@ -155,10 +159,11 @@ module ConcreteInterfaceDispatch =
 
         let state, inherited =
             match parentHandle with
-            | None -> state, []
+            | None -> state, Ok []
             | Some parentHandle ->
-                let state, parentMap =
-                    interfaceMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state parentHandle
+                match interfaceMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state parentHandle with
+                | state, Error failure -> state, Error failure
+                | state, Ok parentMap ->
 
                 let state, baseOfDefinition =
                     ConcreteMethodTable.baseOfDefinition
@@ -187,7 +192,11 @@ module ConcreteInterfaceDispatch =
                         }
                     )
 
-                state, inherited
+                state, Ok inherited
+
+        match inherited with
+        | Error failure -> state, Error failure
+        | Ok inherited ->
 
         // "Checking for further expanded interfaces isn't necessary for the system module, as we can
         // rely on the C# compiler to have found all of the interfaces that the type implements"
@@ -200,16 +209,20 @@ module ConcreteInterfaceDispatch =
             )
 
         let rec expand
-            (state : TypeSystemState, map : InterfaceMapEntry list)
             (declared : bool)
             (spellingAssembly : DumpedAssembly)
             (spellingContext : TypeConcretization.SubstitutionContext)
             (spellingOwner : ConcreteType<ConcreteTypeHandle>)
+            (state : TypeSystemState)
+            (map : InterfaceMapEntry list)
             (row : WoofWare.PawPrint.InterfaceImplementation)
-            : TypeSystemState * InterfaceMapEntry list
+            : TypeSystemState * Result<InterfaceMapEntry list, TypeBindingFailure>
             =
-            let state, handle, interfaceTy, interfaceTypeInfo =
+            match
                 resolveImplementedInterface loggerFactory dotnetRuntimeDirs baseClassTypes spellingOwner row state
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok (handle, interfaceTy, interfaceTypeInfo) ->
 
             let substitution =
                 spelledInterfaceSubstitution
@@ -222,12 +235,17 @@ module ConcreteInterfaceDispatch =
             // The same instantiation *of the definition*, which a matching closed handle is necessary
             // but not sufficient for: `C<T> : B<T>, I<int>` over `B<T> : I<T>` holds `I<!0>` and
             // `I<int>` as two entries, and at `C<int>` both close to `I<int>`.
-            let rec findExisting (state : TypeSystemState) (i : int) (entries : InterfaceMapEntry list) =
+            let rec findExisting
+                (state : TypeSystemState)
+                (i : int)
+                (entries : InterfaceMapEntry list)
+                : TypeSystemState * Result<int option, TypeBindingFailure>
+                =
                 match entries with
-                | [] -> state, None
+                | [] -> state, Ok None
                 | entry :: rest when entry.Interface <> handle -> findExisting state (i + 1) rest
                 | entry :: rest ->
-                    let state, same =
+                    match
                         TypeSystemState.substitutionsEquivalent
                             loggerFactory
                             dotnetRuntimeDirs
@@ -235,18 +253,14 @@ module ConcreteInterfaceDispatch =
                             state
                             entry.Substitution
                             substitution
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok true -> state, Ok (Some i)
+                    | state, Ok false -> findExisting state (i + 1) rest
 
-                    let same = BindingStop.bound same
-
-                    if same then
-                        state, Some i
-                    else
-                        findExisting state (i + 1) rest
-
-            let state, existing = findExisting state 0 map
-
-            match existing with
-            | Some existing ->
+            match findExisting state 0 map with
+            | state, Error failure -> state, Error failure
+            | state, Ok (Some existing) ->
                 // Already present: an entry is added once, and its parents with it. Re-declaring it
                 // on this type is recorded, since that is what makes it re-implemented here.
                 if declared then
@@ -260,9 +274,10 @@ module ConcreteInterfaceDispatch =
                         else
                             entry
                     )
+                    |> Ok
                 else
-                    state, map
-            | None ->
+                    state, Ok map
+            | state, Ok None ->
 
             let entry =
                 {
@@ -277,17 +292,17 @@ module ConcreteInterfaceDispatch =
             let map = map @ [ entry ]
 
             if not expandParents then
-                state, map
+                state, Ok map
             else
 
             let interfaceAssembly, _ =
                 ConcreteMethodTable.definitionMetadata operation state interfaceTy.Identity
 
-            ((state, map), interfaceTypeInfo.ImplementedInterfaces)
-            ||> Seq.fold (fun acc parentRow -> expand acc false interfaceAssembly substitution interfaceTy parentRow)
+            (state, map, interfaceTypeInfo.ImplementedInterfaces)
+            |||> StateResult.fold (expand false interfaceAssembly substitution interfaceTy)
 
-        ((state, inherited), typeInfo.ImplementedInterfaces)
-        ||> Seq.fold (fun acc row -> expand acc true assembly owner.Substitution ty row)
+        (state, inherited, typeInfo.ImplementedInterfaces)
+        |||> StateResult.fold (expand true assembly owner.Substitution ty)
 
     /// The interface method a MethodImpl declaration names, together with the interface instantiation
     /// it names it on -- closed, and read in the vocabulary of the owner's generic definition, whose
@@ -295,7 +310,8 @@ module ConcreteInterfaceDispatch =
     /// is set, and only instance ones when not; `None` when the declaration is not an interface method
     /// of that kind. An instance declaration that is not an interface method makes the row a vtable
     /// write (see `ConcreteMethodTable.contentVtableOfDefinition`); a static one implements a static
-    /// virtual, which `StaticVirtualDispatch` reads the rows for, and which is not in this map.
+    /// virtual, which `StaticVirtualDispatch` reads the rows for, and which is not in this map. A type
+    /// the declaration names that does not bind is the failure.
     let internal interfaceMethodImplDeclaration
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -308,9 +324,18 @@ module ConcreteInterfaceDispatch =
         (ownerSubstitution : TypeConcretization.SubstitutionContext)
         (assembly : DumpedAssembly)
         (declaration : MetadataToken)
-        : TypeSystemState * (ConcreteTypeHandle * TypeConcretization.SubstitutionContext * SlotIdentity) option
+        : TypeSystemState *
+          Result<(ConcreteTypeHandle * TypeConcretization.SubstitutionContext * SlotIdentity) option, TypeBindingFailure>
         =
-        let concretizeParent (state : TypeSystemState) (parent : MetadataToken) =
+        let concretizeParent
+            (state : TypeSystemState)
+            (parent : MetadataToken)
+            : TypeSystemState *
+              Result<
+                  ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>,
+                  TypeBindingFailure
+               >
+            =
             let state, parentTypeDefnResult =
                 TypeSystemState.resolveTypeMetadataToken
                     loggerFactory
@@ -320,9 +345,11 @@ module ConcreteInterfaceDispatch =
                     assembly
                     parent
 
-            let parentTypeDefn, parentAssembly = BindingStop.bound parentTypeDefnResult
+            match parentTypeDefnResult with
+            | Error failure -> state, Error failure
+            | Ok (parentTypeDefn, parentAssembly) ->
 
-            let state, parentHandle =
+            match
                 TypeSystemState.concretizeType
                     loggerFactory
                     dotnetRuntimeDirs
@@ -332,11 +359,12 @@ module ConcreteInterfaceDispatch =
                     ownerTy.Generics
                     ImmutableArray.Empty
                     parentTypeDefn
-
-            let parentHandle = BindingStop.bound parentHandle
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok parentHandle ->
 
             match TypeSystemState.tryGetConcreteTypeInfo state parentHandle with
-            | Some (parentTy, parentTypeInfo) -> state, parentHandle, parentTy, parentTypeInfo
+            | Some (parentTy, parentTypeInfo) -> state, Ok (parentHandle, parentTy, parentTypeInfo)
             | None ->
                 failwith
                     $"%s{operation}: a MethodImpl on %s{ownerDescription} names its declaration on %O{parentHandle}, which has no TypeDef row"
@@ -346,30 +374,35 @@ module ConcreteInterfaceDispatch =
             let method = assembly.Methods.[handle]
 
             if method.IsStatic <> statics then
-                state, None
+                state, Ok None
             else
 
             let declaringTypeInfo =
                 assembly.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
 
             if not declaringTypeInfo.IsInterface then
-                state, None
+                state, Ok None
             elif not declaringTypeInfo.Generics.IsEmpty then
                 // A MethodDef token carries no instantiation, so it can name a generic interface only
                 // at its typical instantiation, which no class implements.
                 failwith
                     $"TODO: %s{operation}: a MethodImpl on %s{ownerDescription} names %s{method.Name} on the generic interface %s{declaringTypeInfo.Name} by MethodDef, which carries no instantiation"
             else
-                let state, interfaceHandle, _, _ =
+                match
                     concretizeParent state (MetadataToken.TypeDefinition method.RequiredDeclaringType.Definition.Get)
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok (interfaceHandle, _, _) ->
 
                 state,
-                Some (
-                    interfaceHandle,
-                    {
-                        TypeConcretization.SubstitutionContext.Arguments = ImmutableArray.Empty
-                    },
-                    (assembly.DefinitionFullName, method.IdentityKey)
+                Ok (
+                    Some (
+                        interfaceHandle,
+                        {
+                            TypeConcretization.SubstitutionContext.Arguments = ImmutableArray.Empty
+                        },
+                        (assembly.DefinitionFullName, method.IdentityKey)
+                    )
                 )
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
@@ -380,18 +413,19 @@ module ConcreteInterfaceDispatch =
             | MemberSignature.Method signature ->
 
             if signature.Header.Get.IsInstance = statics then
-                state, None
+                state, Ok None
             else
 
             match memberRef.Parent with
             | MetadataToken.TypeDefinition _
             | MetadataToken.TypeReference _
             | MetadataToken.TypeSpecification _ ->
-                let state, interfaceHandle, interfaceTy, interfaceTypeInfo =
-                    concretizeParent state memberRef.Parent
+                match concretizeParent state memberRef.Parent with
+                | state, Error failure -> state, Error failure
+                | state, Ok (interfaceHandle, interfaceTy, interfaceTypeInfo) ->
 
                 if not interfaceTypeInfo.IsInterface then
-                    state, None
+                    state, Ok None
                 else
 
                 // Compared in the interface's own open vocabulary, as `FindDeclMethodOnClassInHierarchy`
@@ -403,13 +437,13 @@ module ConcreteInterfaceDispatch =
                         interfaceTypeInfo.Generics.Length
 
                 let state, matches =
-                    ((state, []), interfaceTypeInfo.Methods)
-                    ||> List.fold (fun (state, acc) candidate ->
+                    (state, [], interfaceTypeInfo.Methods)
+                    |||> StateResult.fold (fun state acc candidate ->
                         if candidate.Name <> memberRef.PrettyName || candidate.IsStatic <> statics then
-                            state, acc
+                            state, Ok acc
                         else
 
-                        let state, equivalent =
+                        match
                             TypeSystemState.signaturesEquivalent
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -426,11 +460,14 @@ module ConcreteInterfaceDispatch =
                                     AssemblyFullName = candidate.DeclaringAssemblyFullName
                                     DeclaringTypeGenerics = openContext
                                 }
-
-                        let equivalent = BindingStop.bound equivalent
-
-                        state, (if equivalent then acc @ [ candidate ] else acc)
+                        with
+                        | state, Error failure -> state, Error failure
+                        | state, Ok equivalent -> state, Ok (if equivalent then acc @ [ candidate ] else acc)
                     )
+
+                match matches with
+                | Error failure -> state, Error failure
+                | Ok matches ->
 
                 // The first in declaration order (`FindDeclMethodOnInterfaceEntry`). Two can match
                 // legitimately: overloads spelled against two assemblies become one signature once
@@ -446,24 +483,28 @@ module ConcreteInterfaceDispatch =
                             memberRef.Parent
 
                     state,
-                    Some (
-                        interfaceHandle,
-                        substitution,
-                        (interfaceMethod.DeclaringAssemblyFullName, interfaceMethod.IdentityKey)
+                    Ok (
+                        Some (
+                            interfaceHandle,
+                            substitution,
+                            (interfaceMethod.DeclaringAssemblyFullName, interfaceMethod.IdentityKey)
+                        )
                     )
                 | [] ->
                     failwith
                         $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no method of that name, signature and staticness; CoreCLR rejects this type at load time"
             | _ ->
                 // A ModuleRef or MethodDef parent (the vararg case) cannot name an interface method.
-                state, None
+                state, Ok None
         | other ->
             failwith
                 $"%s{operation}: a MethodImpl on %s{ownerDescription} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
 
     /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
     /// row is that method; a MemberRef is resolved against the owner's own methods by name and
-    /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one.
+    /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one. A type on the way
+    /// that does not bind is the failure, except in a TypeSpec parent, which
+    /// `ConcreteMethodTable.nominalIdentityOfSpelling` resolves and which still stops the run.
     let internal methodImplBody
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -474,7 +515,8 @@ module ConcreteInterfaceDispatch =
         (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (assembly : DumpedAssembly)
         (body : MetadataToken)
-        : TypeSystemState * MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        : TypeSystemState *
+          Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
         =
         let refuse (detail : string) =
             failwith
@@ -487,7 +529,7 @@ module ConcreteInterfaceDispatch =
             if method.RequiredDeclaringType.Identity <> owner.Identity then
                 refuse "a method of another type"
 
-            state, method
+            state, Ok method
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
 
@@ -499,9 +541,9 @@ module ConcreteInterfaceDispatch =
             let state, parentIdentity =
                 match memberRef.Parent with
                 | MetadataToken.TypeDefinition parent ->
-                    state, ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent
+                    state, Ok (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent)
                 | MetadataToken.TypeReference parent ->
-                    let state, resolvedResult =
+                    match
                         TypeSystemState.resolveTypeFromRef
                             loggerFactory
                             dotnetRuntimeDirs
@@ -509,10 +551,13 @@ module ConcreteInterfaceDispatch =
                             assembly.TypeRefs.[parent]
                             ImmutableArray.Empty
                             state
-
-                    let _, resolved = BindingStop.bound resolvedResult
-
-                    state, ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (_, resolved) ->
+                        state,
+                        Ok (
+                            ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
+                        )
                 | MetadataToken.TypeSpecification parent ->
                     let spelling =
                         match assembly.TypeSpecs.[parent].Signature with
@@ -527,12 +572,22 @@ module ConcreteInterfaceDispatch =
                         state
                         assembly
                         spelling
+                    |> fun (state, identity) -> state, Ok identity
                 | _ -> refuse "whose parent is not a type"
+
+            match parentIdentity with
+            | Error failure -> state, Error failure
+            | Ok parentIdentity ->
 
             if parentIdentity <> owner.Identity then
                 refuse "a method of another type"
 
-            let rec first (state : TypeSystemState) candidates =
+            let rec first
+                (state : TypeSystemState)
+                candidates
+                : TypeSystemState *
+                  Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
+                =
                 match candidates with
                 | [] -> refuse "which names no method the type declares"
                 | (candidate : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) :: rest ->
@@ -540,7 +595,7 @@ module ConcreteInterfaceDispatch =
                         first state rest
                     else
 
-                    let state, equivalent =
+                    match
                         TypeSystemState.signaturesEquivalent
                             loggerFactory
                             dotnetRuntimeDirs
@@ -557,10 +612,10 @@ module ConcreteInterfaceDispatch =
                                 AssemblyFullName = owner.AssemblyFullName
                                 DeclaringTypeGenerics = owner.Substitution
                             }
-
-                    let equivalent = BindingStop.bound equivalent
-
-                    if equivalent then state, candidate else first state rest
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok true -> state, Ok candidate
+                    | state, Ok false -> first state rest
 
             first state ownerTypeInfo.Methods
         | _ -> refuse "which is neither a MethodDef nor a MemberRef"
@@ -580,6 +635,10 @@ module ConcreteInterfaceDispatch =
     /// own public virtuals too.
     ///
     /// A MethodImpl naming an interface method then maps it to its body, whatever placement found.
+    ///
+    /// A type the map reaches that does not bind is the failure, returned with what loaded before it;
+    /// only a computed map is memoised. One that building a method table (`ConcreteMethodTable`)
+    /// reaches still stops the run.
     let rec ownDispatchMapOf
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -587,10 +646,10 @@ module ConcreteInterfaceDispatch =
         (operation : string)
         (state : TypeSystemState)
         (typeHandle : ConcreteTypeHandle)
-        : TypeSystemState * InterfaceDispatchMap
+        : TypeSystemState * Result<InterfaceDispatchMap, TypeBindingFailure>
         =
         match Map.tryFind typeHandle state._InterfaceDispatchMaps with
-        | Some cached -> state, cached
+        | Some cached -> state, Ok cached
         | None ->
 
         let ty, typeInfo =
@@ -602,8 +661,9 @@ module ConcreteInterfaceDispatch =
 
         let assembly, _ = ConcreteMethodTable.definitionMetadata operation state ty.Identity
 
-        let state, interfaceMap =
-            interfaceMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state typeHandle
+        match interfaceMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state typeHandle with
+        | state, Error failure -> state, Error failure
+        | state, Ok interfaceMap ->
 
         let state, parentHandle =
             TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state typeHandle
@@ -693,39 +753,39 @@ module ConcreteInterfaceDispatch =
             (interfaceMethodName : string)
             (candidateName : string)
             (candidateComparand : TypeConcretization.SignatureComparand)
-            : TypeSystemState * bool
+            : TypeSystemState * Result<bool, TypeBindingFailure>
             =
             // `MethodSignature::Equivalent`: the names, then the whole signature, return type included.
             if interfaceMethodName <> candidateName then
-                state, false
+                state, Ok false
             else
-                TypeSystemState.signaturesEquivalent
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    state
-                    false
-                    interfaceComparand
-                    candidateComparand
-                |> fun (state, equivalent) -> state, BindingStop.bound equivalent
+                match
+                    TypeSystemState.signaturesEquivalent
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        state
+                        false
+                        interfaceComparand
+                        candidateComparand
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok equivalent -> state, Ok equivalent
 
         let rec firstEquivalent
             (state : TypeSystemState)
             (interfaceComparand : TypeConcretization.SignatureComparand)
             (interfaceMethodName : string)
             (candidates : ('candidate * string * TypeConcretization.SignatureComparand) list)
-            : TypeSystemState * 'candidate option
+            : TypeSystemState * Result<'candidate option, TypeBindingFailure>
             =
             match candidates with
-            | [] -> state, None
+            | [] -> state, Ok None
             | (candidate, name, comparand) :: rest ->
-                let state, matches =
-                    equivalent state interfaceComparand interfaceMethodName name comparand
-
-                if matches then
-                    state, Some candidate
-                else
-                    firstEquivalent state interfaceComparand interfaceMethodName rest
+                match equivalent state interfaceComparand interfaceMethodName name comparand with
+                | state, Error failure -> state, Error failure
+                | state, Ok true -> state, Ok (Some candidate)
+                | state, Ok false -> firstEquivalent state interfaceComparand interfaceMethodName rest
 
         let ownComparands =
             ownCandidates
@@ -740,23 +800,23 @@ module ConcreteInterfaceDispatch =
             )
 
         // Implicit placement, keyed on (interface-map index, interface method).
-        let state, _, placed =
-            ((state, None, ImmutableDictionary.Empty), List.indexed interfaceMap)
-            ||> List.fold (fun (state, parentSlotsIfBuilt, placed) (index, entry) ->
+        let state, placed =
+            (state, (None, ImmutableDictionary.Empty), List.indexed interfaceMap)
+            |||> StateResult.fold (fun state (parentSlotsIfBuilt, placed) (index, entry) ->
                 // Inherited and not re-declared, so the parent's map answers -- unless the parent is
                 // abstract and so may have left a method to a default body.
                 let inheritedOnly = entry.ImplementedByParent && not entry.DeclaredOnType
 
                 if inheritedOnly && not parentIsAbstract then
-                    state, parentSlotsIfBuilt, placed
+                    state, Ok (parentSlotsIfBuilt, placed)
                 else
 
                 let interfaceMethods =
                     entry.TypeInfo.Methods
                     |> List.filter (fun method -> method.IsVirtual && not method.IsStatic)
 
-                ((state, parentSlotsIfBuilt, placed), interfaceMethods)
-                ||> List.fold (fun (state, parentSlotsIfBuilt, placed) interfaceMethod ->
+                (state, (parentSlotsIfBuilt, placed), interfaceMethods)
+                |||> StateResult.fold (fun state (parentSlotsIfBuilt, placed) interfaceMethod ->
                     let interfaceComparand : TypeConcretization.SignatureComparand =
                         {
                             Signature = interfaceMethod.Signature
@@ -784,23 +844,23 @@ module ConcreteInterfaceDispatch =
                                 parentHandle
                                 index
                                 interfaceMethodKey
-                        | _ -> state, false
+                        | _ -> state, Ok false
 
-                    if implementedAbove then
-                        state, parentSlotsIfBuilt, placed
-                    else
+                    match implementedAbove with
+                    | Error failure -> state, Error failure
+                    | Ok true -> state, Ok (parentSlotsIfBuilt, placed)
+                    | Ok false ->
 
-                    let state, own =
-                        firstEquivalent state interfaceComparand interfaceMethod.Name ownComparands
-
-                    match own with
-                    | Some method -> state, parentSlotsIfBuilt, placed.SetItem (key, slotOfOwnMethod method)
-                    | None when entry.ImplementedByParent ->
+                    match firstEquivalent state interfaceComparand interfaceMethod.Name ownComparands with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (Some method) ->
+                        state, Ok (parentSlotsIfBuilt, placed.SetItem (key, slotOfOwnMethod method))
+                    | state, Ok None when entry.ImplementedByParent ->
                         // "Explicit re-declaration of an inherited interface will try to match only
                         // newslot methods [of this type]": an unmatched slot keeps the parent's mapping,
                         // which dispatch reaches by walking up.
-                        state, parentSlotsIfBuilt, placed
-                    | None ->
+                        state, Ok (parentSlotsIfBuilt, placed)
+                    | state, Ok None ->
 
                     let state, slots =
                         match parentSlotsIfBuilt with
@@ -825,14 +885,16 @@ module ConcreteInterfaceDispatch =
                             }
                         )
 
-                    let state, inheritedSlot =
-                        firstEquivalent state interfaceComparand interfaceMethod.Name candidates
-
-                    match inheritedSlot with
-                    | Some slot -> state, Some slots, placed.SetItem (key, slot)
-                    | None -> state, Some slots, placed
+                    match firstEquivalent state interfaceComparand interfaceMethod.Name candidates with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (Some slot) -> state, Ok (Some slots, placed.SetItem (key, slot))
+                    | state, Ok None -> state, Ok (Some slots, placed)
                 )
             )
+
+        match placed with
+        | Error failure -> state, Error failure
+        | Ok (_, placed) ->
 
         // `PlaceMethodImpls` runs after `PlaceInterfaceMethods`, so a MethodImpl replaces whatever
         // placement mapped (`AddMethodImplDispatchMapping`).
@@ -844,10 +906,10 @@ module ConcreteInterfaceDispatch =
             |> Seq.map (fun (KeyValue (_, impl)) -> impl)
             |> List.ofSeq
 
-        let state, placed, _ =
-            ((state, placed, ImmutableDictionary.Empty), methodImpls)
-            ||> List.fold (fun (state, placed, alreadyImplemented) impl ->
-                let state, declaration =
+        let state, placed =
+            (state, (placed, ImmutableDictionary.Empty), methodImpls)
+            |||> StateResult.fold (fun state (placed, alreadyImplemented) impl ->
+                match
                     interfaceMethodImplDeclaration
                         loggerFactory
                         dotnetRuntimeDirs
@@ -860,12 +922,12 @@ module ConcreteInterfaceDispatch =
                         owner.Substitution
                         assembly
                         impl.Declaration
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok None -> state, Ok (placed, alreadyImplemented)
+                | state, Ok (Some (interfaceHandle, declaredSubstitution, interfaceMethod)) ->
 
-                match declaration with
-                | None -> state, placed, alreadyImplemented
-                | Some (interfaceHandle, declaredSubstitution, interfaceMethod) ->
-
-                let state, body =
+                match
                     methodImplBody
                         loggerFactory
                         dotnetRuntimeDirs
@@ -876,16 +938,23 @@ module ConcreteInterfaceDispatch =
                         typeInfo
                         assembly
                         impl.Body
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok body ->
 
                 // The entry the declaration names, identified on the generic definition as the interface
                 // map itself is: the first that is the same instantiation there
                 // (`ComputeDispatchMapTypeIDs`), not every entry that happens to close to the same type.
-                let rec namedEntry (state : TypeSystemState) (entries : (int * InterfaceMapEntry) list) =
+                let rec namedEntry
+                    (state : TypeSystemState)
+                    (entries : (int * InterfaceMapEntry) list)
+                    : TypeSystemState * Result<int option, TypeBindingFailure>
+                    =
                     match entries with
-                    | [] -> state, None
+                    | [] -> state, Ok None
                     | (_, entry) :: rest when entry.Interface <> interfaceHandle -> namedEntry state rest
                     | (index, entry) :: rest ->
-                        let state, same =
+                        match
                             TypeSystemState.substitutionsEquivalent
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -893,12 +962,14 @@ module ConcreteInterfaceDispatch =
                                 state
                                 entry.Substitution
                                 declaredSubstitution
+                        with
+                        | state, Error failure -> state, Error failure
+                        | state, Ok true -> state, Ok (Some index)
+                        | state, Ok false -> namedEntry state rest
 
-                        let same = BindingStop.bound same
-
-                        if same then state, Some index else namedEntry state rest
-
-                let state, index = namedEntry state (List.indexed interfaceMap)
+                match namedEntry state (List.indexed interfaceMap) with
+                | state, Error failure -> state, Error failure
+                | state, Ok index ->
 
                 let index =
                     match index with
@@ -918,9 +989,15 @@ module ConcreteInterfaceDispatch =
                 let slot = slotOfOwnMethod body
 
                 state,
-                placed.SetItem ((index, interfaceMethod), slot),
-                alreadyImplemented.SetItem ((index, interfaceMethod), body.IdentityKey)
+                Ok (
+                    placed.SetItem ((index, interfaceMethod), slot),
+                    alreadyImplemented.SetItem ((index, interfaceMethod), body.IdentityKey)
+                )
             )
+
+        match placed with
+        | Error failure -> state, Error failure
+        | Ok (placed, _) ->
 
         let byInterfaceMethod =
             placed
@@ -948,7 +1025,7 @@ module ConcreteInterfaceDispatch =
                 InterfaceDispatchMap.ByInterfaceMethod = byInterfaceMethod
             }
 
-        state.WithInterfaceDispatchMap typeHandle computed, computed
+        state.WithInterfaceDispatchMap typeHandle computed, Ok computed
 
     /// Does `level` or any type above it map `interfaceMethod` through the interface-map entry at
     /// `index`? Positions agree down a chain, because each type's interface map begins with its
@@ -962,10 +1039,11 @@ module ConcreteInterfaceDispatch =
         (level : ConcreteTypeHandle)
         (index : int)
         (interfaceMethod : SlotIdentity)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
-        let state, own =
-            ownDispatchMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state level
+        match ownDispatchMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state level with
+        | state, Error failure -> state, Error failure
+        | state, Ok own ->
 
         let mapped =
             match own.ByInterfaceMethod.TryGetValue interfaceMethod with
@@ -973,13 +1051,13 @@ module ConcreteInterfaceDispatch =
             | false, _ -> false
 
         if mapped then
-            state, true
+            state, Ok true
         else
             let state, baseType =
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
 
             match baseType with
-            | None -> state, false
+            | None -> state, Ok false
             | Some baseType ->
                 isMappedOnChain
                     loggerFactory
@@ -1002,6 +1080,9 @@ module ConcreteInterfaceDispatch =
     ///
     /// `walkBaseTypes` false asks the receiver's own level alone: the `constrained.` probe of whether
     /// a value type supplies the method itself.
+    ///
+    /// A type the search reaches that does not bind is the failure, returned with what loaded before it.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let tryFindImplementationSlot
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1012,7 +1093,7 @@ module ConcreteInterfaceDispatch =
         (walkBaseTypes : bool)
         (target : ConcreteTypeHandle)
         (interfaceMethod : SlotIdentity)
-        : TypeSystemState * int option
+        : TypeSystemState * Result<int option, TypeBindingFailure>
         =
         let targetHasVariance =
             match TypeSystemState.tryGetConcreteTypeInfo state target with
@@ -1021,11 +1102,15 @@ module ConcreteInterfaceDispatch =
                 |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
             | None -> failwith $"%s{operation}: interface %O{target} has no TypeDef row"
 
-        let rec firstCompatible (state : TypeSystemState) (entries : InterfaceDispatchEntry list) =
+        let rec firstCompatible
+            (state : TypeSystemState)
+            (entries : InterfaceDispatchEntry list)
+            : TypeSystemState * Result<int option, TypeBindingFailure>
+            =
             match entries with
-            | [] -> state, None
+            | [] -> state, Ok None
             | entry :: rest ->
-                let state, compatible =
+                match
                     TypeAssignability.isConcreteTypeAssignableTo
                         loggerFactory
                         dotnetRuntimeDirs
@@ -1033,17 +1118,20 @@ module ConcreteInterfaceDispatch =
                         state
                         entry.Interface
                         target
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok true -> state, Ok (Some entry.ImplementationSlot)
+                | state, Ok false -> firstCompatible state rest
 
-                if compatible then
-                    state, Some entry.ImplementationSlot
-                else
-                    firstCompatible state rest
-
-        let rec atLevel (state : TypeSystemState) (level : ConcreteTypeHandle) : TypeSystemState * int option =
+        let rec atLevel
+            (state : TypeSystemState)
+            (level : ConcreteTypeHandle)
+            : TypeSystemState * Result<int option, TypeBindingFailure>
+            =
             match level with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> state, None
+            | ConcreteTypeHandle.FunctionPointer _ -> state, Ok None
             | ConcreteTypeHandle.Concrete _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ ->
@@ -1053,28 +1141,30 @@ module ConcreteInterfaceDispatch =
                 | None ->
                     // A synthesised array has no TypeDef row and declares nothing; its interfaces
                     // come from `System.Array` above it, or from the SZ-array carve-out.
-                    state, None
+                    state, Ok None
                 | Some _ ->
-                    let state, own =
-                        ownDispatchMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state level
+                    match ownDispatchMapOf loggerFactory dotnetRuntimeDirs baseClassTypes operation state level with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok own ->
 
                     match own.ByInterfaceMethod.TryGetValue interfaceMethod with
-                    | false, _ -> state, None
+                    | false, _ -> state, Ok None
                     | true, entries ->
                         match entries |> List.tryFind (fun entry -> entry.Interface = target) with
-                        | Some entry -> state, Some entry.ImplementationSlot
-                        | None when not targetHasVariance -> state, None
+                        | Some entry -> state, Ok (Some entry.ImplementationSlot)
+                        | None when not targetHasVariance -> state, Ok None
                         | None -> firstCompatible state entries
 
             match found with
-            | Some _ -> state, found
-            | None when not walkBaseTypes -> state, None
-            | None ->
+            | Error failure -> state, Error failure
+            | Ok (Some slot) -> state, Ok (Some slot)
+            | Ok None when not walkBaseTypes -> state, Ok None
+            | Ok None ->
                 let state, baseType =
                     TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
 
                 match baseType with
-                | None -> state, None
+                | None -> state, Ok None
                 | Some baseType -> atLevel state baseType
 
         atLevel state receiver

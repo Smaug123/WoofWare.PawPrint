@@ -185,7 +185,7 @@ public sealed class DerivedGone : BaseRuns
                 true
                 state
 
-        match resolved with
+        match BindingResult.value resolved with
         | VirtualImplementation.Found found ->
             found.Definition.RequiredDeclaringType.Name |> shouldEqual chosenName
             found.Definition.Name |> shouldEqual chosenMethodName

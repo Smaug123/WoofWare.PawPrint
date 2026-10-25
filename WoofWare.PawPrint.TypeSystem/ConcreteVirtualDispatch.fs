@@ -128,7 +128,7 @@ module ConcreteVirtualDispatch =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (dispatchTypeHandle : ConcreteTypeHandle)
         (state : TypeSystemState)
-        : (TypeSystemState * DispatchedMethod) option
+        : (TypeSystemState * Result<DispatchedMethod, TypeBindingFailure>) option
         =
         match dispatchTypeHandle with
         // Multi-dimensional arrays deliberately do *not* participate: CoreCLR's
@@ -238,7 +238,7 @@ module ConcreteVirtualDispatch =
 
         let state, instantiation =
             if dispatchThroughEnumerable || not (isReferenceType theT) then
-                state, theT
+                state, Ok theT
             else
                 LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Object
                 |> TypeSystemState.concretizeType
@@ -249,7 +249,10 @@ module ConcreteVirtualDispatch =
                     baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
-                |> fun (state, objectHandle) -> state, BindingStop.bound objectHandle
+                |> fun (state, objectHandle) ->
+                    match objectHandle with
+                    | Error failure -> state, Error failure
+                    | Ok objectHandle -> state, Ok objectHandle
 
         // `this` is the array, not an SZArrayHelper — exactly the lie CoreCLR tells (see the
         // "! Warning: \"this\" is an array, not an SZArrayHelper" comments in
@@ -258,11 +261,14 @@ module ConcreteVirtualDispatch =
         // whose coercion passes the object reference through without a type check.
         Some (
             state,
-            {
-                Definition = implementation
-                TypeGenerics = ImmutableArray.Empty
-                MethodGenerics = ImmutableArray.Create instantiation
-            }
+            instantiation
+            |> Result.map (fun instantiation ->
+                {
+                    Definition = implementation
+                    TypeGenerics = ImmutableArray.Empty
+                    MethodGenerics = ImmutableArray.Create instantiation
+                }
+            )
         )
 
     let private tryResolveVirtualImplementationForSlot
@@ -274,7 +280,7 @@ module ConcreteVirtualDispatch =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : TypeSystemState)
-        : TypeSystemState * VirtualImplementation
+        : TypeSystemState * Result<VirtualImplementation, TypeBindingFailure>
         =
         let logger = loggerFactory.CreateLogger "CallMethod"
 
@@ -314,7 +320,7 @@ module ConcreteVirtualDispatch =
                 methodToCall.Name
             )
 
-            state, VirtualImplementation.Found impl
+            state, impl |> Result.map VirtualImplementation.Found
         | None ->
 
         let declaringAssy =
@@ -328,7 +334,7 @@ module ConcreteVirtualDispatch =
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (candidateSignature : TypeMethodSignature<TypeDefn>)
             (state : TypeSystemState)
-            : TypeSystemState * bool
+            : TypeSystemState * Result<bool, TypeBindingFailure>
             =
             // The target's own signature as its blob spells it. `methodToCall.Signature` has been
             // concretised, which has already discarded the custom modifiers and the choice of
@@ -364,7 +370,7 @@ module ConcreteVirtualDispatch =
             // `MethodTableLayout.candidateFillsSlot` requires the exact signature CoreCLR
             // requires. `skipReturnType` is how `MethodSignature::SignaturesEquivalent` expresses
             // the same latitude.
-            let state, signatureMatches =
+            match
                 TypeSystemState.signaturesEquivalent
                     loggerFactory
                     dotnetRuntimeDirs
@@ -373,14 +379,12 @@ module ConcreteVirtualDispatch =
                     true
                     candidateComparand
                     targetComparand
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok false -> state, Ok false
+            | state, Ok true ->
 
-            let signatureMatches = BindingStop.bound signatureMatches
-
-            if not signatureMatches then
-                state, false
-            else
-
-            let state, candidateReturn =
+            match
                 candidateSignature.ReturnType
                 |> TypeSystemState.concretizeReturnColumn
                     loggerFactory
@@ -390,11 +394,12 @@ module ConcreteVirtualDispatch =
                     candidateAssemblyFullName
                     candidateTypeGenerics
                     methodToCall.Generics
-
-            let candidateReturn = BindingStop.bound candidateReturn
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok candidateReturn ->
 
             match candidateReturn, methodToCall.Signature.ReturnType with
-            | MethodReturnType.Void, MethodReturnType.Void -> state, true
+            | MethodReturnType.Void, MethodReturnType.Void -> state, Ok true
             | MethodReturnType.Returns retType, MethodReturnType.Returns targetType ->
                 TypeAssignability.isConcreteTypeAssignableTo
                     loggerFactory
@@ -404,7 +409,7 @@ module ConcreteVirtualDispatch =
                     retType
                     targetType
             | MethodReturnType.Void, MethodReturnType.Returns _
-            | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
+            | MethodReturnType.Returns _, MethodReturnType.Void -> state, Ok false
 
         /// Whether `meth`, a method of a class on the receiver's chain, overrides the target, a class's
         /// virtual method, by name and signature.
@@ -412,8 +417,11 @@ module ConcreteVirtualDispatch =
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             (state : TypeSystemState)
-            : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option *
-              TypeSystemState
+            : TypeSystemState *
+              Result<
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option,
+                  TypeBindingFailure
+               >
             =
             if
                 meth.Signature.GenericParameterCount
@@ -421,31 +429,31 @@ module ConcreteVirtualDispatch =
                 || meth.Signature.RequiredParameterCount
                    <> methodToCall.Signature.RequiredParameterCount
             then
-                None, state
+                state, Ok None
             elif meth.Name <> methodToCall.Name then
-                None, state
+                state, Ok None
             elif
                 not meth.IsVirtual
                 || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall))
             then
-                None, state
+                state, Ok None
             else
 
             let state, matches =
                 signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
 
-            if matches then Some meth, state else None, state
+            state, matches |> Result.map (fun matches -> if matches then Some meth else None)
 
         let concretizeTypeArgs
             (declaringAssemblyFullName : string)
             (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (args : TypeDefn ImmutableArray)
             (state : TypeSystemState)
-            : TypeSystemState * ImmutableArray<ConcreteTypeHandle>
+            : TypeSystemState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
             =
-            ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> ()), args)
-            ||> Seq.fold (fun (state, acc) ty ->
-                let state, handle =
+            (state, [], args)
+            |||> StateResult.fold (fun state acc ty ->
+                match
                     TypeSystemState.concretizeType
                         loggerFactory
                         dotnetRuntimeDirs
@@ -455,13 +463,11 @@ module ConcreteVirtualDispatch =
                         contextTypeGenerics
                         methodGenerics
                         ty
-
-                let handle = BindingStop.bound handle
-
-                acc.Add handle
-                state, acc
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok handle -> state, Ok (handle :: acc)
             )
-            |> fun (state, builder) -> state, builder.ToImmutable ()
+            |> fun (state, handles) -> state, handles |> Result.map (List.rev >> ImmutableArray.CreateRange)
 
         let concreteTypeHandlesToTypeDefns
             (state : TypeSystemState)
@@ -549,15 +555,18 @@ module ConcreteVirtualDispatch =
             (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
             (state : TypeSystemState)
             : TypeSystemState *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+              Result<
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list,
+                  TypeBindingFailure
+               >
             =
             let currentAssy =
                 state._LoadedAssemblies.ByDefinitionName currentTy.Identity.AssemblyFullName
 
-            ((state, []), currentTypeInfo.MethodImpls.Values)
-            ||> Seq.fold (fun (state, acc) impl ->
+            (state, [], currentTypeInfo.MethodImpls.Values)
+            |||> StateResult.fold (fun state acc impl ->
                 if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
-                    state, acc
+                    state, Ok acc
                 else
                     let state, declaration, declarationTypeArgs =
                         resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
@@ -566,12 +575,16 @@ module ConcreteVirtualDispatch =
                         match declarationTypeArgs with
                         | Some typeArgs ->
                             concretizeTypeArgs declaration.DeclaringAssemblyFullName currentTy.Generics typeArgs state
-                        | None when declaration.DeclaringTypeGenerics.IsEmpty -> state, ImmutableArray.Empty
+                        | None when declaration.DeclaringTypeGenerics.IsEmpty -> state, Ok ImmutableArray.Empty
                         | None when declaration.RequiredDeclaringType.Identity = currentTy.Identity ->
-                            state, currentTy.Generics
+                            state, Ok currentTy.Generics
                         | None ->
                             failwith
                                 $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
+
+                    match declarationTypeGenerics with
+                    | Error failure -> state, Error failure
+                    | Ok declarationTypeGenerics ->
 
                     // A MethodImpl binds a Body to the specific virtual slot identified by its
                     // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
@@ -586,21 +599,21 @@ module ConcreteVirtualDispatch =
                         || declarationTypeGenerics <> methodToCall.DeclaringTypeGenerics
                         || declaration.Name <> methodToCall.Name
                     then
-                        state, acc
+                        state, Ok acc
                     else
 
-                    let state, matches =
+                    match
                         signatureMatchesTarget
                             declaration.DeclaringAssemblyFullName
                             declarationTypeGenerics
                             declaration.Signature
                             state
-
-                    if not matches then
-                        state, acc
-                    else
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok false -> state, Ok acc
+                    | state, Ok true ->
                         match impl.Body with
-                        | MetadataToken.MethodDef body -> state, currentAssy.Methods.[body] :: acc
+                        | MetadataToken.MethodDef body -> state, Ok (currentAssy.Methods.[body] :: acc)
                         | other ->
                             failwith
                                 $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
@@ -767,9 +780,12 @@ module ConcreteVirtualDispatch =
         let tryResolveByInterfaceDispatchMap
             (state : TypeSystemState)
             : TypeSystemState *
-              (ConcreteTypeHandle *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
-              string) option
+              Result<
+                  (ConcreteTypeHandle *
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+                  string) option,
+                  TypeBindingFailure
+               >
             =
             let interfaceMethod =
                 match methodToCall.TryMetadata with
@@ -795,7 +811,7 @@ module ConcreteVirtualDispatch =
                     },
                     handle
 
-            let state, slot =
+            match
                 ConcreteInterfaceDispatch.tryFindImplementationSlot
                     loggerFactory
                     dotnetRuntimeDirs
@@ -806,10 +822,10 @@ module ConcreteVirtualDispatch =
                     walkBaseTypes
                     targetHandle
                     interfaceMethod
-
-            match slot with
-            | None -> state, None
-            | Some slot ->
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok None
+            | state, Ok (Some slot) ->
 
             let state, table =
                 ConcreteMethodTable.dispatchTableOfClosed
@@ -859,22 +875,37 @@ module ConcreteVirtualDispatch =
             if not walkBaseTypes && implementationHandle <> dispatchTypeHandle then
                 // The exact-type probe asks whether the receiver supplies the body itself; an
                 // inherited one means it does not.
-                state, None
+                state, Ok None
             else
                 state,
-                Some (implementationHandle, occupant.Method, "Found interface implementation through the dispatch map")
+                Ok (
+                    Some (
+                        implementationHandle,
+                        occupant.Method,
+                        "Found interface implementation through the dispatch map"
+                    )
+                )
 
-        let findClassImplementation (state : TypeSystemState) : TypeSystemState * _ option =
+        let findClassImplementation
+            (state : TypeSystemState)
+            : TypeSystemState *
+              Result<
+                  (ConcreteTypeHandle *
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+                  string) option,
+                  TypeBindingFailure
+               >
+            =
             // Resolution precedence: explicit MethodImpl entries, then method name/signature
             // matches on the current type, then the base type walk when enabled.
             let rec walkBase (state : TypeSystemState) (currentTypeHandle : ConcreteTypeHandle) =
                 if not walkBaseTypes then
-                    state, None
+                    state, Ok None
                 else
                     match currentTypeHandle with
                     | ConcreteTypeHandle.Byref _
                     | ConcreteTypeHandle.Pointer _
-                    | ConcreteTypeHandle.FunctionPointer _ -> state, None
+                    | ConcreteTypeHandle.FunctionPointer _ -> state, Ok None
                     | ConcreteTypeHandle.Concrete _
                     | ConcreteTypeHandle.OneDimArrayZero _
                     | ConcreteTypeHandle.Array _ ->
@@ -887,21 +918,33 @@ module ConcreteVirtualDispatch =
                                 currentTypeHandle
 
                         match baseType with
-                        | None -> state, None
+                        | None -> state, Ok None
                         | Some baseType -> walk state baseType
 
-            and walk (state : TypeSystemState) (currentTypeHandle : ConcreteTypeHandle) =
+            and walk
+                (state : TypeSystemState)
+                (currentTypeHandle : ConcreteTypeHandle)
+                : TypeSystemState *
+                  Result<
+                      (ConcreteTypeHandle *
+                      WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+                      string) option,
+                      TypeBindingFailure
+                   >
+                =
                 match TypeSystemState.tryGetConcreteTypeInfo state currentTypeHandle with
                 | None -> walkBase state currentTypeHandle
                 | Some (currentTy, currentTypeInfo) ->
-                    let state, matchingMethodImplBodies =
-                        findMatchingMethodImplBodies currentTy currentTypeInfo state
+                    match findMatchingMethodImplBodies currentTy currentTypeInfo state with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok matchingMethodImplBodies ->
 
                     // Rows naming the same body are one override. Different bodies for one slot make a
                     // type CoreCLR refuses to load (`AddMethodImplDispatchMapping`, methodtablebuilder.cpp),
                     // so no call ever reaches it.
                     match matchingMethodImplBodies |> List.distinctBy _.IdentityKey with
-                    | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
+                    | [ impl ] ->
+                        state, Ok (Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl"))
                     | _ :: _ :: _ as bodies ->
                         let names = bodies |> List.map _.Name |> String.concat ", "
 
@@ -911,12 +954,21 @@ module ConcreteVirtualDispatch =
                         failwith
                             $"virtual dispatch of %s{methodToCall.Name}: an instance interface method reached the class walk, though its implementation is found through the dispatch map"
                     | [] ->
-                        let implementation, state =
-                            (state, currentTypeInfo.Methods)
-                            ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics meth state)
+                        let state, implementation =
+                            (state, [], currentTypeInfo.Methods)
+                            |||> StateResult.fold (fun state acc meth ->
+                                match methodMatches currentTy.Generics meth state with
+                                | state, Ok (Some matched) -> state, Ok (matched :: acc)
+                                | state, Ok None -> state, Ok acc
+                                | state, Error failure -> state, Error failure
+                            )
 
-                        match implementation |> List.choose id with
-                        | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
+                        match implementation with
+                        | Error failure -> state, Error failure
+                        | Ok implementation ->
+
+                        match List.rev implementation with
+                        | [ impl ] -> state, Ok (Some (currentTypeHandle, impl, "Found concrete implementation"))
                         | _ :: _ as implementation ->
                             implementation
                             |> List.map (fun m -> m.Name)
@@ -930,16 +982,17 @@ module ConcreteVirtualDispatch =
 
         let state, classImplementation =
             match bySlotTable with
-            | Some result -> state, Some result
+            | Some result -> state, Ok (Some result)
             | None when methodDeclaringType.IsInterface -> tryResolveByInterfaceDispatchMap state
             | None -> findClassImplementation state
 
         match classImplementation with
-        | Some (implementationTypeHandle, impl, logMessage) ->
+        | Error failure -> state, Error failure
+        | Ok (Some (implementationTypeHandle, impl, logMessage)) ->
             logger.LogDebug logMessage
-            state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle impl state)
-        | None when not walkBaseTypes -> state, VirtualImplementation.NotOverridden
-        | None ->
+            state, Ok (VirtualImplementation.Found (dispatchedOn implementationTypeHandle impl state))
+        | Ok None when not walkBaseTypes -> state, Ok VirtualImplementation.NotOverridden
+        | Ok None ->
 
         logger.LogDebug "No concrete implementation found; searching for a default interface body"
 
@@ -962,7 +1015,7 @@ module ConcreteVirtualDispatch =
                     candidate.Body.Name
                 )
 
-                state, VirtualImplementation.Reabstracted candidate.Body
+                state, Ok (VirtualImplementation.Reabstracted candidate.Body)
             | MethodBody.Il _
             | MethodBody.InternalCall
             | MethodBody.PInvoke
@@ -973,7 +1026,7 @@ module ConcreteVirtualDispatch =
                     candidate.Body.Name
                 )
 
-                state, VirtualImplementation.Found (dispatchedOn candidate.Interface candidate.Body state)
+                state, Ok (VirtualImplementation.Found (dispatchedOn candidate.Interface candidate.Body state))
 
         let throughVariantInterface =
             methodDeclaringType.Generics
@@ -983,9 +1036,12 @@ module ConcreteVirtualDispatch =
         // class implementing `IDynamicInterfaceCastable` for an implementation, and throws for any
         // other receiver; for a class's method the receiver is not derived from the class, and the
         // method itself runs.
-        let nothingFound (state : TypeSystemState) : TypeSystemState * VirtualImplementation =
+        let nothingFound
+            (state : TypeSystemState)
+            : TypeSystemState * Result<VirtualImplementation, TypeBindingFailure>
+            =
             if not methodDeclaringType.IsInterface then
-                state, VirtualImplementation.NotOverridden
+                state, Ok VirtualImplementation.NotOverridden
             else
 
             match dispatchTypeHandle with
@@ -996,8 +1052,10 @@ module ConcreteVirtualDispatch =
                 // multi-dimensional array's included: measured, `ICollection<int>.Count` on an
                 // `int[2,3]` is 6.
                 state,
-                VirtualImplementation.Unmodelled
-                    $"%s{methodToCall.Name} of a generic interface is not implemented by the array %O{dispatchTypeHandle}, which CoreCLR dispatches to System.SZArrayHelper as though it were an SZ array implementing one of the five; PawPrint does not model that"
+                Ok (
+                    VirtualImplementation.Unmodelled
+                        $"%s{methodToCall.Name} of a generic interface is not implemented by the array %O{dispatchTypeHandle}, which CoreCLR dispatches to System.SZArrayHelper as though it were an SZ array implementing one of the five; PawPrint does not model that"
+                )
             | _ ->
 
             // The runtime marks only a class, never a value type, as `IDynamicInterfaceCastable`
@@ -1005,11 +1063,11 @@ module ConcreteVirtualDispatch =
             // implements no such interface.
             let state, dynamicallyCastable =
                 match TypeSystemState.tryGetConcreteTypeInfo state dispatchTypeHandle with
-                | None -> state, false
+                | None -> state, Ok false
                 | Some (_, receiverInfo) when
                     LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies receiverInfo
                     ->
-                    state, false
+                    state, Ok false
                 | Some _ ->
                     let state, map =
                         ConcreteInterfaceDispatch.interfaceMapOf
@@ -1022,22 +1080,28 @@ module ConcreteVirtualDispatch =
 
                     state,
                     map
-                    |> List.exists (fun entry ->
-                        entry.Type.Identity = baseClassTypes.IDynamicInterfaceCastable.Identity
+                    |> Result.map (
+                        List.exists (fun (entry : ConcreteInterfaceDispatch.InterfaceMapEntry) ->
+                            entry.Type.Identity = baseClassTypes.IDynamicInterfaceCastable.Identity
+                        )
                     )
 
-            if dynamicallyCastable then
+            match dynamicallyCastable with
+            | Error failure -> state, Error failure
+            | Ok true ->
                 state,
-                VirtualImplementation.Unmodelled
-                    $"%s{methodToCall.Name} is not implemented by %O{dispatchTypeHandle}, which implements IDynamicInterfaceCastable, so CoreCLR asks the receiver's GetInterfaceImplementation for the interface that implements it; PawPrint does not call back into the guest for that"
-            else
-                state, VirtualImplementation.NotImplemented
+                Ok (
+                    VirtualImplementation.Unmodelled
+                        $"%s{methodToCall.Name} is not implemented by %O{dispatchTypeHandle}, which implements IDynamicInterfaceCastable, so CoreCLR asks the receiver's GetInterfaceImplementation for the interface that implements it; PawPrint does not call back into the guest for that"
+                )
+            | Ok false -> state, Ok VirtualImplementation.NotImplemented
 
         // `FindDispatchImpl` searches at the call's exact instantiation, and only if that finds
         // nothing, and the interface is variant, allowing variance.
         match search false state with
-        | state, [ only ] -> foundDefault state only
-        | state, (_ :: _ :: _ as candidates) ->
+        | state, Error failure -> state, Error failure
+        | state, Ok [ only ] -> foundDefault state only
+        | state, Ok (_ :: _ :: _ as candidates) ->
             let candidates = candidates |> List.map _.Body
 
             if throughVariantInterface then
@@ -1053,19 +1117,22 @@ module ConcreteVirtualDispatch =
                     |> String.concat ", "
 
                 state,
-                VirtualImplementation.Unmodelled
-                    $"more than one most-specific default body of %s{methodToCall.Name} at a variant interface's exact instantiation, where CoreCLR throws or runs the first depending on how the JIT compiled the call: %s{described}"
+                Ok (
+                    VirtualImplementation.Unmodelled
+                        $"more than one most-specific default body of %s{methodToCall.Name} at a variant interface's exact instantiation, where CoreCLR throws or runs the first depending on how the JIT compiled the call: %s{described}"
+                )
             else
-                state, VirtualImplementation.Ambiguous candidates
-        | state, [] when not throughVariantInterface -> nothingFound state
-        | state, [] ->
+                state, Ok (VirtualImplementation.Ambiguous candidates)
+        | state, Ok [] when not throughVariantInterface -> nothingFound state
+        | state, Ok [] ->
 
         // The variant search "[doesn't] look for a conflict for instance methods": it runs the first
         // survivor. `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs` and
         // `VariantInterfaceMapOrder.cs` pin its order against the real runtime.
         match search true state with
-        | state, [] -> nothingFound state
-        | state, first :: _ -> foundDefault state first
+        | state, Error failure -> state, Error failure
+        | state, Ok [] -> nothingFound state
+        | state, Ok (first :: _) -> foundDefault state first
 
     /// One entry of a receiver's interface map, as `collectInterfaceMap` visits it.
     type private InterfaceSearchEntry =
@@ -1085,18 +1152,18 @@ module ConcreteVirtualDispatch =
         (ifaceHandle : ConcreteTypeHandle)
         (ifaceTy : ConcreteType<ConcreteTypeHandle>)
         (ifaceTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeSystemState * Set<ConcreteTypeHandle> * InterfaceSearchEntry list
+        : TypeSystemState * Result<Set<ConcreteTypeHandle> * InterfaceSearchEntry list, TypeBindingFailure>
         =
         if visited.Contains ifaceHandle then
-            state, visited, []
+            state, Ok (visited, [])
         else
 
         let visited = visited.Add ifaceHandle
 
-        let state, visited, parents =
-            ((state, visited, []), ifaceTypeInfo.ImplementedInterfaces)
-            ||> Seq.fold (fun (state, visited, acc) impl ->
-                let state, parentHandle, parentTy, parentTypeInfo =
+        let state, parents =
+            (state, (visited, []), ifaceTypeInfo.ImplementedInterfaces)
+            |||> StateResult.fold (fun state (visited, acc) impl ->
+                match
                     ConcreteInterfaceDispatch.resolveImplementedInterface
                         loggerFactory
                         dotnetRuntimeDirs
@@ -1104,8 +1171,11 @@ module ConcreteVirtualDispatch =
                         ifaceTy
                         impl
                         state
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok (parentHandle, parentTy, parentTypeInfo) ->
 
-                let state, visited, expanded =
+                match
                     expandInterfaceEntry
                         loggerFactory
                         dotnetRuntimeDirs
@@ -1115,17 +1185,21 @@ module ConcreteVirtualDispatch =
                         parentHandle
                         parentTy
                         parentTypeInfo
-
-                state, visited, acc @ expanded
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok (visited, expanded) -> state, Ok (visited, acc @ expanded)
             )
 
         state,
-        visited,
-        {
-            Handle = ifaceHandle
-            Type = ifaceTy
-        }
-        :: parents
+        parents
+        |> Result.map (fun (visited, parents) ->
+            visited,
+            {
+                Handle = ifaceHandle
+                Type = ifaceTy
+            }
+            :: parents
+        )
 
     /// The receiver's interface map, in the order variance-compatible entries are *searched*:
     /// the interfaces the type itself declares, in metadata order and each expanded through its
@@ -1151,10 +1225,10 @@ module ConcreteVirtualDispatch =
         (state : TypeSystemState)
         (visited : Set<ConcreteTypeHandle>)
         (typeHandle : ConcreteTypeHandle)
-        : TypeSystemState * Set<ConcreteTypeHandle> * InterfaceSearchEntry list
+        : TypeSystemState * Result<Set<ConcreteTypeHandle> * InterfaceSearchEntry list, TypeBindingFailure>
         =
         if visited.Contains typeHandle then
-            state, visited, []
+            state, Ok (visited, [])
         else
 
         // Class handles and interface handles share one `visited` set: a handle is one or the
@@ -1179,15 +1253,15 @@ module ConcreteVirtualDispatch =
         // "exact-type dispatch" (the `constrained.` value-type probe), where only the type's own
         // interface list is in scope. A value type's base chain is `ValueType`/`Enum`/`Object`,
         // none of which contributes a generic interface.
-        let state, visited, baseEntries =
+        let state, inherited =
             if not walkBaseTypes then
-                state, visited, []
+                state, Ok (visited, [])
             else
 
             match typeHandle with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> state, visited, []
+            | ConcreteTypeHandle.FunctionPointer _ -> state, Ok (visited, [])
             | ConcreteTypeHandle.Concrete _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ ->
@@ -1196,17 +1270,21 @@ module ConcreteVirtualDispatch =
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state typeHandle
 
             match baseType with
-            | None -> state, visited, []
+            | None -> state, Ok (visited, [])
             | Some baseType ->
                 collectInterfaceMap loggerFactory dotnetRuntimeDirs baseClassTypes walkBaseTypes state visited baseType
 
-        let state, visited, ownEntries =
+        match inherited with
+        | Error failure -> state, Error failure
+        | Ok (visited, baseEntries) ->
+
+        let state, own =
             match TypeSystemState.tryGetConcreteTypeInfo state typeHandle with
-            | None -> state, visited, []
+            | None -> state, Ok (visited, [])
             | Some (ty, typeInfo) ->
-                ((state, visited, []), typeInfo.ImplementedInterfaces)
-                ||> Seq.fold (fun (state, visited, acc) impl ->
-                    let state, ifaceHandle, ifaceTy, ifaceTypeInfo =
+                (state, (visited, []), typeInfo.ImplementedInterfaces)
+                |||> StateResult.fold (fun state (visited, acc) impl ->
+                    match
                         ConcreteInterfaceDispatch.resolveImplementedInterface
                             loggerFactory
                             dotnetRuntimeDirs
@@ -1214,8 +1292,11 @@ module ConcreteVirtualDispatch =
                             ty
                             impl
                             state
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (ifaceHandle, ifaceTy, ifaceTypeInfo) ->
 
-                    let state, visited, expanded =
+                    match
                         expandInterfaceEntry
                             loggerFactory
                             dotnetRuntimeDirs
@@ -1225,26 +1306,30 @@ module ConcreteVirtualDispatch =
                             ifaceHandle
                             ifaceTy
                             ifaceTypeInfo
-
-                    state, visited, acc @ expanded
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (visited, expanded) -> state, Ok (visited, acc @ expanded)
                 )
 
-        state, visited, ownEntries @ baseEntries
+        state,
+        own
+        |> Result.map (fun (visited, ownEntries) -> visited, ownEntries @ baseEntries)
 
     /// The interfaces in `receiverType`'s interface map, its base types' included, in the order
     /// `MethodTable::FindDefaultInterfaceImplementation` searches them (see `collectInterfaceMap`).
+    /// An interface on the way that does not bind is the failure, returned with what loaded before it.
     let interfaceMapHandles
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (receiverType : ConcreteTypeHandle)
-        : TypeSystemState * ConcreteTypeHandle list
+        : TypeSystemState * Result<ConcreteTypeHandle list, TypeBindingFailure>
         =
-        let state, _, entries =
+        let state, entries =
             collectInterfaceMap loggerFactory dotnetRuntimeDirs baseClassTypes true state Set.empty receiverType
 
-        state, entries |> List.map _.Handle
+        state, entries |> Result.map (fun (_, entries) -> entries |> List.map _.Handle)
 
     /// Identify the body a virtual or interface call lands on, given the receiver's runtime type.
     ///
@@ -1261,6 +1346,10 @@ module ConcreteVirtualDispatch =
     /// `IDynamicInterfaceCastable`, or is an array and the interface is generic.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
+    ///
+    /// A type the search reaches that does not bind is the failure, returned with what loaded before
+    /// it: CoreCLR would have failed to load that type before any call could dispatch on it.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1270,7 +1359,7 @@ module ConcreteVirtualDispatch =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : TypeSystemState)
-        : TypeSystemState * VirtualImplementation
+        : TypeSystemState * Result<VirtualImplementation, TypeBindingFailure>
         =
         if methodToCall.IsStatic then
             failwith

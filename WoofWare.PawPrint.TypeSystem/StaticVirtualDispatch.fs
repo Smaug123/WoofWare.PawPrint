@@ -71,7 +71,7 @@ module StaticVirtualDispatch =
         (constrained : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState * DefaultBody
+        : TypeSystemState * Result<DefaultBody, TypeBindingFailure>
         =
         let state, candidates =
             DefaultInterfaceImplementation.search
@@ -87,10 +87,11 @@ module StaticVirtualDispatch =
         // static method finds that conflict in the variant pass too, but `ResolveVirtualStaticMethod`
         // then runs the first survivor anyway, reporting a variant match as unique.
         match candidates with
-        | [] -> state, DefaultBody.NotFound
-        | [ only ] -> state, DefaultBody.Unique only
-        | first :: _ when allowVariance -> state, DefaultBody.Unique first
-        | all -> state, DefaultBody.Conflict all
+        | Error failure -> state, Error failure
+        | Ok [] -> state, Ok DefaultBody.NotFound
+        | Ok [ only ] -> state, Ok (DefaultBody.Unique only)
+        | Ok (first :: _) when allowVariance -> state, Ok (DefaultBody.Unique first)
+        | Ok all -> state, Ok (DefaultBody.Conflict all)
 
     /// The method a `constrained.` call of the static virtual `method` runs when the prefix names
     /// `constrained`. `method` is the interface method as the call instantiates it, so its declaring
@@ -103,6 +104,10 @@ module StaticVirtualDispatch =
     /// class and on a value type alike); `NotImplemented` where nothing implements an abstract
     /// method, as where `constrained` does not implement the interface at all. Never
     /// `NotOverridden`. `constrained` must be a type with a TypeDef row.
+    ///
+    /// A type the search reaches that does not bind is the failure, returned with what loaded before
+    /// it.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let resolve
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -110,7 +115,7 @@ module StaticVirtualDispatch =
         (constrained : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState * VirtualImplementation
+        : TypeSystemState * Result<VirtualImplementation, TypeBindingFailure>
         =
         if not method.IsStatic then
             failwith $"%s{operation}: %s{method.Name} is not static"
@@ -147,8 +152,12 @@ module StaticVirtualDispatch =
 
         // 1. A MethodImpl on a type of the chain, exactly and then, for a variant interface, on the
         // first variance-compatible entry of the type's interface map.
-        let rec onChain (state : TypeSystemState) (level : ConcreteTypeHandle) =
-            let exactly (state : TypeSystemState) (declaredOn : ConcreteTypeHandle) = state, declaredOn = target
+        let rec onChain
+            (state : TypeSystemState)
+            (level : ConcreteTypeHandle)
+            : TypeSystemState * Result<VirtualImplementation option, TypeBindingFailure>
+            =
+            let exactly (state : TypeSystemState) (declaredOn : ConcreteTypeHandle) = state, Ok (declaredOn = target)
 
             match
                 DefaultInterfaceImplementation.implementationOnType
@@ -161,15 +170,16 @@ module StaticVirtualDispatch =
                     exactly
                     state
             with
-            | state, Some body -> state, Some (found state level body)
-            | state, None ->
+            | state, Error failure -> state, Error failure
+            | state, Ok (Some body) -> state, Ok (Some (found state level body))
+            | state, Ok None ->
 
             let state, variant =
                 if not (isVariant state target) then
-                    state, None
+                    state, Ok None
                 else
 
-                let state, map =
+                match
                     ConcreteInterfaceDispatch.interfaceMapOf
                         loggerFactory
                         dotnetRuntimeDirs
@@ -177,10 +187,17 @@ module StaticVirtualDispatch =
                         operation
                         state
                         level
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok map ->
 
-                let rec entries (state : TypeSystemState) (map : ConcreteInterfaceDispatch.InterfaceMapEntry list) =
+                let rec entries
+                    (state : TypeSystemState)
+                    (map : ConcreteInterfaceDispatch.InterfaceMapEntry list)
+                    : TypeSystemState * Result<VirtualImplementation option, TypeBindingFailure>
+                    =
                     match map with
-                    | [] -> state, None
+                    | [] -> state, Ok None
                     | entry :: rest when
                         entry.Interface = target
                         || not (DefaultInterfaceImplementation.sameDefinition state entry.Interface target)
@@ -196,10 +213,11 @@ module StaticVirtualDispatch =
                                 state
                                 entry.Interface
                         with
-                        | state, false -> entries state rest
-                        | state, true ->
+                        | state, Error failure -> state, Error failure
+                        | state, Ok false -> entries state rest
+                        | state, Ok true ->
                             let onEntry (state : TypeSystemState) (declaredOn : ConcreteTypeHandle) =
-                                state, declaredOn = entry.Interface
+                                state, Ok (declaredOn = entry.Interface)
 
                             match
                                 DefaultInterfaceImplementation.implementationOnType
@@ -212,56 +230,66 @@ module StaticVirtualDispatch =
                                     onEntry
                                     state
                             with
-                            | state, Some body -> state, Some (found state level body)
-                            | state, None -> entries state rest
+                            | state, Error failure -> state, Error failure
+                            | state, Ok (Some body) -> state, Ok (Some (found state level body))
+                            | state, Ok None -> entries state rest
 
                 entries state map
 
             match variant with
-            | Some _ -> state, variant
-            | None ->
+            | Error failure -> state, Error failure
+            | Ok (Some found) -> state, Ok (Some found)
+            | Ok None ->
 
             match
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
             with
-            | state, None -> state, None
+            | state, None -> state, Ok None
             | state, Some parent -> onChain state parent
 
         match onChain state constrained with
-        | state, Some implementation -> state, implementation
-        | state, None ->
+        | state, Error failure -> state, Error failure
+        | state, Ok (Some implementation) -> state, Ok implementation
+        | state, Ok None ->
 
         // 2. A default body, exactly and then allowing variance.
-        let fromDefault (state : TypeSystemState) (allowVariance : bool) =
+        let fromDefault
+            (state : TypeSystemState)
+            (allowVariance : bool)
+            : TypeSystemState * Result<VirtualImplementation option, TypeBindingFailure>
+            =
             match defaultBody loggerFactory dotnetRuntimeDirs baseClassTypes allowVariance constrained method state with
-            | state, DefaultBody.Unique candidate ->
+            | state, Error failure -> state, Error failure
+            | state, Ok (DefaultBody.Unique candidate) ->
                 match candidate.Body.Body with
-                | MethodBody.Abstract -> state, Some (VirtualImplementation.Reabstracted candidate.Body)
+                | MethodBody.Abstract -> state, Ok (Some (VirtualImplementation.Reabstracted candidate.Body))
                 | MethodBody.Il _
                 | MethodBody.InternalCall
                 | MethodBody.PInvoke
-                | MethodBody.RuntimeProvided _ -> state, Some (found state candidate.Interface candidate.Body)
-            | state, DefaultBody.Conflict candidates ->
-                state, Some (VirtualImplementation.Ambiguous (candidates |> List.map _.Body))
-            | state, DefaultBody.NotFound -> state, None
+                | MethodBody.RuntimeProvided _ -> state, Ok (Some (found state candidate.Interface candidate.Body))
+            | state, Ok (DefaultBody.Conflict candidates) ->
+                state, Ok (Some (VirtualImplementation.Ambiguous (candidates |> List.map _.Body)))
+            | state, Ok DefaultBody.NotFound -> state, Ok None
 
         match fromDefault state false with
-        | state, Some implementation -> state, implementation
-        | state, None ->
+        | state, Error failure -> state, Error failure
+        | state, Ok (Some implementation) -> state, Ok implementation
+        | state, Ok None ->
 
         match fromDefault state true with
-        | state, Some implementation -> state, implementation
-        | state, None ->
+        | state, Error failure -> state, Error failure
+        | state, Ok (Some implementation) -> state, Ok implementation
+        | state, Ok None ->
 
         // 3. The method's own body.
         let definition = DefaultInterfaceImplementation.definitionOf state method
 
         match definition.Body with
-        | MethodBody.Abstract -> state, VirtualImplementation.NotImplemented
+        | MethodBody.Abstract -> state, Ok VirtualImplementation.NotImplemented
         | MethodBody.Il _
         | MethodBody.InternalCall
         | MethodBody.PInvoke
-        | MethodBody.RuntimeProvided _ -> state, found state target definition
+        | MethodBody.RuntimeProvided _ -> state, Ok (found state target definition)
 
     /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
     /// the implementation the constrained type supplies, or to why there is none to run.
@@ -281,6 +309,10 @@ module StaticVirtualDispatch =
     /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
     /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
     /// guessed at.
+    ///
+    /// A type the resolution reaches that does not bind is the failure, returned with what loaded
+    /// before it.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let resolveConstrainedStaticInterfaceMethod
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -290,7 +322,7 @@ module StaticVirtualDispatch =
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState * ConstrainedStaticImplementation
+        : TypeSystemState * Result<ConstrainedStaticImplementation, TypeBindingFailure>
         =
         let methodDeclAssy =
             state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
@@ -321,23 +353,24 @@ module StaticVirtualDispatch =
             resolve loggerFactory dotnetRuntimeDirs baseClassTypes constrainedTypeHandle concretizedMethod state
 
         match implementation with
-        | VirtualImplementation.NotOverridden ->
+        | Error failure -> state, Error failure
+        | Ok VirtualImplementation.NotOverridden ->
             failwith $"BUG: %s{opName}: static virtual dispatch of %s{methodToCall.Name} answered NotOverridden"
-        | VirtualImplementation.NotImplemented ->
-            state, ConstrainedStaticImplementation.Fails (DispatchFailure.StaticNotImplemented concretizedMethod)
-        | VirtualImplementation.Ambiguous candidates ->
-            state, ConstrainedStaticImplementation.Fails (DispatchFailure.Ambiguous candidates)
-        | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
-        | VirtualImplementation.Reabstracted reabstraction when not reabstraction.IsStatic ->
+        | Ok VirtualImplementation.NotImplemented ->
+            state, Ok (ConstrainedStaticImplementation.Fails (DispatchFailure.StaticNotImplemented concretizedMethod))
+        | Ok (VirtualImplementation.Ambiguous candidates) ->
+            state, Ok (ConstrainedStaticImplementation.Fails (DispatchFailure.Ambiguous candidates))
+        | Ok (VirtualImplementation.Unmodelled reason) -> failwith $"%s{opName}: %s{reason}"
+        | Ok (VirtualImplementation.Reabstracted reabstraction) when not reabstraction.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}"
-        | VirtualImplementation.Reabstracted reabstraction ->
-            state, ConstrainedStaticImplementation.Fails (DispatchFailure.Reabstracted reabstraction)
-        | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
+        | Ok (VirtualImplementation.Reabstracted reabstraction) ->
+            state, Ok (ConstrainedStaticImplementation.Fails (DispatchFailure.Reabstracted reabstraction))
+        | Ok (VirtualImplementation.Found implementation) when not implementation.Definition.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
-        | VirtualImplementation.Found implementation ->
-            let state, implementationResult =
+        | Ok (VirtualImplementation.Found implementation) ->
+            match
                 MethodConcretisation.concretizeMethodWithAllGenerics
                     loggerFactory
                     dotnetRuntimeDirs
@@ -346,7 +379,7 @@ module StaticVirtualDispatch =
                     implementation.Definition
                     implementation.MethodGenerics
                     state
-
-            let implementation, declaringType = BindingStop.bound implementationResult
-
-            state, ConstrainedStaticImplementation.Runs (implementation, declaringType)
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok (implementation, declaringType) ->
+                state, Ok (ConstrainedStaticImplementation.Runs (implementation, declaringType))
