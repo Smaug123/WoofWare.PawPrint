@@ -41,7 +41,10 @@ What lives here:
 * `TypeLoad` — CoreCLR's full load of a type, walked level by level as the class loader brings
   each type it reaches through them, and the first type reference that load reaches that names
   nothing (a `TypeLoadException`) or that needs an assembly no runtime directory supplies (a
-  `FileNotFoundException`). The JIT asks for every type a method names at that level. A caller
+  `FileNotFoundException`). Once every type it reaches has the levels below `CLASS_LOADED`, the
+  load brings each type definition's type parameters' constraints to the level below, except in
+  CoreLib, which skips that; it does not check that an instantiation satisfies them. The JIT asks
+  for every type a method names at that level. A caller
   loading many types passes from one load to the next the definitions those that met no miss
   loaded in full, which a load passes over as CoreCLR passes over a type already loaded. It walks
   too the approximate load by which CoreCLR lays out the arguments a signature names
