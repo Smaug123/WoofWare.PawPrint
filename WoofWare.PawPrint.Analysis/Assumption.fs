@@ -19,6 +19,9 @@ type Assumption =
     /// under `NativeAssumption.NamedTypesLoad` keeps to it, as the cast helpers' fallback,
     /// `IsInstanceOf_NoCacheLookup`, does where reflection asks it about an open type. Were an
     /// assembly missing, the runtime would run those handlers, which could throw anything.
+    /// `RuntimeType` asks for the constraints whenever it works out a generic parameter's base type,
+    /// so without this, comparing `Type`s or asking whether one is a value type is "unknown", as is
+    /// every cast helper but `IsInstanceOfClass`.
     | NamedTypesLoad
     /// Reading an exception's `Source` and `StackTrace` raises only what `Assumption.raises` lists.
     /// CoreCLR reads both when it throws an exception that has been thrown before
@@ -29,6 +32,7 @@ type Assumption =
     /// getter raises from it only what `Exception`'s own does, and when the metadata of each method
     /// on the stack trace, and of every type and assembly it names, is intact and loads without
     /// running the program's `AssemblyResolve` or `Resolving` handlers.
+    /// Without this, wherever a type initializer may fail is "unknown".
     | StackTracePreserved
     /// CoreLib's type initializers, each of them, raise only what `Assumption.raises` lists. Every
     /// CoreLib exception's constructor runs one, `SR`'s, which reads an `AppContext` switch through
@@ -37,6 +41,9 @@ type Assumption =
     /// the runtime (its `runtimeconfig.json` properties and the environment variables it reads) is
     /// well formed; when only CoreLib writes CoreLib's private static fields; and when the
     /// initializer of each of CoreLib's generic types does so whatever its type arguments.
+    /// Allowed every other assumption, about five in six of CoreLib's own methods are "unknown"
+    /// without this one, and about one in three with it. The program's own type initializers are
+    /// always followed.
     | CoreLibTypeInitializers
     /// CoreCLR's JIT compiles every method with at least the optimisations it makes at tier 0
     /// (the JIT's `Tier0OptimizationEnabled`), wherever neither the method nor its assembly says
@@ -49,6 +56,10 @@ type Assumption =
     /// `MethodImplOptions.NoOptimization`, and the assembly when its `DebuggableAttribute`
     /// disables optimisation (`Debuggable.allowsJitOptimisation`). This assumption stands in for
     /// no method's body, so `Assumption.raises` and `Assumption.constructs` list nothing for it.
+    /// Where the method or its assembly says otherwise, the analysis follows the calls whatever the
+    /// caller allows. Without this, about one in twenty-five of CoreLib's own non-generic methods are
+    /// "unknown" that are known with it, most of them through `Unsafe.BitCast`, which asks whether
+    /// each of its type arguments is a value type.
     | JitOptimises
     /// Every class implementing `IDynamicInterfaceCastable` raises from `IsInterfaceImplemented`
     /// only the `InvalidCastException` its documentation asks for, and that only where it is asked
@@ -59,6 +70,7 @@ type Assumption =
     /// the cast cache, through `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which
     /// raises only what `Assumption.raises` lists when this holds. Whether it does turns on code
     /// the program supplies, and on reflection over the two types the analysis does not see into.
+    /// Without this, every cast helper but `IsInstanceOfClass` is "unknown".
     | DynamicCastsAsDocumented
     /// Every method, field and type an instruction's token names is one the method whose
     /// instruction it is may access, by CoreCLR's visibility rules (`ClassLoader::CanAccess`,

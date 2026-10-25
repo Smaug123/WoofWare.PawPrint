@@ -394,7 +394,7 @@ public sealed class TypeAttribute : System.Attribute
         // Concretize the QCall method; this also concretizes its parameter types so the
         // active-pattern match (QCallModule / ObjectHandleOnStack / pointer-to-Int32 etc.)
         // in the handler succeeds at dispatch time.
-        let state, qCallMethod, _ =
+        let state, qCallMethodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -405,7 +405,9 @@ public sealed class TypeAttribute : System.Attribute
                 ImmutableArray.Empty
                 state
 
-        let state, namedArgQCallMethod, _ =
+        let qCallMethod, _ = BindingResult.value qCallMethodResult
+
+        let state, namedArgQCallMethodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -415,6 +417,8 @@ public sealed class TypeAttribute : System.Attribute
                 corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let namedArgQCallMethod, _ = BindingResult.value namedArgQCallMethodResult
 
         let attributeType = requiredTopLevelType guestAssembly "" attributeTypeName
 
@@ -431,7 +435,7 @@ public sealed class TypeAttribute : System.Attribute
         // Locate the attribute ctor (we wrote exactly one, taking int + string).
         let rawCtor = attributeType.Methods |> List.find (fun m -> m.Name = ".ctor")
 
-        let state, concretizedCtor, _ =
+        let state, concretizedCtorResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -439,6 +443,8 @@ public sealed class TypeAttribute : System.Attribute
                 rawCtor
                 ImmutableArray.Empty
                 state
+
+        let concretizedCtor, _ = BindingResult.value concretizedCtorResult
 
         let ctorMethodHandle, state =
             IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretizedCtor state

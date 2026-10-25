@@ -74,7 +74,7 @@ module TestSignalHandler =
                 | methods ->
                     failwith $"method %s{methodName} on System.Object was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -84,6 +84,8 @@ module TestSignalHandler =
                 corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, method
 

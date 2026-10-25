@@ -65,8 +65,11 @@ module NativeEnum =
             match typeInfo.BaseType with
             | None -> failwith $"%s{operation}: %s{typeDisplayName typeInfo} has no base type; expected System.Enum"
             | Some baseType ->
-                let state, _baseAssembly, resolvedBase =
+                let state, baseResult =
                     IlMachineState.resolveBaseTypeInfo ctx.LoggerFactory ctx.BaseClassTypes state assembly baseType
+
+                let _baseAssembly, resolvedBase =
+                    TokenBindingStop.baseType assembly baseType baseResult
 
                 match resolvedBase with
                 | TypeDefn.FromDefinition (identity, _) when identity = ctx.BaseClassTypes.Enum.Identity -> state

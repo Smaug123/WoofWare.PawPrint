@@ -576,7 +576,13 @@ module internal MethodTableProjection =
             let assembly, typeInfo = typeInfoForIdentityOrFail state identity
             state, assembly, TypeInfo.applyGenericArgs args typeInfo
         | TypeDefn.FromReference (typeRef, _) ->
-            IlMachineTypeResolution.resolveTypeFromRef loggerFactory currentAssembly typeRef args state
+            let state, resolved =
+                IlMachineTypeResolution.resolveTypeFromRef loggerFactory currentAssembly typeRef args state
+
+            let assembly, typeInfo =
+                TokenBindingStop.typeReference typeRef currentAssembly resolved
+
+            state, assembly, typeInfo
         | TypeDefn.PrimitiveType primitiveType ->
             let typeInfo =
                 match primitiveType with
@@ -708,13 +714,16 @@ module internal MethodTableProjection =
                 match baseType with
                 | None -> state, false
                 | Some baseTypeInfo ->
-                    let state, baseAssembly, baseTypeDefn =
+                    let state, baseAssemblyResult =
                         IlMachineState.resolveBaseTypeInfo
                             loggerFactory
                             baseClassTypes
                             state
                             currentAssembly
                             baseTypeInfo
+
+                    let baseAssembly, baseTypeDefn =
+                        TokenBindingStop.baseType currentAssembly baseTypeInfo baseAssemblyResult
 
                     let inheritedContainsGcPointers, state =
                         typeDefnInstanceFieldsMayContainGcPointers

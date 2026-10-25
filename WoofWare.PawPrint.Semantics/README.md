@@ -11,135 +11,20 @@ read by something that never executes anything: an analyser computing which exce
 method, which methods can reach the filesystem, or which are pure. A fact kept only as control flow
 inside an interpreter is available to the interpreter alone.
 
-What lives here:
+It holds facts of four kinds:
 
-* `EmulatedRuntime` — the .NET runtimes PawPrint supports, and which one a CoreLib belongs to: the
-  key of every fact below that differs between runtimes.
-* `ContextSwitchPrior` — how likely interleaving an opcode with another thread's steps is to reveal
-  a guest-visible difference. Consumed by PawPrint's Probabilistic Concurrency Testing scheduler.
-* `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
-  from a callee, and what it needs of its operands to raise each (a zero divisor, say). Consumed by
-  the interpreter, which raises through it and checks itself against it, and readable by an
-  analyser that never runs anything, which can rule a fault out where it knows the operands.
-* `ControlFlow` — where control goes after each instruction, and which offsets a run of a body can
-  execute: following branches, fall-through and `leave`, entering a handler only once its protected
-  block has run, and following a conditional branch one way only where it pops a Boolean known in
-  advance. `StackShape` and the escape analysis both read it.
-* `JitImport` — what CoreCLR's JIT compiles of a body, which is not quite what a run can execute: it
-  skips the side of a branch whose condition it folds to a constant, and folds nothing in a body it
-  does not optimise. Two bounds stand in for its folding, which PawPrint does not model: what it
-  surely compiles, crossing only branches it cannot fold, and what it may. Where something it may
-  compile it need not, a consumer must refuse rather than guess. It also gives the order in which
-  the JIT surely reaches one instruction before another, whatever its worklist does.
-* `StackEffect` — what each instruction pops, and what each value it pushes is (a literal, an
-  argument, a call's result, an element of the array popped, ...), without saying what such a
-  value is in any one analysis's terms. CoreCLR's own `opcode.def` is its oracle.
-* `StackFlow` — a dataflow over the evaluation stack, generic in what it tracks about each slot: a
-  `SlotLattice` says what each `StackEffect` push is in its terms and how two paths' values meet,
-  and the flow joins them over every path, sharing CoreCLR's spill temps across a join.
-* `StackShape` — `StackFlow` over float widths: the shape of the evaluation stack on entry to every
-  instruction of a body, joined over every path that reaches it, and the control-flow joins at which CoreCLR's importer widens a
-  float32 slot to double because another path delivers a double there. What a token-bearing
-  instruction does to the stack comes in as data (`StackShapeTokens` reads it from a PE module's
-  own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.
-* `IntrinsicBody` — what CoreCLR executes for an `[Intrinsic]` method: its own IL, or one of two
-  placeholders, IL that calls itself (which the JIT must expand) or a CoreLib body that cannot return
-  (which the VM substitutes). Only a placeholder's call to itself is expanded; the rest of its IL
-  runs. On a hardware-intrinsic class that call is a capability query or an instruction, and
-  `IntrinsicBody.expandSelfCall` says what it does on a given CPU: yields a constant for a query,
-  raises `PlatformNotSupportedException` for an instruction the CPU lacks. The interpreter runs a
-  method's own IL, expands its self-call, and refuses the rest unless it implements the method
-  itself; an analyser can treat the self-call the same way.
-* `IntrinsicPrimitive` — the operations CoreCLR's runtime performs in code of its own when a
-  CoreLib intrinsic is called (barriers, atomics, `GetMethodTable`, the estimates, ...), how each
-  CoreLib method is recognised as one, and each operation's contract: the faults it raises and
-  under what conditions, whether it returns, and the nullness of its result. `TestIntrinsicContracts`
-  holds the contracts to real .NET, and PawPrint's implementations to the contracts.
-* `NativeMethod` — methods CoreCLR implements in native code (an `InternalCall` or a P/Invoke)
-  whose behaviour is known, and what each can do to its caller (a `NativeContract`: the CoreLib
-  exception types it can raise, whether it returns, and its result's nullness). These are the C
-  runtime's maths functions that `Math` and `MathF` call, the functions of the native libraries
-  the framework ships with CoreLib (`FrameworkShim`), called through a P/Invoke whose stub only
-  copies each value as its bytes, which CoreLib's disabling of runtime marshalling allows, and
-  the FCalls and QCalls the contract table describes. None of the first two can fault, the
-  shims' on the assumption that they are present.
-* `NativeContractTable` — the contract table: what each of a list of CoreLib's FCalls and QCalls
-  can raise, read from the pinned runtime's C++, one row each in the embedded
-  `NativeContractTable.tsv` with the functions it was read from and a sentence saying why. Every
-  native a row names runs no managed code but the CoreLib methods its row says it calls and the
-  parameterless constructor of each exception it raises, which CoreCLR runs to make it. A row may
-  hold only under a claim about the program (`NativeAssumption`), which an analyser must be allowed
-  to make before relying on it: `NamedTypesLoad`, for a native that loads the types a loaded type's
-  metadata names, which would otherwise run the program's assembly resolution handlers wherever an
-  assembly is missing. A row says whether an FCall is static or an instance method, which passes
-  its receiver to the C++ as the first argument. A QCall is described only when it is called as a shim function is. `TestNativeContractTable` checks that
-  each row names a native both CoreLibs declare and recognise as that row, raises only CoreLib
-  exception types, and cites functions the pinned source defines and binds the native to; that
-  every call a cited function makes is to one its row also cites, or to one
-  `NativeContractCallees.tsv` vouches for, by reading it, as running no managed code (matching by
-  name, as `CppSource` reads C++ without resolving it), or vouches for as loading types, which
-  it requires exactly the rows holding under `NamedTypesLoad` to call; and that every managed call
-  a cited function makes is of a method the row says it calls; `TestEscapeAnalysis` checks that the analysis
-  reports exactly what each row says, and what the constructors of the exceptions it names raise. `TestNativeMethod` checks the recognition against both
-  CoreLibs' metadata and against fabricated images, calls each maths function on real .NET over
-  its edge values, and checks on real .NET that an exception thrown into native code by a
-  callback ends the process rather than reaching the caller.
-* `StringConstructor` — which method CoreCLR runs for a constructor of `System.String`: each is an
-  FCall whose implementation is the static `String.Ctor` with the same parameters, which a
-  `newobj` of the constructor calls in its place. The interpreter runs that `Ctor`, and an
-  analyser can follow the call into it. `TestStringConstructor` checks that every constructor in
-  both CoreLibs has one, and that a fabricated type's constructor has one only when exactly one
-  static `Ctor` takes its parameters and returns a string.
-* `JitTypeLoads` — which types the JIT loads when it compiles a method, by where each appears: a
-  local, the method's own signature, a callee's, a field's type, a type token, a member's owner.
-  CoreCLR hands the JIT only fully loaded types, so a type that fails to load there fails the
-  compilation, and its exception comes out of the call to the method, past every handler the
-  method has. Some it loads in full; the value types of the signature of a method whose address
-  becomes a function pointer it loads only where their references name a definition; some, a
-  local pointer or a callee's class parameter, it does not load at all. Whether a load fails is
-  the Loader's `TypeLoad` to say. Taking a method's address loads the value types of its signature
-  before its return type, or not at all, depending on the instruction and what becomes of the
-  address, or only if the JIT asks for the address itself, which it may not, folding it away or
-  looking it up in shared code, or may do while compiling a method it inlines this one into, or
-  only if it resolves the implementation a `constrained.` prefix names: those are loads it may make
-  (`JitTypeLoad.Possibly`). A method Swift code calls loads its pointer
-  parameters' targets too. Making a delegate open over its target loads approximately each value
-  type of the `Invoke` method's signature and then of the target's (`JitTypeLoad.Approximately`), as
-  CoreCLR makes a thunk to shuffle the arguments; making one closed over its target loads nothing
-  more. A call of unmanaged code (a P/Invoke, or `calli` by an unmanaged calling convention) loads
-  what any call does, and, where the JIT makes the transition to unmanaged code in the caller's own
-  code, each value type and instantiation that the VM's walk for whether the call needs marshalling
-  reaches, and by Swift's convention each pointer's target; whether the JIT makes the transition
-  there it does not decide, so those are loads it may make (`JitTypeLoads.unmanagedMeetings`, with
-  `UnmanagedConvention` saying whether the convention is Swift's). `TestJitTypeLoads` puts each of a grammar of types
-  that load, fail to load or live in a missing assembly at each position, runs every probe on the
-  host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
-  rule and `TypeLoad` say, with the same exception.
-* `SignatureRefusal` — which method signatures CoreCLR refuses to hand the JIT as it converts
-  them (`ConvToJitSig`): on Unix, one with a variable argument list, managed or native, raising
-  `InvalidProgramException`; and which instructions have it convert the signature of the member
-  they name (every call, `calli`, `jmp`, `ldftn` and `ldvirtftn`; not `ldtoken` nor a field
-  access), besides the method being compiled, whose own it converts first.
-* `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
-  JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
-  address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
-  operand is out of range, `DivideByZeroException` or `OverflowException` from an x86 integer
-  divide, or unknown for the JIT's helper and special intrinsics. It is read from each supported
-  runtime's JIT tables (`hwintrinsiclist*.h`), which `HardwareIntrinsicTable.<runtime>.tsv`
-  reproduce, and that JIT's mapping from an intrinsic class to the table's instruction set
-  (`lookupIsa`) is transcribed for Arm64 and x64; a caller names the runtime, an `EmulatedRuntime`.
-  `TestHardwareInstruction` regenerates each table from that runtime's pinned source and fails on a
-  difference; checks that every placeholder in each runtime's arm64 and linux-x64 CoreLibs has a
-  row; and on an arm64 or x64 host calls every instruction the CPU has with null, misaligned and
-  valid addresses and every immediate value, and fails on any exception a contract leaves out.
-* `VmSubstitution` — the IL CoreCLR's VM runs in place of CoreLib's body for each
-  `System.Runtime.CompilerServices.Unsafe` method corelib.h binds, transcribed from
-  `getILIntrinsicImplementationForUnsafe` (jitinterface.cpp). The interpreter runs a stub where it
-  has no implementation of its own; an analyser can read every one, including those whose CoreLib
-  body works but is not what CoreCLR runs.
-* `HardwareIntrinsicsProfile` — the virtual CPU as the guest sees it: which hardware-intrinsic
-  classes answer `IsSupported` and which vector APIs answer `IsHardwareAccelerated`. PawPrint runs
-  on `ScalarOnly`, where every answer is false.
+* the IL execution model: what each instruction pops, pushes and raises by itself, where control
+  goes after it, and the shape of the evaluation stack on entry to it;
+* what CoreCLR's JIT does with a body: what it compiles, which types it loads where, which
+  signatures it refuses, and which instructions it folds away;
+* the methods CoreCLR implements itself rather than in CoreLib's IL: intrinsics, FCalls, QCalls,
+  P/Invokes into the framework's own native libraries, and the VM's substitute bodies, with what
+  each can raise; and the CoreLib fields the VM lays out as one native object;
+* the platform a guest sees: the supported runtimes, the virtual CPU's hardware intrinsics, and how
+  likely interleaving an instruction with another thread is to matter.
+
+Each module's docstrings say what it describes and where it was read from. Most tables are checked
+by `WoofWare.PawPrint.Test` against the pinned runtime source, real .NET, or both.
 
 The dependency direction is the invariant: this library sees `WoofWare.PawPrint.Domain` and never
 `WoofWare.PawPrint`, so nothing in here can reach the interpreter's mutable machine state. That is

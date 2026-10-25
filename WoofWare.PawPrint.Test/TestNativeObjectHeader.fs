@@ -73,7 +73,7 @@ public static class Entry
             | [ method ] -> method
             | methods -> failwith $"expected one matching ObjectHeader method, found %d{methods.Length}"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -83,6 +83,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, objectHeader, method
 

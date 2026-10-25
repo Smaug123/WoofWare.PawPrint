@@ -1235,7 +1235,7 @@ module NativeDelegate =
                                 $"%s{operation}: the declaring type %O{declaringType} of %s{methodInfo.Name} has no TypeDef row"
                         )
 
-                    let state, concretised, _declaringHandle =
+                    let state, concretisedResult =
                         ExecutionConcretization.concretizeMethodWithAllGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
@@ -1243,6 +1243,8 @@ module NativeDelegate =
                             methodInfo
                             (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
                             state
+
+                    let concretised, _declaringHandle = BindingStop.bound concretisedResult
 
                     state,
                     TargetSignature.Closed concretised.Signature,
@@ -1472,7 +1474,7 @@ module NativeDelegate =
                                             state, acc
                                         else
 
-                                        let state, onInterface, _ =
+                                        let state, onInterfaceResult =
                                             ExecutionConcretization.concretizeMethodWithAllGenerics
                                                 ctx.LoggerFactory
                                                 ctx.BaseClassTypes
@@ -1480,6 +1482,8 @@ module NativeDelegate =
                                                 method
                                                 ImmutableArray.Empty
                                                 state
+
+                                        let onInterface, _ = BindingStop.bound onInterfaceResult
 
                                         let state, resolved =
                                             IlMachineStateExecution.tryResolveVirtualImplementation

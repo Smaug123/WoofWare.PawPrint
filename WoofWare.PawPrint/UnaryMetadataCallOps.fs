@@ -875,6 +875,8 @@ module internal UnaryMetadataCallOps =
                             ref
                             state
 
+                    let resolved = TokenBindingStop.memberReference activeAssy ref resolved
+
                     match resolved with
                     | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
                     | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Call a field"
@@ -891,6 +893,8 @@ module internal UnaryMetadataCallOps =
                         activeAssy
                         h
                         state
+
+                let resolved = TokenBindingStop.memberReference activeAssy h resolved
 
                 match resolved with
                 | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
@@ -938,7 +942,7 @@ module internal UnaryMetadataCallOps =
 
                 cur, cleared
 
-        let state, concretizedMethod, _declaringTypeHandle =
+        let state, concretizedMethodResult =
             match preConcretizedMethodGenerics with
             | Some concrete ->
                 ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
@@ -958,6 +962,9 @@ module internal UnaryMetadataCallOps =
                     methodGenerics
                     typeArgsFromMetadata
                     state
+
+        let concretizedMethod, _declaringTypeHandle =
+            BindingStop.bound concretizedMethodResult
 
         match pendingConstrained with
         | Some constrainedTypeHandle ->
@@ -1362,6 +1369,8 @@ module internal UnaryMetadataCallOps =
                             ref
                             state
 
+                    let resolved = TokenBindingStop.memberReference activeAssy ref resolved
+
                     match resolved with
                     | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
                     | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) ->
@@ -1379,6 +1388,8 @@ module internal UnaryMetadataCallOps =
                         activeAssy
                         h
                         state
+
+                let resolved = TokenBindingStop.memberReference activeAssy h resolved
 
                 match resolved with
                 | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
@@ -1398,7 +1409,7 @@ module internal UnaryMetadataCallOps =
         | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
         | Ok (methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics) ->
 
-        let state, concretizedMethod, declaringTypeHandle =
+        let state, concretizedMethodResult =
             match preConcretizedMethodGenerics with
             | Some concrete ->
                 ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
@@ -1418,6 +1429,9 @@ module internal UnaryMetadataCallOps =
                     methodGenerics
                     typeArgsFromMetadata
                     state
+
+        let concretizedMethod, declaringTypeHandle =
+            BindingStop.bound concretizedMethodResult
 
         // Capture the pending `constrained.` prefix up front and clear it from the current
         // frame. This ensures that if the callee's class initializer throws an exception
@@ -1537,7 +1551,7 @@ module internal UnaryMetadataCallOps =
                     | state, ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.ObjectGetHashCode) ->
                         let getHashCode = ConstrainedType.objectGetHashCode baseClassTypes
 
-                        let state, concreteGetHashCode, objectHandle =
+                        let state, concreteGetHashCodeResult =
                             ExecutionConcretization.concretizeMethodForExecution
                                 loggerFactory
                                 baseClassTypes
@@ -1546,6 +1560,8 @@ module internal UnaryMetadataCallOps =
                                 None
                                 None
                                 state
+
+                        let concreteGetHashCode, objectHandle = BindingStop.bound concreteGetHashCodeResult
 
                         state, underlying, getHashCode, concreteGetHashCode, objectHandle, true
                     | state, ConstrainedType.Undecided enum ->
@@ -1639,7 +1655,7 @@ module internal UnaryMetadataCallOps =
                         else
                             refuseMistyped "the receiver's address"
                     | ClassMethodOnValueType.Resolves runs ->
-                        let state, runs, _ =
+                        let state, runsResult =
                             ExecutionConcretization.concretizeMethodWithAllGenerics
                                 loggerFactory
                                 baseClassTypes
@@ -1647,6 +1663,8 @@ module internal UnaryMetadataCallOps =
                                 runs
                                 concretizedMethod.Generics
                                 state
+
+                        let runs, _ = BindingStop.bound runsResult
 
                         state, ValueTypeReceiver.OnAddress runs
                     | ClassMethodOnValueType.Boxes when
@@ -1861,10 +1879,19 @@ module internal UnaryMetadataCallOps =
         let state, ty, assy =
             match metadataToken with
             | MetadataToken.TypeDefinition h ->
-                let state, ty = IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                let state, ty =
+                    IlMachineState.lookupTypeDefn loggerFactory baseClassTypes state activeAssy h
+
+                let ty = TokenBindingStop.typeToken activeAssy (MetadataToken.TypeDefinition h) ty
                 state, ty, activeAssy
             | MetadataToken.TypeReference ref ->
-                IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
+                let state, resolved =
+                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
+
+                let ty, assy =
+                    TokenBindingStop.typeToken activeAssy (MetadataToken.TypeReference ref) resolved
+
+                state, ty, assy
             | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
             | _ -> failwith $"unexpected token {metadataToken} in Constrained"
 

@@ -77,7 +77,7 @@ method) may add more:
   protected block does. Tokens in code left out are still bound, below, which for a capability
   query reports more than the JIT does: it folds such a branch, even under MinOpts, and never
   binds what only the other way reaches;
-* where the caller allows `JitOptimises` (below), `typeof(X).IsValueType` is the constant the JIT
+* where the caller allows `Assumption.JitOptimises`, `typeof(X).IsValueType` is the constant the JIT
   compiles it to: `ldtoken X`, then calls of `Type.GetTypeFromHandle` and `Type.get_IsValueType`
   that no branch lands between, call neither method, and a
   `brtrue` or `brfalse` straight after follows only the way the answer goes, where the instance
@@ -284,7 +284,7 @@ Casting an object to an interface, or storing it in an array (whose element type
 interface), calls `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class
 implements that interface. Where the analysis follows the CoreLib code that asks it, the cast
 helpers' fallback, as it does from `castclass`, `isinst` and stores into arrays, that is the
-assumption `DynamicCastsAsDocumented` (below). The interface's
+assumption `Assumption.DynamicCastsAsDocumented`. The interface's
 other callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
 an object whose class does not implement the interface. The analysis counts an interface
 `ldvirtftn` as opaque, and resolves an interface call only through a `constrained.` type that
@@ -350,87 +350,24 @@ Constructing a CoreLib exception runs type initializers, though: `SR`'s, as it a
 and the resource reader's types', in the lookup. Should one fail, the runtime may throw its own
 exception again, which reads that exception's stack trace. The analysis cannot see into `SR`'s
 initializer or into that read, so unless the caller allows `CoreLibTypeInitializers` and
-`StackTracePreserved` (below), constructing almost any CoreLib exception is "unknown" still.
+`StackTracePreserved` (each an `Assumption`), constructing almost any CoreLib exception is "unknown" still.
 
 Other assumptions are the caller's to allow (`Assumption`, given to `EscapeAnalysis.create`). Each
 lets the analysis take a contract in place of a method's body, or what the JIT compiles in place of
-code, and each answer lists in
-`Escapes.Assumes` those it relied on: the ones whose contract stands in for code that something
-escaping could come from, so that without them the answer could be "unknown". It may also list one
-that a handler in a method this one calls made unnecessary, since a callee's answer records only
-that it relied on the assumption. Allowed none, every answer follows from the code and the
-assumptions above. There are five so far:
-
-* `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
-  defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
-  intact, and defines the type as named. So CoreCLR's native code for listing a generic parameter's
-  constraints (the QCall `RuntimeTypeHandle_GetConstraints`, which loads each constraint's type)
-  raises only `ArgumentException` (for a type that is not a generic parameter),
-  `OutOfMemoryException` and `StackOverflowException`. The runtime makes that `ArgumentException`
-  with its parameterless constructor, which looks up its message, so the analysis follows that
-  constructor too, and what it raises escapes as well. `RuntimeType` asks for the constraints
-  whenever it works out a generic parameter's base type, so without this assumption, comparing
-  `Type`s or asking whether one is a value type is "unknown". A native of the contract table that
-  loads such types holds under it too: the cast helpers' fallback, `IsInstanceOf_NoCacheLookup`,
-  loads a generic parameter's constraints where reflection asks it about an open type, so without
-  this assumption, every cast helper but `IsInstanceOfClass` is "unknown".
-* `StackTracePreserved`: reading an exception's `Source` and `StackTrace` raises only
-  `OutOfMemoryException`, `TypeInitializationException`, `ThreadInterruptedException` and
-  `StackOverflowException`. CoreCLR reads both when it throws an exception that has been thrown
-  before (`Exception.InternalPreserveStackTrace`), as it does a type initializer's own exception
-  when it cannot wrap that. `Exception`'s own getters walk the stack trace, reading each method's
-  metadata through reflection and native code the analysis does not see into; what they read of
-  attributes is inside handlers that absorb anything. It holds when every exception class that
-  overrides either getter raises from it only what `Exception`'s own does, and when the metadata of
-  each method on the stack trace, and of every type and assembly it names, is intact and loads
-  without running the program's `AssemblyResolve` or `Resolving` handlers. Without it, wherever a
-  type initializer may fail is "unknown".
-* `CoreLibTypeInitializers`: each of CoreLib's type initializers raises only
-  `OutOfMemoryException`, `TypeInitializationException` (from another type's initializer it runs),
-  `ThreadInterruptedException` and `StackOverflowException`. Every CoreLib exception's constructor
-  runs `SR`'s, which reads an `AppContext` switch through dictionaries and reflection the analysis
-  does not see into, and many others are like it: allowed every other assumption, about five in six
-  of CoreLib's own methods are "unknown" without this one, and about one in three with it. It holds when
-  the runtime is installed completely and intact; when the configuration the host gives the
-  runtime (its `runtimeconfig.json` properties and the environment variables it reads) is well
-  formed; when only CoreLib writes CoreLib's private static fields; and when each of CoreLib's
-  generic types' initializers does so whatever its type arguments. The program's own type
-  initializers are always followed.
-* `JitOptimises`: CoreCLR's JIT compiles each method with at least the optimisations it makes at
-  tier 0, wherever neither the method nor its assembly says otherwise. Then it compiles
-  `typeof(X).IsValueType` to a constant, and calls neither `Type.GetTypeFromHandle` nor the getter,
-  whose own code walks the type's base types through native code the analysis does not see into.
-  Likewise the JIT compares `typeof(X) == typeof(Y)` by the two types' handles, and any other
-  `t == typeof(X)` by reference, and calls neither `GetTypeFromHandle` nor the operator, whose own
-  code calls `Type.Equals` virtually.
-  The method says otherwise when it is marked `MethodImplOptions.NoOptimization`, and the assembly
-  when its `DebuggableAttribute` disables optimisation, as a Debug build's does
-  (`Debuggable.allowsJitOptimisation`); the analysis follows the calls there whatever the caller
-  allows. It holds when no debugger or profiler disables optimisation, when `DOTNET_JitMinOpts` and
-  `DOTNET_JitDebuggable` are unset, and when no interpreter runs the code. Without it, about one in
-  twenty-five of CoreLib's own non-generic methods are "unknown" that are known with it, most of
-  them through `Unsafe.BitCast`, which asks whether each of its type arguments is a value type.
-* `DynamicCastsAsDocumented`: asking an `IDynamicInterfaceCastable` whether it implements an
-  interface raises only `InvalidCastException`, `NullReferenceException` (where asked about null,
-  which CoreCLR never does), `OutOfMemoryException`, `TypeInitializationException`,
-  `ThreadInterruptedException` and `StackOverflowException`. Where
-  a cast to an interface its class does not implement misses the cast cache, CoreCLR asks an
-  object whose class implements that interface, through
-  `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which calls the object's
-  `IsInterfaceImplemented` and, where that declines and was asked to throw, throws an
-  `InvalidCastException` whose message names the two types. It holds when every class
-  implementing the interface raises from `IsInterfaceImplemented` only the
-  `InvalidCastException` its documentation asks for, and that only where asked to throw, and when
-  formatting the two types' names raises only what allocating and looking up a resource does.
-  Without it, every cast helper but `IsInstanceOfClass` is "unknown".
+code, and each answer lists in `Escapes.Assumes` those it relied on: the ones whose contract stands
+in for code that something escaping could come from, so that without them the answer could be
+"unknown". It may also list one that a handler in a method this one calls made unnecessary, since a
+callee's answer records only that it relied on the assumption. Allowed none, every answer follows
+from the code and the assumptions above. Each case of `Assumption` says what it claims, when that
+holds, and what is "unknown" without it.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
-needs rebuilding (or, for a package, a different version). Other ways such a change can break a
-caller are not checked, and are not reported: a member made inaccessible to it
-(`FieldAccessException`, `MethodAccessException`), and a generic instantiation it spells that a
-constraint added since now rejects (a constraint naming a type that is not there is reported, as
-above).
+needs rebuilding (or, for a package, a different version). A member made inaccessible to a
+caller is "unknown" wherever its visibility does not settle the check, unless the caller allows
+`MembersAccessible`. A generic instantiation the caller spells that a constraint added since now
+rejects is not checked, and is not reported (a constraint naming a type that is not there is
+reported, as above).
 
 Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of time
 (ReadyToRun: the shared framework's, and a program's published that way) binds what it names as it

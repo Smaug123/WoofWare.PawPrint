@@ -104,7 +104,7 @@ module TestSignalDispatch =
                     failwith
                         $"static method %s{methodName} with arity %d{arity} on %s{typeNamespace}.%s{typeName} was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 fixture.BaseClassTypes
@@ -114,6 +114,8 @@ module TestSignalDispatch =
                 fixture.CoreLib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, method
 

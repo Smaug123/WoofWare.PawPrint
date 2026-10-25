@@ -206,7 +206,7 @@ public static class Caller
             |> findMethod "Gen`1" "Sweep"
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let state, concretizedMethod, _declaringType =
+        let state, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -214,6 +214,8 @@ public static class Caller
                 method
                 methodGenerics
                 state
+
+        let concretizedMethod, _declaringType = BindingResult.value concretizedMethodResult
 
         let methodState =
             match
@@ -703,7 +705,7 @@ public static class Caller
             |> findMethod "Gen`1" "Get"
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -711,6 +713,8 @@ public static class Caller
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         let handleValue, state =
             IlMachineState.getOrAllocateMethod loggerFactory baseClassTypes concretized state

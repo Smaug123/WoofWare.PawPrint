@@ -51,7 +51,7 @@ module TestFunctionPointerTargetIdentity =
                 | [ method ] -> method
                 | methods -> failwith $"expected one System.Int32.%s{methodName}, found %d{methods.Length}"
 
-        let state, method, _declaringType =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -61,6 +61,8 @@ module TestFunctionPointerTargetIdentity =
                 corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _declaringType = BindingResult.value methodResult
 
         state, method
 

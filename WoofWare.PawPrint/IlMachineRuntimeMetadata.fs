@@ -155,14 +155,21 @@ module IlMachineRuntimeMetadata =
 
     /// `TypeSystemState.lookupTypeDefn` against the machine's type system.
     let lookupTypeDefn
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
         (typeDef : TypeDefinitionHandle)
-        : IlMachineState * TypeDefn
+        : IlMachineState * Result<TypeDefn, TypeBindingFailure>
         =
         let typeSystem, result =
-            TypeSystemState.lookupTypeDefn baseClassTypes state.TypeSystem activeAssy typeDef
+            TypeSystemState.lookupTypeDefn
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                activeAssy
+                typeDef
 
         state.WithTypeSystem typeSystem, result
 
@@ -173,23 +180,18 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
         (ref : TypeReferenceHandle)
-        : IlMachineState * TypeDefn * DumpedAssembly
+        : IlMachineState * Result<TypeDefn * DumpedAssembly, TypeBindingFailure>
         =
-        let typeSystem, typeDefn, assembly =
-            match
-                TypeSystemState.lookupTypeRef
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    baseClassTypes
-                    state.TypeSystem
-                    activeAssy
-                    ref
-            with
-            | typeSystem, Ok (typeDefn, assembly) -> typeSystem, typeDefn, assembly
-            | _, Error failure ->
-                failwith (TypeResolution.describeReferenceFailure activeAssy.TypeRefs.[ref] activeAssy failure)
+        let typeSystem, result =
+            TypeSystemState.lookupTypeRef
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                activeAssy
+                ref
 
-        state.WithTypeSystem typeSystem, typeDefn, assembly
+        state.WithTypeSystem typeSystem, result
 
     /// `TypeSystemState.resolveBaseTypeInfo` against the machine's type system.
     let resolveBaseTypeInfo
@@ -198,32 +200,18 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         (currentAssembly : DumpedAssembly)
         (baseTypeInfo : BaseTypeInfo)
-        : IlMachineState * DumpedAssembly * TypeDefn
+        : IlMachineState * Result<DumpedAssembly * TypeDefn, TypeBindingFailure>
         =
-        let typeSystem, assembly, typeDefn =
-            match
-                TypeSystemState.resolveBaseTypeInfo
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    baseClassTypes
-                    state.TypeSystem
-                    currentAssembly
-                    baseTypeInfo
-            with
-            | typeSystem, Ok (assembly, typeDefn) -> typeSystem, assembly, typeDefn
-            | _, Error failure ->
-                match baseTypeInfo with
-                | BaseTypeInfo.TypeRef handle ->
-                    failwith (
-                        TypeResolution.describeReferenceFailure
-                            currentAssembly.TypeRefs.[handle]
-                            currentAssembly
-                            failure
-                    )
-                | BaseTypeInfo.TypeDef _
-                | BaseTypeInfo.TypeSpec _ -> failwith (TypeBindingFailure.describe failure)
+        let typeSystem, result =
+            TypeSystemState.resolveBaseTypeInfo
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                currentAssembly
+                baseTypeInfo
 
-        state.WithTypeSystem typeSystem, assembly, typeDefn
+        state.WithTypeSystem typeSystem, result
 
     /// `TypeSystemState.resolveBaseConcreteType` against the machine's type system.
     let resolveBaseConcreteType
@@ -380,8 +368,10 @@ module IlMachineRuntimeMetadata =
             match typeInfo.BaseType with
             | None -> state, None
             | Some baseTypeInfo ->
-                let state, baseAssy, baseTypeDefn =
+                let state, baseResult =
                     resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
+
+                let baseAssy, baseTypeDefn = TokenBindingStop.baseType assy baseTypeInfo baseResult
 
                 // What each `!i` of the extends clause denotes. The typical instantiation's
                 // arguments are the definition's own variables, the very targets reflection hands
@@ -1571,26 +1561,18 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         (activeAssy : DumpedAssembly)
         (token : MetadataToken)
-        : IlMachineState * TypeDefn * DumpedAssembly
+        : IlMachineState * Result<TypeDefn * DumpedAssembly, TypeBindingFailure>
         =
-        let typeSystem, typeDefn, assembly =
-            match
-                TypeSystemState.resolveTypeMetadataToken
-                    loggerFactory
-                    state.DotnetRuntimeDirs
-                    baseClassTypes
-                    state.TypeSystem
-                    activeAssy
-                    token
-            with
-            | typeSystem, Ok (typeDefn, assembly) -> typeSystem, typeDefn, assembly
-            | _, Error failure ->
-                match token with
-                | MetadataToken.TypeReference ref ->
-                    failwith (TypeResolution.describeReferenceFailure activeAssy.TypeRefs.[ref] activeAssy failure)
-                | _ -> failwith (TypeBindingFailure.describe failure)
+        let typeSystem, result =
+            TypeSystemState.resolveTypeMetadataToken
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                state.TypeSystem
+                activeAssy
+                token
 
-        state.WithTypeSystem typeSystem, typeDefn, assembly
+        state.WithTypeSystem typeSystem, result
 
     /// `TypeSystemState.tryGetConcreteTypeInfo` against the machine's type system.
     let tryGetConcreteTypeInfo
@@ -2106,8 +2088,11 @@ module IlMachineRuntimeMetadata =
                     | Some a -> a
                     | None -> assy
 
-                let state, implTypeDefn, implResolvedAssy =
+                let state, implResult =
                     resolveTypeMetadataToken loggerFactory baseClassTypes state implAssy impl.InterfaceHandle
+
+                let implTypeDefn, implResolvedAssy =
+                    TokenBindingStop.typeToken implAssy impl.InterfaceHandle implResult
 
                 let state, implTarget =
                     ReflectedTypeTarget.reflectedTypeTarget

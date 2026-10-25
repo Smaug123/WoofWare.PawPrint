@@ -267,7 +267,7 @@ module internal ProgramStartup =
                 mainMethodFromMetadata
                 |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
 
-            let state, concretizedMainMethod, _ =
+            let state, concretizedMainMethodResult =
                 ExecutionConcretization.concretizeMethodWithTypeGenerics
                     loggerFactory
                     baseTypes
@@ -295,6 +295,8 @@ module internal ProgramStartup =
                     dumped.DefinitionFullName
                     ImmutableArray.Empty
                     state
+
+            let concretizedMainMethod, _ = BindingStop.bound concretizedMainMethodResult
 
             // Create the method state with the concretized method.
             // The body has been replaced with onlyRet, so these are placeholders whose
@@ -346,7 +348,7 @@ module internal ProgramStartup =
             IlMachineState.seedManagedThreadId loggerFactory baseClassTypes mainThread state
 
         // Now that we have base class types, concretize the main method for use in the rest of the function
-        let state, concretizedMainMethod, mainTypeHandle =
+        let state, concretizedMainMethodResult =
             let rawMainMethod =
                 mainMethodFromMetadata
                 |> MethodInfo.mapTypeGenerics (fun (i, _) -> TypeDefn.GenericTypeParameter i.SequenceNumber)
@@ -360,6 +362,9 @@ module internal ProgramStartup =
                 dumped.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretizedMainMethod, mainTypeHandle =
+            BindingStop.bound concretizedMainMethodResult
 
         let state =
             { state with

@@ -579,7 +579,7 @@ module StructMarshalStub =
                     $"%s{operation}: static System.StubHelpers.%s{className}.%s{name} of %d{arity} argument(s) not found"
             )
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -587,6 +587,8 @@ module StructMarshalStub =
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingStop.bound concretizedResult
 
         state, concretized
 
@@ -611,7 +613,7 @@ module StructMarshalStub =
             )
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.DateTime::.ctor(long) not found")
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -619,6 +621,8 @@ module StructMarshalStub =
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingStop.bound concretizedResult
 
         state, concretized
 
