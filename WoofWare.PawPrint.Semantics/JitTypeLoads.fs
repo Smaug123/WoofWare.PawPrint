@@ -13,8 +13,8 @@ type JitTypePosition =
     /// A parameter of the method being compiled, as its locals (`lvaInitArgs`).
     | OwnParameter
     /// A parameter of the method being compiled where that method is called by Swift's calling
-    /// convention (`[UnmanagedCallersOnly]` naming `CallConvSwift`), on a JIT target that compiles
-    /// such calls (`SWIFT_SUPPORT`: Arm64, and x64 other than Windows'): as `OwnParameter`, and a
+    /// convention, as CoreCLR reads it from the method's `[UnmanagedCallersOnly]`, on a JIT target
+    /// that compiles such calls (`UnmanagedCallingConvention.isSwift`): as `OwnParameter`, and a
     /// pointer's or byref's target and a function pointer's signature too, which the JIT reads for
     /// the Swift-specific arguments (`lvaInitSpecialSwiftParam`).
     | SwiftOwnParameter
