@@ -119,8 +119,9 @@ method) may add more:
   (a cast to a type variable, or to a `Nullable<T>` over one), a generic definition calls each
   some instance does, and an instance the one its code does. The JIT decides a cast without a call
   only where it optimises fully, or where it folds a `box` the cast tests, which the analysis does
-  not follow: it follows the call there too. It takes the runtime to be a Unix one, which casts to
-  no type by type equivalence;
+  not follow: it follows the call there too. It takes the runtime to be a Unix one, wherever the
+  operating system decides what CoreCLR does (Windows is not modelled): one that casts to no type
+  by type equivalence;
 * `unbox`, and `unbox.any` of a value type, call `CastHelpers.Unbox`, or `Unbox_Nullable` for a
   `Nullable<T>` (`getUnBoxHelper`); `box` of a struct calls `Box`, and of a `Nullable<T>`,
   `Box_Nullable`, while the JIT boxes a primitive type or an enum inline and a reference type not at
@@ -178,17 +179,22 @@ method) may add more:
   parameter
   of a class type it loads where the method called is compiled, which that method's own answer
   says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
-  nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method,
-  which the analysis takes any `[UnmanagedCallersOnly]` method to be; a return type of such a type
-  it loads with what it points to. Of a call of unmanaged code (a P/Invoke, or `calli` by an
-  unmanaged calling convention) the JIT loads what it loads of any call; where it makes the
-  transition to unmanaged code in the caller's own code, it also loads each instantiation the
-  VM's walk for whether the call needs marshalling reaches and, by Swift's convention, each
-  pointer's target, which the analysis takes to be loads it may make, as it does not decide where
-  the JIT makes the transition. A class, a byref's target or, by another convention, a pointer's
-  target it does not load there; the stub CoreCLR otherwise makes for the call loads them as the
-  call runs, where the caller's handlers can catch the failure. Of a method whose address the body
-  takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value
+  nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method:
+  CoreCLR reads the method's `[UnmanagedCallersOnly]` conventions by the names of the types its
+  `CallConvs` lists, loading none of them (`UnmanagedCallingConvention`), and Swift's is the one it
+  reads where they name `CallConvSwift` and no second base convention; every target's JIT compiles
+  Swift calls on the Unix runtime the analysis takes. Where CoreCLR cannot read those conventions,
+  as it begins to compile the method, it raises, or for `CallConvs = null` kills the process,
+  which the analysis does not name (`Opacity.UnreadableCallingConvention`). A return type of a
+  pointer, byref or function pointer type it loads with what it points to. Of a call of unmanaged
+  code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
+  any call; where it makes the transition to unmanaged code in the caller's own code, it also
+  loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by
+  Swift's convention, each pointer's target, which the analysis takes to be loads it may make, as
+  it does not decide where the JIT makes the transition. A class, a byref's target or, by another
+  convention, a pointer's target it does not load there; the stub CoreCLR otherwise makes for the
+  call loads them as the call runs, where the caller's handlers can catch the failure. Of a
+  method whose address the body takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value
   type of the signature whose definition is there where it prepares the method as a function
   pointer: for `ldvirtftn` and a method a method specification instantiates, and otherwise where
   the JIT asks for the address of an `ldftn` whose address is not a delegate's target nor
