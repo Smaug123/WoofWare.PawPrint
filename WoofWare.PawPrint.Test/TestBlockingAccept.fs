@@ -103,7 +103,7 @@ static class Sys
             fileName
             (Some fileName)
             peImage
-            (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+            (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
         |> ExpectRun.ended
 
     let private exitCodeOf (outcome : RunOutcome) : int =
@@ -158,7 +158,7 @@ class NeverConnected
                 loggerFactory
                 (Some "NeverConnected.cs")
                 peImage
-                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
         with
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> failwith $"guest completed before Main: %O{outcome}"
         | Program.ProgramStartResult.Ready prepared ->

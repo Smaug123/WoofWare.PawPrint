@@ -42,9 +42,9 @@
       #   bumped, and self-report the previous patch (v10.0.5 -> 4, v10.0.7 -> 6, v10.0.8 -> 7);
       #   others agree (v10.0.12 -> 12). The tag is the release identity: pin by it, not by the
       #   in-tree string.
-      # - `linuxFrameworkTfm` and `linuxFrameworkHash` describe its linux-x64 runtime pack
-      #   (`linuxFramework` below). The TFM tracks the major version; the hash tracks
-      #   `expectedRuntimeVersion`, so bump it in the same commit.
+      # - `frameworkPackTfm`, `linuxFrameworkHash` and `osxFrameworkHash` describe its linux-x64
+      #   and osx-arm64 runtime packs (`frameworkPack` below). The TFM tracks the major version;
+      #   each hash tracks `expectedRuntimeVersion`, so bump both in the same commit.
       # - `aspNetCore`, on a runtime newer than the oldest, is nixpkgs's ASP.NET Core shared
       #   framework at that runtime's version, which guests that run ASP.NET Core bind. The oldest
       #   runtime's comes with the SDK. Its version must equal `expectedRuntimeVersion` too.
@@ -54,16 +54,18 @@
           expectedRuntimeVersion = "10.0.12";
           sourceRev = "4271d88e0aebf3d04f188f1334c2220d80555ef6"; # v10.0.12
           sourceHash = "sha256-rSa1KZND+LRcz3iVLq0rzZx4KBmxFJ5tkj+Ums3cOOM=";
-          linuxFrameworkTfm = "net10.0";
+          frameworkPackTfm = "net10.0";
           linuxFrameworkHash = "sha256-iGni+5dLyBD/5AuPuOGLf/sdGgPlKglMgEZoxNeTsa4=";
+          osxFrameworkHash = "sha256-Lw5y/feerZHQ4a1JYOo6m966G3ywhGfj6tCkJ9H9Lgg=";
         };
         net11 = {
           runtime = pkgs.dotnetCorePackages.runtime_11_0;
           expectedRuntimeVersion = "11.0.0-rc.1.26425.128";
           sourceRev = "ab19415702aa8139d5369e47c73edb47343c34ad"; # v11.0.0-rc.1.26425.128
           sourceHash = "sha256-q9OZEYDuXnbTdi81CDsObuL+DyyOioRi7RqHIxYTjoA=";
-          linuxFrameworkTfm = "net11.0";
+          frameworkPackTfm = "net11.0";
           linuxFrameworkHash = "sha256-+oYmT/VOyfRO84M5ZnmQerKBlPSbXf4DIT8VoqGSJLY=";
+          osxFrameworkHash = "sha256-DNGYmohVcVwXZv4oJIhqiRC/jFhJdCORLIvJ1VrCIsM=";
           aspNetCore = pkgs.dotnetCorePackages.aspnetcore_11_0;
         };
       };
@@ -116,27 +118,31 @@
             "eng"
           ];
         };
-      # The managed framework assemblies from a runtime's linux-x64 runtime pack, at the version
-      # we emulate, exposed to the devshell as $DOTNET_LINUX_FRAMEWORK_DIR_<RUNTIME>.
+      # The managed framework assemblies from one of a runtime's runtime packs (`rid` is
+      # linux-x64 or osx-arm64, the two flavours the emulated kernel models), at the version we
+      # emulate, exposed to the devshell as $DOTNET_LINUX_FRAMEWORK_DIR_<RUNTIME> and
+      # $DOTNET_OSX_FRAMEWORK_DIR_<RUNTIME>.
       #
       # Why this exists: PawPrint interprets whichever CoreLib it is pointed at, and CoreLib is
       # `#if`-split per target — e.g. `Lock.ThreadId.InitializeForCurrentThread` calls
       # `GetUInt64OSThreadId` under TARGET_OSX and `TryGetUInt32OSThreadId` elsewhere. Every
       # entry point otherwise resolves the *host's* shared framework, so a macOS dev box can
-      # only ever exercise the macOS BCL while production and CI run the Linux one. Pointing the
-      # interpreter's runtime-dir list at this pack closes that gap.
+      # only ever exercise the macOS BCL while production and CI run the Linux one, and a guest
+      # on an emulated kernel of the other flavour would run a CoreLib that kernel never meets.
+      # Pointing the interpreter's runtime-dir list at the pack of the kernel's flavour closes
+      # that gap.
       #
       # Only the managed assemblies are kept: PawPrint never loads native code (that is the
       # point of the project), so the pack's `native/` tree is closure for nothing. The install
-      # phase fails loudly if the pack's layout ever stops matching `linuxFrameworkTfm`, rather
+      # phase fails loudly if the pack's layout ever stops matching `frameworkPackTfm`, rather
       # than silently producing an empty dir.
-      linuxFramework = name: pin:
+      frameworkPack = rid: hash: name: pin:
         pkgs.stdenvNoCC.mkDerivation {
-          pname = "dotnet-linux-x64-framework";
+          pname = "dotnet-${rid}-framework";
           version = pin.expectedRuntimeVersion;
           src = pkgs.fetchurl {
-            url = "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.linux-x64/${pin.expectedRuntimeVersion}/microsoft.netcore.app.runtime.linux-x64.${pin.expectedRuntimeVersion}.nupkg";
-            hash = pin.linuxFrameworkHash;
+            url = "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.${rid}/${pin.expectedRuntimeVersion}/microsoft.netcore.app.runtime.${rid}.${pin.expectedRuntimeVersion}.nupkg";
+            inherit hash;
           };
           nativeBuildInputs = [pkgs.unzip];
           # A .nupkg is a zip, but the default unpackPhase dispatches on file extension and does
@@ -148,10 +154,10 @@
           '';
           installPhase = ''
             runHook preInstall
-            libDir="pack/runtimes/linux-x64/lib/${pin.linuxFrameworkTfm}"
+            libDir="pack/runtimes/${rid}/lib/${pin.frameworkPackTfm}"
             if [ ! -f "$libDir/System.Private.CoreLib.dll" ]; then
               echo "Runtime pack layout changed: expected $libDir/System.Private.CoreLib.dll." >&2
-              echo "Check linuxFrameworkTfm for ${name} against the pack contents." >&2
+              echo "Check frameworkPackTfm for ${name} against the pack contents." >&2
               exit 1
             fi
             mkdir -p "$out"
@@ -244,7 +250,7 @@
         # One `runtime-version-pin-<name>` per runtime. Each fails the build (and so `nix flake
         # check` in CI) when nixpkgs's version of that runtime drifts away from the version we pin.
         # Forces a deliberate bump of that runtime's `sourceRev` and `sourceHash`,
-        # `expectedRuntimeVersion`, `linuxFrameworkHash`, and (for a runtime `EmulatedRuntime` has a
+        # `expectedRuntimeVersion`, `linuxFrameworkHash`, `osxFrameworkHash`, and (for a runtime `EmulatedRuntime` has a
         # case for) `EmulatedRuntime.pin` in WoofWare.PawPrint.Semantics/EmulatedRuntime.fs in lockstep.
         // pkgs.lib.mapAttrs' (name: pin:
           pkgs.lib.nameValuePair "runtime-version-pin-${name}"
@@ -253,7 +259,7 @@
               if pin.runtime.version != pin.expectedRuntimeVersion
               then ''
                 echo "Runtime pin drift for ${name}: nixpkgs provides ${pin.runtime.version} but expectedRuntimeVersion = ${pin.expectedRuntimeVersion}." >&2
-                echo "Bump ${name}'s sourceRev (to the public v<new> tag commit), sourceHash, expectedRuntimeVersion and linuxFrameworkHash, and EmulatedRuntime.pin in WoofWare.PawPrint.Semantics/EmulatedRuntime.fs, together." >&2
+                echo "Bump ${name}'s sourceRev (to the public v<new> tag commit), sourceHash, expectedRuntimeVersion, linuxFrameworkHash and osxFrameworkHash, and EmulatedRuntime.pin in WoofWare.PawPrint.Semantics/EmulatedRuntime.fs, together." >&2
                 exit 1
               ''
               else if pin ? aspNetCore && pin.aspNetCore.version != pin.expectedRuntimeVersion
@@ -275,11 +281,14 @@
         # sync-dotnet-runtime skill.
         DOTNET_RUNTIME_SRC_NET10 = runtimeSource runtimes.net10;
         DOTNET_RUNTIME_SRC_NET11 = runtimeSource runtimes.net11;
-        # Managed linux-x64 framework assemblies, so tests can point the interpreter at the
-        # CoreLib flavour production runs instead of the host's. See `linuxFramework`.
-        # Tests that need it skip when it is unset, so a non-Nix checkout still works.
-        DOTNET_LINUX_FRAMEWORK_DIR_NET10 = linuxFramework "net10" runtimes.net10;
-        DOTNET_LINUX_FRAMEWORK_DIR_NET11 = linuxFramework "net11" runtimes.net11;
+        # Managed linux-x64 and osx-arm64 framework assemblies, so tests can point the
+        # interpreter at the CoreLib flavour of the kernel it emulates instead of the host's.
+        # See `frameworkPack`. Tests that need one skip when it is unset, so a non-Nix checkout
+        # still works.
+        DOTNET_LINUX_FRAMEWORK_DIR_NET10 = frameworkPack "linux-x64" runtimes.net10.linuxFrameworkHash "net10" runtimes.net10;
+        DOTNET_LINUX_FRAMEWORK_DIR_NET11 = frameworkPack "linux-x64" runtimes.net11.linuxFrameworkHash "net11" runtimes.net11;
+        DOTNET_OSX_FRAMEWORK_DIR_NET10 = frameworkPack "osx-arm64" runtimes.net10.osxFrameworkHash "net10" runtimes.net10;
+        DOTNET_OSX_FRAMEWORK_DIR_NET11 = frameworkPack "osx-arm64" runtimes.net11.osxFrameworkHash "net11" runtimes.net11;
         # The net11 shared framework inside `dotnet-devshell`, as `dotnet --list-runtimes` names
         # it. The net10 one needs no variable: the test host runs on it, and finds it from its
         # own runtimeconfig.

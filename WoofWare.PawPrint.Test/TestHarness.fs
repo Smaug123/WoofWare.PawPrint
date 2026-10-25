@@ -150,8 +150,9 @@ module OraclePolicy =
 /// This is a test-harness concern only. `Program.run` stays unbounded, because a real host
 /// running a real program has no business deciding the guest has gone on too long.
 ///
-/// A run whose CoreLib is not the framework under test's fails before any guest code runs; see
-/// `FrameworkUnderTest.assertServes`.
+/// A run whose CoreLib is not the framework under test's, or is not the pinned pack of its
+/// kernel's flavour, fails before any guest code runs; see `FrameworkUnderTest.assertServes` and
+/// `FrameworkUnderTest.assertFlavourServes`.
 [<RequireQualifiedAccess>]
 module BoundedRun =
 
@@ -271,6 +272,7 @@ module BoundedRun =
         let startup = Program.beginStartup loggerFactory originalPath fileStream hostConfig
         // Startup has bound the CoreLib and run no guest code yet.
         FrameworkUnderTest.assertServes startup.State
+        FrameworkUnderTest.assertFlavourServes hostConfig.Guest.Kernel.UnixPlatform startup.State
         goStartup 0L startup
 
     /// `runWith` at `defaultMaxSteps`.

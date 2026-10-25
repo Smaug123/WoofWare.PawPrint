@@ -64,7 +64,7 @@ module FabricatedGuest =
     let private runtimeDirs (tempDir : string) : ImmutableArray<string> =
         seq {
             yield tempDir
-            yield! FrameworkUnderTest.runtimeDirs ()
+            yield! FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
         }
         |> ImmutableArray.CreateRange
 
