@@ -695,7 +695,7 @@ module IlMachineStateExecution =
                 // failure — running for the first time or cached from an earlier one — unwinds
                 // through the ctor frame and meets the wrap on its way out, and so does anything
                 // the ctor body itself throws.
-                let state, concretizedCtor, declaringTypeHandle =
+                let state, concretizedCtorResult =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         loggerFactory
                         baseClassTypes
@@ -703,6 +703,8 @@ module IlMachineStateExecution =
                         ctor
                         ImmutableArray.Empty
                         state
+
+                let concretizedCtor, declaringTypeHandle = BindingStop.bound concretizedCtorResult
 
                 let state, fields =
                     IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
@@ -846,7 +848,7 @@ module IlMachineStateExecution =
                             let helper =
                                 declaringAssy.Methods.[IntrinsicBody.platformNotSupportedHelper declaringAssy]
 
-                            let state, helper, _ =
+                            let state, helperResult =
                                 ExecutionConcretization.concretizeMethodWithAllGenerics
                                     loggerFactory
                                     baseClassTypes
@@ -854,6 +856,8 @@ module IlMachineStateExecution =
                                     helper
                                     ImmutableArray.Empty
                                     state
+
+                            let helper, _ = BindingStop.bound helperResult
 
                             // The helper throws, so its frame never returns to advance the caller.
                             callMethod
@@ -1572,7 +1576,7 @@ module IlMachineStateExecution =
         // begins, handler lookup and the stack-trace frame must see the faulting
         // instruction's PC, not the next instruction.  (Same class of bug as call-site
         // vs resumed-PC for cross-frame unwinding, which CallSiteIlOpIndex solves.)
-        let state, concretizedCtor, ctorDeclaringTypeHandle =
+        let state, concretizedCtorResult =
             ExecutionConcretization.concretizeMethodForExecution
                 loggerFactory
                 baseClassTypes
@@ -1581,6 +1585,9 @@ module IlMachineStateExecution =
                 None
                 None
                 state
+
+        let concretizedCtor, ctorDeclaringTypeHandle =
+            BindingStop.bound concretizedCtorResult
 
         let threadState = state.ThreadState.[currentThread]
 
@@ -1727,7 +1734,7 @@ module IlMachineStateExecution =
                 (List.length arguments)
                 $"wrap a thrown object that is not an exception, as .NET 11's %s{runtimeCaller} does"
 
-        let state, concretized, _declaringType =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -1737,6 +1744,8 @@ module IlMachineStateExecution =
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretized, _declaringType = BindingStop.bound concretizedResult
 
         let state =
             (state, arguments)

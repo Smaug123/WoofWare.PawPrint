@@ -1720,7 +1720,7 @@ module NativeRuntimeMethodHandle =
             let state, handleValue, registry =
                 match typeVariables with
                 | ReflectedTypeTarget.ReflectionVariableBinding.Bound declaringTypeGenerics ->
-                    let state, concretizedMethod, _ =
+                    let state, concretizedMethodResult =
                         ExecutionConcretization.concretizeMethodWithAllGenerics
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
@@ -1728,6 +1728,8 @@ module NativeRuntimeMethodHandle =
                             methodInfo
                             (ImmutableArray.CreateRange methodInstantiation)
                             state
+
+                    let concretizedMethod, _ = BindingStop.bound concretizedMethodResult
 
                     let handleValue, registry =
                         MethodHandleRegistry.getOrAllocateConcreteInternalHandle

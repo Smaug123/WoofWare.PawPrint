@@ -36,12 +36,12 @@ type MemberReferenceResolution =
 [<RequireQualifiedAccess>]
 module IlMachineMemberResolution =
     /// <summary>
-    /// Refuse to execute a member that MemberRef row <paramref name="m" /> of
-    /// <paramref name="assy" /> names through a generic definition with no instantiation: a
-    /// TypeReference or TypeDefinition parent naming a generic type, whichever type declares the
-    /// member. CoreCLR's <c>CEEInfo::resolveToken</c> loads such a parent with
-    /// <c>FailIfUninstDefOrRef</c> for every instruction but <c>ldtoken</c>, so it throws
-    /// <c>TypeLoadException</c>; that is not modelled.
+    /// Why executing the member that MemberRef row <paramref name="m" /> of
+    /// <paramref name="assy" /> names is unmodelled, if it is named through a generic definition
+    /// with no instantiation: a TypeReference or TypeDefinition parent naming a generic type,
+    /// whichever type declares the member. CoreCLR's <c>CEEInfo::resolveToken</c> loads such a
+    /// parent with <c>FailIfUninstDefOrRef</c> for every instruction but <c>ldtoken</c>, so it
+    /// throws <c>TypeLoadException</c>; that is not modelled.
     /// </summary>
     /// <remarks>
     /// The row must already have been resolved, so that the parent's assembly is loaded. Without
@@ -53,7 +53,7 @@ module IlMachineMemberResolution =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : unit
+        : UnmodelledBinding option
         =
         let parent =
             match assy.Members.[m].Parent with
@@ -75,9 +75,12 @@ module IlMachineMemberResolution =
 
         match parent with
         | Some definition when not definition.Generics.IsEmpty ->
-            failwith
-                $"TODO: raise TypeLoadException: %s{opName} names a member through generic type definition %s{definition.Namespace}.%s{definition.Name} with no instantiation, which CoreCLR refuses for every instruction but ldtoken; that is not modelled"
-        | _ -> ()
+            Some
+                {
+                    Diagnostic =
+                        $"is named by %s{opName} through generic type definition %s{definition.Namespace}.%s{definition.Name} with no instantiation, which CoreCLR refuses for every instruction but ldtoken; TODO: raise TypeLoadException, which is not modelled"
+                }
+        | _ -> None
 
     /// <summary>
     /// Why CoreCLR refuses an instruction whose token is MemberRef row <paramref name="m" /> of
@@ -161,24 +164,37 @@ module IlMachineMemberResolution =
     /// The generic definition a TypeSpec spelling in `assy` names without an instantiation, if any: a
     /// nominal type, other than an instantiation's own generic definition, whose definition has
     /// generic parameters. No signature may spell one; CoreCLR's `SigPointer::GetTypeHandleThrowing`
-    /// cannot load it. A type reference that does not resolve is not this rule's concern.
+    /// cannot load it. A type reference that does not resolve is not this rule's concern, but one
+    /// in a shape PawPrint does not implement resolving is the failure.
     let rec private uninstantiatedDefinitionIn
         (state : IlMachineState)
         (assy : DumpedAssembly)
         (spelling : TypeDefn)
-        : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+        : Result<TypeInfo<GenericParamFromMetadata, TypeDefn> option, UnmodelledBinding>
         =
         let recurse = uninstantiatedDefinitionIn state assy
 
         let ifGeneric (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
             if definition.Generics.IsEmpty then
-                None
+                Ok None
             else
-                Some definition
+                Ok (Some definition)
+
+        // The first part, in order, that names a generic definition or that cannot be resolved.
+        let rec first
+            (parts : TypeDefn list)
+            : Result<TypeInfo<GenericParamFromMetadata, TypeDefn> option, UnmodelledBinding>
+            =
+            match parts with
+            | [] -> Ok None
+            | part :: rest ->
+                match recurse part with
+                | Ok None -> first rest
+                | found -> found
 
         match spelling with
         | TypeDefn.Modified modified -> recurse modified.Unmodified
-        | TypeDefn.GenericInstantiation (_, args) -> args |> Seq.tryPick recurse
+        | TypeDefn.GenericInstantiation (_, args) -> first (List.ofSeq args)
         | TypeDefn.Array (element, _)
         | TypeDefn.OneDimensionalArrayLowerBoundZero element
         | TypeDefn.Pointer element
@@ -190,7 +206,7 @@ module IlMachineMemberResolution =
                 | MethodReturnType.Void -> []
                 | MethodReturnType.Returns ret -> [ ret ]
 
-            returned @ signature.ParameterTypes |> List.tryPick recurse
+            first (returned @ signature.ParameterTypes)
         | TypeDefn.FromDefinition (identity, _) ->
             state.TypeSystem._LoadedAssemblies
                 .ByDefinitionName(identity.AssemblyFullName)
@@ -203,12 +219,12 @@ module IlMachineMemberResolution =
             | TypeResolutionResult.Resolved (definedIn, _, resolved) ->
                 ifGeneric definedIn.TypeDefs.[resolved.TypeDefHandle]
             | TypeResolutionResult.NotFound _
-            | TypeResolutionResult.FirstLoadAssy _ -> None
-            | TypeResolutionResult.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
+            | TypeResolutionResult.FirstLoadAssy _ -> Ok None
+            | TypeResolutionResult.Unmodelled unmodelled -> Error unmodelled
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void -> None
+        | TypeDefn.Void -> Ok None
 
     /// `MemberReferenceInstantiation.resolveMemberWithGenerics` against the machine's type system.
     let resolveMemberWithGenerics
@@ -221,9 +237,12 @@ module IlMachineMemberResolution =
         (m : MemberReferenceHandle)
         (state : IlMachineState)
         : IlMachineState *
-          AssemblyName *
-          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
-          TypeDefn ImmutableArray
+          Result<
+              AssemblyName *
+              Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
+              TypeDefn ImmutableArray,
+              MemberBindingFailure
+           >
         =
         // TODO: do we need to initialise the parent class here?
         let typeSystem, binding =
@@ -237,18 +256,16 @@ module IlMachineMemberResolution =
                 m
                 state.TypeSystem
 
-        let declaringAssembly, member', targetTypeGenerics =
-            match binding with
-            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
-            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
-
-        state.WithTypeSystem typeSystem, declaringAssembly, member', targetTypeGenerics
+        state.WithTypeSystem typeSystem,
+        binding
+        |> Result.map (fun bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics)
 
     /// `MemberReferenceInstantiation.resolveMember` against the machine's type system, in the
-    /// generic context of the method `currentThread` is executing. For any use but `ldtoken`,
-    /// refuses a row whose parent names a generic definition without an instantiation, as CoreCLR
-    /// refuses it, and answers `RefusedParent` for a row whose member CoreCLR finds but whose parent
-    /// it refuses the instruction over.
+    /// generic context of the method `currentThread` is executing. For any use but `ldtoken`, a row
+    /// whose parent names a generic definition without an instantiation, which CoreCLR refuses, is
+    /// an unmodelled failure, and a row whose member CoreCLR finds but whose parent it refuses the
+    /// instruction over is `RefusedParent`. A parent signature spelling a generic definition without
+    /// an instantiation is an unmodelled failure whatever the use.
     let resolveMember
         (use' : MemberReferenceUse)
         (loggerFactory : ILoggerFactory)
@@ -257,7 +274,7 @@ module IlMachineMemberResolution =
         (assy : DumpedAssembly)
         (m : MemberReferenceHandle)
         (state : IlMachineState)
-        : IlMachineState * MemberReferenceResolution
+        : IlMachineState * Result<MemberReferenceResolution, MemberBindingFailure>
         =
         let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
@@ -272,15 +289,17 @@ module IlMachineMemberResolution =
                 m
                 state.TypeSystem
 
-        let declaringAssembly, member', targetTypeGenerics =
-            match binding with
-            | Ok bound -> bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
-            | Error failure -> failwith (MemberReferenceInstantiation.describeFailure assy m failure)
-
         let state = state.WithTypeSystem typeSystem
 
+        match binding with
+        | Error failure -> state, Error failure
+        | Ok bound ->
+
+        let declaringAssembly, member', targetTypeGenerics =
+            bound.DeclaringAssembly, bound.Member, bound.TargetTypeGenerics
+
         let resolved =
-            state, MemberReferenceResolution.Resolved (declaringAssembly, member', targetTypeGenerics)
+            state, Ok (MemberReferenceResolution.Resolved (declaringAssembly, member', targetTypeGenerics))
 
         match member' with
         // A parent CoreCLR cannot load is the failure the binding already reports.
@@ -294,19 +313,33 @@ module IlMachineMemberResolution =
 
         // A parent signature naming a generic definition with no instantiation cannot be loaded,
         // whatever the instruction.
-        match assy.Members.[m].Parent with
-        | MetadataToken.TypeSpecification handle ->
-            match uninstantiatedDefinitionIn state assy assy.TypeSpecs.[handle].Signature with
-            | Some definition ->
-                failwith
-                    $"TODO: raise TypeLoadException: %s{opName} names a member of a type whose signature spells generic type definition %s{definition.Namespace}.%s{definition.Name} with no instantiation, which CoreCLR cannot load; that is not modelled"
-            | None -> ()
-        | _ -> ()
+        let uninstantiatedSpelling =
+            match assy.Members.[m].Parent with
+            | MetadataToken.TypeSpecification handle ->
+                match uninstantiatedDefinitionIn state assy assy.TypeSpecs.[handle].Signature with
+                | Ok (Some definition) ->
+                    Some (
+                        MemberBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"is named by %s{opName} through a type whose signature spells generic type definition %s{definition.Namespace}.%s{definition.Name} with no instantiation, which CoreCLR cannot load; TODO: raise TypeLoadException, which is not modelled"
+                            }
+                    )
+                | Ok None -> None
+                | Error unmodelled -> Some (MemberBindingFailure.TypeUnbound (TypeBindingFailure.Unmodelled unmodelled))
+            | _ -> None
+
+        match uninstantiatedSpelling with
+        | Some failure -> state, Error failure
+        | None ->
 
         match use' with
         | MemberReferenceUse.Ldtoken -> resolved
         | MemberReferenceUse.Other opName ->
-            refuseUninstantiatedParent opName assy m state
+
+        match refuseUninstantiatedParent opName assy m state with
+        | Some unmodelled -> state, Error (MemberBindingFailure.Unmodelled unmodelled)
+        | None ->
 
             match member' with
             // A field that binds nothing raises its own failure first, as CoreCLR finds no member
@@ -315,5 +348,5 @@ module IlMachineMemberResolution =
             | Choice1Of2 _
             | Choice2Of2 (FieldReferenceBinding.Bound _) ->
                 match parentRefusal baseClassTypes assy m state with
-                | Some refusal -> state, MemberReferenceResolution.RefusedParent refusal
+                | Some refusal -> state, Ok (MemberReferenceResolution.RefusedParent refusal)
                 | None -> resolved

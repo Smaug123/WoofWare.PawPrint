@@ -118,7 +118,7 @@ public static class Entry
                     failwith
                         $"QCall entry point AssemblyNative_GetResource was ambiguous on RuntimeAssembly: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -128,6 +128,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, runtimeAssemblyType, method
 

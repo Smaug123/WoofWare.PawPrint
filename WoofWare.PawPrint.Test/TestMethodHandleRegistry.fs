@@ -105,7 +105,7 @@ module TestMethodHandleRegistry =
             currentMethod
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let state, concretizedMethod, _declaringType =
+        let state, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -113,6 +113,8 @@ module TestMethodHandleRegistry =
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _declaringType = BindingResult.value concretizedMethodResult
 
         let methodState =
             match
@@ -160,7 +162,7 @@ public static class HasMethod
             targetMethod
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let state, concretizedMethod, _declaringType =
+        let state, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -168,6 +170,8 @@ public static class HasMethod
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _declaringType = BindingResult.value concretizedMethodResult
 
         loggerFactory, baseClassTypes, assembly, targetMethod, concretizedMethod, state
 
@@ -649,7 +653,7 @@ public static class GenericMethodHolder
                 | [] -> failwith $"RuntimeMethodHandle.%s{methodName} native method not found"
                 | methods -> failwith $"RuntimeMethodHandle.%s{methodName} was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -659,6 +663,8 @@ public static class GenericMethodHolder
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         let methodState =
             match
@@ -992,7 +998,7 @@ public static class GenericMethodHolder
         let targetMethod = assembly |> findMethod "GenericMethodHolder" "Identity"
 
         let concretizeWith (methodGeneric : TypeDefn) (state : IlMachineState) =
-            let state, concretized, _ =
+            let state, concretizedResult =
                 ExecutionConcretization.concretizeMethodWithTypeGenerics
                     loggerFactory
                     baseClassTypes
@@ -1002,6 +1008,8 @@ public static class GenericMethodHolder
                     assembly.DefinitionFullName
                     ImmutableArray.Empty
                     state
+
+            let concretized, _ = BindingResult.value concretizedResult
 
             let internalHandle, registry =
                 MethodHandleRegistry.getOrAllocateConcreteInternalHandle
@@ -1158,7 +1166,7 @@ public static class InstantiationHolder
 
         let targetMethod = assembly |> findMethod "InstantiationHolder" "Identity"
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -1168,6 +1176,8 @@ public static class InstantiationHolder
                 assembly.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle
@@ -2178,7 +2188,7 @@ public static class TypicalHolder<T>
 
         let seedMethod = assembly |> findMethod "TypicalPlain" "NonGeneric"
 
-        let state, seedConcretized, _declaringType =
+        let state, seedConcretizedResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -2187,6 +2197,8 @@ public static class TypicalHolder<T>
                  |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber))
                 ImmutableArray.Empty
                 state
+
+        let seedConcretized, _declaringType = BindingResult.value seedConcretizedResult
 
         loggerFactory, baseClassTypes, assembly, seedConcretized, state
 
@@ -2311,7 +2323,7 @@ public static class TypicalHolder<T>
 
         let targetMethod = assembly |> findMethod "TypicalPlain" "GenericMethod"
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -2321,6 +2333,8 @@ public static class TypicalHolder<T>
                 assembly.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         let internalHandle, registry =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle
@@ -2625,7 +2639,7 @@ public static class TypicalHolder<T>
             (typeGenerics : ConcreteTypeHandle list)
             (methodGenerics : ConcreteTypeHandle list)
             =
-            let state', concretized, declaring =
+            let state', concretizedResult =
                 ExecutionConcretization.concretizeMethodWithAllGenerics
                     loggerFactory
                     baseClassTypes
@@ -2633,6 +2647,8 @@ public static class TypicalHolder<T>
                     method
                     (ImmutableArray.CreateRange methodGenerics)
                     state
+
+            let concretized, declaring = BindingResult.value concretizedResult
 
             let id, registry =
                 MethodHandleRegistry.getOrAllocateConcreteId

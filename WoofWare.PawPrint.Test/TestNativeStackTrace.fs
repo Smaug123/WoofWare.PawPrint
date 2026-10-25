@@ -86,7 +86,7 @@ public static class Entry
                 | [] -> failwith "QCall entry point StackTrace_GetStackFramesInternal not found on StackTrace"
                 | methods -> failwith $"StackTrace_GetStackFramesInternal was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -96,6 +96,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, method
 
@@ -388,7 +390,7 @@ public static class Entry
         let int32Defn =
             LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state.TypeSystem._LoadedAssemblies baseClassTypes.Int32
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -398,6 +400,8 @@ public static class Entry
                 baseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         // The point of the frame: it really is an instantiation, not a definition.
         method.Generics.Length |> shouldEqual 1

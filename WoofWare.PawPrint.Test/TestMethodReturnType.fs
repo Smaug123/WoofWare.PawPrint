@@ -172,7 +172,7 @@ public sealed class ModifiedReturnShapes
             findMethod "ModifiedReturnShapes" "set_InitOnly" assembly
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let _, concretizedMethod, _ =
+        let _, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -180,6 +180,8 @@ public sealed class ModifiedReturnShapes
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _ = BindingResult.value concretizedMethodResult
 
         match concretizedMethod.Signature.ReturnType with
         | MethodReturnType.Void -> ()
@@ -196,7 +198,7 @@ public sealed class ModifiedReturnShapes
             findMethod "ModifiedReturnShapes" "RefToCell" assembly
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let _, concretizedMethod, _ =
+        let _, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -204,6 +206,8 @@ public sealed class ModifiedReturnShapes
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _ = BindingResult.value concretizedMethodResult
 
         match concretizedMethod.Signature.ReturnType with
         | MethodReturnType.Returns (ConcreteTypeHandle.Byref _) -> ()
@@ -218,7 +222,7 @@ public sealed class ModifiedReturnShapes
             findMethod "ReturnShapes" "DoesNotReturn" assembly
             |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
 
-        let _, concretizedMethod, _ =
+        let _, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -226,6 +230,8 @@ public sealed class ModifiedReturnShapes
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _ = BindingResult.value concretizedMethodResult
 
         match concretizedMethod.Signature.ReturnType with
         | MethodReturnType.Void -> ()

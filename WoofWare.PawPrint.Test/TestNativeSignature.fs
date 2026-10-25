@@ -276,7 +276,7 @@ public sealed class MethodSignatureHost
         let state, signatureTypeHandle =
             concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state signatureType
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -286,6 +286,8 @@ public sealed class MethodSignatureHost
                 fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, signatureType, signatureTypeHandle, method
 
@@ -505,7 +507,7 @@ public sealed class MethodSignatureHost
         let state, _ =
             concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state (methodSignatureHost fixture)
 
-        let state, concretised, _ =
+        let state, concretisedResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -515,6 +517,8 @@ public sealed class MethodSignatureHost
                 fixture.Assembly.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let concretised, _ = BindingResult.value concretisedResult
 
         let handle, methodHandles =
             MethodHandleRegistry.getOrAllocateConcreteInternalHandle

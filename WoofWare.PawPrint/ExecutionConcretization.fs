@@ -121,8 +121,11 @@ module ExecutionConcretization =
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
         let typeSystem, methodResult =
             MethodConcretisation.concretizeMethodWithAllGenerics
@@ -134,9 +137,7 @@ module ExecutionConcretization =
                 methodGenerics
                 state.TypeSystem
 
-        let method, declaringTypeHandle = BindingStop.bound methodResult
-
-        state.WithTypeSystem typeSystem, method, declaringTypeHandle
+        state.WithTypeSystem typeSystem, methodResult
 
     /// `MethodConcretisation.concretizeMethodWithTypeGenerics` against the machine's type system.
     let concretizeMethodWithTypeGenerics
@@ -149,8 +150,11 @@ module ExecutionConcretization =
         (currentExecutingMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
         let typeSystem, methodResult =
             MethodConcretisation.concretizeMethodWithTypeGenerics
@@ -164,62 +168,70 @@ module ExecutionConcretization =
                 currentExecutingMethodGenerics
                 state.TypeSystem
 
-        let method, declaringTypeHandle = BindingStop.bound methodResult
-
-        state.WithTypeSystem typeSystem, method, declaringTypeHandle
+        state.WithTypeSystem typeSystem, methodResult
 
     /// Resolve the target method's declaring-type generics from the IL metadata, falling back to
-    /// the current frame when none were supplied. Returned handles are already concretized.
+    /// the current frame when none were supplied. Returned handles are already concretized; the
+    /// first argument that does not bind is the failure.
     let private resolveTargetTypeGenerics
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
-        : ImmutableArray<ConcreteTypeHandle> * IlMachineState
+        : IlMachineState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
         =
         match typeArgsFromMetadata with
         | Some args when not args.IsEmpty ->
             // We have concrete type arguments from the IL metadata
             // Need to concretize them to ConcreteTypeHandle first
             let handles = ImmutableArray.CreateBuilder args.Length
-            let mutable state = state
 
-            for i = 0 to args.Length - 1 do
-                let ctx =
-                    {
-                        TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
-                        TypeConcretization.ConcretizationContext.LoadedAssemblies = state.TypeSystem._LoadedAssemblies
-                        TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
-                    }
+            let rec go
+                (i : int)
+                (state : IlMachineState)
+                : IlMachineState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
+                =
+                if i = args.Length then
+                    state, Ok (handles.ToImmutable ())
+                else
+                    let ctx =
+                        {
+                            TypeConcretization.ConcretizationContext.ConcreteTypes = state.TypeSystem.ConcreteTypes
+                            TypeConcretization.ConcretizationContext.LoadedAssemblies =
+                                state.TypeSystem._LoadedAssemblies
+                            TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+                        }
 
-                let handle, newCtx =
-                    TypeConcretization.concretizeType
-                        ctx
-                        (IlMachineState.loader loggerFactory state)
-                        (state.ActiveAssembly thread).DefinitionFullName
-                        ImmutableArray.Empty // No type generics for the concretization context
-                        ImmutableArray.Empty // No method generics for the concretization context
-                        args.[i]
+                    let handle, newCtx =
+                        TypeConcretization.concretizeType
+                            ctx
+                            (IlMachineState.loader loggerFactory state)
+                            (state.ActiveAssembly thread).DefinitionFullName
+                            ImmutableArray.Empty // No type generics for the concretization context
+                            ImmutableArray.Empty // No method generics for the concretization context
+                            args.[i]
 
-                let handle = BindingStop.bound handle
+                    let state =
+                        { state with
+                            TypeSystem =
+                                { state.TypeSystem with
+                                    ConcreteTypes = newCtx.ConcreteTypes
+                                    _LoadedAssemblies = newCtx.LoadedAssemblies
+                                }
+                        }
 
-                handles.Add handle
+                    match handle with
+                    | Error failure -> state, Error failure
+                    | Ok handle ->
+                        handles.Add handle
+                        go (i + 1) state
 
-                state <-
-                    { state with
-                        TypeSystem =
-                            { state.TypeSystem with
-                                ConcreteTypes = newCtx.ConcreteTypes
-                                _LoadedAssemblies = newCtx.LoadedAssemblies
-                            }
-                    }
-
-            handles.ToImmutable (), state
+            go 0 state
         | _ ->
             // Fall back to current execution context
             let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod
-            currentMethod.DeclaringTypeGenerics, state
+            state, Ok currentMethod.DeclaringTypeGenerics
 
     /// Returns also the declaring type.
     let concretizeMethodForExecution
@@ -231,11 +243,15 @@ module ExecutionConcretization =
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
-        let typeGenerics, state =
-            resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state
+        match resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state with
+        | state, Error failure -> state, Error failure
+        | state, Ok typeGenerics ->
 
         // `DefinitionFullName` rather than `Name.FullName`: this runs on every dispatch, and the
         // argument is evaluated whether or not `methodGenerics` turns out to need it, so it has to
@@ -267,13 +283,16 @@ module ExecutionConcretization =
         (typeArgsFromMetadata : TypeDefn ImmutableArray option)
         (state : IlMachineState)
         : IlMachineState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+          Result<
+              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+              ConcreteTypeHandle,
+              TypeBindingFailure
+           >
         =
-        let typeGenerics, state =
-            resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state
-
-        concretizeMethodWithAllGenerics loggerFactory baseClassTypes typeGenerics methodToCall methodGenerics state
+        match resolveTargetTypeGenerics loggerFactory baseClassTypes thread typeArgsFromMetadata state with
+        | state, Error failure -> state, Error failure
+        | state, Ok typeGenerics ->
+            concretizeMethodWithAllGenerics loggerFactory baseClassTypes typeGenerics methodToCall methodGenerics state
 
     /// Concretize the declaring type of a resolved field token, substituting any generic
     /// parameters it still mentions against the supplied context.
@@ -293,18 +312,14 @@ module ExecutionConcretization =
         (contextMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (field : WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>)
         (state : IlMachineState)
-        : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
+        : IlMachineState * Result<ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
         =
-        let loadedAssemblies =
-            match
-                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
-                    (IlMachineState.loader loggerFactory state)
-                    state.TypeSystem._LoadedAssemblies
-                    (state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
-                    field.DeclaringType.Definition.Get
-            with
-            | assemblies, None -> assemblies
-            | _, Some failure -> failwith (string<BaseChainFailure> failure)
+        let loadedAssemblies, baseChainFailure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (IlMachineState.loader loggerFactory state)
+                state.TypeSystem._LoadedAssemblies
+                (state.TypeSystem._LoadedAssemblies.ByDefinitionName field.DeclaringType.AssemblyFullName)
+                field.DeclaringType.Definition.Get
 
         let state =
             { state with
@@ -313,6 +328,10 @@ module ExecutionConcretization =
                         _LoadedAssemblies = loadedAssemblies
                     }
             }
+
+        match baseChainFailure with
+        | Some failure -> state, Error (TypeBindingFailure.ofBaseChain failure)
+        | None ->
 
         // Create a concretization context
         let ctx =
@@ -364,8 +383,6 @@ module ExecutionConcretization =
                 contextMethodGenerics
                 declaringTypeDefn
 
-        let declaringHandle = BindingStop.bound declaringHandle
-
         let state =
             { state with
                 TypeSystem =
@@ -375,6 +392,10 @@ module ExecutionConcretization =
                     }
             }
 
+        match declaringHandle with
+        | Error failure -> state, Error failure
+        | Ok declaringHandle ->
+
         // Get the concretized type's generics
         let concretizedType =
             AllConcreteTypes.lookup declaringHandle state.TypeSystem.ConcreteTypes
@@ -382,7 +403,7 @@ module ExecutionConcretization =
 
         let typeGenerics = concretizedType.Generics
 
-        state, declaringHandle, typeGenerics
+        state, Ok (declaringHandle, typeGenerics)
 
     let concretizeFieldForExecution
         (loggerFactory : ILoggerFactory)
@@ -390,7 +411,7 @@ module ExecutionConcretization =
         (thread : ThreadId)
         (field : WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>)
         (state : IlMachineState)
-        : IlMachineState * ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>
+        : IlMachineState * Result<ConcreteTypeHandle * ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
         =
         // Get type and method generics from current execution context
         let currentMethod = state.ThreadState.[thread].MethodState.ExecutingMethod

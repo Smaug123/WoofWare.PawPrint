@@ -557,15 +557,35 @@ module TypeSystemState =
         },
         resolved
 
+    /// The `TypeDefn` a `TypeDefinition` token of `activeAssy` names. Which kind of type it is
+    /// depends on its base chain, which is loaded first; a type on the chain that does not bind is
+    /// the failure, and what loaded before it stays loaded.
     let lookupTypeDefn
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (activeAssy : DumpedAssembly)
         (typeDef : TypeDefinitionHandle)
-        : TypeSystemState * TypeDefn
+        : TypeSystemState * Result<TypeDefn, TypeBindingFailure>
         =
-        let defn = activeAssy.TypeDefs.[typeDef]
-        state, LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn
+        let assemblies, failure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                state._LoadedAssemblies
+                activeAssy
+                typeDef
+
+        let state =
+            { state with
+                _LoadedAssemblies = assemblies
+            }
+
+        match failure with
+        | Some failure -> state, Error (TypeBindingFailure.ofBaseChain failure)
+        | None ->
+            let defn = activeAssy.TypeDefs.[typeDef]
+            state, Ok (LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies defn)
 
     /// Resolve a `TypeReference` token to the type it names.
     ///
@@ -612,8 +632,9 @@ module TypeSystemState =
         =
         match token with
         | MetadataToken.TypeDefinition h ->
-            let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
-            state, Ok (ty, activeAssy)
+            match lookupTypeDefn loggerFactory dotnetRuntimeDirs baseClassTypes state activeAssy h with
+            | state, Ok ty -> state, Ok (ty, activeAssy)
+            | state, Error failure -> state, Error failure
         | MetadataToken.TypeReference ref ->
             lookupTypeRef loggerFactory dotnetRuntimeDirs baseClassTypes state activeAssy ref
         | MetadataToken.TypeSpecification spec -> state, Ok (activeAssy.TypeSpecs.[spec].Signature, activeAssy)

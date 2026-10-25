@@ -112,6 +112,9 @@ module internal UnaryMetadataTokenOps =
                 handle
                 state
 
+        let resolution =
+            TokenBindingStop.memberReference ctx.ActiveAssembly handle resolution
+
         match resolution with
         | MemberReferenceResolution.RefusedParent refusal -> state, ResolvedMemberToken.RefusedParent refusal
         | MemberReferenceResolution.Resolved (_, resolved, extractedTypeArgs) ->
@@ -142,7 +145,7 @@ module internal UnaryMetadataTokenOps =
             // member of `G<List<T>>` resolving at `G<List<string>>` rather than at the frame's own
             // `G<string>`: `concretizeMethodForExecution` falls back to the frame's declaring-type
             // generics when given none.
-            let state, concretized, _ =
+            let state, concretizedResult =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
@@ -151,6 +154,8 @@ module internal UnaryMetadataTokenOps =
                     None
                     (Some extractedTypeArgs)
                     state
+
+            let concretized, _ = BindingStop.bound concretizedResult
 
             state, ResolvedMemberToken.Method (concretized, method)
         | Choice2Of2 (FieldReferenceBinding.Fails failure) -> state, ResolvedMemberToken.BindingFails failure
@@ -165,8 +170,10 @@ module internal UnaryMetadataTokenOps =
             // `ldfld`/`ldsfld`: `resolveMember` has already substituted the parent's instantiation
             // into `field.DeclaringType.Generics`, and this turns that into the declaring type's
             // handle. The field's own signature is deliberately untouched.
-            let state, declaringTypeHandle, _ =
+            let state, declaringTypeHandleResult =
                 ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+            let declaringTypeHandle, _ = BindingStop.bound declaringTypeHandleResult
 
             state, ResolvedMemberToken.Field (declaringTypeHandle, field.Handle)
 
@@ -219,7 +226,7 @@ module internal UnaryMetadataTokenOps =
                 failwith
                     $"TODO: %s{opName} of a MethodSpecification over a MethodDef declared on generic type %s{MethodOwner.describe method.Owner} names the typical instantiation of the declaring type, which needs open generic RuntimeMethodHandle support; got %O{method}"
 
-            let state, concretized, _ =
+            let state, concretizedResult =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
@@ -228,6 +235,8 @@ module internal UnaryMetadataTokenOps =
                     (Some spec.Signature)
                     None
                     state
+
+            let concretized, _ = BindingStop.bound concretizedResult
 
             state, Ok (concretized, method)
         | MetadataToken.MemberReference ref ->
@@ -262,6 +271,8 @@ module internal UnaryMetadataTokenOps =
                     ref
                     state
 
+            let resolution = TokenBindingStop.memberReference activeAssy ref resolution
+
             match resolution with
             | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
             | MemberReferenceResolution.Resolved (_, method, extractedTypeArgs) ->
@@ -279,7 +290,7 @@ module internal UnaryMetadataTokenOps =
                     method.DeclaringTypeGenerics
                     (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
 
-                let state, concretized, _ =
+                let state, concretizedResult =
                     ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
                         loggerFactory
                         baseClassTypes
@@ -288,6 +299,8 @@ module internal UnaryMetadataTokenOps =
                         methodGenerics
                         (Some extractedTypeArgs)
                         state
+
+                let concretized, _ = BindingStop.bound concretizedResult
 
                 state, Ok (concretized, method)
         | k -> failwith $"Unrecognised MethodSpecification kind for %s{opName}: %O{k}"
@@ -332,7 +345,7 @@ module internal UnaryMetadataTokenOps =
                 activeAssy.Methods.[handle]
                 |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-            let state, concretized, _ =
+            let state, concretizedResult =
                 ExecutionConcretization.concretizeMethodForExecution
                     loggerFactory
                     baseClassTypes
@@ -341,6 +354,8 @@ module internal UnaryMetadataTokenOps =
                     None
                     None
                     state
+
+            let concretized, _ = BindingStop.bound concretizedResult
 
             state, Ok (concretized, method)
         | MetadataToken.MemberReference h ->
@@ -799,7 +814,7 @@ module internal UnaryMetadataTokenOps =
                     failwith
                         $"TODO: ldtoken MethodDef for generic methods names the typical instantiation, which needs open generic RuntimeMethodHandle support; got %O{method}"
 
-                let state, concretizedMethod, _declaringTypeHandle =
+                let state, concretizedMethodResult =
                     ExecutionConcretization.concretizeMethodForExecution
                         loggerFactory
                         baseClassTypes
@@ -808,6 +823,9 @@ module internal UnaryMetadataTokenOps =
                         None
                         None
                         state
+
+                let concretizedMethod, _declaringTypeHandle =
+                    BindingStop.bound concretizedMethodResult
 
                 state, Ok (LdtokenTarget.Method concretizedMethod)
             | MetadataToken.MemberReference h ->
@@ -836,13 +854,19 @@ module internal UnaryMetadataTokenOps =
                 let sign = activeAssy.TypeSpecs.[h].Signature
                 targetForTypeToken activeAssy false sign state |> Tuple.rmap Ok
             | MetadataToken.TypeReference h ->
-                let state, typeDefn, assy =
+                let state, typeDefnResult =
                     IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy h
+
+                let typeDefn, assy =
+                    TokenBindingStop.typeToken activeAssy (MetadataToken.TypeReference h) typeDefnResult
 
                 targetForTypeToken assy true typeDefn state |> Tuple.rmap Ok
             | MetadataToken.TypeDefinition h ->
                 let state, typeDefn =
-                    IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
+                    IlMachineState.lookupTypeDefn loggerFactory baseClassTypes state activeAssy h
+
+                let typeDefn =
+                    TokenBindingStop.typeToken activeAssy (MetadataToken.TypeDefinition h) typeDefn
 
                 targetForTypeToken activeAssy true typeDefn state |> Tuple.rmap Ok
             | _ ->

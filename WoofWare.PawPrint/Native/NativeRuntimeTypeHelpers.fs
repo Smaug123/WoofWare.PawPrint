@@ -399,7 +399,7 @@ module NativeRuntimeTypeHelpers =
         (state : IlMachineState)
         : IlMachineState * bool
         =
-        let state, concretizedMethod, _ =
+        let state, concretizedMethodResult =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -407,6 +407,8 @@ module NativeRuntimeTypeHelpers =
                 valueTypeMethod
                 ImmutableArray.Empty
                 state
+
+        let concretizedMethod, _ = BindingStop.bound concretizedMethodResult
 
         let state, directImplementation =
             IlMachineStateExecution.tryResolveVirtualImplementation
@@ -909,8 +911,11 @@ module NativeRuntimeTypeHelpers =
                 match typeInfo.BaseType with
                 | None -> None, state
                 | Some baseTypeInfo ->
-                    let state, baseAssembly, baseTypeDefn =
+                    let state, baseAssemblyResult =
                         IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state assembly baseTypeInfo
+
+                    let baseAssembly, baseTypeDefn =
+                        TokenBindingStop.baseType assembly baseTypeInfo baseAssemblyResult
 
                     let state, baseHandle =
                         IlMachineState.concretizeType
@@ -2360,31 +2365,18 @@ module NativeRuntimeTypeHelpers =
         (state : IlMachineState)
         : IlMachineState * RuntimeTypeHandleTarget
         =
-        // `lookupTypeDefn` walks the declaring type's base chain and cannot load, so the chain has
-        // to be closed first: a MethodDef token may name a type whose base class lives in an
-        // assembly this run has not touched, and `Module.ResolveMethod` is allowed to be the first
-        // thing that touches it. Same discharge as `ExecutionConcretization.concretizeFieldDeclaringType`.
-        let loadedAssemblies =
-            match
-                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
-                    (IlMachineState.loader loggerFactory state)
-                    state.TypeSystem._LoadedAssemblies
-                    assembly
-                    method.RequiredDeclaringType.Definition.Get
-            with
-            | assemblies, None -> assemblies
-            | _, Some failure -> failwith (string<BaseChainFailure> failure)
-
-        let state =
-            { state with
-                TypeSystem =
-                    { state.TypeSystem with
-                        _LoadedAssemblies = loadedAssemblies
-                    }
-            }
-
+        // A MethodDef token may name a type whose base class lives in an assembly this run has not
+        // touched, and `Module.ResolveMethod` is allowed to be the first thing that touches it;
+        // `lookupTypeDefn` loads it.
         let state, declaringTypeDefn =
-            IlMachineState.lookupTypeDefn baseClassTypes state assembly method.RequiredDeclaringType.Definition.Get
+            IlMachineState.lookupTypeDefn
+                loggerFactory
+                baseClassTypes
+                state
+                assembly
+                method.RequiredDeclaringType.Definition.Get
+
+        let declaringTypeDefn = BindingStop.bound declaringTypeDefn
 
         IlMachineState.runtimeTypeHandleTargetForTypeToken
             loggerFactory
@@ -2822,8 +2814,11 @@ module UninitializedObjectInfo =
             let definingAssembly =
                 state.TypeSystem._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
 
-            let state, _, baseDefn =
+            let state, baseDefnResult =
                 IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state definingAssembly baseTypeInfo
+
+            let _, baseDefn =
+                TokenBindingStop.baseType definingAssembly baseTypeInfo baseDefnResult
 
             match baseDefn with
             | TypeDefn.FromDefinition (identity, _) -> state, identity = baseClassTypes.MulticastDelegateType.Identity

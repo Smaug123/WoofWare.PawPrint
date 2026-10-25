@@ -147,6 +147,8 @@ module internal UnaryMetadataFieldOps =
                         mr
                         state
 
+                let resolved = TokenBindingStop.memberReference activeAssy mr resolved
+
                 match resolved with
                 | MemberReferenceResolution.RefusedParent refusal ->
                     failwith
@@ -334,8 +336,10 @@ module internal UnaryMetadataFieldOps =
         let valueToStore, state = IlMachineState.popEvalStack thread state
         let currentObj, state = IlMachineState.popEvalStack thread state
 
-        let state, declaringTypeHandle, typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
@@ -435,8 +439,10 @@ module internal UnaryMetadataFieldOps =
             field.Signature
         )
 
-        let state, declaringTypeHandle, typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -557,8 +563,10 @@ module internal UnaryMetadataFieldOps =
 
         let currentObj, state = IlMachineState.popEvalStack thread state
 
-        let state, declaringTypeHandle, typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
@@ -756,8 +764,10 @@ module internal UnaryMetadataFieldOps =
 
         checkFieldStaticness "ldflda" "take the address of" false "ldsflda" field
 
-        let state, declaringTypeHandle, _typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, _typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         let fieldId = FieldId.metadata declaringTypeHandle field.Handle field.Name
 
@@ -814,8 +824,10 @@ module internal UnaryMetadataFieldOps =
                 field.Signature
             )
 
-        let state, declaringTypeHandle, typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
@@ -987,8 +999,10 @@ module internal UnaryMetadataFieldOps =
         // thread's slot forever after, even if some other thread dereferences it.
         let owner = StaticOwner.forField thread field
 
-        let state, declaringTypeHandle, typeGenerics =
+        let state, declaringTypeHandleResult =
             ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        let declaringTypeHandle, typeGenerics = BindingStop.bound declaringTypeHandleResult
 
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit

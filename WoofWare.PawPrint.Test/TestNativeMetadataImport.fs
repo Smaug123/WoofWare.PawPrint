@@ -535,7 +535,7 @@ public class MarshalShapes
                     failwith
                         $"MetadataImport method %s{methodName} with %d{parameterCount} parameters was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -545,6 +545,8 @@ public class MarshalShapes
                 fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, metadataImportType, method
 
@@ -578,7 +580,7 @@ public class MarshalShapes
                     failwith
                         $"MetadataImport QCall stub with entry point %s{entryPointName} was ambiguous: %d{methods.Length} matches"
 
-        let state, method, _ =
+        let state, methodResult =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
@@ -588,6 +590,8 @@ public class MarshalShapes
                 fixture.BaseClassTypes.Corelib.DefinitionFullName
                 ImmutableArray.Empty
                 state
+
+        let method, _ = BindingResult.value methodResult
 
         state, metadataImportType, method
 
