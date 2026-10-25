@@ -7,63 +7,20 @@ name?". This library answers what the runtime builds from those definitions: the
 generic instantiation denotes, and a type's method table — which slot each method owns, and what
 each slot holds. Like the Loader, it runs no code.
 
-What lives here:
+It answers four kinds of question:
 
-* `TypeConcretization` — instantiating a generic type definition over the whole set of loaded
-  assemblies, to a handle that identifies one concrete type, and comparing signatures and
-  substitutions in terms of those handles.
-* `VtableSlot`, `MethodTableLayout` — a type definition's method table as CoreCLR's
-  `MethodTableBuilder` lays it out: which slot each declaration owns, what each vtable slot holds
-  once MethodImpls are applied, and the slots beyond the vtable.
-* `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
-  `MethodDef` of a generic definition, with the instantiation of the type that declares it (the
-  parent or one of its ancestors), a method the runtime supplies on an array type, or nothing (a
-  `MissingMethodException`, or a `TypeLoadException` if the parent names no type, or a
-  `FileNotFoundException` if loading it needs an assembly that is not there). It lives here
-  rather than beside the Loader's field resolver because CoreCLR binds a method reference by
-  searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
-  it is checked against the real runtime's own answer.
-* `MemberReferenceInstantiation` — a `MemberRef` resolved as `MethodReferenceResolution` and the
-  Loader's `FieldReferenceResolution` bind it, then instantiated for one generic context: the method
-  or field it names, with the arguments of the type that declares it, memoised per context.
-* `TypeSystemState` — the state all of the above is computed over: the assemblies loaded, the
-  concrete types instantiated so far, and the memos of method-table walks, member resolution and
-  method concretisation. The interpreter's machine state holds one. Its module asks the questions
-  that need nothing else: instantiating a type or signature, comparing signatures and
-  instantiations as CoreCLR does, resolving a type token, and finding a concrete type's base.
-* `MethodConcretisation` — a method instantiated for execution: its declaring type's and its own
-  generic parameters bound to concrete types, and its signature and locals concretised against
-  them, memoised per instantiation.
-* `ConcreteMethodTable`, `ConcreteInterfaceDispatch` — the method table of a concrete type, read
-  through its definition's, and CoreCLR's interface map and dispatch map: which slot of the receiver
-  implements an interface method, before any default interface body is considered.
-* `DefaultInterfaceImplementation` — the default interface bodies a call can land on, as CoreCLR's
-  `MethodTable::FindDefaultInterfaceImplementation` finds them: by identity, never by name, at the
-  call's exact instantiation or allowing variance, keeping only the most specific. Both dispatchers
-  below search with it, and each decides what more than one survivor means.
-* `ConcreteVirtualDispatch` — which method a virtual or interface call runs on a receiver of a
-  known concrete type, as CoreCLR's `MethodTable::FindDispatchImpl` decides it: the dispatch table
-  and MethodImpls, the dispatch map, default interface bodies, variance, and the methods the
-  runtime supplies for an SZ array's implicit interfaces, or that the call is ambiguous because
-  more than one default body is most specific, or that it is not modelled: a conflict at a variant
-  interface's exact instantiation, whose outcome depends on the JIT, or a reabstraction. It names the method it chooses and the generic arguments it
-  runs with, and leaves instantiating that method to `MethodConcretisation`: CoreCLR reads a
-  method's locals only when it compiles the method.
-* `StaticVirtualDispatch` — which method a `constrained.` call of a static virtual interface method
-  runs, as CoreCLR's `MethodTable::ResolveVirtualStaticMethod` decides it, by its own rules rather
-  than virtual dispatch's: a MethodImpl on the constrained type's chain, exactly before through
-  variance, then the most specific default body, found by identity and never by name, exactly
-  before through variance, or that the call is ambiguous.
-* `ConstrainedType` — the type CoreCLR resolves a `constrained.` call against. That is the type
-  the prefix names, except where it names an enum and the method called holds the slot number
-  `Object.GetHashCode` holds in `Object`'s table: `getCallInfo` then resolves the call on the
-  enum's underlying primitive, unboxed. The comparison is of slot numbers alone, so an interface
-  method in that slot (`IConvertible.ToSByte`, or a static virtual numbered past an interface's
-  vtable) is retargeted too. A class's method in that slot is dispatched on the primitive as
-  `Object.GetHashCode`, since CoreCLR resolves a class's method on a value type by its slot.
-* `TypeAssignability` — whether a value of one closed type can be stored where another is
-  expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
-  array rules.
+* what a generic type or method denotes once instantiated, as a handle identifying one concrete
+  type or method, and how signatures compare in those terms;
+* what a type's method table holds: which slot each method owns, what each slot holds once
+  MethodImpls are applied, and which slot implements each interface method;
+* which method a call runs: a member reference bound to the definition it names, and a virtual,
+  interface or `constrained.` call dispatched on a receiver of known type, default interface
+  bodies and variance included;
+* what the runtime and the JIT decide about concrete types: whether one can be cast to another,
+  whether a method runs as shared generic code, whether storage holds GC references.
+
+`TypeSystemState` holds what all of these are computed over, and the memos they keep. Each module's
+docstrings say what it decides, and which part of CoreCLR it follows.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must know which method a call runs exactly as the
