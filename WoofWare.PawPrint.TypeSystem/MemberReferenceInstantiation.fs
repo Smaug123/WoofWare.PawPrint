@@ -6,6 +6,18 @@ open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 
+/// Why a MemberRef row binds to no member, where binding it is not a `FieldReferenceBinding.Fails`.
+[<RequireQualifiedAccess>]
+type MemberBindingFailure =
+    /// The row is method-shaped, and nothing of its name and signature is where CoreCLR looks, so
+    /// binding it throws `MissingMethodException`.
+    | NoSuchMethod
+    /// A type the binding reaches does not bind: the parent, a type its load reaches, or one a
+    /// signature compared on the way names.
+    | TypeUnbound of TypeBindingFailure
+    /// A shape PawPrint does not implement binding.
+    | Unmodelled of UnmodelledBinding
+
 /// A MemberRef row resolved as CoreCLR binds it, and instantiated for one generic context: which
 /// method or field it names, and the arguments of the type that declares it. Whatever loads an
 /// assembly or registers a concrete type on the way returns the state it leaves behind;
@@ -32,18 +44,23 @@ module MemberReferenceInstantiation =
         (spellingAssembly : DumpedAssembly)
         (spelling : TypeDefn)
         (state : TypeSystemState)
-        : TypeSystemState * string
+        : TypeSystemState * Result<string, MemberBindingFailure>
         =
         let recurse =
             arrayParentName loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly
 
+        let decorated (element : TypeDefn) (decoration : string -> string) =
+            match recurse element state with
+            | state, Ok element -> state, Ok (decoration element)
+            | failed -> failed
+
         match spelling with
         | TypeDefn.Modified modified -> recurse modified.Unmodified state
         | TypeDefn.PrimitiveType primitive ->
-            state, definitionName state (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity
-        | TypeDefn.FromDefinition (identity, _) -> state, definitionName state identity
+            state, Ok (definitionName state (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity)
+        | TypeDefn.FromDefinition (identity, _) -> state, Ok (definitionName state identity)
         | TypeDefn.FromReference (typeRef, _) ->
-            let state, _, resolved =
+            match
                 TypeSystemState.resolveTypeFromRef
                     loggerFactory
                     dotnetRuntimeDirs
@@ -51,23 +68,45 @@ module MemberReferenceInstantiation =
                     typeRef
                     ImmutableArray.Empty
                     state
-
-            state, definitionName state resolved.Identity
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
-            let state, element = recurse element state
-            state, $"%s{element}[]"
+            with
+            | state, Ok (_, resolved) -> state, Ok (definitionName state resolved.Identity)
+            | state, Error failure -> state, Error (MemberBindingFailure.TypeUnbound failure)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> decorated element (fun element -> $"%s{element}[]")
         | TypeDefn.Array (element, rank) ->
-            let state, element = recurse element state
             let dimensions = if rank = 1 then "*" else System.String (',', rank - 1)
-            state, $"%s{element}[%s{dimensions}]"
-        | TypeDefn.Pointer element ->
-            let state, element = recurse element state
-            state, $"%s{element}*"
+            decorated element (fun element -> $"%s{element}[%s{dimensions}]")
+        | TypeDefn.Pointer element -> decorated element (fun element -> $"%s{element}*")
         | other ->
             // `TypeHandle::GetName` appends an instantiation with `TypeString::AppendInst`, and a
             // function pointer or a type variable has a rendering of its own; none is measured.
-            failwith
-                $"TODO: name the array element %O{other} as MissingFieldException's message would; the rendering has not been measured"
+            state,
+            Error (
+                MemberBindingFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            $"binds to no field, and its parent is an array of %O{other}; TODO: name the array element as MissingFieldException's message would; the rendering has not been measured"
+                    }
+            )
+
+    /// The row, as a diagnostic names it.
+    let private rowDescription (assy : DumpedAssembly) (m : MemberReferenceHandle) : string =
+        let memberName = assy.Strings assy.Members.[m].Name
+
+        let row =
+            MetadataTokens.GetRowNumber (MemberReferenceHandle.op_Implicit m : EntityHandle)
+
+        $"MemberRef %s{memberName} (row %d{row}) of %s{assy.DefinitionFullName}"
+
+    /// The failure, described for a run that stops on it: which row of `assy` failed, and why.
+    let describeFailure (assy : DumpedAssembly) (m : MemberReferenceHandle) (failure : MemberBindingFailure) : string =
+        let prefix = rowDescription assy m
+
+        match failure with
+        | MemberBindingFailure.NoSuchMethod ->
+            $"%s{prefix} binds to no method, so CoreCLR throws MissingMethodException; that is not modelled"
+        | MemberBindingFailure.TypeUnbound failure ->
+            $"%s{prefix} reaches a type that does not bind, so CoreCLR throws while compiling the method that uses it; that is not modelled: %s{TypeBindingFailure.describe failure}"
+        | MemberBindingFailure.Unmodelled unmodelled -> $"%s{prefix} %s{unmodelled.Diagnostic}"
 
     /// <summary>
     /// The member a MemberRef row of <paramref name="assy" /> names, as CoreCLR binds it
@@ -79,9 +118,10 @@ module MemberReferenceInstantiation =
     /// <remarks>
     /// A field reference CoreCLR fails to bind is <c>FieldReferenceBinding.Fails</c>, saying why:
     /// CoreCLR throws while compiling the method that uses it, and the caller throws the same
-    /// exception where the reference is used. Refuses a method reference CoreCLR would fail to
-    /// bind, one whose target depends on how a type variable of the
-    /// referencing context is instantiated, and one naming a method the runtime supplies on an array
+    /// exception where the reference is used. Any other reference that binds no member is the
+    /// result's failure: a method reference CoreCLR fails to bind, one whose target depends on how a
+    /// type variable of the referencing context is instantiated, and a shape PawPrint does not
+    /// implement binding. Fails on a reference naming a method the runtime supplies on an array
     /// type, which callers handle before resolving.
     /// </remarks>
     let resolveMemberWithGenerics
@@ -93,17 +133,36 @@ module MemberReferenceInstantiation =
         (methodGenerics : ImmutableArray<TypeDefn>)
         (m : MemberReferenceHandle)
         (state : TypeSystemState)
-        : TypeSystemState *
-          AssemblyName *
-          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
-          TypeDefn ImmutableArray
+        : TypeSystemState * Result<ResolvedMemberReference, MemberBindingFailure>
         =
         let mem = assy.Members.[m]
         let memberName : string = assy.Strings mem.Name
 
-        let refuse (outcome : string) : 'a =
-            failwith
-                $"MemberRef %s{memberName} (row %d{MetadataTokens.GetRowNumber (MemberReferenceHandle.op_Implicit m : EntityHandle)}) of %s{assy.DefinitionFullName} %s{outcome}"
+        let fails (state : TypeSystemState) (failure : MemberBindingFailure) : TypeSystemState * Result<'a, _> =
+            state, Error failure
+
+        let unmodelled (state : TypeSystemState) (diagnostic : string) : TypeSystemState * Result<'a, _> =
+            fails
+                state
+                (MemberBindingFailure.Unmodelled
+                    {
+                        Diagnostic = diagnostic
+                    })
+
+        let bound
+            (state : TypeSystemState)
+            (declaringAssembly : AssemblyName)
+            (member' :
+                Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding>)
+            (targetTypeGenerics : TypeDefn ImmutableArray)
+            =
+            state,
+            Ok
+                {
+                    DeclaringAssembly = declaringAssembly
+                    Member = member'
+                    TargetTypeGenerics = targetTypeGenerics
+                }
 
         let withAssemblies (assemblies : LoadedAssemblies) (state : TypeSystemState) : TypeSystemState =
             { state with
@@ -115,36 +174,37 @@ module MemberReferenceInstantiation =
         // typical instantiation, which callers recognise by the empty arguments and refuse.
         let resolveParent
             (state : TypeSystemState)
-            : TypeSystemState * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn> * ImmutableArray<TypeDefn>
+            : TypeSystemState *
+              Result<WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn> * ImmutableArray<TypeDefn>, MemberBindingFailure>
             =
             match mem.Parent with
             | MetadataToken.TypeReference parent ->
-                let state, _, targetType =
+                match
                     TypeSystemState.resolveType loggerFactory dotnetRuntimeDirs parent ImmutableArray.Empty assy state
-
-                state, targetType, ImmutableArray.Empty
+                with
+                | state, Ok (_, targetType) -> state, Ok (targetType, ImmutableArray.Empty)
+                | state, Error failure -> fails state (MemberBindingFailure.TypeUnbound failure)
             | MetadataToken.TypeDefinition parent ->
                 // The bare definition, as a TypeReference parent resolves to it (base chain loaded):
                 // its formals stand, rather than being substituted from an environment the parent
                 // supplies none of.
-                let assemblies, targetType =
-                    match
-                        TypeResolution.resolveTypeFromDefn
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            (TypeDefn.FromDefinition (assy.TypeDefs.[parent].Identity, SignatureTypeKind.Unknown))
-                            ImmutableArray.Empty
-                            ImmutableArray.Empty
-                            assy
-                            state._LoadedAssemblies
-                    with
-                    | assemblies, Ok (_, targetType) -> assemblies, targetType
-                    | _, Error failure -> failwith (TypeBindingFailure.describe failure)
-
-                withAssemblies assemblies state, targetType, ImmutableArray.Empty
+                match
+                    TypeResolution.resolveTypeFromDefn
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        (TypeDefn.FromDefinition (assy.TypeDefs.[parent].Identity, SignatureTypeKind.Unknown))
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        assy
+                        state._LoadedAssemblies
+                with
+                | assemblies, Ok (_, targetType) ->
+                    withAssemblies assemblies state, Ok (targetType, ImmutableArray.Empty)
+                | assemblies, Error failure ->
+                    fails (withAssemblies assemblies state) (MemberBindingFailure.TypeUnbound failure)
             | MetadataToken.TypeSpecification parent ->
-                let state, _, targetType =
+                match
                     TypeSystemState.resolveTypeFromSpec
                         loggerFactory
                         dotnetRuntimeDirs
@@ -154,9 +214,10 @@ module MemberReferenceInstantiation =
                         typeGenerics
                         methodGenerics
                         state
-
-                state, targetType, targetType.Generics
-            | parent -> refuse $"has a parent %O{parent} that names no type with members"
+                with
+                | state, Ok (_, targetType) -> state, Ok (targetType, targetType.Generics)
+                | state, Error failure -> fails state (MemberBindingFailure.TypeUnbound failure)
+            | parent -> unmodelled state $"has a parent %O{parent} that names no type with members"
 
         // Whether a substitution still mentions a type variable of the parent, which only a generic
         // definition named without an instantiation leaves standing.
@@ -185,25 +246,29 @@ module MemberReferenceInstantiation =
             // Which exception binding throws is the first failure of the parent's load, and a missing
             // field is not a failure until the parent has loaded; so either answer needs every type
             // that load reaches to be one that cannot fail some other way.
-            let refuseUnvouched () : unit =
+            let unvouched () : string option =
                 match ParentLoadVouching.vouch baseClassTypes state._LoadedAssemblies assy m with
-                | ParentLoadVouch.Vouched -> ()
+                | ParentLoadVouch.Vouched -> None
                 | ParentLoadVouch.Unvouched reason ->
-                    refuse
+                    Some
                         $"binds to no field, and PawPrint cannot vouch for every type CoreCLR's load of its parent reaches (%O{reason}), so cannot tell which exception binding throws; TODO: that is not modelled"
 
             match target with
             | FieldReferenceTarget.Defined (declaringAssembly, field) ->
                 // Fields are not inherited, so the parent is the declaring type.
-                let state, targetType, spelledArguments = resolveParent state
+                match resolveParent state with
+                | state, Error failure -> fails state failure
+                | state, Ok (targetType, spelledArguments) ->
 
                 let field =
                     declaringAssembly.Fields.[field]
                     |> FieldInfo.mapTypeGenerics (fun _ (par, _) -> targetType.Generics.[par.SequenceNumber])
 
-                state, declaringAssembly.Name, Choice2Of2 (FieldReferenceBinding.Bound field), spelledArguments
+                bound state declaringAssembly.Name (Choice2Of2 (FieldReferenceBinding.Bound field)) spelledArguments
             | FieldReferenceTarget.Missing ->
-                refuseUnvouched ()
+                match unvouched () with
+                | Some diagnostic -> unmodelled state diagnostic
+                | None ->
 
                 let assemblies, parent =
                     MemberReferenceParent.resolve
@@ -218,17 +283,29 @@ module MemberReferenceInstantiation =
 
                 let state, parentName =
                     match parent with
-                    | MemberReferenceParent.Nominal identity -> state, definitionName state identity
+                    | MemberReferenceParent.Nominal identity -> state, Ok (definitionName state identity)
                     | MemberReferenceParent.Array arrayType ->
                         arrayParentName loggerFactory dotnetRuntimeDirs baseClassTypes assy arrayType state
                     | other ->
-                        refuse
-                            $"binds to no field, but its parent %O{other} is not one FieldReferenceResolution searches"
+                        state,
+                        Error (
+                            MemberBindingFailure.Unmodelled
+                                {
+                                    Diagnostic =
+                                        $"binds to no field, but its parent %O{other} is not one FieldReferenceResolution searches"
+                                }
+                        )
+
+                match parentName with
+                | Error failure -> fails state failure
+                | Ok parentName ->
 
                 let failure = FieldReferenceFailure.MissingField (parentName, memberName)
-                state, assy.Name, Choice2Of2 (FieldReferenceBinding.Fails failure), ImmutableArray.Empty
+                bound state assy.Name (Choice2Of2 (FieldReferenceBinding.Fails failure)) ImmutableArray.Empty
             | FieldReferenceTarget.ParentTypeMissing miss ->
-                refuseUnvouched ()
+                match unvouched () with
+                | Some diagnostic -> unmodelled state diagnostic
+                | None ->
 
                 // `ClassLoader::ThrowTypeLoadException` names the missing TypeRef row by its own
                 // namespace and name: a nested row is named alone, without the type it is nested in.
@@ -242,14 +319,14 @@ module MemberReferenceInstantiation =
                     | TypeResolutionMiss.NestedTypeAbsent (searchedIn, _declaringType, name) -> name, searchedIn
 
                 let failure = FieldReferenceFailure.ParentTypeMissing (typeName, searchedIn)
-                state, assy.Name, Choice2Of2 (FieldReferenceBinding.Fails failure), ImmutableArray.Empty
+                bound state assy.Name (Choice2Of2 (FieldReferenceBinding.Fails failure)) ImmutableArray.Empty
             | FieldReferenceTarget.ParentAssemblyUnavailable reference ->
-                refuse
-                    $"has a parent whose load needs %s{reference.FullName}, which no runtime directory supplies, so CoreCLR throws FileNotFoundException; that is not modelled"
+                fails state (MemberBindingFailure.TypeUnbound (TypeBindingFailure.AssemblyUnavailable reference))
             | FieldReferenceTarget.DependsOnInstantiation ->
-                refuse
+                unmodelled
+                    state
                     "has a type variable for its parent, whose instantiation resolution does not yet take into account"
-            | FieldReferenceTarget.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
+            | FieldReferenceTarget.Unmodelled unmodelled -> fails state (MemberBindingFailure.Unmodelled unmodelled)
 
         | MemberSignature.Method _ ->
             let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
@@ -277,7 +354,9 @@ module MemberReferenceInstantiation =
                 && mentionsTypeVariable declaringTypeArguments.Arguments
                 ->
                 // A generic definition named without an instantiation: its typical instantiation.
-                let state, parent, spelledArguments = resolveParent state
+                match resolveParent state with
+                | state, Error failure -> fails state failure
+                | state, Ok (parent, spelledArguments) ->
 
                 let declaredByParent =
                     declaringTypeArguments.Arguments
@@ -289,23 +368,33 @@ module MemberReferenceInstantiation =
                     )
 
                 if not declaredByParent then
-                    refuse
+                    unmodelled
+                        state
                         $"names generic type definition %O{parent} without an instantiation, and an ancestor of it declares the method; the typical instantiation of a generic declaring type is not supported"
+                else
 
                 let method =
                     declaringAssembly.Methods.[method]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> parent.Generics.[par.SequenceNumber])
 
-                state, declaringAssembly.Name, Choice1Of2 method, spelledArguments
+                bound state declaringAssembly.Name (Choice1Of2 method) spelledArguments
             | MethodReferenceTarget.Defined (declaringAssembly, method, declaringTypeArguments) ->
-                let state, parent, spelledArguments = resolveParent state
+                match resolveParent state with
+                | state, Error failure -> fails state failure
+                | state, Ok (parent, spelledArguments) ->
 
                 // The parent's own arguments, concretised the first time an ancestor's extends
                 // clause turns out to spell one of the declaring type's arguments in terms of them.
-                let parentHandles (state : TypeSystemState) : TypeSystemState * ImmutableArray<ConcreteTypeHandle> =
-                    ((state, ImmutableArray.CreateBuilder spelledArguments.Length), spelledArguments)
-                    ||> Seq.fold (fun (state, handles) ty ->
-                        let state, handle =
+                let rec parentHandles
+                    (state : TypeSystemState)
+                    (handles : ConcreteTypeHandle list)
+                    (spelled : TypeDefn list)
+                    : TypeSystemState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
+                    =
+                    match spelled with
+                    | [] -> state, Ok (handles |> List.rev |> ImmutableArray.CreateRange)
+                    | ty :: rest ->
+                        match
                             TypeSystemState.concretizeType
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -315,18 +404,16 @@ module MemberReferenceInstantiation =
                                 ImmutableArray.Empty
                                 ImmutableArray.Empty
                                 ty
-
-                        handles.Add handle
-                        state, handles
-                    )
-                    |> fun (state, handles) -> state, handles.ToImmutable ()
+                        with
+                        | state, Ok handle -> parentHandles state (handle :: handles) rest
+                        | state, Error failure -> state, Error failure
 
                 // One of the declaring type's arguments, which the parent's arguments close.
                 let closeArgument
                     (state : TypeSystemState)
                     (handles : ImmutableArray<ConcreteTypeHandle>)
                     (argument : TypeConcretization.SubstitutionArgument)
-                    : TypeSystemState * TypeDefn
+                    : TypeSystemState * Result<TypeDefn, TypeBindingFailure>
                     =
                     let closedArguments =
                         TypeConcretization.SubstitutionContext.rebase
@@ -356,54 +443,70 @@ module MemberReferenceInstantiation =
                         }
 
                     state,
-                    Concretization.concreteHandleToTypeDefn
-                        baseClassTypes
-                        closed.[0]
-                        state.ConcreteTypes
-                        state._LoadedAssemblies
+                    closed
+                    |> Result.map (fun closed ->
+                        Concretization.concreteHandleToTypeDefn
+                            baseClassTypes
+                            closed.[0]
+                            state.ConcreteTypes
+                            state._LoadedAssemblies
+                    )
 
-                let state, _, declaringTypeGenerics =
-                    ((state, None, ImmutableArray.CreateBuilder declaringTypeArguments.Arguments.Length),
-                     declaringTypeArguments.Arguments)
-                    ||> Seq.fold (fun (state, handles, acc) argument ->
+                // Each of the declaring type's arguments in turn, stopping at the first that does not
+                // bind.
+                let rec declaringTypeGenerics
+                    (state : TypeSystemState)
+                    (handles : ImmutableArray<ConcreteTypeHandle> option)
+                    (acc : TypeDefn list)
+                    (arguments : TypeConcretization.SubstitutionArgument list)
+                    : TypeSystemState * Result<ImmutableArray<TypeDefn>, TypeBindingFailure>
+                    =
+                    match arguments with
+                    | [] -> state, Ok (acc |> List.rev |> ImmutableArray.CreateRange)
+                    | argument :: rest ->
                         match argument with
                         | TypeConcretization.SubstitutionArgument.Formal (owner, index) when owner = parent.Identity ->
-                            acc.Add spelledArguments.[index]
-                            state, handles, acc
+                            declaringTypeGenerics state handles (spelledArguments.[index] :: acc) rest
                         | TypeConcretization.SubstitutionArgument.Formal (owner, index) ->
                             failwith
                                 $"%s{memberName}: the declaring type's arguments mention variable !%d{index} of %O{owner}, not of the parent %O{parent}"
                         | TypeConcretization.SubstitutionArgument.Closed _
                         | TypeConcretization.SubstitutionArgument.Spelled _ ->
-                            let state, handles =
+                            let state, parentArguments =
                                 match handles with
-                                | Some handles -> state, handles
-                                | None -> parentHandles state
+                                | Some handles -> state, Ok handles
+                                | None -> parentHandles state [] (List.ofSeq spelledArguments)
 
-                            let state, closed = closeArgument state handles argument
-                            acc.Add closed
-                            state, Some handles, acc
-                    )
-                    |> fun (state, handles, acc) -> state, handles, acc.ToImmutable ()
+                            match parentArguments with
+                            | Error failure -> state, Error failure
+                            | Ok parentArguments ->
+
+                            match closeArgument state parentArguments argument with
+                            | state, Ok closed ->
+                                declaringTypeGenerics state (Some parentArguments) (closed :: acc) rest
+                            | state, Error failure -> state, Error failure
+
+                match declaringTypeGenerics state None [] (List.ofSeq declaringTypeArguments.Arguments) with
+                | state, Error failure -> fails state (MemberBindingFailure.TypeUnbound failure)
+                | state, Ok declaringTypeGenerics ->
 
                 let method =
                     declaringAssembly.Methods.[method]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> declaringTypeGenerics.[par.SequenceNumber])
 
-                state, declaringAssembly.Name, Choice1Of2 method, declaringTypeGenerics
+                bound state declaringAssembly.Name (Choice1Of2 method) declaringTypeGenerics
             | MethodReferenceTarget.ArrayMethod (arrayType, accessor) ->
-                refuse
-                    $"names %A{accessor} of the array type %O{arrayType}, which the runtime supplies; callers handle these before resolving a MemberRef"
-            | MethodReferenceTarget.Missing ->
-                refuse "binds to no method, so CoreCLR throws MissingMethodException; that is not modelled"
+                failwith
+                    $"%s{rowDescription assy m} names %A{accessor} of the array type %O{arrayType}, which the runtime supplies; callers handle these before resolving a MemberRef"
+            | MethodReferenceTarget.Missing -> fails state MemberBindingFailure.NoSuchMethod
             | MethodReferenceTarget.ParentTypeMissing miss ->
-                refuse
-                    $"has a parent that names no type (%O{miss}), so CoreCLR throws TypeLoadException; that is not modelled"
+                fails state (MemberBindingFailure.TypeUnbound (TypeBindingFailure.TypeAbsent miss))
             | MethodReferenceTarget.ParentAssemblyUnavailable reference ->
-                refuse
-                    $"has a parent whose load needs %s{reference.FullName}, which no runtime directory supplies, so CoreCLR throws FileNotFoundException; that is not modelled"
+                fails state (MemberBindingFailure.TypeUnbound (TypeBindingFailure.AssemblyUnavailable reference))
+            | MethodReferenceTarget.Unbound failure -> fails state (MemberBindingFailure.TypeUnbound failure)
             | MethodReferenceTarget.DependsOnInstantiation ->
-                refuse
+                unmodelled
+                    state
                     "names a method that depends on how a type variable of the referencing context is instantiated, which resolution does not yet take into account"
 
     /// `resolveMemberWithGenerics` for a reference read in the generic context of a method whose
@@ -419,10 +522,7 @@ module MemberReferenceInstantiation =
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (m : MemberReferenceHandle)
         (state : TypeSystemState)
-        : TypeSystemState *
-          AssemblyName *
-          Choice<WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>, FieldReferenceBinding> *
-          TypeDefn ImmutableArray
+        : TypeSystemState * Result<ResolvedMemberReference, MemberBindingFailure>
         =
         let key : MemberResolutionKey =
             {
@@ -433,7 +533,7 @@ module MemberReferenceInstantiation =
             }
 
         match Map.tryFind key state._MemberResolutions with
-        | Some resolved -> state, resolved.DeclaringAssembly, resolved.Member, resolved.TargetTypeGenerics
+        | Some resolved -> state, Ok resolved
         | None ->
 
         let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
@@ -445,7 +545,8 @@ module MemberReferenceInstantiation =
         let methodGenericDefns =
             methodGenerics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
 
-        let state, declaringAssembly, member', targetTypeGenerics =
+        // A failure is not memoised: binding the row again fails the same way.
+        match
             resolveMemberWithGenerics
                 loggerFactory
                 dotnetRuntimeDirs
@@ -455,12 +556,6 @@ module MemberReferenceInstantiation =
                 methodGenericDefns
                 m
                 state
-
-        let resolved : ResolvedMemberReference =
-            {
-                DeclaringAssembly = declaringAssembly
-                Member = member'
-                TargetTypeGenerics = targetTypeGenerics
-            }
-
-        state.WithMemberResolution key resolved, declaringAssembly, member', targetTypeGenerics
+        with
+        | state, Ok resolved -> state.WithMemberResolution key resolved, Ok resolved
+        | state, Error failure -> state, Error failure

@@ -158,6 +158,8 @@ module TestAmbiguousDefaultInterfaceDispatch =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition ((typeNamed "Both").Identity, SignatureTypeKind.ValueType))
 
+        let receiver = BindingResult.value receiver
+
         let method =
             (typeNamed (if variant then "IBase`1" else "IBase")).Methods
             |> List.find (fun m -> m.Name = "M")
@@ -168,7 +170,7 @@ module TestAmbiguousDefaultInterfaceDispatch =
             else
                 ImmutableArray.Empty
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             MethodConcretisation.concretizeMethodWithAllGenerics
                 loggerFactory
                 runtimeDirs
@@ -177,6 +179,8 @@ module TestAmbiguousDefaultInterfaceDispatch =
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         ConcreteVirtualDispatch.tryResolveVirtualImplementation
             loggerFactory
@@ -310,9 +314,11 @@ public static class Run
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition ((typeNamed "S").Identity, SignatureTypeKind.ValueType))
 
+        let receiver = BindingResult.value receiver
+
         let method = (typeNamed "I`1").Methods |> List.find (fun m -> m.Name = "M")
 
-        let state, concretized, _ =
+        let state, concretizedResult =
             MethodConcretisation.concretizeMethodWithAllGenerics
                 loggerFactory
                 runtimeDirs
@@ -321,6 +327,8 @@ public static class Run
                 method
                 ImmutableArray.Empty
                 state
+
+        let concretized, _ = BindingResult.value concretizedResult
 
         let _, resolved =
             ConcreteVirtualDispatch.tryResolveVirtualImplementation

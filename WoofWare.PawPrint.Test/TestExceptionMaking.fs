@@ -94,6 +94,12 @@ static class Program
     // C# throws only exceptions, so this emits a throw of its argument.
     static Action<object> wrap;
 
+    static void Variadic(__arglist) { }
+
+    // CoreCLR on Unix refuses to compile a method calling one with a variable argument list.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CallsVariadic() => Variadic(__arglist(1));
+
     static Action<object> Wrap()
     {
         var method = new DynamicMethod("Wrap", typeof(void), new[] { typeof(object) });
@@ -135,6 +141,7 @@ static class Program
             case "Negative": Negative(-1); break;
             case "Bounds": bounds(int.MaxValue, 2, 0, 1); break;
             case "Wrap": wrap("a string"); break;
+            case "Vararg": CallsVariadic(); break;
             default: throw new ArgumentException(fault);
         }
     }
@@ -353,6 +360,13 @@ static class Program
                     Exception = "System.OverflowException"
                     MayEndProcess = false
                 }
+                // Compiling a method that calls one with a variable argument list.
+                "Vararg",
+                {
+                    Making = lazy (snd (ExceptionMaking.ofSignatureRefusal SignatureRefusal.VariableArguments))
+                    Exception = "System.InvalidProgramException"
+                    MayEndProcess = false
+                }
                 "Bounds",
                 {
                     Making =
@@ -401,7 +415,7 @@ static class Program
 
     [<TestCaseSource(nameof faults)>]
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
-        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ] then
+        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ; "Vararg" ] then
             Net11Frontier.park Net11Frontier.exceptionMaking
 
         let case = cases.[fault]

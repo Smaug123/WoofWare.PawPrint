@@ -180,9 +180,14 @@ method) may add more:
   says. A local or parameter of a pointer, byref or function pointer type it does not load at all,
   nor what that points to (`JitTypeLoads`), unless Swift's calling convention calls the method,
   which the analysis takes any `[UnmanagedCallersOnly]` method to be; a return type of such a type
-  it loads with what it points to. What the JIT loads of a call of unmanaged code (a P/Invoke, or
-  `calli` by an unmanaged calling convention) depends on the marshalling the call needs, and the
-  analysis takes it to load every type of the signature in full. Of a method whose address the body
+  it loads with what it points to. Of a call of unmanaged code (a P/Invoke, or `calli` by an
+  unmanaged calling convention) the JIT loads what it loads of any call; where it makes the
+  transition to unmanaged code in the caller's own code, it also loads each instantiation the
+  VM's walk for whether the call needs marshalling reaches and, by Swift's convention, each
+  pointer's target, which the analysis takes to be loads it may make, as it does not decide where
+  the JIT makes the transition. A class, a byref's target or, by another convention, a pointer's
+  target it does not load there; the stub CoreCLR otherwise makes for the call loads them as the
+  call runs, where the caller's handlers can catch the failure. Of a method whose address the body
   takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value
   type of the signature whose definition is there where it prepares the method as a function
   pointer: for `ldvirtftn` and a method a method specification instantiates, and otherwise where
@@ -198,6 +203,15 @@ method) may add more:
   compiling whatever method it inlines the `ldftn` into, so what loading the value types then
   raises the analysis takes to escape every method that calls the body, directly or not, past all
   its handlers, as any of them may have the body inlined into it;
+* CoreCLR on Unix, which the analysis answers for, refuses a signature with a variable argument
+  list, managed or native, wherever it converts one for the JIT (`SignatureRefusal`): a `call`,
+  `callvirt`, `newobj`, `ldftn` or `ldvirtftn` naming a method with one, or a `calli` whose call
+  site has one, fails the compilation of the method holding it with `InvalidProgramException`,
+  past all its handlers and before the JIT loads any type of the signature (CoreCLR prepares a
+  method as a function pointer first for an `ldvirtftn`, or an `ldftn` of a method specification,
+  which may fail before), unless resolving a `call` or `ldftn` of an abstract method refuses that
+  first (`BadImageFormatException`); a method with one never compiles at all, so none of its body
+  runs. `ldtoken` converts no signature. The call is not followed, nor anything it would call;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),

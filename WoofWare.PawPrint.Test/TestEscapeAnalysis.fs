@@ -7188,68 +7188,654 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// Calls passing a pointer to a type that is gone, of unmanaged code (a P/Invoke, and `calli`
-    /// by an unmanaged calling convention) and of managed code. What the JIT loads of an unmanaged
-    /// call's signature depends on the marshalling CoreCLR decides the call needs, which
-    /// `JitTypeLoads` does not describe, so the analysis takes the caller's compilation to load
-    /// every type of that signature in full, and to fail past the caller's handlers; a managed call
-    /// loads nothing a pointer parameter points to. This is the analysis's upper bound, which the
-    /// host's outcome does not decide.
+    /// CoreCLR on Unix refuses a signature with a variable argument list, managed or native, as it
+    /// converts one for the JIT (`ConvToJitSig`, `IDS_EE_VARARG_NOT_SUPPORTED`): compiling a method
+    /// whose `call`, `callvirt`, `newobj`, `ldftn`, `ldvirtftn` or `calli` names such a method or
+    /// call site fails with `InvalidProgramException`, past the method's handlers, as does compiling
+    /// such a method itself; `ldtoken` converts no signature. Each caller makes its call in a branch
+    /// never taken; the host's CoreCLR, at tier 0 and fully optimised, says which fail.
     [<Test>]
-    let ``a call of unmanaged code is taken to load every type of its signature`` () : unit =
+    let ``the JIT refuses a signature with a variable argument list wherever it reads one`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let provider (complete : bool) : string =
-            "namespace Provider; public struct Kept { }"
+            "namespace Provider; public class Kept { }"
             + (if complete then " public struct GoneStruct { }" else "")
 
-        let client =
+        let compileProvider (complete : bool) : byte[] =
+            Roslyn.compileOptimizedAssembly "Provider" OutputKind.DynamicallyLinkedLibrary [ provider complete ]
+
+        // The image with the `ldvirtftn` of `Target.Plain` in `Calls.VirtualAddressOfHoldsGone`
+        // retargeted to `Target.Variadic`, whose address C# takes nowhere.
+        let retargetAddress (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let methodToken (typeName : string) (methodName : string) : int * MethodDefinition =
+                metadata.TypeDefinitions
+                |> Seq.map metadata.GetTypeDefinition
+                |> Seq.filter (fun ty -> metadata.GetString ty.Name = typeName)
+                |> Seq.exactlyOne
+                |> fun ty -> ty.GetMethods ()
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+                |> fun handle ->
+                    MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit handle : EntityHandle),
+                    metadata.GetMethodDefinition handle
+
+            let plain, _ = methodToken "Target" "Plain"
+            let variadic, _ = methodToken "Target" "Variadic"
+            let _, caller = methodToken "Calls" "VirtualAddressOfHoldsGone"
+            let rva = caller.RelativeVirtualAddress
+
+            let section =
+                pe.PEHeaders.SectionHeaders
+                |> Seq.find (fun s -> rva >= s.VirtualAddress && rva < s.VirtualAddress + s.VirtualSize)
+
+            let start = rva - section.VirtualAddress + section.PointerToRawData
+            let size = (pe.GetMethodBody rva).Size
+            let ldvirtftn = Array.append [| 0xFEuy ; 0x07uy |] (BitConverter.GetBytes plain)
+
+            match
+                [ start .. start + size - ldvirtftn.Length ]
+                |> List.filter (fun i -> patched.[i .. i + ldvirtftn.Length - 1] = ldvirtftn)
+            with
+            | [ at ] -> Array.blit (BitConverter.GetBytes variadic) 0 patched (at + 2) 4
+            | found -> failwith $"VirtualAddressOfHoldsGone takes Plain's address %d{found.Length} times, not once"
+
+            patched
+
+        // C# spells a call of a method with a variable argument list, and of a P/Invoke with one.
+        let source =
             """
 using System.Runtime.InteropServices;
 
-namespace Client;
+namespace Arglist;
 
-public static unsafe class Calls
+public struct HoldsGone { public Provider.GoneStruct G; }
+
+public class Target
 {
+    public Target(int a, __arglist) { }
+    public virtual void Plain() { }
+    public virtual void Variadic(HoldsGone h, __arglist) { }
+    public Target() { }
+    public static void Static(int a, __arglist) { }
+    public virtual void Virtual(int a, __arglist) { }
     [DllImport("nowhere")]
-    static extern void Native(Provider.GoneStruct* x);
+    public static extern void Native(int a, __arglist);
+}
 
-    static void Managed(Provider.GoneStruct* x) { }
+public static class Calls
+{
+    static bool never;
 
-    public static void CallsNative()
+    public static void Call() { if (never) Target.Static(1, __arglist(2)); }
+    public static void CallCaught()
     {
-        try { Native(null); } catch (System.Exception) { }
+        try { if (never) Target.Static(1, __arglist(2)); } catch (System.Exception) { }
     }
-    public static void CallsManaged()
+    public static void Callvirt() { if (never) new Target().Virtual(1, __arglist(2)); }
+    public static void Newobj() { if (never) new Target(1, __arglist(2)); }
+    public static void Native() { if (never) Target.Native(1, __arglist(2)); }
+    // The JIT folds away a branch capability queries rule out, as no CPU has both of these, and
+    // compiles no call in it.
+    public static void Guarded()
     {
-        try { Managed(null); } catch (System.Exception) { }
+        if (System.Runtime.Intrinsics.X86.Sse.IsSupported && System.Runtime.Intrinsics.Arm.AdvSimd.IsSupported)
+            Target.Static(1, __arglist(2));
     }
-    public static void CallsUnmanagedPointer()
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void Use(object o) { }
+    // Retargeted to `Variadic` after compiling.
+    public static void VirtualAddressOfHoldsGone()
     {
-        try { delegate* unmanaged<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+        if (never) Use(new System.Action(new Target().Plain));
     }
-    public static void CallsManagedPointer()
+    public static void NativeCaught()
     {
-        try { delegate*<Provider.GoneStruct*, void> f = null; f(null); } catch (System.Exception) { }
+        try { if (never) Target.Native(1, __arglist(2)); } catch (System.Exception) { }
     }
 }
 """
 
-        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
-            Roslyn.compileAssembly
-                name
+        let arglistImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Arglist"
                 OutputKind.DynamicallyLinkedLibrary
-                (references
-                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
-                [ text ]
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (compileProvider true))
+                    :> MetadataReference
+                ]
+                [ source ]
+            |> retargetAddress
+
+        let incompleteProvider = compileProvider false
+
+        // C# spells no `ldftn`, `ldvirtftn`, `calli` or `ldtoken` of one, so this emits them, each
+        // in a branch never taken.
+        let emittedImage =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Varargs", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Varargs"
+
+            let targets =
+                modul.DefineType ("Varargs.Targets", TypeAttributes.Public ||| TypeAttributes.Class)
+
+            let never =
+                targets.DefineField ("Never", typeof<bool>, FieldAttributes.Public ||| FieldAttributes.Static)
+
+            let staticTarget =
+                targets.DefineMethod (
+                    "Static",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    CallingConventions.VarArgs,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            staticTarget.GetILGenerator().Emit Emit.OpCodes.Ret
+
+            let virtualTarget =
+                targets.DefineMethod (
+                    "Virtual",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot,
+                    CallingConventions.VarArgs ||| CallingConventions.HasThis,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            virtualTarget.GetILGenerator().Emit Emit.OpCodes.Ret
+
+            let constructor = targets.DefineDefaultConstructor MethodAttributes.Public
+
+            let caller (name : string) (caught : bool) (body : Emit.ILGenerator -> unit) : unit =
+                let method =
+                    targets.DefineMethod (
+                        name,
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        Type.EmptyTypes
+                    )
+
+                let il = method.GetILGenerator ()
+                let skip = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Ldsfld, never)
+                il.Emit (Emit.OpCodes.Brfalse, skip)
+
+                if caught then
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+
+                body il
+
+                if caught then
+                    il.BeginCatchBlock typeof<Exception>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+
+                il.MarkLabel skip
+                il.Emit Emit.OpCodes.Ret
+
+            let functionPointer (il : Emit.ILGenerator) : unit =
+                il.Emit Emit.OpCodes.Ldc_I4_1
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Conv_I
+
+                il.EmitCalli (Emit.OpCodes.Calli, CallingConventions.VarArgs, typeof<Void>, [| typeof<int> |], null)
+
+            caller
+                "Address"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldftn, staticTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller
+                "VirtualAddress"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                    il.Emit (Emit.OpCodes.Ldvirtftn, virtualTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller "Indirect" false functionPointer
+            caller "IndirectCaught" true functionPointer
+
+            let abstractType =
+                modul.DefineType (
+                    "Varargs.Abstract",
+                    TypeAttributes.Public ||| TypeAttributes.Class ||| TypeAttributes.Abstract
+                )
+
+            let abstractTarget =
+                abstractType.DefineMethod (
+                    "Target",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot
+                    ||| MethodAttributes.Abstract,
+                    CallingConventions.VarArgs ||| CallingConventions.HasThis,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            abstractType.CreateType () |> ignore<Type>
+
+            caller
+                "AbstractAddress"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldftn, abstractTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller
+                "AbstractVirtualAddress"
+                false
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldvirtftn, abstractTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller
+                "Token"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldtoken, staticTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            targets.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let invalidProgram = "System.InvalidProgramException"
+
+        // Each method, by its assembly's name and type, and its name; whether the host runs it as a
+        // caller or prepares it as a method compiled by itself; and the exception compiling it fails
+        // with, if any.
+        let methods =
+            [
+                "Arglist", "Arglist.Calls", "Call", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "CallCaught", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Callvirt", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Newobj", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Native", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "NativeCaught", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Guarded", false, None
+                // CoreCLR prepares the method as a function pointer, loading the value types of its
+                // signature, before it converts the signature.
+                "Arglist", "Arglist.Calls", "VirtualAddressOfHoldsGone", false, Some "System.TypeLoadException"
+                "Arglist", "Arglist.Target", "Static", true, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Address", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "VirtualAddress", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Indirect", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "IndirectCaught", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Token", false, None
+                // Resolving a call of an abstract method itself, CoreCLR refuses it first.
+                "Varargs", "Varargs.Targets", "AbstractAddress", false, Some "System.BadImageFormatException"
+                "Varargs", "Varargs.Targets", "AbstractVirtualAddress", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Static", true, Some invalidProgram
+            ]
+
+        let images = Map.ofList [ "Arglist", arglistImage ; "Varargs", emittedImage ]
+
+        // What compiling each method does on the host's CoreCLR, at tier 0 and fully optimised:
+        // the name of the exception, if it fails.
+        let hostOutcomes (collectible : bool) : Map<string * string, string option> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ($"Varargs%b{collectible}", isCollectible = collectible)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let loaded =
+                    images
+                    |> Map.map (fun _ image -> context.LoadFromStream (new MemoryStream (image)))
+
+                methods
+                |> List.map (fun (assemblyName, typeName, name, prepared, _) ->
+                    let method = loaded.[assemblyName].GetType(typeName).GetMethod name
+
+                    let outcome =
+                        if prepared then
+                            try
+                                Runtime.CompilerServices.RuntimeHelpers.PrepareMethod method.MethodHandle
+                                None
+                            with e ->
+                                Some (e.GetType().FullName)
+                        else
+                            try
+                                method.Invoke ((null : obj), [||]) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some (e.InnerException.GetType().FullName)
+
+                    (typeName, name), outcome
+                )
+                |> Map.ofList
+            finally
+                if collectible then
+                    context.Unload ()
+
+        let host = [ hostOutcomes false ; hostOutcomes true ]
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
 
-        let clientAssembly =
-            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
+        let assemblies = images |> Map.map read
 
-        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            assemblies.["Arglist"].AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                (providerAssembly :: (assemblies |> Map.toList |> List.map snd))
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeBy : Map<string, Set<string>> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            let madeTypeLoad = render analysis madeTypeLoad
+            let next, madeInvalidProgram = making analysis invalidProgram
+            analysis <- next
+            let next, madeBadImage = making analysis "System.BadImageFormatException"
+            analysis <- next
+
+            Map.ofList
+                [
+                    "System.TypeLoadException", madeTypeLoad
+                    invalidProgram, madeInvalidProgram
+                    "System.BadImageFormatException", madeBadImage
+                ]
+
+        let failures =
+            [
+                for assemblyName, typeName, name, _, expected in methods do
+
+                    for outcomes in host do
+                        if outcomes.[typeName, name] <> expected then
+                            yield
+                                $"%s{typeName}.%s{name}: the host's outcome is %A{outcomes.[typeName, name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed assemblies.[assemblyName] typeName name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [
+                            invalidProgram
+                            "System.BadImageFormatException"
+                            "System.TypeLoadException"
+                        ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        match expected with
+                        | None -> escaping
+                        | Some expected when not (List.contains expected escaping) -> escaping @ [ $"no %s{expected}" ]
+                        | Some expected ->
+                            escaping
+                            |> List.filter (fun escaped ->
+                                escaped <> expected && not (madeBy.[expected].Contains $"=%s{escaped}")
+                            )
+
+                    if not unexplained.IsEmpty then
+                        yield
+                            $"%s{typeName}.%s{name}: %A{unexplained} in the analysis, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                    // Nothing of an instruction CoreCLR refuses runs, so nothing it would call is
+                    // unknown.
+                    if expected = Some invalidProgram && escapes.Unknown then
+                        yield
+                            $"%s{typeName}.%s{name}: unknown in the analysis, from %A{snd (EscapeAnalysis.unknownSources analysis (methodNamed assemblies.[assemblyName] typeName name))}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// A client compiled against one version of a provider, run against another lacking two types
+    /// and without the assembly `Optional`, each of whose callers calls unmanaged code (a P/Invoke,
+    /// or `calli` by an unmanaged calling convention) whose signature names a type that fails to
+    /// load. The JIT loads the return type and each value-type parameter, as of any call. Where it
+    /// makes the transition to unmanaged code in the caller's own code, CoreCLR's walk for whether
+    /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
+    /// loads each pointer's target; a class, a byref's target or, by any other convention, a
+    /// pointer's target, it does not load at all. Whether the JIT makes the transition there the
+    /// analysis does not decide, so it takes those loads to be ones the JIT may make
+    /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
+    /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
+    /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
+    [<Test>]
+    let ``a call of unmanaged code loads what marshalling and Swift's convention read of its signature`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let optional = "namespace Optional; public class Thing { }"
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Natives
+{
+    [DllImport("nowhere")]
+    public static extern void TakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere")]
+    public static extern void TakesGone(Provider.Gone x);
+    [DllImport("nowhere")]
+    public static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void TakesPointerThenGenericOfMissing(Provider.GoneStruct* x, Provider.KeptGeneric<Optional.Thing> y);
+    [DllImport("nowhere")]
+    public static extern Provider.Gone ReturnsGone();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftTakesByrefToGoneStruct(ref Provider.GoneStruct x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void CdeclTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    // Its import's calling-convention bits are cleared after compiling.
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void UnspecifiedTakesPointerToGoneStruct(Provider.GoneStruct* x);
+}
+
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    public static void PointerToGoneStruct() { if (never) Natives.TakesPointerToGoneStruct(null); }
+    public static void Gone() { if (never) Natives.TakesGone(null); }
+    public static void GenericOfGone() { if (never) Natives.TakesGenericOfGone(null); }
+    public static void PointerThenGenericOfMissing() { if (never) Natives.TakesPointerThenGenericOfMissing(null, null); }
+    public static void ReturnsGone() { if (never) Natives.ReturnsGone(); }
+    public static void SwiftPointerToGoneStruct() { if (never) Natives.SwiftTakesPointerToGoneStruct(null); }
+    public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
+    public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
+    public static void UnspecifiedPointerToGoneStruct() { if (never) Natives.UnspecifiedTakesPointerToGoneStruct(null); }
+    public static void CaughtGenericOfGone()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
+    }
+    public static void IndirectPointerToGoneStruct()
+    {
+        if (never) ((delegate* unmanaged<Provider.GoneStruct*, void>)pointer)(null);
+    }
+    public static void IndirectGenericOfGone()
+    {
+        if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+    public static void SwiftIndirectPointerToGoneStruct()
+    {
+        if (never) ((delegate* unmanaged[Swift]<Provider.GoneStruct*, void>)pointer)(null);
+    }
+}
+"""
+
+        // Optimised: the JIT never makes the transition in the caller's code where the assembly's
+        // `DebuggableAttribute` disables its optimisation.
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let optionalImage = compile "Optional" [] optional
+        // The image with the calling-convention bits of the P/Invoke named `methodName`'s import
+        // cleared, which C# never emits and CoreCLR reads as `WinApi`.
+        let clearImportConvention (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let method =
+                metadata.MethodDefinitions
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+
+            // A small image's `MemberForwarded` is a two-byte coded index whose tag 1 is a method.
+            let memberForwarded =
+                (MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit method : EntityHandle)
+                 <<< 1)
+                ||| 1
+
+            let rowSize = metadata.GetTableRowSize TableIndex.ImplMap
+
+            let tableStart =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.ImplMap
+
+            let row =
+                [ 0 .. metadata.GetTableRowCount TableIndex.ImplMap - 1 ]
+                |> List.filter (fun row ->
+                    int (BitConverter.ToUInt16 (patched, tableStart + row * rowSize + 2)) = memberForwarded
+                )
+                |> List.exactlyOne
+
+            let offset = tableStart + row * rowSize
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let cleared = flags &&& ~~~(uint16 MethodImportAttributes.CallingConventionMask)
+            Array.blit (BitConverter.GetBytes cleared) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ; optionalImage ] client
+            |> clearImportConvention "UnspecifiedTakesPointerToGoneStruct"
+
+        let typeLoad = "System.TypeLoadException"
+        let fileNotFound = "System.IO.FileNotFoundException"
+
+        // Swift's convention is compiled as such on Arm64 and on x64 other than Windows'.
+        let compilesSwift =
+            not (
+                OperatingSystem.IsWindows ()
+                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+            )
+
+        let swiftEscapes =
+            if compilesSwift then
+                CallOutcome.Escapes typeLoad
+            else
+                CallOutcome.Runs
+
+        // Each caller, what running it does, and what the analysis lets escape it.
+        let methods =
+            [
+                "PointerToGoneStruct", CallOutcome.Runs, []
+                "Gone", CallOutcome.Runs, []
+                "GenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                // The walk loads the instantiation; nothing loads what the pointer points to.
+                "PointerThenGenericOfMissing", CallOutcome.Escapes fileNotFound, [ fileNotFound ]
+                "ReturnsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "SwiftPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+                // A byref needs marshalling, so the JIT leaves the transition to the stub.
+                "SwiftByrefToGoneStruct", CallOutcome.Runs, []
+                // The import's convention is not `WinApi`, so CoreCLR reads no `UnmanagedCallConv`.
+                "CdeclPointerToGoneStruct", CallOutcome.Runs, []
+                // An import that names no calling convention CoreCLR reads as naming `WinApi`.
+                "UnspecifiedPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+                // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
+                // analysis does not decide.
+                "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
+                "IndirectPointerToGoneStruct", CallOutcome.Runs, []
+                "IndirectGenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "SwiftIndirectPointerToGoneStruct", swiftEscapes, [ typeLoad ]
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedCallTypeLoads", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let outcome =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
 
         let reference =
             clientAssembly.AssemblyReferences.Values
@@ -7260,26 +7846,47 @@ public static unsafe class Calls
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
-        let raisesTypeLoad (name : string) : bool =
-            let next, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
-
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let made : Set<string> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
             analysis <- next
-            (render analysis escapes).Contains "=System.TypeLoadException"
+            let next, madeFileNotFound = making analysis fileNotFound
+            analysis <- next
+            Set.union (render analysis madeTypeLoad) madeFileNotFound
 
-        [
-            "CallsNative", raisesTypeLoad "CallsNative"
-            "CallsManaged", raisesTypeLoad "CallsManaged"
-            "CallsUnmanagedPointer", raisesTypeLoad "CallsUnmanagedPointer"
-            "CallsManagedPointer", raisesTypeLoad "CallsManagedPointer"
-        ]
-        |> shouldEqual
+        let failures =
             [
-                "CallsNative", true
-                "CallsManaged", false
-                "CallsUnmanagedPointer", true
-                "CallsManagedPointer", false
+                for name, expected, expectedEscaping in methods do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; fileNotFound ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        (expectedEscaping
+                         |> List.filter (fun expected -> not (List.contains expected escaping))
+                         |> List.map (fun missing -> $"no %s{missing}"))
+                        @ (escaping
+                           |> List.filter (fun escaped ->
+                               not (List.contains escaped expectedEscaping)
+                               && (expectedEscaping.IsEmpty || not (made.Contains $"=%s{escaped}"))
+                           ))
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
     /// A client compiled against one version of a provider, run against another lacking two types,
     /// taking the address of a method whose signature names a type that fails to load. The JIT

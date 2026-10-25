@@ -226,7 +226,7 @@ module TypeSystemState =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (ty : TypeDefn)
-        : TypeSystemState * ConcreteTypeHandle
+        : TypeSystemState * Result<ConcreteTypeHandle, TypeBindingFailure>
         =
         let ctx =
             {
@@ -269,7 +269,7 @@ module TypeSystemState =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (signature : TypeMethodSignature<TypeDefn>)
-        : TypeSystemState * TypeMethodSignature<ConcreteTypeHandle>
+        : TypeSystemState * Result<TypeMethodSignature<ConcreteTypeHandle>, TypeBindingFailure>
         =
         let ctx =
             {
@@ -307,7 +307,7 @@ module TypeSystemState =
         (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (returnType : MethodReturnType<TypeDefn>)
-        : TypeSystemState * MethodReturnType<ConcreteTypeHandle>
+        : TypeSystemState * Result<MethodReturnType<ConcreteTypeHandle>, TypeBindingFailure>
         =
         let ctx =
             {
@@ -343,7 +343,7 @@ module TypeSystemState =
         (state : TypeSystemState)
         (impl : TypeConcretization.ConstraintComparand)
         (decl : TypeConcretization.ConstraintComparand)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         let ctx =
             {
@@ -387,7 +387,7 @@ module TypeSystemState =
         (skipReturnType : bool)
         (caller : TypeConcretization.SignatureComparand)
         (callee : TypeConcretization.SignatureComparand)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         let ctx =
             {
@@ -422,7 +422,7 @@ module TypeSystemState =
         (skipReturnType : bool)
         (caller : TypeConcretization.UnsubstitutedComparand)
         (callee : TypeConcretization.UnsubstitutedComparand)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         let ctx =
             {
@@ -457,7 +457,7 @@ module TypeSystemState =
         (state : TypeSystemState)
         (left : TypeConcretization.SubstitutionContext)
         (right : TypeConcretization.SubstitutionContext)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         let ctx =
             {
@@ -488,9 +488,9 @@ module TypeSystemState =
         (target : TypeRef)
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (state : TypeSystemState)
-        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : TypeSystemState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let assemblies, resolvedAssy, typeInfo =
+        let assemblies, resolved =
             match
                 TypeResolution.resolveTypeFromRef
                     loggerFactory
@@ -500,14 +500,12 @@ module TypeSystemState =
                     typeGenericArgs
                     state._LoadedAssemblies
             with
-            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
-            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure target referencedInAssembly failure)
+            | assemblies, resolved -> assemblies, resolved
 
         { state with
             _LoadedAssemblies = assemblies
         },
-        resolvedAssy,
-        typeInfo
+        resolved
 
     let resolveType
         (loggerFactory : ILoggerFactory)
@@ -516,20 +514,18 @@ module TypeSystemState =
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (state : TypeSystemState)
-        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : TypeSystemState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let assemblies, resolvedAssy, typeInfo =
+        let assemblies, resolved =
             match
                 TypeResolution.resolveType loggerFactory dotnetRuntimeDirs ty genericArgs assy state._LoadedAssemblies
             with
-            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
-            | _, Error failure -> failwith (TypeResolution.describeReferenceFailure assy.TypeRefs.[ty] assy failure)
+            | assemblies, resolved -> assemblies, resolved
 
         { state with
             _LoadedAssemblies = assemblies
         },
-        resolvedAssy,
-        typeInfo
+        resolved
 
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
@@ -540,9 +536,9 @@ module TypeSystemState =
         (typeGenericArgs : TypeDefn ImmutableArray)
         (methodGenericArgs : TypeDefn ImmutableArray)
         (state : TypeSystemState)
-        : TypeSystemState * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        : TypeSystemState * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let assemblies, resolvedAssy, typeInfo =
+        let assemblies, resolved =
             match
                 TypeResolution.resolveTypeFromSpec
                     loggerFactory
@@ -554,14 +550,12 @@ module TypeSystemState =
                     methodGenericArgs
                     state._LoadedAssemblies
             with
-            | assemblies, Ok (resolvedAssy, typeInfo) -> assemblies, resolvedAssy, typeInfo
-            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+            | assemblies, resolved -> assemblies, resolved
 
         { state with
             _LoadedAssemblies = assemblies
         },
-        resolvedAssy,
-        typeInfo
+        resolved
 
     let lookupTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -592,14 +586,14 @@ module TypeSystemState =
         (state : TypeSystemState)
         (activeAssy : DumpedAssembly)
         (ref : TypeReferenceHandle)
-        : TypeSystemState * TypeDefn * DumpedAssembly
+        : TypeSystemState * Result<TypeDefn * DumpedAssembly, TypeBindingFailure>
         =
         let ref = activeAssy.TypeRefs.[ref]
 
-        let state, assy, resolved =
-            resolveTypeFromRef loggerFactory dotnetRuntimeDirs activeAssy ref ImmutableArray.Empty state
-
-        state, LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy
+        match resolveTypeFromRef loggerFactory dotnetRuntimeDirs activeAssy ref ImmutableArray.Empty state with
+        | state, Error failure -> state, Error failure
+        | state, Ok (assy, resolved) ->
+            state, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved, assy)
 
     /// Resolve a MetadataToken (TypeDefinition, TypeReference, or TypeSpecification) to a TypeDefn,
     /// together with the assembly the type was resolved in.
@@ -614,15 +608,15 @@ module TypeSystemState =
         (state : TypeSystemState)
         (activeAssy : DumpedAssembly)
         (token : MetadataToken)
-        : TypeSystemState * TypeDefn * DumpedAssembly
+        : TypeSystemState * Result<TypeDefn * DumpedAssembly, TypeBindingFailure>
         =
         match token with
         | MetadataToken.TypeDefinition h ->
             let state, ty = lookupTypeDefn baseClassTypes state activeAssy h
-            state, ty, activeAssy
+            state, Ok (ty, activeAssy)
         | MetadataToken.TypeReference ref ->
             lookupTypeRef loggerFactory dotnetRuntimeDirs baseClassTypes state activeAssy ref
-        | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
+        | MetadataToken.TypeSpecification spec -> state, Ok (activeAssy.TypeSpecs.[spec].Signature, activeAssy)
         | m -> failwith $"unexpected type metadata token {m}"
 
     /// Resolve a BaseTypeInfo to the assembly and TypeDefn of the base type.
@@ -633,7 +627,7 @@ module TypeSystemState =
         (state : TypeSystemState)
         (currentAssembly : DumpedAssembly)
         (baseTypeInfo : BaseTypeInfo)
-        : TypeSystemState * DumpedAssembly * TypeDefn
+        : TypeSystemState * Result<DumpedAssembly * TypeDefn, TypeBindingFailure>
         =
         match baseTypeInfo with
         | BaseTypeInfo.TypeDef handle ->
@@ -642,9 +636,9 @@ module TypeSystemState =
             let typeDefn =
                 LoadedTypeInfo.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies typeInfo
 
-            state, currentAssembly, typeDefn
+            state, Ok (currentAssembly, typeDefn)
         | BaseTypeInfo.TypeRef handle ->
-            let state, assy, resolved =
+            match
                 resolveTypeFromRef
                     loggerFactory
                     dotnetRuntimeDirs
@@ -652,14 +646,13 @@ module TypeSystemState =
                     (currentAssembly.TypeRefs.[handle])
                     ImmutableArray.Empty
                     state
-
-            let typeDefn =
-                LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved
-
-            state, assy, typeDefn
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok (assy, resolved) ->
+                state, Ok (assy, LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies resolved)
         | BaseTypeInfo.TypeSpec handle ->
             let signature = currentAssembly.TypeSpecs.[handle].Signature
-            state, currentAssembly, signature
+            state, Ok (currentAssembly, signature)
 
     /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
     /// Returns None for types without a base type (System.Object).
@@ -686,7 +679,9 @@ module TypeSystemState =
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
-            state, Some arrayHandle
+            match arrayHandle with
+            | Ok arrayHandle -> state, Some arrayHandle
+            | Error failure -> failwith (TypeBindingFailure.describe failure)
         | ConcreteTypeHandle.FunctionPointer _ ->
             failwith
                 $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
@@ -705,7 +700,11 @@ module TypeSystemState =
                 | None -> state, None
                 | Some baseTypeInfo ->
                     let state, baseAssy, baseTypeDefn =
-                        resolveBaseTypeInfo loggerFactory dotnetRuntimeDirs baseClassTypes state assy baseTypeInfo
+                        match
+                            resolveBaseTypeInfo loggerFactory dotnetRuntimeDirs baseClassTypes state assy baseTypeInfo
+                        with
+                        | state, Ok (baseAssy, baseTypeDefn) -> state, baseAssy, baseTypeDefn
+                        | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
                     let state, baseHandle =
                         concretizeType
@@ -718,7 +717,9 @@ module TypeSystemState =
                             ImmutableArray.Empty
                             baseTypeDefn
 
-                    state, Some baseHandle
+                    match baseHandle with
+                    | Ok baseHandle -> state, Some baseHandle
+                    | Error failure -> failwith (TypeBindingFailure.describe failure)
 
     /// Get the metadata row directly represented by this concrete handle.
     /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
@@ -833,5 +834,7 @@ module TypeSystemState =
                         ImmutableArray.Empty
                         valueField.Signature
 
-                Some (state, underlying)
+                match underlying with
+                | Ok underlying -> Some (state, underlying)
+                | Error failure -> failwith (TypeBindingFailure.describe failure)
             | _ -> None

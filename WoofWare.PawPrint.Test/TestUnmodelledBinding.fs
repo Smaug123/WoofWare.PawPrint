@@ -18,254 +18,12 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestUnmodelledBinding =
 
-    /// The handles of an emitted image's shapes.
-    type private Shapes =
-        {
-            /// `System.Gone`, scoped to CoreLib, which declares no such type.
-            Absent : TypeReferenceHandle
-            /// `System.Gone`, scoped to an assembly named `Nowhere`.
-            Unbound : TypeReferenceHandle
-            /// `System.Collections.Generic.List`1`, scoped to CoreLib.
-            List : TypeReferenceHandle
-            /// `N.Inner`, scoped to a module reference.
-            ModuleScoped : TypeReferenceHandle
-            /// A field reference whose parent is a module reference.
-            ModuleParent : MemberReferenceHandle
-            /// A field reference whose parent is a method definition.
-            MethodParent : MemberReferenceHandle
-            /// A reference to `Object.ToString`, a method, read as a field.
-            MethodSignature : MemberReferenceHandle
-            /// `N.Exported`, exported from another file of the assembly.
-            FileExport : ExportedTypeHandle
-            /// `N.Derived`, whose base type is `System.Gone`, which CoreLib does not declare.
-            Derived : TypeDefinitionHandle
-        }
-
-    let private emit () : byte[] * Shapes =
-        let metadata = MetadataBuilder ()
-        let ilStream = BlobBuilder ()
-
-        metadata.AddModule (
-            0,
-            metadata.GetOrAddString "Unmodelled.dll",
-            metadata.GetOrAddGuid (Guid "0d4b9e61-2a7c-4e3f-9b8d-5c6e7f8a9b0c"),
-            Unchecked.defaultof<GuidHandle>,
-            Unchecked.defaultof<GuidHandle>
-        )
-        |> ignore<ModuleDefinitionHandle>
-
-        metadata.AddAssembly (
-            metadata.GetOrAddString "Unmodelled",
-            Version (1, 0, 0, 0),
-            Unchecked.defaultof<StringHandle>,
-            Unchecked.defaultof<BlobHandle>,
-            Unchecked.defaultof<AssemblyFlags>,
-            AssemblyHashAlgorithm.None
-        )
-        |> ignore<AssemblyDefinitionHandle>
-
-        let corelibName = typeof<obj>.Assembly.GetName ()
-
-        let corelibRef =
-            metadata.AddAssemblyReference (
-                metadata.GetOrAddString corelibName.Name,
-                corelibName.Version,
-                Unchecked.defaultof<StringHandle>,
-                metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
-                Unchecked.defaultof<AssemblyFlags>,
-                Unchecked.defaultof<BlobHandle>
-            )
-
-        let nowhereRef =
-            metadata.AddAssemblyReference (
-                metadata.GetOrAddString "Nowhere",
-                Version (1, 0, 0, 0),
-                Unchecked.defaultof<StringHandle>,
-                Unchecked.defaultof<BlobHandle>,
-                Unchecked.defaultof<AssemblyFlags>,
-                Unchecked.defaultof<BlobHandle>
-            )
-
-        let typeRef (scope : EntityHandle) (ns : string) (name : string) : TypeReferenceHandle =
-            metadata.AddTypeReference (scope, metadata.GetOrAddString ns, metadata.GetOrAddString name)
-
-        let objectRef =
-            typeRef (AssemblyReferenceHandle.op_Implicit corelibRef) "System" "Object"
-
-        let absent =
-            typeRef (AssemblyReferenceHandle.op_Implicit corelibRef) "System" "Gone"
-
-        let unbound =
-            typeRef (AssemblyReferenceHandle.op_Implicit nowhereRef) "System" "Gone"
-
-        let list =
-            typeRef (AssemblyReferenceHandle.op_Implicit corelibRef) "System.Collections.Generic" "List`1"
-
-        let otherModule =
-            metadata.AddModuleReference (metadata.GetOrAddString "Other.netmodule")
-
-        let moduleScoped =
-            typeRef (ModuleReferenceHandle.op_Implicit otherModule) "N" "Inner"
-
-        let int32Field =
-            let blob = BlobBuilder ()
-            BlobEncoder(blob).Field().Type().Int32 ()
-            metadata.GetOrAddBlob blob
-
-        let toStringSignature =
-            let blob = BlobBuilder ()
-
-            BlobEncoder(blob)
-                .MethodSignature(isInstanceMethod = true)
-                .Parameters (0, (fun returnType -> returnType.Type().String ()), (fun _ -> ()))
-
-            metadata.GetOrAddBlob blob
-
-        let voidSignature =
-            let blob = BlobBuilder ()
-
-            BlobEncoder(blob).MethodSignature().Parameters (0, (fun returnType -> returnType.Void ()), (fun _ -> ()))
-
-            metadata.GetOrAddBlob blob
-
-        let body =
-            let il = InstructionEncoder (BlobBuilder ())
-            il.OpCode ILOpCode.Ret
-            MethodBodyStreamEncoder(ilStream).AddMethodBody il
-
-        // `<Module>` is row 1, `Holder` row 2, which declares `M`, MethodDef row 1, and `Derived` row
-        // 3, which declares no method.
-        metadata.AddTypeDefinition (
-            TypeAttributes.NotPublic,
-            Unchecked.defaultof<StringHandle>,
-            metadata.GetOrAddString "<Module>",
-            Unchecked.defaultof<EntityHandle>,
-            MetadataTokens.FieldDefinitionHandle 1,
-            MetadataTokens.MethodDefinitionHandle 1
-        )
-        |> ignore<TypeDefinitionHandle>
-
-        metadata.AddTypeDefinition (
-            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed,
-            metadata.GetOrAddString "N",
-            metadata.GetOrAddString "Holder",
-            TypeReferenceHandle.op_Implicit objectRef,
-            MetadataTokens.FieldDefinitionHandle 1,
-            MetadataTokens.MethodDefinitionHandle 1
-        )
-        |> ignore<TypeDefinitionHandle>
-
-        let derived =
-            metadata.AddTypeDefinition (
-                TypeAttributes.Public,
-                metadata.GetOrAddString "N",
-                metadata.GetOrAddString "Derived",
-                TypeReferenceHandle.op_Implicit absent,
-                MetadataTokens.FieldDefinitionHandle 1,
-                MetadataTokens.MethodDefinitionHandle 2
-            )
-
-        let m =
-            metadata.AddMethodDefinition (
-                MethodAttributes.Public ||| MethodAttributes.Static,
-                MethodImplAttributes.IL,
-                metadata.GetOrAddString "M",
-                voidSignature,
-                body,
-                MetadataTokens.ParameterHandle 1
-            )
-
-        let moduleParent =
-            metadata.AddMemberReference (
-                ModuleReferenceHandle.op_Implicit otherModule,
-                metadata.GetOrAddString "F",
-                int32Field
-            )
-
-        let methodParent =
-            metadata.AddMemberReference (MethodDefinitionHandle.op_Implicit m, metadata.GetOrAddString "F", int32Field)
-
-        let methodSignature =
-            metadata.AddMemberReference (
-                TypeReferenceHandle.op_Implicit objectRef,
-                metadata.GetOrAddString "ToString",
-                toStringSignature
-            )
-
-        let file =
-            metadata.AddAssemblyFile (
-                metadata.GetOrAddString "Other.netmodule",
-                metadata.GetOrAddBlob [| 0uy |],
-                containsMetadata = true
-            )
-
-        let fileExport =
-            metadata.AddExportedType (
-                TypeAttributes.Public,
-                metadata.GetOrAddString "N",
-                metadata.GetOrAddString "Exported",
-                AssemblyFileHandle.op_Implicit file,
-                0
-            )
-
-        let peBuilder =
-            ManagedPEBuilder (
-                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
-                MetadataRootBuilder metadata,
-                ilStream
-            )
-
-        let image = BlobBuilder ()
-        peBuilder.Serialize image |> ignore<BlobContentId>
-
-        image.ToArray (),
-        {
-            Absent = absent
-            Unbound = unbound
-            List = list
-            ModuleScoped = moduleScoped
-            ModuleParent = moduleParent
-            MethodParent = methodParent
-            MethodSignature = methodSignature
-            FileExport = fileExport
-            Derived = derived
-        }
-
-    /// The emitted image read, CoreLib, and everything needed to resolve against them.
-    type private Fixture =
-        {
-            LoggerFactory : Microsoft.Extensions.Logging.ILoggerFactory
-            BaseClassTypes : BaseClassTypes<DumpedAssembly>
-            Assemblies : LoadedAssemblies
-            Analysed : DumpedAssembly
-            Shapes : Shapes
-        }
-
-    let private fixture () : Fixture =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let corelib =
-            Assembly.readFile loggerFactory (Path.Combine (HostImage.frameworkDirectory, "System.Private.CoreLib.dll"))
-
-        let image, shapes = emit ()
-
-        let analysed =
-            Assembly.read loggerFactory (Some "Unmodelled.dll") (new MemoryStream (image))
-
-        {
-            LoggerFactory = loggerFactory
-            BaseClassTypes = BaseClassTypes.ofCorelib corelib
-            Assemblies = LoadedAssemblies.ofAssemblies [ corelib ; analysed ]
-            Analysed = analysed
-            Shapes = shapes
-        }
-
     let private unmodelledSaying (fragment : string) (unmodelled : UnmodelledBinding) : unit =
         Assert.That (unmodelled.Diagnostic, Does.Contain fragment)
 
     [<Test>]
     let ``a type reference scoped to a module reference is unmodelled`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
         let target = f.Analysed.TypeRefs.[f.Shapes.ModuleScoped]
 
         match LoadedTypeResolution.resolveTypeRef f.Assemblies f.Analysed ImmutableArray.Empty target with
@@ -288,7 +46,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``a type reference naming nothing is a named miss`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
 
         match
             TypeResolution.resolveTypeFromRef
@@ -317,7 +75,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``a type exported from another file of the assembly is unmodelled`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
 
         match
             TypeResolution.tryResolveTypeFromExport
@@ -334,7 +92,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``a member reference whose parent is a module reference is unmodelled`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
 
         match
             MemberReferenceParent.resolve
@@ -351,7 +109,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``a field reference ECMA-335 forbids is unmodelled`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
 
         let resolve (reference : MemberReferenceHandle) =
             FieldReferenceResolution.resolve
@@ -374,7 +132,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``an argument of an instantiation that names nothing is the instantiation's miss`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
 
         let spelled (handle : TypeReferenceHandle) =
             TypeDefn.FromReference (f.Analysed.TypeRefs.[handle], SignatureTypeKind.Class)
@@ -406,7 +164,7 @@ module TestUnmodelledBinding =
 
     [<Test>]
     let ``a type whose base type is absent is a named miss`` () : unit =
-        let f = fixture ()
+        let f = UnmodelledImage.fixture ()
         let derived = f.Analysed.TypeDefs.[f.Shapes.Derived]
 
         match

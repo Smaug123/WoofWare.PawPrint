@@ -43,7 +43,7 @@ module ConcreteInterfaceDispatch =
             | Some assy -> assy
             | None -> ownerAssy
 
-        let state, implTypeDefn, implResolvedAssy =
+        let state, implTypeDefnResult =
             TypeSystemState.resolveTypeMetadataToken
                 loggerFactory
                 dotnetRuntimeDirs
@@ -51,6 +51,8 @@ module ConcreteInterfaceDispatch =
                 state
                 implAssy
                 impl.InterfaceHandle
+
+        let implTypeDefn, implResolvedAssy = BindingStop.bound implTypeDefnResult
 
         let state, implHandle =
             TypeSystemState.concretizeType
@@ -62,6 +64,8 @@ module ConcreteInterfaceDispatch =
                 ownerTy.Generics
                 ImmutableArray.Empty
                 implTypeDefn
+
+        let implHandle = BindingStop.bound implHandle
 
         match TypeSystemState.tryGetConcreteTypeInfo state implHandle with
         | Some (implTy, typeInfo) -> state, implHandle, implTy, typeInfo
@@ -232,6 +236,8 @@ module ConcreteInterfaceDispatch =
                             entry.Substitution
                             substitution
 
+                    let same = BindingStop.bound same
+
                     if same then
                         state, Some i
                     else
@@ -305,7 +311,7 @@ module ConcreteInterfaceDispatch =
         : TypeSystemState * (ConcreteTypeHandle * TypeConcretization.SubstitutionContext * SlotIdentity) option
         =
         let concretizeParent (state : TypeSystemState) (parent : MetadataToken) =
-            let state, parentTypeDefn, parentAssembly =
+            let state, parentTypeDefnResult =
                 TypeSystemState.resolveTypeMetadataToken
                     loggerFactory
                     dotnetRuntimeDirs
@@ -313,6 +319,8 @@ module ConcreteInterfaceDispatch =
                     state
                     assembly
                     parent
+
+            let parentTypeDefn, parentAssembly = BindingStop.bound parentTypeDefnResult
 
             let state, parentHandle =
                 TypeSystemState.concretizeType
@@ -324,6 +332,8 @@ module ConcreteInterfaceDispatch =
                     ownerTy.Generics
                     ImmutableArray.Empty
                     parentTypeDefn
+
+            let parentHandle = BindingStop.bound parentHandle
 
             match TypeSystemState.tryGetConcreteTypeInfo state parentHandle with
             | Some (parentTy, parentTypeInfo) -> state, parentHandle, parentTy, parentTypeInfo
@@ -417,6 +427,8 @@ module ConcreteInterfaceDispatch =
                                     DeclaringTypeGenerics = openContext
                                 }
 
+                        let equivalent = BindingStop.bound equivalent
+
                         state, (if equivalent then acc @ [ candidate ] else acc)
                     )
 
@@ -489,7 +501,7 @@ module ConcreteInterfaceDispatch =
                 | MetadataToken.TypeDefinition parent ->
                     state, ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent
                 | MetadataToken.TypeReference parent ->
-                    let state, _, resolved =
+                    let state, resolvedResult =
                         TypeSystemState.resolveTypeFromRef
                             loggerFactory
                             dotnetRuntimeDirs
@@ -497,6 +509,8 @@ module ConcreteInterfaceDispatch =
                             assembly.TypeRefs.[parent]
                             ImmutableArray.Empty
                             state
+
+                    let _, resolved = BindingStop.bound resolvedResult
 
                     state, ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
                 | MetadataToken.TypeSpecification parent ->
@@ -543,6 +557,8 @@ module ConcreteInterfaceDispatch =
                                 AssemblyFullName = owner.AssemblyFullName
                                 DeclaringTypeGenerics = owner.Substitution
                             }
+
+                    let equivalent = BindingStop.bound equivalent
 
                     if equivalent then state, candidate else first state rest
 
@@ -691,6 +707,7 @@ module ConcreteInterfaceDispatch =
                     false
                     interfaceComparand
                     candidateComparand
+                |> fun (state, equivalent) -> state, BindingStop.bound equivalent
 
         let rec firstEquivalent
             (state : TypeSystemState)
@@ -876,6 +893,8 @@ module ConcreteInterfaceDispatch =
                                 state
                                 entry.Substitution
                                 declaredSubstitution
+
+                        let same = BindingStop.bound same
 
                         if same then state, Some index else namedEntry state rest
 
