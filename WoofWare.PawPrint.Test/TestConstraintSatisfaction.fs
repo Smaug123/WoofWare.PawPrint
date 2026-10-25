@@ -776,3 +776,127 @@ public static class Outer<U>
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
+
+    /// An abstract class implementing, without implementing its static abstract method, an
+    /// interface that declares one, and an interface deriving from that, which C# cannot declare.
+    /// CoreCLR loads it. Against a constraint naming the interface that declares the method, it
+    /// asks the method to resolve on the argument, which fails, and the host rejects it; TypeSystem
+    /// does not decide that rule, so it must answer `Undecided`. Against a constraint naming the
+    /// derived interface, CoreCLR asks only of the methods that interface declares itself, of which
+    /// there are none, and the host admits it; TypeSystem must too.
+    [<Test>]
+    let ``an abstract class is undecided only against an interface declaring a static abstract method itself``
+        ()
+        : unit
+        =
+        let fabricated =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (Reflection.AssemblyName "SvmShapes", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "SvmShapes"
+
+            let interfaceAttributes =
+                Reflection.TypeAttributes.Public
+                ||| Reflection.TypeAttributes.Interface
+                ||| Reflection.TypeAttributes.Abstract
+
+            let declaring = modul.DefineType ("ISvmBase", interfaceAttributes)
+
+            declaring.DefineMethod (
+                "Make",
+                Reflection.MethodAttributes.Public
+                ||| Reflection.MethodAttributes.Static
+                ||| Reflection.MethodAttributes.Abstract
+                ||| Reflection.MethodAttributes.Virtual
+                ||| Reflection.MethodAttributes.HideBySig
+                ||| Reflection.MethodAttributes.NewSlot,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+            |> ignore<Reflection.Emit.MethodBuilder>
+
+            let derived = modul.DefineType ("ISvmDerived", interfaceAttributes)
+            derived.AddInterfaceImplementation declaring
+
+            let unimplemented =
+                modul.DefineType (
+                    "AbstractUnimplemented",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Abstract
+                    ||| Reflection.TypeAttributes.Class
+                )
+
+            unimplemented.AddInterfaceImplementation derived
+
+            let holder (name : string) (constraint' : Reflection.Emit.TypeBuilder) =
+                let holder =
+                    modul.DefineType (name, Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+                (holder.DefineGenericParameters [| "T" |]).[0].SetInterfaceConstraints [| constraint' :> Type |]
+                holder
+
+            let ofBase = holder "HolderOfBase`1" declaring
+            let ofDerived = holder "HolderOfDerived`1" derived
+
+            for built in [ declaring ; derived ; unimplemented ; ofBase ; ofDerived ] do
+                built.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let hostAssembly = Reflection.Assembly.Load fabricated
+
+        let assembly =
+            use stream = new MemoryStream (fabricated)
+            AssemblyApi.read loggerFactory None stream
+
+        let typeNamed (name : string) =
+            assembly.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+        let argument = typeNamed "AbstractUnimplemented"
+
+        let state, handle =
+            match
+                TypeSystemState.concretizeType
+                    loggerFactory
+                    HostImage.runtimeDirs
+                    bct
+                    (initialState.WithLoadedAssembly assembly)
+                    assembly.DefinitionFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (argument.Identity, SignatureTypeKind.Class))
+            with
+            | state, Ok handle -> state, handle
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+
+        let verdict (holder : string) : ConstraintVerdict =
+            match
+                ConstraintSatisfaction.satisfiesClosed
+                    loggerFactory
+                    HostImage.runtimeDirs
+                    bct
+                    state
+                    assembly.DefinitionFullName
+                    (ImmutableArray.Create handle)
+                    ImmutableArray.Empty
+                    (typeNamed holder).Generics
+                    [ handle ]
+            with
+            | _, Ok verdict -> verdict
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+
+        let host (holder : string) : int option =
+            hostVerdict (fun () ->
+                box ((hostAssembly.GetType holder).MakeGenericType (hostAssembly.GetType "AbstractUnimplemented"))
+            )
+
+        host "HolderOfBase`1" |> shouldEqual (Some 0)
+
+        match verdict "HolderOfBase`1" with
+        | ConstraintVerdict.Undecided (0, _) -> ()
+        | other -> failwith $"HolderOfBase: TypeSystem's verdict is %A{other}, not undecided at the first parameter"
+
+        host "HolderOfDerived`1" |> shouldEqual None
+        verdict "HolderOfDerived`1" |> shouldEqual ConstraintVerdict.Satisfied
