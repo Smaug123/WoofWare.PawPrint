@@ -1,8 +1,10 @@
+elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
 probes.cpp:Allocate	probes.cpp	Allocate
 probes.cpp:Construct	probes.cpp	Construct
 probes.cpp:Declared	probes.cpp	Declared
 probes.cpp:Defaults	probes.cpp	Defaults
 probes.cpp:DeleteShape	probes.cpp	DeleteShape
+probes.cpp:Derived::Use	probes.cpp	Derived::Use
 probes.cpp:Destroy	probes.cpp	Destroy
 probes.cpp:DestroyOnThrow	probes.cpp	DestroyOnThrow
 probes.cpp:Diamond	probes.cpp	Diamond
@@ -13,10 +15,11 @@ probes.cpp:Macros	probes.cpp	Macros
 probes.cpp:MemberPointer	probes.cpp	MemberPointer
 probes.cpp:NeverInstantiated	probes.cpp	NeverInstantiated
 probes.cpp:Owner::~Owner	probes.cpp	Owner::~Owner
+probes.cpp:Pasting	probes.cpp	Pasting
 probes.cpp:Pure	probes.cpp	Pure
 probes.cpp:Qualified	probes.cpp	Qualified
 probes.cpp:Shadowing	probes.cpp	Shadowing
 probes.cpp:Throws	probes.cpp	Throws
 probes.cpp:Unevaluated	probes.cpp	Unevaluated
-probes.cpp:Use	probes.cpp	Use
 probes.cpp:WithDefault::WithDefault	probes.cpp	WithDefault::WithDefault
+probes.cpp:rived::Use	probes.cpp	rived::Use

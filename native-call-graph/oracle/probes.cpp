@@ -139,3 +139,6 @@ WithDefault::WithDefault() { }
 
 // Declared, never defined.
 void Declared();
+
+// A call whose name a macro pastes together.
+void Pasting() { PASTE(Pasted); }

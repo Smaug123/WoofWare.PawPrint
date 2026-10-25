@@ -1,11 +1,13 @@
 # What generate.py writes for this program, less every USR: the rows by their first field, as
 # generate.py's header describes them, with each routine's USR, a call's routine's USR and its
 # callee's USR left out.
+undefined	elsewhere.cpp:Diamond
 routine	probes.cpp:Allocate	Allocate	void ()	probes.cpp:85
 routine	probes.cpp:Construct	M::Construct	void ()	probes.cpp:46
 undefined	probes.cpp:Declared
 routine	probes.cpp:Defaults	Defaults	void ()	probes.cpp:136
 routine	probes.cpp:DeleteShape	DeleteShape	void (Shape *)	probes.cpp:90
+routine	probes.cpp:Derived::Use	Derived::Use	void (X::A *)	probes.cpp:39
 routine	probes.cpp:Destroy	Destroy	void ()	probes.cpp:71
 routine	probes.cpp:DestroyOnThrow	DestroyOnThrow	void ()	probes.cpp:76
 routine	probes.cpp:Diamond	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:54
@@ -17,13 +19,14 @@ routine	probes.cpp:Macros	Macros	void ()	probes.cpp:97
 routine	probes.cpp:MemberPointer	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94
 uninstantiated	probes.cpp:NeverInstantiated
 routine	probes.cpp:Owner::~Owner	Owner::~Owner	void () noexcept	probes.cpp:82
+routine	probes.cpp:Pasting	Pasting	void ()	probes.cpp:144
 routine	probes.cpp:Pure	Pure	void (Abstract *, Interface *)	probes.cpp:61
 routine	probes.cpp:Qualified	N::Qualified	void (A *, N::A *)	probes.cpp:30
 routine	probes.cpp:Shadowing	Shadowing	void (A *, B *)	probes.cpp:9
 routine	probes.cpp:Throws	Throws	void ()	probes.cpp:133
 routine	probes.cpp:Unevaluated	Unevaluated	void ()	probes.cpp:115
-routine	probes.cpp:Use	Derived::Use	void (X::A *)	probes.cpp:39
 routine	probes.cpp:WithDefault::WithDefault	WithDefault::WithDefault	void ()	probes.cpp:138
+undefined	probes.cpp:rived::Use
 call	Allocate	void ()	probes.cpp:87	-	construct	Made::Made	void (int)	-
 call	Allocate	void ()	probes.cpp:87	-	new	operator new	void *(unsigned long)	-
 call	Allocate	void ()	probes.cpp:88	-	delete	operator delete	void (void *, unsigned long) noexcept	-
@@ -67,6 +70,7 @@ call	N::Qualified	void (A *, N::A *)	probes.cpp:32	-	direct	A::F	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:33	-	direct	N::A::F	void ()	-
 call	Owner::~Owner	void () noexcept	probes.cpp:82	-	destruct	Guard::~Guard	void () noexcept	-
 call	Owner::~Owner	void () noexcept	probes.cpp:82	-	direct	Helper	void ()	-
+call	Pasting	void ()	probes.cpp:144	probes.h:PASTE	direct	CallPasted	void ()	-
 call	Pure	void (Abstract *, Interface *)	probes.cpp:63	-	virtual	Concrete::V	void ()	-
 call	Pure	void (Abstract *, Interface *)	probes.cpp:64	-	virtual-unimplemented	Interface::M	void ()	-
 call	Shadowing	void (A *, B *)	probes.cpp:11	-	direct	A::F	void ()	-

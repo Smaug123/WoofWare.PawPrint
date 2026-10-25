@@ -20,3 +20,6 @@ void Helper();
 enum Kind { kFirst, kSecond };
 void Throw(Kind k, int n = 0, Kind d = kSecond);
 #define THROW(k) Throw(k)
+
+void CallPasted();
+#define PASTE(name) Call##name()
