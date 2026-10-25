@@ -37,7 +37,7 @@ module SignatureRefusal =
     let readsMemberSignature (operand : MemberOperand) : bool =
         match operand with
         | MemberOperand.Call
-        | MemberOperand.UnmanagedCall
+        | MemberOperand.UnmanagedCall _
         | MemberOperand.Jump
         | MemberOperand.Address _ -> true
         | MemberOperand.FieldAccess
@@ -53,4 +53,4 @@ module SignatureRefusal =
         | MemberPositions.Described positions ->
             positions
             |> List.takeWhile (fun position -> position <> JitTypePosition.CalleeReturn)
-        | MemberPositions.Undescribed -> []
+        | MemberPositions.BySignature -> []
