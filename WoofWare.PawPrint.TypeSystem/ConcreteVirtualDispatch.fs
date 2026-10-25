@@ -678,13 +678,17 @@ module ConcreteVirtualDispatch =
         /// a non-virtual target; a target with no MethodDef row; a receiver with no class
         /// chain; `walkBaseTypes = false`, which is the `constrained.` exact-type probe; a
         /// declaration owning no slot of its own declaring type; or a receiver that does not derive
-        /// from the target's declaring type.
+        /// from the target's declaring type. A type that building the receiver's method table reaches
+        /// and that does not bind is the failure.
         let tryResolveBySlotTable
             (state : TypeSystemState)
             : TypeSystemState *
-              (ConcreteTypeHandle *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
-              string) option
+              Result<
+                  (ConcreteTypeHandle *
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+                  string) option,
+                  TypeBindingFailure
+               >
             =
             if
                 not walkBaseTypes
@@ -692,7 +696,7 @@ module ConcreteVirtualDispatch =
                 || not methodToCall.IsVirtual
                 || methodToCall.TryMetadata.IsNone
             then
-                state, None
+                state, Ok None
             else
 
             // One walk gives both halves: which slot every declaration in the receiver's chain owns,
@@ -700,7 +704,7 @@ module ConcreteVirtualDispatch =
             // first would build a second table for no gain -- slot numbers are prefix-stable, so the
             // receiver's own list already names the target's declaration at the index its declaring
             // type gave it.
-            let state, table =
+            match
                 ConcreteMethodTable.dispatchTableOfClosed
                     loggerFactory
                     dotnetRuntimeDirs
@@ -708,12 +712,12 @@ module ConcreteVirtualDispatch =
                     "callvirt"
                     state
                     dispatchTypeHandle
-
-            match table with
-            | None ->
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok None ->
                 // A receiver with no method table: a byref, pointer or function pointer.
-                state, None
-            | Some table ->
+                state, Ok None
+            | state, Ok (Some table) ->
 
             let target = methodToCall.DeclaringAssemblyFullName, methodToCall.IdentityKey
 
@@ -733,7 +737,7 @@ module ConcreteVirtualDispatch =
                 // so the target overrides one of `Object`'s virtuals by name and signature, and the
                 // walk the caller falls back to finds what the box's table holds in that slot. Hand
                 // the question back rather than guess.
-                state, None
+                state, Ok None
             | Some slot ->
 
             match
@@ -746,7 +750,7 @@ module ConcreteVirtualDispatch =
                 // Prefix stability means a slot named by an ancestor is always within the receiver's
                 // table, so this is unreachable for a chain the walk built consistently. Falling back
                 // beats reading past the end.
-                state, None
+                state, Ok None
             | Some occupant ->
 
             // The table says *which MethodDef*. Concretising it needs the instantiation the receiver
@@ -755,7 +759,7 @@ module ConcreteVirtualDispatch =
             let state, chain = concreteChainOfReceiver state
 
             match chain with
-            | None -> state, None
+            | None -> state, Ok None
             | Some chain ->
 
             match
@@ -765,11 +769,17 @@ module ConcreteVirtualDispatch =
             | None ->
                 // The occupant is declared by a type that is not on the receiver's chain, which would
                 // mean the content table and the chain disagree about the receiver's ancestry.
-                state, None
+                state, Ok None
             | Some (implementationHandle, _) ->
 
             state,
-            Some (implementationHandle, occupant.Method, "Found concrete implementation by reading the receiver's slot")
+            Ok (
+                Some (
+                    implementationHandle,
+                    occupant.Method,
+                    "Found concrete implementation by reading the receiver's slot"
+                )
+            )
 
         /// Answer an instance interface call from the dispatch map of the receiver's chain, then read
         /// the slot it names from the receiver's own method table.
@@ -827,7 +837,7 @@ module ConcreteVirtualDispatch =
             | state, Ok None -> state, Ok None
             | state, Ok (Some slot) ->
 
-            let state, table =
+            match
                 ConcreteMethodTable.dispatchTableOfClosed
                     loggerFactory
                     dotnetRuntimeDirs
@@ -835,6 +845,9 @@ module ConcreteVirtualDispatch =
                     "callvirt"
                     state
                     dispatchTypeHandle
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok table ->
 
             let occupant =
                 match table with
@@ -978,13 +991,12 @@ module ConcreteVirtualDispatch =
 
             walk state dispatchTypeHandle
 
-        let state, bySlotTable = tryResolveBySlotTable state
-
         let state, classImplementation =
-            match bySlotTable with
-            | Some result -> state, Ok (Some result)
-            | None when methodDeclaringType.IsInterface -> tryResolveByInterfaceDispatchMap state
-            | None -> findClassImplementation state
+            match tryResolveBySlotTable state with
+            | state, Error failure -> state, Error failure
+            | state, Ok (Some result) -> state, Ok (Some result)
+            | state, Ok None when methodDeclaringType.IsInterface -> tryResolveByInterfaceDispatchMap state
+            | state, Ok None -> findClassImplementation state
 
         match classImplementation with
         | Error failure -> state, Error failure
@@ -1349,7 +1361,6 @@ module ConcreteVirtualDispatch =
     ///
     /// A type the search reaches that does not bind is the failure, returned with what loaded before
     /// it: CoreCLR would have failed to load that type before any call could dispatch on it.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)

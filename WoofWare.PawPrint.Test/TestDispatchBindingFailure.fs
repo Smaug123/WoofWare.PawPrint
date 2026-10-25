@@ -11,9 +11,9 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Dispatch over a type whose interfaces, MethodImpls or fields name a type that does not bind
-/// reports that failure as a result: CoreCLR would have refused to load the type, so no call could
-/// dispatch on it.
+/// Dispatch over a type whose interfaces, overrides, MethodImpls or fields name a type that does not
+/// bind, and laying out its method table, report that failure as a result: CoreCLR would have refused
+/// to load the type, so no call could dispatch on it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestDispatchBindingFailure =
@@ -30,8 +30,10 @@ module TestDispatchBindingFailure =
     type private Image =
         {
             Bytes : byte[]
-            /// Each type the image declares, with how it fails.
+            /// Each type the image declares whose base binds, with how it fails.
             Types : (string * TypeDefinitionHandle * Expected) list
+            /// Each type the image declares whose base does not bind, with how it fails.
+            BaseUnbound : (string * TypeDefinitionHandle * Expected) list
         }
 
     let private emit () : Image =
@@ -92,6 +94,7 @@ module TestDispatchBindingFailure =
         let nowhereException = typeRef nowhere "System" "Exception"
         let equatable = typeRef corelib "System" "IEquatable`1"
         let gone = typeRef corelib "System" "Gone"
+        let goneGeneric = typeRef corelib "System" "Gone`1"
         let interfaceGone = typeRef corelib "System" "IGone"
         let nowhereGone = typeRef nowhere "System" "Gone"
 
@@ -129,6 +132,16 @@ module TestDispatchBindingFailure =
 
         let returnsVoid (returns : ReturnTypeEncoder) = returns.Void ()
 
+        // `instance void G<T>()`.
+        let genericVoid =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(SignatureCallingConvention.Default, 1, true)
+                .Parameters (0, returnsVoid, (fun (_ : ParametersEncoder) -> ()))
+
+            metadata.GetOrAddBlob blob
+
         let instanceVoid = signature true returnsVoid []
         let takesException = signature true returnsVoid [ exceptionType ]
         let takesUnboundException = signature true returnsVoid [ nowhereException ]
@@ -144,6 +157,11 @@ module TestDispatchBindingFailure =
             ||| MethodAttributes.Virtual
             ||| MethodAttributes.HideBySig
             ||| MethodAttributes.NewSlot
+
+        let publicOverride =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.HideBySig
 
         let privateOverride =
             MethodAttributes.Private
@@ -372,6 +390,149 @@ module TestDispatchBindingFailure =
                         (memberRef staticInterface "M" (signature false returnsVoid [ exceptionType ]))
                 )
 
+        // The method's one type parameter, constrained to derive from `bound`.
+        let constrain (method : MethodDefinitionHandle) (bound : EntityHandle) : unit =
+            let parameter =
+                metadata.AddGenericParameter (
+                    MethodDefinitionHandle.op_Implicit method,
+                    GenericParameterAttributes.None,
+                    metadata.GetOrAddString "T",
+                    0
+                )
+
+            metadata.AddGenericParameterConstraint (parameter, bound)
+            |> ignore<GenericParameterConstraintHandle>
+
+        let mutable baseTake = Unchecked.defaultof<MethodDefinitionHandle>
+        let mutable baseG = Unchecked.defaultof<MethodDefinitionHandle>
+
+        // `class N.Base { virtual void Take(System.Exception); virtual void G<T>() where T : System.Exception; }`,
+        // whose slots the types below override or name in a MethodImpl, so that laying out their
+        // method tables compares a class reference with one of the same name.
+        let baseType : EntityHandle =
+            declareType
+                "Base"
+                object
+                1
+                (fun _ ->
+                    baseTake <- method publicVirtual "Take" takesException
+                    baseG <- method publicVirtual "G" genericVoid
+                    constrain baseG exceptionType
+                )
+            |> TypeDefinitionHandle.op_Implicit
+
+        // Overrides `Base.Take` by name and signature, with a parameter naming
+        // `[Nowhere]System.Exception`, so that placing it in `Base`'s slot must bind that.
+        let overridesUnbound =
+            declareType
+                "OverridesUnbound"
+                baseType
+                1
+                (fun _ ->
+                    method publicOverride "Take" takesUnboundException
+                    |> ignore<MethodDefinitionHandle>
+                )
+
+        // Overrides `Base.G<T>`, constraining `T` to `[Nowhere]System.Exception`, so that placing it
+        // compares that constraint with `Base.G`'s.
+        let constrainsUnbound =
+            declareType
+                "ConstrainsUnbound"
+                baseType
+                1
+                (fun _ ->
+                    let g = method publicOverride "G" genericVoid
+                    constrain g nowhereException
+                )
+
+        // A MethodImpl declaring `Base::Take` by a MemberRef whose parameter names
+        // `[Nowhere]System.Exception`, which finding the slot it names compares with `Base.Take`.
+        let declaresUnboundOverride =
+            declareType
+                "DeclaresUnboundOverride"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef baseType "Take" takesUnboundException)
+                )
+
+        // A MethodImpl installing, in `Base.Take`'s slot, a body whose parameter names
+        // `[Nowhere]System.Exception`.
+        let implementsUnboundBody =
+            declareType
+                "ImplementsUnboundBody"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesUnboundException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // A MethodImpl installing, in `Base.G<T>`'s slot, a body constraining its `T` to
+        // `[Nowhere]System.Exception`.
+        let implementsUnboundConstraint =
+            declareType
+                "ImplementsUnboundConstraint"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "GImpl" genericVoid
+                    constrain impl nowhereException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (MethodDefinitionHandle.op_Implicit baseG)
+                )
+
+        // A MethodImpl whose declaration is a MemberRef on a type CoreLib does not declare.
+        let declaresOnAbsent =
+            declareType
+                "DeclaresOnAbsent"
+                object
+                1
+                (fun owner ->
+                    let impl = method privateOverride "MImpl" instanceVoid
+                    methodImpl owner (MethodDefinitionHandle.op_Implicit impl) (memberRef gone "M" instanceVoid)
+                )
+
+        // A MethodImpl whose body is a MemberRef on `[CoreLib]System.Gone`1<object>`, which CoreLib does
+        // not declare.
+        let bodyOnAbsentInstantiation =
+            let instantiation : EntityHandle =
+                let blob = BlobBuilder ()
+
+                let arguments =
+                    BlobEncoder(blob).TypeSpecificationSignature().GenericInstantiation (goneGeneric, 1, false)
+
+                arguments.AddArgument().Object ()
+
+                metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+                |> TypeSpecificationHandle.op_Implicit
+
+            declareType
+                "BodyOnAbsentInstantiation"
+                object
+                1
+                (fun owner ->
+                    implements owner disposable
+                    method privateOverride "Body" instanceVoid |> ignore<MethodDefinitionHandle>
+
+                    methodImpl
+                        owner
+                        (memberRef instantiation "Body" instanceVoid)
+                        (memberRef disposable "Dispose" instanceVoid)
+                )
+
         // A value type with a field of a type CoreLib does not declare, the only type owning a field
         // but the one after it.
         let holdsGone =
@@ -409,6 +570,80 @@ module TestDispatchBindingFailure =
                     |> ignore<FieldDefinitionHandle>
                 )
 
+        // Derives from `OverridesUnbound`, so that laying out its parent's slots fails.
+        let derivesOverridesUnbound =
+            declareType "DerivesOverridesUnbound" (TypeDefinitionHandle.op_Implicit overridesUnbound) 3 ignore
+
+        // Derives from `ImplementsUnboundBody`, so that what its parent's slots hold fails.
+        let derivesImplementsUnboundBody =
+            declareType "DerivesImplementsUnboundBody" (TypeDefinitionHandle.op_Implicit implementsUnboundBody) 3 ignore
+
+        // A value type with a MethodImpl whose declaration is a MemberRef on a type CoreLib does not
+        // declare.
+        let valueDeclaresOnAbsent =
+            declareType
+                "ValueDeclaresOnAbsent"
+                valueType
+                3
+                (fun owner ->
+                    let impl = method privateOverride "MImpl" instanceVoid
+                    methodImpl owner (MethodDefinitionHandle.op_Implicit impl) (memberRef gone "M" instanceVoid)
+                )
+
+        // Extends a type CoreLib does not declare.
+        let extendsAbsent = declareType "ExtendsAbsent" gone 3 ignore
+
+        // Extends `[CoreLib]System.Gone`1<object>`, which CoreLib does not declare.
+        let extendsAbsentInstantiation =
+            let instantiation : EntityHandle =
+                let blob = BlobBuilder ()
+
+                let arguments =
+                    BlobEncoder(blob).TypeSpecificationSignature().GenericInstantiation (goneGeneric, 1, false)
+
+                arguments.AddArgument().Object ()
+
+                metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+                |> TypeSpecificationHandle.op_Implicit
+
+            declareType "ExtendsAbsentInstantiation" instantiation 3 ignore
+
+        let types =
+            [
+                "ImplementsAbsent", implementsAbsent, Expected.Absent "IGone"
+                "ImplementsUnboundArgument", implementsUnboundArgument, Expected.Unavailable
+                "TakesUnbound", takesUnbound, Expected.Unavailable
+                "DeclaresOnUnboundArgument", declaresOnUnboundArgument, Expected.Unavailable
+                "DeclaresUnboundSignature", declaresUnboundSignature, Expected.Unavailable
+                "BodyOnAbsent", bodyOnAbsent, Expected.Absent "Gone"
+                "BodyUnboundSignature", bodyUnboundSignature, Expected.Unavailable
+                "StaticUnbound", staticUnbound, Expected.Unavailable
+                "OverridesUnbound", overridesUnbound, Expected.Unavailable
+                "ConstrainsUnbound", constrainsUnbound, Expected.Unavailable
+                "DeclaresUnboundOverride", declaresUnboundOverride, Expected.Unavailable
+                "ImplementsUnboundBody", implementsUnboundBody, Expected.Unavailable
+                "ImplementsUnboundConstraint", implementsUnboundConstraint, Expected.Unavailable
+                "DeclaresOnAbsent", declaresOnAbsent, Expected.Absent "Gone"
+                "BodyOnAbsentInstantiation", bodyOnAbsentInstantiation, Expected.Absent "Gone`1"
+                "HoldsGone", holdsGone, Expected.Absent "Gone"
+                "HoldsHoldsGone", holdsHoldsGone, Expected.Absent "Gone"
+                "DerivesOverridesUnbound", derivesOverridesUnbound, Expected.Unavailable
+                "DerivesImplementsUnboundBody", derivesImplementsUnboundBody, Expected.Unavailable
+                "ValueDeclaresOnAbsent", valueDeclaresOnAbsent, Expected.Absent "Gone"
+            ]
+
+        let baseUnbound =
+            [
+                "ExtendsAbsent", extendsAbsent, Expected.Absent "Gone"
+                "ExtendsAbsentInstantiation", extendsAbsentInstantiation, Expected.Absent "Gone`1"
+            ]
+
+        // `<type>::Probe()`, a reference to a method no type declares, so that binding it searches each
+        // type's method table and its base's.
+        for _, handle, _ in types do
+            memberRef (TypeDefinitionHandle.op_Implicit handle) "Probe" instanceVoid
+            |> ignore<EntityHandle>
+
         let peBuilder =
             ManagedPEBuilder (
                 PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
@@ -421,19 +656,8 @@ module TestDispatchBindingFailure =
 
         {
             Bytes = image.ToArray ()
-            Types =
-                [
-                    "ImplementsAbsent", implementsAbsent, Expected.Absent "IGone"
-                    "ImplementsUnboundArgument", implementsUnboundArgument, Expected.Unavailable
-                    "TakesUnbound", takesUnbound, Expected.Unavailable
-                    "DeclaresOnUnboundArgument", declaresOnUnboundArgument, Expected.Unavailable
-                    "DeclaresUnboundSignature", declaresUnboundSignature, Expected.Unavailable
-                    "BodyOnAbsent", bodyOnAbsent, Expected.Absent "Gone"
-                    "BodyUnboundSignature", bodyUnboundSignature, Expected.Unavailable
-                    "StaticUnbound", staticUnbound, Expected.Unavailable
-                    "HoldsGone", holdsGone, Expected.Absent "Gone"
-                    "HoldsHoldsGone", holdsHoldsGone, Expected.Absent "Gone"
-                ]
+            Types = types
+            BaseUnbound = baseUnbound
         }
 
     type private Fixture =
@@ -443,6 +667,7 @@ module TestDispatchBindingFailure =
             Corelib : DumpedAssembly
             Analysed : DumpedAssembly
             Types : (string * TypeDefinitionHandle * Expected) list
+            BaseUnbound : (string * TypeDefinitionHandle * Expected) list
         }
 
     let private fixture () : Fixture =
@@ -462,6 +687,7 @@ module TestDispatchBindingFailure =
             Corelib = corelib
             Analysed = analysed
             Types = image.Types
+            BaseUnbound = image.BaseUnbound
         }
 
     let private typeSystem (f : Fixture) : TypeSystemState =
@@ -497,6 +723,31 @@ module TestDispatchBindingFailure =
         f.Corelib.TypeDefs
         |> Seq.find (fun (KeyValue (_, ty)) -> ty.Namespace = "System" && ty.Name = name)
         |> _.Key
+
+    /// The method `name` of the CoreLib type `typeName`, which declares one of that name, instantiated.
+    let private corelibMethod
+        (f : Fixture)
+        (typeName : string)
+        (name : string)
+        (state : TypeSystemState)
+        : TypeSystemState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let method =
+            f.Corelib.TypeDefs.[corelibType f typeName].Methods
+            |> List.find (fun m -> m.Name = name)
+
+        let state, (concretized, _) =
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                f.LoggerFactory
+                dirs
+                f.BaseClassTypes
+                ImmutableArray.Empty
+                method
+                ImmutableArray.Empty
+                state
+            |> BindingResult.bound
+
+        state, concretized
 
     /// `IDisposable`, and its `Dispose` instantiated.
     let private dispose
@@ -541,31 +792,128 @@ module TestDispatchBindingFailure =
         | Ok _ -> "Ok"
         | Error failure -> $"Error %s{TypeBindingFailure.describe failure}"
 
-    /// Every dispatch question PawPrint asks of a receiver type, each as an outcome that is either a
-    /// success or the failure, from a state in which nothing about the receiver has yet been asked.
+    /// A question PawPrint asks, as an outcome that is either a success or the failure.
+    let private ask
+        (name : string)
+        (question : unit -> Result<'a, TypeBindingFailure>)
+        : string * (unit -> Result<unit, TypeBindingFailure>)
+        =
+        name, (fun () -> question () |> Result.map ignore)
+
+    /// Each walk over the method table of the definition `handle`, from a state in which nothing about
+    /// it has yet been asked.
+    let private definitionQuestions
+        (f : Fixture)
+        (handle : TypeDefinitionHandle)
+        : (string * (unit -> Result<unit, TypeBindingFailure>)) list
+        =
+        let identity =
+            ResolvedTypeIdentity.ofDefinitionInAssembly f.Analysed.DefinitionFullName handle
+
+        let onDefinition
+            (name : string)
+            (question : TypeSystemState -> TypeSystemState * Result<'a, TypeBindingFailure>)
+            : string * (unit -> Result<unit, TypeBindingFailure>)
+            =
+            ask name (fun () -> question (typeSystem f) |> snd)
+
+        [
+            onDefinition
+                "vtableOfDefinition"
+                (fun state ->
+                    ConcreteMethodTable.vtableOfDefinition f.LoggerFactory dirs f.BaseClassTypes "test" state identity
+                )
+            onDefinition
+                "contentVtableOfDefinition"
+                (fun state ->
+                    ConcreteMethodTable.contentVtableOfDefinition
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        "test"
+                        state
+                        identity
+                )
+            onDefinition
+                "placedSlotsOfDefinition"
+                (fun state ->
+                    ConcreteMethodTable.placedSlotsOfDefinition
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        "test"
+                        state
+                        identity
+                )
+            onDefinition
+                "slotTableOfDefinition"
+                (fun state ->
+                    ConcreteMethodTable.slotTableOfDefinition
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        "test"
+                        state
+                        identity
+                )
+            onDefinition
+                "numVirtualsOfDefinition"
+                (fun state ->
+                    ConcreteMethodTable.numVirtualsOfDefinition
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        "test"
+                        state
+                        identity
+                )
+        ]
+
+    /// Every dispatch and method-table question PawPrint asks of a type, from a state in which nothing
+    /// about the type has yet been asked.
     let private questions
         (f : Fixture)
         (handle : TypeDefinitionHandle)
         : (string * (unit -> Result<unit, TypeBindingFailure>)) list
         =
-        let fresh () =
-            let state = typeSystem f
-            let state, receiver = concretize f f.Analysed handle SignatureTypeKind.Class state
-            let state, disposable, dispose = dispose f state
-            state, receiver, disposable, dispose
 
-        let ask
+        // The state with the receiver and `IDisposable.Dispose` concretised, then `question` of them.
+        let onReceiver
             (name : string)
-            (question : unit -> Result<'a, TypeBindingFailure>)
+            (question :
+                TypeSystemState *
+                ConcreteTypeHandle *
+                ConcreteTypeHandle *
+                WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+                    -> Result<'a, TypeBindingFailure>)
             : string * (unit -> Result<unit, TypeBindingFailure>)
             =
-            name, (fun () -> question () |> Result.map ignore)
+            ask
+                name
+                (fun () ->
+                    let state, receiver =
+                        concretize f f.Analysed handle SignatureTypeKind.Class (typeSystem f)
+
+                    let state, disposable, dispose = dispose f state
+                    question (state, receiver, disposable, dispose)
+                )
+
+        // The first instance virtual the type itself declares, which a `constrained.` call can name.
+        let ownVirtual () =
+            let typeInfo = f.Analysed.TypeDefs.[handle]
+
+            if typeInfo.IsInterface then
+                None
+            else
+                typeInfo.Methods |> List.tryFind (fun m -> m.IsVirtual && not m.IsStatic)
+
+        let corelibValueType (name : string) (state : TypeSystemState) =
+            concretize f f.Corelib (corelibType f name) SignatureTypeKind.ValueType state
 
         [
-            ask
+            onReceiver
                 "interfaceMapOf"
-                (fun () ->
-                    let state, receiver, _, _ = fresh ()
+                (fun (state, receiver, _, _) ->
 
                     ConcreteInterfaceDispatch.interfaceMapOf
                         f.LoggerFactory
@@ -576,10 +924,9 @@ module TestDispatchBindingFailure =
                         receiver
                     |> snd
                 )
-            ask
+            onReceiver
                 "ownDispatchMapOf"
-                (fun () ->
-                    let state, receiver, _, _ = fresh ()
+                (fun (state, receiver, _, _) ->
 
                     ConcreteInterfaceDispatch.ownDispatchMapOf
                         f.LoggerFactory
@@ -590,10 +937,9 @@ module TestDispatchBindingFailure =
                         receiver
                     |> snd
                 )
-            ask
+            onReceiver
                 "tryFindImplementationSlot"
-                (fun () ->
-                    let state, receiver, disposable, dispose = fresh ()
+                (fun (state, receiver, disposable, dispose) ->
 
                     ConcreteInterfaceDispatch.tryFindImplementationSlot
                         f.LoggerFactory
@@ -607,18 +953,16 @@ module TestDispatchBindingFailure =
                         (dispose.DeclaringAssemblyFullName, dispose.IdentityKey)
                     |> snd
                 )
-            ask
+            onReceiver
                 "interfaceMapHandles"
-                (fun () ->
-                    let state, receiver, _, _ = fresh ()
+                (fun (state, receiver, _, _) ->
 
                     ConcreteVirtualDispatch.interfaceMapHandles f.LoggerFactory dirs f.BaseClassTypes state receiver
                     |> snd
                 )
-            ask
+            onReceiver
                 "tryResolveVirtualImplementation"
-                (fun () ->
-                    let state, receiver, _, dispose = fresh ()
+                (fun (state, receiver, _, dispose) ->
 
                     ConcreteVirtualDispatch.tryResolveVirtualImplementation
                         f.LoggerFactory
@@ -631,10 +975,9 @@ module TestDispatchBindingFailure =
                         state
                     |> snd
                 )
-            ask
+            onReceiver
                 "isConcreteTypeAssignableTo"
-                (fun () ->
-                    let state, receiver, disposable, _ = fresh ()
+                (fun (state, receiver, disposable, _) ->
 
                     TypeAssignability.isConcreteTypeAssignableTo
                         f.LoggerFactory
@@ -645,18 +988,16 @@ module TestDispatchBindingFailure =
                         disposable
                     |> snd
                 )
-            ask
+            onReceiver
                 "containsReferences"
-                (fun () ->
-                    let state, receiver, _, _ = fresh ()
+                (fun (state, receiver, _, _) ->
 
                     GcReferences.containsReferences f.LoggerFactory dirs f.BaseClassTypes state receiver
                     |> snd
                 )
-            ask
+            onReceiver
                 "resolveConstrainedStaticInterfaceMethod"
-                (fun () ->
-                    let state, receiver, _, _ = fresh ()
+                (fun (state, receiver, _, _) ->
 
                     let staticInterface =
                         f.Analysed.TypeDefs |> Seq.find (fun (KeyValue (_, ty)) -> ty.Name = "IStatic")
@@ -691,7 +1032,133 @@ module TestDispatchBindingFailure =
                         state
                     |> snd
                 )
+            onReceiver
+                "vtableOfClosed"
+                (fun (state, receiver, _, _) ->
+
+                    ConcreteMethodTable.vtableOfClosed f.LoggerFactory dirs f.BaseClassTypes "test" state receiver
+                    |> snd
+                )
+            onReceiver
+                "slotTableOfClosed"
+                (fun (state, receiver, _, _) ->
+
+                    ConcreteMethodTable.slotTableOfClosed f.LoggerFactory dirs f.BaseClassTypes "test" state receiver
+                    |> snd
+                )
+            onReceiver
+                "dispatchTableOfClosed"
+                (fun (state, receiver, _, _) ->
+
+                    ConcreteMethodTable.dispatchTableOfClosed
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        "test"
+                        state
+                        receiver
+                    |> snd
+                )
+            ask
+                "MethodReferenceResolution.resolve"
+                (fun () ->
+                    let state = typeSystem f
+
+                    let probe =
+                        f.Analysed.Members
+                        |> Seq.find (fun (KeyValue (_, m)) ->
+                            m.PrettyName = "Probe" && m.Parent = MetadataToken.TypeDefinition handle
+                        )
+                        |> _.Key
+
+                    let ctx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
+                        {
+                            ConcreteTypes = state.ConcreteTypes
+                            LoadedAssemblies = state._LoadedAssemblies
+                            BaseTypes = f.BaseClassTypes
+                        }
+
+                    match
+                        MethodReferenceResolution.resolve f.LoggerFactory dirs ctx f.Analysed probe
+                        |> snd
+                    with
+                    | MethodReferenceTarget.Unbound failure -> Error failure
+                    | MethodReferenceTarget.ParentTypeMissing miss -> Error (TypeBindingFailure.TypeAbsent miss)
+                    | MethodReferenceTarget.ParentAssemblyUnavailable reference ->
+                        Error (TypeBindingFailure.AssemblyUnavailable reference)
+                    | MethodReferenceTarget.Missing -> Ok ()
+                    | other -> failwith $"a reference to Probe, which no type declares, bound to %A{other}"
+                )
+            ask
+                "ConstrainedType.resolve"
+                (fun () ->
+                    match ownVirtual () with
+                    | None -> Ok ()
+                    | Some called ->
+                        let state, enum = corelibValueType "DayOfWeek" (typeSystem f)
+
+                        ConstrainedType.resolve f.LoggerFactory dirs f.BaseClassTypes state enum called
+                        |> snd
+                        |> Result.map ignore
+                )
+            ask
+                "ConstrainedType.resolveClassMethodOnValueType"
+                (fun () ->
+                    match ownVirtual () with
+                    | None -> Ok ()
+                    | Some called ->
+                        let state, int32 = corelibValueType "Int32" (typeSystem f)
+
+                        ConstrainedType.resolveClassMethodOnValueType
+                            f.LoggerFactory
+                            dirs
+                            f.BaseClassTypes
+                            state
+                            int32
+                            called
+                        |> snd
+                        |> Result.map ignore
+                )
+            onReceiver
+                "tryResolveVirtualImplementation of Object.ToString"
+                (fun (state, receiver, _, _) ->
+                    let state, toString = corelibMethod f "Object" "ToString" state
+
+                    ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        ImmutableArray.Empty
+                        toString
+                        receiver
+                        true
+                        state
+                    |> snd
+                )
+            onReceiver
+                "ConstrainedType.resolveClassMethodOnValueType of Object.ToString"
+                (fun (state, receiver, _, _) ->
+                    let typeInfo = f.Analysed.TypeDefs.[handle]
+
+                    if not (LoadedTypeInfo.isValueType f.BaseClassTypes state._LoadedAssemblies typeInfo) then
+                        Ok ()
+                    else
+                        let toString =
+                            f.Corelib.TypeDefs.[corelibType f "Object"].Methods
+                            |> List.find (fun m -> m.Name = "ToString")
+
+                        ConstrainedType.resolveClassMethodOnValueType
+                            f.LoggerFactory
+                            dirs
+                            f.BaseClassTypes
+                            state
+                            receiver
+                            toString
+                        |> snd
+                        |> Result.map ignore
+                )
         ]
+        @ definitionQuestions f handle
 
     [<Test>]
     let ``every dispatch question either answers or fails as the receiver's type fails to bind`` () : unit =
@@ -738,6 +1205,35 @@ module TestDispatchBindingFailure =
             "StaticUnbound", "resolveConstrainedStaticInterfaceMethod"
             "HoldsGone", "containsReferences"
             "HoldsHoldsGone", "containsReferences"
+            "OverridesUnbound", "vtableOfClosed"
+            "OverridesUnbound", "slotTableOfClosed"
+            "OverridesUnbound", "dispatchTableOfClosed"
+            "OverridesUnbound", "MethodReferenceResolution.resolve"
+            "OverridesUnbound", "ConstrainedType.resolve"
+            "OverridesUnbound", "ConstrainedType.resolveClassMethodOnValueType"
+            "OverridesUnbound", "tryResolveVirtualImplementation"
+            "ConstrainsUnbound", "vtableOfClosed"
+            "ConstrainsUnbound", "dispatchTableOfClosed"
+            "ConstrainsUnbound", "MethodReferenceResolution.resolve"
+            "DeclaresUnboundOverride", "dispatchTableOfClosed"
+            "DeclaresUnboundOverride", "ownDispatchMapOf"
+            "ImplementsUnboundBody", "dispatchTableOfClosed"
+            "ImplementsUnboundConstraint", "dispatchTableOfClosed"
+            "DeclaresOnAbsent", "dispatchTableOfClosed"
+            "DeclaresOnAbsent", "ownDispatchMapOf"
+            "BodyOnAbsentInstantiation", "ownDispatchMapOf"
+            "OverridesUnbound", "tryResolveVirtualImplementation of Object.ToString"
+            "OverridesUnbound", "vtableOfDefinition"
+            "OverridesUnbound", "contentVtableOfDefinition"
+            "OverridesUnbound", "placedSlotsOfDefinition"
+            "OverridesUnbound", "slotTableOfDefinition"
+            "OverridesUnbound", "numVirtualsOfDefinition"
+            "ImplementsUnboundBody", "contentVtableOfDefinition"
+            "DerivesOverridesUnbound", "vtableOfClosed"
+            "DerivesOverridesUnbound", "dispatchTableOfClosed"
+            "DerivesImplementsUnboundBody", "dispatchTableOfClosed"
+            "ValueDeclaresOnAbsent", "dispatchTableOfClosed"
+            "ValueDeclaresOnAbsent", "ConstrainedType.resolveClassMethodOnValueType of Object.ToString"
         ]
 
     [<Test>]
@@ -751,3 +1247,16 @@ module TestDispatchBindingFailure =
 
             if not (isExpected expected outcome) then
                 failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
+
+    /// A definition whose base does not bind has no method table: each walk over it fails with the
+    /// base's failure.
+    [<Test>]
+    let ``laying out a definition whose base does not bind fails with the base's failure`` () : unit =
+        let f = fixture ()
+
+        for name, handle, expected in f.BaseUnbound do
+            for question, ask in definitionQuestions f handle do
+                let outcome = ask ()
+
+                if not (isExpected expected outcome) then
+                    failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"

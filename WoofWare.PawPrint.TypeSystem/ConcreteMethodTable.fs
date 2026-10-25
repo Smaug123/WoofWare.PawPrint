@@ -7,6 +7,9 @@ open Microsoft.Extensions.Logging
 /// `MethodTableLayout` lays it out, an array's is `System.Array`'s, and a byref, pointer or function
 /// pointer has none. Also `MethodTableLayout`'s walks over a definition, run against a `TypeSystemState`
 /// rather than a bare load context, so that the assemblies they bind and the types they register are kept.
+///
+/// A type that laying out a table must bind and that does not is the failure, returned with what loaded
+/// before it: CoreCLR would have refused to load the type whose table it is.
 [<RequireQualifiedAccess>]
 module ConcreteMethodTable =
 
@@ -56,7 +59,7 @@ module ConcreteMethodTable =
         (state : TypeSystemState)
         (assembly : DumpedAssembly)
         (ty : TypeDefn)
-        : TypeSystemState * ResolvedTypeIdentity
+        : TypeSystemState * Result<ResolvedTypeIdentity, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -74,7 +77,11 @@ module ConcreteMethodTable =
         (state : TypeSystemState)
         (owner : SlotOwner)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeSystemState * (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option
+        : TypeSystemState *
+          Result<
+              (ResolvedTypeIdentity * ImmutableArray<TypeConcretization.SubstitutionArgument>) option,
+              TypeBindingFailure
+           >
         =
         inContext
             baseClassTypes
@@ -89,7 +96,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (identity : ResolvedTypeIdentity)
-        : TypeSystemState * VtableSlot list
+        : TypeSystemState * Result<VtableSlot list, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -104,7 +111,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (identity : ResolvedTypeIdentity)
-        : TypeSystemState * VtableSlot list
+        : TypeSystemState * Result<VtableSlot list, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -121,7 +128,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (identity : ResolvedTypeIdentity)
-        : TypeSystemState * (VtableSlot * int) list
+        : TypeSystemState * Result<(VtableSlot * int) list, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -138,7 +145,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (identity : ResolvedTypeIdentity)
-        : TypeSystemState * MethodTableLayout.MethodSlotTable
+        : TypeSystemState * Result<MethodTableLayout.MethodSlotTable, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -153,7 +160,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (identity : ResolvedTypeIdentity)
-        : TypeSystemState * int
+        : TypeSystemState * Result<int, TypeBindingFailure>
         =
         inContext
             baseClassTypes
@@ -176,6 +183,9 @@ module ConcreteMethodTable =
     ///
     /// `None` means the handle has no method table to read: byrefs, pointers and function pointers are
     /// TypeDescs. A synthesised array delegates to `System.Array`, whose slots are the ones it has.
+    ///
+    /// A type that building the method table reaches and that does not bind is the failure, and only
+    /// a table that was built is memoised.
     let rec dispatchTableOfClosed
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -183,14 +193,14 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (concreteType : ConcreteTypeHandle)
-        : TypeSystemState * DispatchTable option
+        : TypeSystemState * Result<DispatchTable option, TypeBindingFailure>
         =
         match concreteType with
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
             // TypeDescs with no method table: no slots, so nothing to dispatch through.
-            state, None
+            state, Ok None
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // A synthesised array's virtual slots are `System.Array`'s, as in `vtableOfClosed`.
@@ -203,7 +213,7 @@ module ConcreteMethodTable =
                     concreteType
 
             match baseHandle with
-            | None -> state, None
+            | None -> state, Ok None
             | Some baseHandle ->
                 dispatchTableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state baseHandle
         | ConcreteTypeHandle.Concrete _ ->
@@ -217,15 +227,15 @@ module ConcreteMethodTable =
             // walk itself is defined on the definition. See `TypeSystemState._VirtualSlotTables` for why a memo is
             // sound here and why it has to live on the state rather than beside this walk.
             match Map.tryFind concreteTypeInfo.Identity state._VirtualSlotTables with
-            | Some cached -> state, Some cached
+            | Some cached -> state, Ok (Some cached)
             | None ->
 
-            let state, (table, content) =
+            let state, built =
                 inContext
                     baseClassTypes
                     state
                     (fun ctx ->
-                        let ctx, table =
+                        match
                             MethodTableLayout.ownerOfDefinition
                                 operation
                                 ctx.LoadedAssemblies
@@ -235,17 +245,17 @@ module ConcreteMethodTable =
                                 dotnetRuntimeDirs
                                 operation
                                 ctx
+                        with
+                        | ctx, Error failure -> ctx, Error failure
+                        | ctx, Ok table ->
 
-                        let ctx, content =
-                            MethodTableLayout.contentOfDefinitionOwner
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                operation
-                                ctx
-                                table
-
-                        ctx, (table, content)
+                        MethodTableLayout.contentOfDefinitionOwner loggerFactory dotnetRuntimeDirs operation ctx table
+                        |> fun (ctx, content) -> ctx, content |> Result.map (fun content -> table, content)
                     )
+
+            match built with
+            | Error failure -> state, Error failure
+            | Ok (table, content) ->
 
             // Indexed here rather than at each use: the memo is built once per definition and read
             // once per `callvirt`, so the cost belongs on the build.
@@ -266,7 +276,7 @@ module ConcreteMethodTable =
                         content |> List.map (fun entry -> entry.Occupant) |> ImmutableArray.CreateRange
                 }
 
-            state.WithVirtualSlotTable concreteTypeInfo.Identity computed, Some computed
+            state.WithVirtualSlotTable concreteTypeInfo.Identity computed, Ok (Some computed)
 
 
     /// The instance vtable of a runtime type, base-first: index `i` is the method that occupies slot
@@ -283,7 +293,7 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (concreteType : ConcreteTypeHandle)
-        : TypeSystemState * VtableSlot list
+        : TypeSystemState * Result<VtableSlot list, TypeBindingFailure>
         =
         match concreteType with
         | ConcreteTypeHandle.Byref _
@@ -291,7 +301,7 @@ module ConcreteMethodTable =
         | ConcreteTypeHandle.FunctionPointer _ ->
             // Byrefs, pointers, and function pointers are TypeDescs in CoreCLR with no
             // MethodTable, so they have no vtable at all.
-            state, []
+            state, Ok []
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // Synthesised array MethodTables inherit their virtual slots from System.Array (and
@@ -305,7 +315,7 @@ module ConcreteMethodTable =
                     concreteType
 
             match baseHandle with
-            | None -> state, []
+            | None -> state, Ok []
             | Some bh -> vtableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state bh
         | ConcreteTypeHandle.Concrete _ ->
             // A nominal type's own generic arguments say nothing about which slot anything occupies:
@@ -331,12 +341,13 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (concreteType : ConcreteTypeHandle)
-        : TypeSystemState * MethodTableLayout.MethodSlotTable
+        : TypeSystemState * Result<MethodTableLayout.MethodSlotTable, TypeBindingFailure>
         =
         // Only the vtable walk recurses through the base chain; the region beyond it is this type's
         // alone, so it is computed once here rather than once per ancestor and discarded.
-        let state, virtualSlots =
-            vtableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state concreteType
+        match vtableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state concreteType with
+        | state, Error failure -> state, Error failure
+        | state, Ok virtualSlots ->
 
         match concreteType with
         | ConcreteTypeHandle.Byref _
@@ -345,10 +356,11 @@ module ConcreteMethodTable =
             // TypeDescs with no MethodTable, so no slots of either kind -- the same
             // reason `vtableOfClosed` gives them an empty vtable.
             state,
-            {
-                MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
-                MethodTableLayout.MethodSlotTable.BeyondVtable = []
-            }
+            Ok
+                {
+                    MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
+                    MethodTableLayout.MethodSlotTable.BeyondVtable = []
+                }
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // A synthesised array MethodTable really does carry slots beyond its vtable, for the
@@ -370,11 +382,12 @@ module ConcreteMethodTable =
             let _, typeInfo = definitionMetadata operation state concreteTypeInfo.Identity
 
             state,
-            {
-                MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
-                MethodTableLayout.MethodSlotTable.BeyondVtable =
-                    MethodTableLayout.slotsBeyondVtableOfDefinition operation owner typeInfo
-            }
+            Ok
+                {
+                    MethodTableLayout.MethodSlotTable.Vtable = virtualSlots
+                    MethodTableLayout.MethodSlotTable.BeyondVtable =
+                        MethodTableLayout.slotsBeyondVtableOfDefinition operation owner typeInfo
+                }
 
     /// The size of the instance vtable for a closed type, matching CoreCLR's
     /// `MethodTable::GetNumVirtuals()`.
@@ -385,13 +398,11 @@ module ConcreteMethodTable =
         (operation : string)
         (state : TypeSystemState)
         (concreteType : ConcreteTypeHandle)
-        : TypeSystemState * int
+        : TypeSystemState * Result<int, TypeBindingFailure>
         =
         // The length of `vtableOfClosed` by definition rather than an independently-computed sum,
         // because `PopulateMethods` compares it against `RuntimeMethodHandle.GetSlot`'s answer:
         // two walks that had to agree by discipline would disagree silently, and the symptom
         // would be a wrong `isVirtual` rather than a crash.
-        let state, slots =
-            vtableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state concreteType
-
-        state, List.length slots
+        vtableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state concreteType
+        |> fun (state, slots) -> state, slots |> Result.map List.length

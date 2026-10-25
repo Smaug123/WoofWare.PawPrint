@@ -69,7 +69,7 @@ module VirtualSlotLayout =
                 assembly
                 ty
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.baseOfDefinition` against the machine's type system.
     let internal baseOfDefinition
@@ -91,7 +91,7 @@ module VirtualSlotLayout =
                 owner
                 typeInfo
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.vtableOfDefinition` against the machine's type system.
     let vtableOfDefinition
@@ -111,7 +111,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 identity
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.contentVtableOfDefinition` against the machine's type system.
     let contentVtableOfDefinition
@@ -131,7 +131,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 identity
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.placedSlotsOfDefinition` against the machine's type system.
     let placedSlotsOfDefinition
@@ -151,7 +151,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 identity
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.slotTableOfDefinition` against the machine's type system.
     let slotTableOfDefinition
@@ -171,7 +171,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 identity
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.numVirtualsOfDefinition` against the machine's type system.
     let numVirtualsOfDefinition
@@ -191,7 +191,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 identity
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.dispatchTableOfClosed` against the machine's type system.
     let dispatchTableOfClosed
@@ -211,7 +211,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.vtableOfClosed` against the machine's type system.
     let vtableOfClosed
@@ -231,7 +231,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.slotTableOfClosed` against the machine's type system.
     let slotTableOfClosed
@@ -251,7 +251,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteMethodTable.numVirtualsOfClosed` against the machine's type system.
     let numVirtualsOfClosed
@@ -271,7 +271,7 @@ module VirtualSlotLayout =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     let numVirtuals
         (loggerFactory : ILoggerFactory)

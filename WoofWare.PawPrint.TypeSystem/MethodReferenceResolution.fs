@@ -59,8 +59,9 @@ type MethodReferenceTarget =
     /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
     | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
 
-    /// A type the search had to bind does not: one a signature it compared names, or one in the
-    /// parent's base chain; or the parent is a shape PawPrint does not implement binding.
+    /// A type the search had to bind does not: one a signature it compared names, one in the
+    /// parent's base chain, or one that laying out a searched type's method table reaches; or the
+    /// parent is a shape PawPrint does not implement binding.
     | Unbound of TypeBindingFailure
 
 /// <summary>
@@ -244,12 +245,14 @@ module MethodReferenceResolution =
         let methodTableFromTheEnd
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
             (searched : SearchedType)
-            : TypeConcretization.ConcretizationContext<DumpedAssembly> * VtableSlot list * VtableSlot list
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+              Result<VtableSlot list * VtableSlot list, TypeBindingFailure>
             =
-            let ctx, table =
-                MethodTableLayout.slotTableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx searched.Identity
-
-            ctx, List.rev table.BeyondVtable, List.rev table.Vtable
+            MethodTableLayout.slotTableOfDefinition loggerFactory dotnetRuntimeDirs operation ctx searched.Identity
+            |> fun (ctx, table) ->
+                ctx,
+                table
+                |> Result.map (fun table -> List.rev table.BeyondVtable, List.rev table.Vtable)
 
         let definedBy
             (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
@@ -288,7 +291,9 @@ module MethodReferenceResolution =
             (inherited : bool)
             : TypeConcretization.ConcretizationContext<DumpedAssembly> * MethodReferenceTarget
             =
-            let ctx, beyondVtable, vtable = methodTableFromTheEnd ctx searched
+            match methodTableFromTheEnd ctx searched with
+            | ctx, Error failure -> ctx, MethodReferenceTarget.Unbound failure
+            | ctx, Ok (beyondVtable, vtable) ->
 
             match firstMatch ctx referenceContext searched (beyondVtable @ vtable) with
             | ctx, Error failure -> ctx, MethodReferenceTarget.Unbound failure
@@ -321,8 +326,9 @@ module MethodReferenceResolution =
                 match
                     MethodTableLayout.baseOfDefinition loggerFactory dotnetRuntimeDirs operation ctx owner typeInfo
                 with
-                | ctx, None -> ctx, MethodReferenceTarget.Missing
-                | ctx, Some (baseIdentity, arguments) ->
+                | ctx, Error failure -> ctx, MethodReferenceTarget.Unbound failure
+                | ctx, Ok None -> ctx, MethodReferenceTarget.Missing
+                | ctx, Ok (Some (baseIdentity, arguments)) ->
                     let parent =
                         {
                             Identity = baseIdentity
