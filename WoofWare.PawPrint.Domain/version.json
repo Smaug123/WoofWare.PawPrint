@@ -1,12 +1,16 @@
 {
-  "version": "0.10",
+  "version": "0.11",
   "publicReleaseRefSpec": [
     "^refs/heads/main$"
   ],
   "pathFilters": [
-    "./",
+    ":/.gitignore",
     ":/Directory.Build.props",
+    ":/Directory.Build.targets",
     ":/README.md",
+    ":/WoofWare.PawPrint.Domain",
+    ":/flake.lock",
+    ":/flake.nix",
     ":/logos/light.png"
   ]
 }
