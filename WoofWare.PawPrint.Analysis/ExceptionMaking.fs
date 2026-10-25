@@ -93,6 +93,15 @@ module internal ExceptionMaking =
                     "System.ArgumentOutOfRangeException", ExceptionMaking.ResourceMessage
             ]
 
+    /// The exception CoreCLR raises refusing a signature it converts for the JIT, and how it makes
+    /// it: `COMPlusThrow` with one of the runtime's own resources (`EEMessageException`), which
+    /// runs the exception's parameterless constructor and then sets the message it reads from the
+    /// runtime's native resources, running no more managed code.
+    let ofSignatureRefusal (refusal : SignatureRefusal) : string * ExceptionMaking =
+        match refusal with
+        | SignatureRefusal.VariableArguments ->
+            "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
+
     /// How CoreCLR makes the exception of a fault one of its own operations raises: the CPU reports
     /// each, and the VM makes the exception (`EEException::CreateThrowable`).
     let ofPrimitiveFault (fault : PrimitiveFault) : ExceptionMaking =

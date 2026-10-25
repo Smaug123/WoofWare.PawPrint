@@ -202,6 +202,13 @@ method) may add more:
   compiling whatever method it inlines the `ldftn` into, so what loading the value types then
   raises the analysis takes to escape every method that calls the body, directly or not, past all
   its handlers, as any of them may have the body inlined into it;
+* CoreCLR on Unix, which the analysis answers for, refuses a signature with a variable argument
+  list, managed or native, wherever it converts one for the JIT (`SignatureRefusal`): a `call`,
+  `callvirt`, `newobj`, `ldftn` or `ldvirtftn` naming a method with one, or a `calli` whose call
+  site has one, fails the compilation of the method holding it with `InvalidProgramException`,
+  past all its handlers and before the JIT loads any type of the signature, and a method with one
+  never compiles at all, so none of its body runs. `ldtoken` converts no signature. The call is
+  not followed;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),

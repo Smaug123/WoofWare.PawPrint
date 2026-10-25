@@ -3104,7 +3104,8 @@ module EscapeAnalysis =
         |> Option.map StackValue.Objects
         |> Option.defaultValue StackValue.Unknown
 
-    let private opaqueFromEntry (reason : Opacity) : LocalFacts =
+    /// The facts of a method whose body never runs: only `outside` happens, as the runtime enters it.
+    let private outsideOnly (outside : Set<OutsideBodyFact>) : LocalFacts =
         {
             Raises = []
             Opaque = []
@@ -3113,7 +3114,7 @@ module EscapeAnalysis =
             ConstrainedPointers = []
             Rethrows = []
             Regions = []
-            OutsideBody = Set.singleton (OutsideBodyFact.Opaque reason)
+            OutsideBody = outside
             RaisedWhereInlined = Set.empty
             Spellings = [||]
             Returns = StackValue.Unknown
@@ -3124,6 +3125,22 @@ module EscapeAnalysis =
             Refusals = []
             Branching = None
         }
+
+    let private opaqueFromEntry (reason : Opacity) : LocalFacts =
+        outsideOnly (Set.singleton (OutsideBodyFact.Opaque reason))
+
+    /// What CoreCLR raises refusing to hand the JIT a signature (`SignatureRefusal`), and what making
+    /// the exception runs (`ExceptionMaking.ofSignatureRefusal`).
+    let private signatureRefusalFacts
+        (state : EscapeAnalysisState)
+        (refusal : SignatureRefusal)
+        : OutsideBodyFact list
+        =
+        let name, making = ExceptionMaking.ofSignatureRefusal refusal
+        let thrown, run = runtimeRaises state name making
+
+        OutsideBodyFact.Raises thrown
+        :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
 
     /// The exceptions an operation of the runtime's own can raise (`runtimeRaises`). Its contract
     /// says under which conditions on its arguments; the analysis does not track their values, so
@@ -3530,6 +3547,13 @@ module EscapeAnalysis =
                  |> List.map (fun name -> parameterlessConstructor state name, []))
         | Runs.Il (body, selfCall) ->
 
+        // CoreCLR converts the method's own signature for the JIT before anything else of it
+        // (`getMethodInfo`), refusing some (`SignatureRefusal`): then none of the body runs, and the
+        // JIT loads none of the types it names.
+        match SignatureRefusal.ofSignature method.Signature with
+        | Some refusal -> state, outsideOnly (Set.ofList (signatureRefusalFacts state refusal))
+        | None ->
+
         let ops = body.Instructions |> Array.ofList
 
         // Inside a type initializer, touching the type it initializes cannot trigger it: the CLI
@@ -3809,6 +3833,21 @@ module EscapeAnalysis =
                         match operand with
                         | None -> state, failures, [], []
                         | Some (spellingAssembly, signature, operand, delegateMade) ->
+
+                        // CoreCLR converts the signature of the method the instruction names, or of
+                        // `calli`'s call site, for the JIT before the JIT loads any type of it,
+                        // refusing some (`SignatureRefusal`).
+                        let refusal =
+                            match signature with
+                            | MemberSignature.Method methodSignature when SignatureRefusal.readsMemberSignature operand ->
+                                SignatureRefusal.ofSignature methodSignature
+                            | MemberSignature.Method _
+                            | MemberSignature.Field _ -> None
+
+                        match refusal with
+                        | Some refusal -> state, failures @ signatureRefusalFacts state refusal, [], []
+                        | None ->
+
                             let state, loads = memberSignatureLoads state spellingAssembly operand signature
 
                             // Making the delegate, the JIT compiles the `newobj` after the address
