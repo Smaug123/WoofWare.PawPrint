@@ -882,8 +882,14 @@ public class OpenGeneric<T>
             SignatureTypeKind.Class
         )
 
+    /// One of the `class` and `struct` special constraints.
+    [<RequireQualifiedAccess>]
+    type private Special =
+        | Reference
+        | NonNullableValue
+
     let private parameter
-        (kind : GenericConstraint option)
+        (kind : Special option)
         (requiresParameterlessConstructor : bool)
         (allowsByRefLike : bool)
         (constraints : TypeDefn list)
@@ -891,7 +897,8 @@ public class OpenGeneric<T>
         =
         {
             Variance = None
-            Constraint = kind
+            RequiresReferenceType = (kind = Some Special.Reference)
+            RequiresNonNullableValueType = (kind = Some Special.NonNullableValue)
             RequiresParameterlessConstructor = requiresParameterlessConstructor
             AllowsByRefLike = allowsByRefLike
             Constraints = ImmutableArray.CreateRange constraints
@@ -934,11 +941,11 @@ public class OpenGeneric<T>
         let cases =
             [
                 unconstrained
-                parameter (Some GenericConstraint.Reference) false false []
-                parameter (Some GenericConstraint.NonNullableValue) false false []
+                parameter (Some Special.Reference) false false []
+                parameter (Some Special.NonNullableValue) false false []
                 parameter None true false []
                 parameter None false true []
-                parameter (Some GenericConstraint.Reference) false false [ comparable ]
+                parameter (Some Special.Reference) false false [ comparable ]
             ]
 
         for case in cases do
@@ -950,8 +957,8 @@ public class OpenGeneric<T>
     let ``an override may not add a special constraint`` () =
         let fixture = fixture ()
 
-        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
-        let referenceType = parameter (Some GenericConstraint.Reference) false false []
+        let valueType = parameter (Some Special.NonNullableValue) false false []
+        let referenceType = parameter (Some Special.Reference) false false []
 
         constraintsMatch fixture [ valueType ] [ unconstrained ] |> shouldEqual false
         constraintsMatch fixture [ unconstrained ] [ valueType ] |> shouldEqual true
@@ -970,7 +977,7 @@ public class OpenGeneric<T>
     let ``a value-type constraint satisfies a parameterless-constructor constraint`` () =
         let fixture = fixture ()
         let requiresCtor = parameter None true false []
-        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
+        let valueType = parameter (Some Special.NonNullableValue) false false []
 
         constraintsMatch fixture [ requiresCtor ] [ unconstrained ] |> shouldEqual false
         constraintsMatch fixture [ requiresCtor ] [ valueType ] |> shouldEqual true
@@ -1016,16 +1023,9 @@ public class OpenGeneric<T>
         |> shouldEqual true
 
         let valueTypeConstrained =
-            parameter
-                (Some GenericConstraint.NonNullableValue)
-                false
-                false
-                [ nominalOf fixture.BaseClassTypes.ValueType ]
+            parameter (Some Special.NonNullableValue) false false [ nominalOf fixture.BaseClassTypes.ValueType ]
 
-        constraintsMatch
-            fixture
-            [ valueTypeConstrained ]
-            [ parameter (Some GenericConstraint.NonNullableValue) false false [] ]
+        constraintsMatch fixture [ valueTypeConstrained ] [ parameter (Some Special.NonNullableValue) false false [] ]
         |> shouldEqual true
 
         // Only vacuous *because* the parameter is value-type constrained: without that, a
@@ -1079,7 +1079,7 @@ public class OpenGeneric<T>
     [<Test>]
     let ``every parameter is compared, not just the first`` () =
         let fixture = fixture ()
-        let valueType = parameter (Some GenericConstraint.NonNullableValue) false false []
+        let valueType = parameter (Some Special.NonNullableValue) false false []
 
         constraintsMatch fixture [ unconstrained ; valueType ] [ unconstrained ; unconstrained ]
         |> shouldEqual false
