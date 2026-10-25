@@ -412,8 +412,9 @@ module internal DefaultInterfaceImplementation =
             match
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
             with
-            | state, None -> state, Ok candidates
-            | state, Some parent -> levels state candidates parent
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok candidates
+            | state, Ok (Some parent) -> levels state candidates parent
 
         match candidates with
         | Error failure -> state, Error failure

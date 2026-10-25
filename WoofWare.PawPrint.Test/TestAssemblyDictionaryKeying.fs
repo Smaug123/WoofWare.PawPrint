@@ -162,7 +162,10 @@ module TestAssemblyDictionaryKeying =
                 BaseTypes = baseTypes
             }
 
-        TypeConcretization.concretizeTypeDefinition ctx identity |> ignore
+        TypeConcretization.concretizeTypeDefinition (loader ()) ctx identity
+        |> fst
+        |> BindingResult.value
+        |> ignore<ConcreteTypeHandle>
 
     /// A reference whose identity differs from every loaded assembly's definition identity must
     /// NOT resolve — otherwise the binder would be inventing bindings it has not made.
