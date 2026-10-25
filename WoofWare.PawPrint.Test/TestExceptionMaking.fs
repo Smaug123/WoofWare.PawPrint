@@ -415,7 +415,7 @@ static class Program
 
     [<TestCaseSource(nameof faults)>]
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
-        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ] then
+        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ; "Vararg" ] then
             Net11Frontier.park Net11Frontier.exceptionMaking
 
         let case = cases.[fault]
