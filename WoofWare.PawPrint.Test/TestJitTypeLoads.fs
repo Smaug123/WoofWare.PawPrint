@@ -339,6 +339,9 @@ public class ThingException : System.Exception { }
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesSwiftNative%d{k}() {{ try {{ if (Never) SwiftNativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged<%s{s}, void>)Pointer)(null); }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged[Swift]<%s{s}, void>)Pointer)(null); }}"
+                    $"[System.Runtime.InteropServices.DllImport(\"nowhere\", CallingConvention = System.Runtime.InteropServices.CallingConvention.FastCall)] static extern void FastcallNativeTakes%d{k}(%s{s} p);"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsFastcallNative%d{k}() {{ if (Never) FastcallNativeTakes%d{k}(null); }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsFastcallUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged[Fastcall]<%s{s}, void>)Pointer)(null); }}"
             ]
 
         let types =
@@ -744,6 +747,23 @@ public class ThingException : System.Exception { }
                 unmanagedProbe
                     "IndirectUnmanagedParameter"
                     $"CallsUnmanaged%d{k}"
+                    $"NativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Unprotected
+                    true
+
+                // By Fastcall's convention the JIT never makes the transition in the caller's code.
+                unmanagedProbe
+                    "FastcallUnmanagedParameter"
+                    $"CallsFastcallNative%d{k}"
+                    $"FastcallNativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Unprotected
+                    false
+
+                unmanagedProbe
+                    "FastcallIndirectUnmanagedParameter"
+                    $"CallsFastcallUnmanaged%d{k}"
                     $"NativeTakes%d{k}"
                     UnmanagedConvention.NotSwift
                     UnmanagedCallPlacement.Unprotected

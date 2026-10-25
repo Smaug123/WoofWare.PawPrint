@@ -9421,6 +9421,1082 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A client compiled against one version of a provider, run against another lacking two types,
+    /// each of whose callers calls unmanaged code whose calling convention CoreCLR reads from a
+    /// P/Invoke's import, from its `[UnmanagedCallConv]`, or from the modifiers of a `calli`'s
+    /// signature (`getUnmanagedCallConv`), as the JIT compiles the call. By Fastcall's convention the
+    /// JIT never makes the transition to unmanaged code in the caller's own code, so it does not walk
+    /// the signature for whether the call needs marshalling, which would load an instantiation of a
+    /// type that fails to load. `[UnmanagedCallConv]` naming two base conventions counts for nothing
+    /// to the JIT, though the VM's walk refuses it with a `TypeLoadException`, and one CoreCLR cannot
+    /// parse fails the compilation of the caller; a `calli` signature whose
+    /// modifiers name two fails it with `InvalidProgramException`, after the JIT loads the return
+    /// type and before it reads anything else of the signature, wherever the call is. Each call is
+    /// in a branch never taken; the host's CoreCLR says which callers fail to compile.
+    [<Test>]
+    let ``CoreCLR reads an unmanaged call's convention from the import, the attribute or the call site's modifiers``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let client =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Natives
+{
+    [DllImport("nowhere", CallingConvention = CallingConvention.FastCall)]
+    public static extern void FastcallTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void CdeclTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvFastcall) })]
+    public static extern void AttributeFastcallTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvFastcall), typeof(CallConvMemberFunction) })]
+    public static extern void AttributeFastcallMemberTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })]
+    public static extern void AttributeSwiftCdeclTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere", SetLastError = true), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })]
+    public static extern void AttributeSwiftCdeclSetsLastErrorTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere", PreserveSig = false), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })]
+    public static extern void AttributeSwiftCdeclUnpreservedTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(object) })]
+    public static extern void AttributeForeignOnlyTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv]
+    public static extern void AttributeEmptyTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvMemberFunction), typeof(CallConvSwift) })]
+    public static extern void AttributeMemberSwiftTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(object), typeof(CallConvSwift) })]
+    public static extern void AttributeForeignSwiftTakesPointerToGoneStruct(Provider.GoneStruct* x);
+    // Its attribute's blob is made malformed after compiling; no other attribute's blob is the same.
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvMemberFunction), typeof(CallConvSuppressGCTransition) })]
+    public static extern void MalformedTakesPointerToGoneStruct(Provider.GoneStruct* x);
+}
+
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    public static void FastcallGenericOfGone() { if (never) Natives.FastcallTakesGenericOfGone(null); }
+    public static void CdeclGenericOfGone() { if (never) Natives.CdeclTakesGenericOfGone(null); }
+    public static void AttributeFastcallGenericOfGone() { if (never) Natives.AttributeFastcallTakesGenericOfGone(null); }
+    public static void AttributeFastcallMemberGenericOfGone() { if (never) Natives.AttributeFastcallMemberTakesGenericOfGone(null); }
+    public static void AttributeSwiftCdeclPointer() { if (never) Natives.AttributeSwiftCdeclTakesPointerToGoneStruct(null); }
+    public static void AttributeSwiftCdeclCaught()
+    {
+        try { if (never) Natives.AttributeSwiftCdeclTakesPointerToGoneStruct(null); } catch (Exception) { }
+    }
+    public static void AttributeSwiftCdeclSetsLastError() { if (never) Natives.AttributeSwiftCdeclSetsLastErrorTakesPointerToGoneStruct(null); }
+    public static void AttributeSwiftCdeclUnpreserved() { if (never) Natives.AttributeSwiftCdeclUnpreservedTakesPointerToGoneStruct(null); }
+    public static void AttributeForeignOnlyPointer() { if (never) Natives.AttributeForeignOnlyTakesPointerToGoneStruct(null); }
+    public static void AttributeEmptyPointer() { if (never) Natives.AttributeEmptyTakesPointerToGoneStruct(null); }
+    public static void AttributeMemberSwiftPointer() { if (never) Natives.AttributeMemberSwiftTakesPointerToGoneStruct(null); }
+    public static void AttributeForeignSwiftPointer() { if (never) Natives.AttributeForeignSwiftTakesPointerToGoneStruct(null); }
+    public static void MalformedPointer() { if (never) Natives.MalformedTakesPointerToGoneStruct(null); }
+    public static void IndirectFastcallGenericOfGone()
+    {
+        if (never) ((delegate* unmanaged[Fastcall]<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+    public static void IndirectFastcallMemberGenericOfGone()
+    {
+        if (never) ((delegate* unmanaged[Fastcall, MemberFunction]<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+    public static void IndirectCdeclStdcallGenericOfGone()
+    {
+        if (never) ((delegate* unmanaged[Cdecl, Stdcall]<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+    public static void IndirectCdeclStdcallCaught()
+    {
+        try
+        {
+            if (never) ((delegate* unmanaged[Cdecl, Stdcall]<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+        }
+        catch (Exception) { }
+    }
+    public static void IndirectCdeclStdcallReturnsGone()
+    {
+        if (never) ((delegate* unmanaged[Cdecl, Stdcall]<Provider.Gone>)pointer)();
+    }
+    public static void IndirectSwiftCdeclPointer()
+    {
+        if (never) ((delegate* unmanaged[Swift, Cdecl]<Provider.GoneStruct*, void>)pointer)(null);
+    }
+    public static void IndirectSwiftSuppressPointer()
+    {
+        if (never) ((delegate* unmanaged[Swift, SuppressGCTransition]<Provider.GoneStruct*, void>)pointer)(null);
+    }
+}
+"""
+
+        // Optimised: the JIT never makes the transition in the caller's code where the assembly's
+        // `DebuggableAttribute` disables its optimisation.
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+
+        // The image with the prolog of the `[UnmanagedCallConv]` blob of the P/Invoke named
+        // `methodName` spoilt, which CoreCLR refuses to parse.
+        let spoilAttributeProlog (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let method =
+                metadata.MethodDefinitions
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+
+            let attribute =
+                (metadata.GetMethodDefinition method).GetCustomAttributes ()
+                |> Seq.map metadata.GetCustomAttribute
+                |> Seq.filter (fun attribute ->
+                    match attribute.Constructor.Kind with
+                    | HandleKind.MemberReference ->
+                        let constructor =
+                            metadata.GetMemberReference (MemberReferenceHandle.op_Explicit attribute.Constructor)
+
+                        let declaring =
+                            metadata.GetTypeReference (TypeReferenceHandle.op_Explicit constructor.Parent)
+
+                        metadata.GetString declaring.Name = "UnmanagedCallConvAttribute"
+                    | _ -> false
+                )
+                |> Seq.exactlyOne
+
+            let blobStart =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetHeapMetadataOffset HeapIndex.Blob
+                + MetadataTokens.GetHeapOffset attribute.Value
+
+            // The blob's compressed length (ECMA-335 II.24.2.4) comes first; the prolog `01 00` follows.
+            let prolog =
+                if patched.[blobStart] &&& 0x80uy = 0uy then
+                    blobStart + 1
+                elif patched.[blobStart] &&& 0xC0uy = 0x80uy then
+                    blobStart + 2
+                else
+                    blobStart + 4
+
+            if patched.[prolog] <> 1uy || patched.[prolog + 1] <> 0uy then
+                failwith $"BUG: the blob of %s{methodName}'s attribute is not where it was looked for"
+
+            patched.[prolog] <- 2uy
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> spoilAttributeProlog "MalformedTakesPointerToGoneStruct"
+
+        let typeLoad = "System.TypeLoadException"
+        let invalidProgram = "System.InvalidProgramException"
+
+        // Swift's convention is compiled as such on Arm64 and on x64 other than Windows'.
+        let compilesSwift =
+            not (
+                OperatingSystem.IsWindows ()
+                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+            )
+
+        let swiftEscapes =
+            if compilesSwift then
+                CallOutcome.Escapes typeLoad
+            else
+                CallOutcome.Runs
+
+        // Each caller, what running it does, what the analysis lets escape it, and a place it
+        // cannot see through, as `renderSite` spells it, which it must report.
+        let methods =
+            [
+                "FastcallGenericOfGone", CallOutcome.Runs, [], None
+                "CdeclGenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ], None
+                "AttributeFastcallGenericOfGone", CallOutcome.Runs, [], None
+                "AttributeFastcallMemberGenericOfGone", CallOutcome.Runs, [], None
+                // A second base convention makes the JIT pass over the attribute, and the signature
+                // names none: the platform's default, so nothing loads what the pointer points to.
+                // But where the JIT asks the VM to walk the signature for whether the call needs
+                // marshalling, the VM reads the P/Invoke's conventions again, refusing them with a
+                // `TypeLoadException` (`PInvokeStaticSigInfo::InitCallConv`): not inside a `catch`,
+                // nor for a P/Invoke that does not preserve its signature, which needs marshalling
+                // before the VM reads them; but for one that sets the last error, which the VM asks
+                // after it reads them.
+                "AttributeSwiftCdeclPointer", CallOutcome.Escapes typeLoad, [ typeLoad ], None
+                "AttributeSwiftCdeclCaught", CallOutcome.Runs, [], None
+                "AttributeSwiftCdeclSetsLastError", CallOutcome.Escapes typeLoad, [ typeLoad ], None
+                "AttributeSwiftCdeclUnpreserved", CallOutcome.Runs, [], None
+                // A type CoreCLR does not recognise names no base convention: the platform's default.
+                "AttributeForeignOnlyPointer", CallOutcome.Runs, [], None
+                "AttributeEmptyPointer", CallOutcome.Runs, [], None
+                "AttributeMemberSwiftPointer", swiftEscapes, [ typeLoad ], None
+                // A type CoreCLR does not recognise counts for nothing.
+                "AttributeForeignSwiftPointer", swiftEscapes, [ typeLoad ], None
+                "MalformedPointer",
+                CallOutcome.Escapes "System.Runtime.InteropServices.COMException",
+                [],
+                Some "Client.Calls::MalformedPointer entry UnreadableCallingConvention"
+                "IndirectFastcallGenericOfGone", CallOutcome.Runs, [], None
+                "IndirectFastcallMemberGenericOfGone", CallOutcome.Runs, [], None
+                "IndirectCdeclStdcallGenericOfGone", CallOutcome.Escapes invalidProgram, [ invalidProgram ], None
+                // The refusal comes before the JIT asks where the call is.
+                "IndirectCdeclStdcallCaught", CallOutcome.Escapes invalidProgram, [ invalidProgram ], None
+                // The JIT loads the return type before it reads the convention.
+                "IndirectCdeclStdcallReturnsGone", CallOutcome.Escapes typeLoad, [ typeLoad ], None
+                "IndirectSwiftCdeclPointer", CallOutcome.Escapes invalidProgram, [ invalidProgram ], None
+                "IndirectSwiftSuppressPointer", swiftEscapes, [ typeLoad ], None
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedCallConventions", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                methods
+                |> List.map (fun (name, _, _, _) ->
+                    let outcome =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let made : Set<string> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            let next, madeInvalidProgram = making analysis invalidProgram
+            analysis <- next
+            Set.union (render analysis madeTypeLoad) madeInvalidProgram
+
+        let failures =
+            [
+                for name, expected, expectedEscaping, expectedSite in methods do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let key = methodNamed clientAssembly "Client.Calls" name
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; invalidProgram ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        (expectedEscaping
+                         |> List.filter (fun expected -> not (List.contains expected escaping))
+                         |> List.map (fun missing -> $"no %s{missing}"))
+                        @ (escaping
+                           |> List.filter (fun escaped ->
+                               not (List.contains escaped expectedEscaping)
+                               && (expectedEscaping.IsEmpty || not (made.Contains $"=%s{escaped}"))
+                           ))
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                    let next, sources = EscapeAnalysis.unknownSources analysis key
+                    analysis <- next
+                    let sites = sources |> Seq.map (renderSite analysis) |> Set.ofSeq
+
+                    match expectedSite with
+                    | Some site when not (sites.Contains site) ->
+                        yield $"%s{name}: no %s{site} among the analysis's unknown sources %A{Set.toList sites}"
+                    | _ -> ()
+
+                    // Nothing of an instruction CoreCLR refuses runs, so nothing it would call is
+                    // unknown.
+                    if expected = CallOutcome.Escapes invalidProgram && escapes.Unknown then
+                        yield $"%s{name}: unknown in the analysis, from %A{Set.toList sites}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// Every calling convention C# spells for a `calli` with up to three of the calling-convention
+    /// types, in each order, and for a P/Invoke by each import's convention with an
+    /// `[UnmanagedCallConv]` naming up to two types, in each order, or none: each called with a
+    /// pointer to a value type that fails to load, which only Swift's convention loads, and with an
+    /// instantiation of a type that fails to load, which only the walk for whether the call needs
+    /// marshalling loads. The host's CoreCLR says which callers fail to compile, and with what; the
+    /// analysis must let that escape, and nothing else of those, from each.
+    [<Test>]
+    let ``the analysis reads every unmanaged calling convention C# spells as the host's JIT does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        // Each ordered choice of between one and `most` distinct elements of `pool`.
+        let rec choices (most : int) (pool : string list) : string list list =
+            if most = 0 then
+                []
+            else
+                pool
+                |> List.collect (fun first ->
+                    let rest = pool |> List.filter (fun other -> other <> first)
+
+                    [ first ]
+                    :: (choices (most - 1) rest |> List.map (fun chosen -> first :: chosen))
+                )
+
+        let calliConventions =
+            choices
+                3
+                [
+                    "Cdecl"
+                    "Stdcall"
+                    "Thiscall"
+                    "Fastcall"
+                    "Swift"
+                    "MemberFunction"
+                    "SuppressGCTransition"
+                ]
+
+        // `SuppressGCTransition` is left out: the JIT binds such a P/Invoke's native library as it
+        // compiles the call, which raises `DllNotFoundException` for one that is not there.
+        let pInvokes =
+            [
+                for import in [ "Winapi" ; "Cdecl" ; "StdCall" ; "ThisCall" ; "FastCall" ] do
+                    yield import, None
+
+                    for types in
+                        choices
+                            2
+                            [
+                                "typeof(CallConvCdecl)"
+                                "typeof(CallConvStdcall)"
+                                "typeof(CallConvFastcall)"
+                                "typeof(CallConvSwift)"
+                                "typeof(CallConvMemberFunction)"
+                                "typeof(object)"
+                            ] do
+                        yield import, Some (String.concat ", " types)
+            ]
+
+        let arguments =
+            [
+                "Pointer", "Provider.GoneStruct*"
+                "Generic", "Provider.KeptGeneric<Provider.Gone>"
+            ]
+
+        let natives =
+            [
+                for j, (import, types) in List.indexed pInvokes do
+                    let attribute =
+                        match types with
+                        | None -> ""
+                        | Some types -> $", UnmanagedCallConv(CallConvs = new[] {{ %s{types} }})"
+
+                    for argument, argumentType in arguments do
+                        $"    [DllImport(\"nowhere\", CallingConvention = CallingConvention.%s{import})%s{attribute}] public static extern void %s{argument}Native%d{j}(%s{argumentType} x);"
+            ]
+
+        let callers =
+            [
+                for j in 0 .. pInvokes.Length - 1 do
+                    for argument, _ in arguments do
+                        $"PInvoke%s{argument}%d{j}",
+                        $"    public static void PInvoke%s{argument}%d{j}() {{ if (never) Natives.%s{argument}Native%d{j}(null); }}"
+                for i, conventions in List.indexed calliConventions do
+                    let listed = String.concat ", " conventions
+
+                    for argument, argumentType in arguments do
+                        $"Calli%s{argument}%d{i}",
+                        $"    public static void Calli%s{argument}%d{i}() {{ if (never) ((delegate* unmanaged[%s{listed}]<%s{argumentType}, void>)pointer)(null); }}"
+            ]
+
+        let client =
+            [
+                "using System.Runtime.CompilerServices;"
+                "using System.Runtime.InteropServices;"
+                "namespace Client;"
+                "public static unsafe class Natives {"
+                yield! natives
+                "}"
+                "public static unsafe class Calls {"
+                "    static bool never;"
+                "    static void* pointer;"
+                yield! callers |> List.map snd
+                "}"
+            ]
+            |> String.concat "\n"
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let clientImage = compile "Client" [ completeProvider ] client
+
+        let names = callers |> List.map fst
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("EveryUnmanagedConvention", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                names
+                |> List.map (fun name ->
+                    let outcome =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        let typeLoad = "System.TypeLoadException"
+        let invalidProgram = "System.InvalidProgramException"
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeBy : Map<string, Set<string>> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            let madeTypeLoad = render analysis madeTypeLoad
+            let next, madeParameterless = making analysis typeLoad
+            analysis <- next
+            let next, madeInvalidProgram = making analysis invalidProgram
+            analysis <- next
+
+            Map.ofList
+                [
+                    typeLoad, Set.union madeTypeLoad madeParameterless
+                    invalidProgram, madeInvalidProgram
+                ]
+
+        let failures =
+            [
+                for name in names do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; invalidProgram ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        match hostOutcomes.[name] with
+                        | CallOutcome.Runs -> escaping
+                        | CallOutcome.Escapes expected when not (List.contains expected escaping) ->
+                            escaping @ [ $"no %s{expected}" ]
+                        | CallOutcome.Escapes expected ->
+                            escaping
+                            |> List.filter (fun escaped ->
+                                escaped <> expected
+                                && not (
+                                    (Map.tryFind expected madeBy |> Option.defaultValue Set.empty).Contains
+                                        $"=%s{escaped}"
+                                )
+                            )
+                        | CallOutcome.Caught _ -> failwith "BUG: no caller catches what it calls"
+
+                    if not unexplained.IsEmpty then
+                        yield $"%s{name}: the host %A{hostOutcomes.[name]}, the analysis %A{unexplained}"
+
+                    if hostOutcomes.[name] = CallOutcome.Escapes invalidProgram && escapes.Unknown then
+                        yield $"%s{name}: unknown in the analysis, though CoreCLR refuses the call"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// P/Invokes whose signatures carry calling-convention modifiers, which only emitted IL spells,
+    /// each called in a branch never taken with a pointer to a value type that fails to load, which
+    /// only Swift's convention loads, or with an instantiation of a type that fails to load, which
+    /// only the walk for whether the call needs marshalling loads. The JIT reads the modifiers only
+    /// where the import and `[UnmanagedCallConv]` name no convention, passing over a required one
+    /// and stopping at a second base convention; describing the P/Invoke as its walk begins, the VM
+    /// refuses, with a `TypeLoadException`, modifiers naming two base conventions, and an import or
+    /// attribute naming one convention where the modifiers name another, a member-function variant
+    /// counting as a convention of its own. The host's CoreCLR says which callers fail to compile.
+    [<Test>]
+    let ``CoreCLR reads a P/Invoke's convention from its signature's modifiers where nothing else names one``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let compile (name : string) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences name OutputKind.DynamicallyLinkedLibrary [] [ text ]
+
+        let completeProvider = compile "Provider" (provider true)
+        let incompleteProvider = compile "Provider" (provider false)
+
+        let typeLoad = "System.TypeLoadException"
+        let cdecl = typeof<Runtime.CompilerServices.CallConvCdecl>
+        let stdcall = typeof<Runtime.CompilerServices.CallConvStdcall>
+        let thiscall = typeof<Runtime.CompilerServices.CallConvThiscall>
+        let fastcall = typeof<Runtime.CompilerServices.CallConvFastcall>
+        let swift = typeof<Runtime.CompilerServices.CallConvSwift>
+        let memberFunction = typeof<Runtime.CompilerServices.CallConvMemberFunction>
+        let winapi = Runtime.InteropServices.CallingConvention.Winapi
+        let importCdecl = Runtime.InteropServices.CallingConvention.Cdecl
+
+        // Swift's convention is compiled as such on Arm64 and on x64 other than Windows'.
+        let swiftEscapes =
+            if
+                OperatingSystem.IsWindows ()
+                && Runtime.InteropServices.RuntimeInformation.ProcessArchitecture = Runtime.InteropServices.Architecture.X64
+            then
+                CallOutcome.Runs
+            else
+                CallOutcome.Escapes typeLoad
+
+        // Each P/Invoke: its name, its import's convention, what its `[UnmanagedCallConv]` names, its
+        // return type's optional and required modifiers, whether it takes the instantiation rather
+        // than the pointer, whether the call is inside a `catch`, and what running the caller does.
+        let natives =
+            [
+                "ModoptCdecl", winapi, None, [ cdecl ], [], false, false, CallOutcome.Runs
+                "ModoptSwift", winapi, None, [ swift ], [], false, false, swiftEscapes
+                "ModreqSwift", winapi, None, [], [ swift ], false, false, CallOutcome.Runs
+                // The JIT keeps the first, Swift's; the VM refuses the second.
+                "ModoptSwiftCdecl", winapi, None, [ swift ; cdecl ], [], false, false, CallOutcome.Escapes typeLoad
+                "ModoptSwiftCdeclCaught", winapi, None, [ swift ; cdecl ], [], false, true, CallOutcome.Runs
+                "ModoptFastcallGeneric", winapi, None, [ fastcall ], [], true, false, CallOutcome.Runs
+                "ModoptCdeclGeneric", winapi, None, [ cdecl ], [], true, false, CallOutcome.Escapes typeLoad
+                "ModoptMemberOnly", winapi, None, [ memberFunction ], [], false, false, CallOutcome.Runs
+                "ImportCdeclModoptStdcall",
+                importCdecl,
+                None,
+                [ stdcall ],
+                [],
+                false,
+                false,
+                CallOutcome.Escapes typeLoad
+                "ImportCdeclModoptCdecl", importCdecl, None, [ cdecl ], [], false, false, CallOutcome.Runs
+                "ImportCdeclModoptCdeclMember",
+                importCdecl,
+                None,
+                [ cdecl ; memberFunction ],
+                [],
+                false,
+                false,
+                CallOutcome.Escapes typeLoad
+                "ImportThiscallModoptThiscallMember",
+                Runtime.InteropServices.CallingConvention.ThisCall,
+                None,
+                [ thiscall ; memberFunction ],
+                [],
+                false,
+                false,
+                CallOutcome.Runs
+                "ImportCdeclModoptSwift", importCdecl, None, [ swift ], [], false, false, CallOutcome.Escapes typeLoad
+                "ImportFastcallModoptCdeclGeneric",
+                Runtime.InteropServices.CallingConvention.FastCall,
+                None,
+                [ cdecl ],
+                [],
+                true,
+                false,
+                CallOutcome.Runs
+                "AttributeSwiftModoptCdecl",
+                winapi,
+                Some swift,
+                [ cdecl ],
+                [],
+                false,
+                false,
+                CallOutcome.Escapes typeLoad
+                "AttributeSwiftModoptSwift", winapi, Some swift, [ swift ], [], false, false, swiftEscapes
+            ]
+
+        let clientImage =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("ModifierConventionsBuild", isCollectible = true)
+
+            try
+                let providerTypes = context.LoadFromStream (new MemoryStream (completeProvider))
+                let goneStruct = providerTypes.GetType "Provider.GoneStruct"
+
+                let genericOfGone =
+                    (providerTypes.GetType "Provider.KeptGeneric`1")
+                        .MakeGenericType (providerTypes.GetType "Provider.Gone")
+
+                let builder =
+                    Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+                let modul = builder.DefineDynamicModule "Client"
+
+                let calls =
+                    modul.DefineType ("Client.Calls", TypeAttributes.Public ||| TypeAttributes.Class)
+
+                let never =
+                    calls.DefineField ("Never", typeof<bool>, FieldAttributes.Public ||| FieldAttributes.Static)
+
+                let unmanagedCallConv = typeof<Runtime.InteropServices.UnmanagedCallConvAttribute>
+
+                for name, import, attribute, optional, required, generic, caught, _ in natives do
+                    let parameter =
+                        if generic then
+                            genericOfGone
+                        else
+                            goneStruct.MakePointerType ()
+
+                    let native =
+                        calls.DefinePInvokeMethod (
+                            name + "Native",
+                            "nowhere",
+                            name,
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Static
+                            ||| MethodAttributes.PinvokeImpl,
+                            CallingConventions.Standard,
+                            typeof<Void>,
+                            List.toArray required,
+                            List.toArray optional,
+                            [| parameter |],
+                            null,
+                            null,
+                            import,
+                            Runtime.InteropServices.CharSet.Ansi
+                        )
+
+                    native.SetImplementationFlags MethodImplAttributes.PreserveSig
+
+                    match attribute with
+                    | None -> ()
+                    | Some convention ->
+                        Emit.CustomAttributeBuilder (
+                            unmanagedCallConv.GetConstructor Type.EmptyTypes,
+                            [||],
+                            [| unmanagedCallConv.GetField "CallConvs" |],
+                            [| box [| convention |] |]
+                        )
+                        |> native.SetCustomAttribute
+
+                    let caller =
+                        calls.DefineMethod (
+                            name,
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            Type.EmptyTypes
+                        )
+
+                    let il = caller.GetILGenerator ()
+                    let skip = il.DefineLabel ()
+                    il.Emit (Emit.OpCodes.Ldsfld, never)
+                    il.Emit (Emit.OpCodes.Brfalse, skip)
+
+                    if caught then
+                        il.BeginExceptionBlock () |> ignore<Emit.Label>
+
+                    if generic then
+                        il.Emit Emit.OpCodes.Ldnull
+                    else
+                        il.Emit Emit.OpCodes.Ldc_I4_0
+
+                    if not generic then
+                        il.Emit Emit.OpCodes.Conv_U
+
+                    il.Emit (Emit.OpCodes.Call, native)
+
+                    if caught then
+                        il.BeginCatchBlock typeof<Exception>
+                        il.Emit Emit.OpCodes.Pop
+                        il.EndExceptionBlock ()
+
+                    il.MarkLabel skip
+                    il.Emit Emit.OpCodes.Ret
+
+                calls.CreateType () |> ignore<Type>
+                use stream = new MemoryStream ()
+                builder.Save stream
+                stream.ToArray ()
+            finally
+                context.Unload ()
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("ModifierConventions", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                natives
+                |> List.map (fun (name, _, _, _, _, _, _, _) ->
+                    let outcome =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let made : Set<string> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            let next, madeParameterless = making analysis typeLoad
+            analysis <- next
+            Set.union (render analysis madeTypeLoad) madeParameterless
+
+        let failures =
+            [
+                for name, _, _, _, _, _, _, expected in natives do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+                    let escapesTypeLoad = shown.Contains $"=%s{typeLoad}"
+
+                    match expected with
+                    | CallOutcome.Escapes _ when not escapesTypeLoad ->
+                        yield $"%s{name}: no %s{typeLoad} in %A{Set.toList shown}"
+                    | CallOutcome.Runs when escapesTypeLoad && not (made.Contains $"=%s{typeLoad}") ->
+                        yield $"%s{name}: %s{typeLoad} in %A{Set.toList shown}"
+                    | _ -> ()
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// For generated `[UnmanagedCallConv]` blobs, well-formed and not, sometimes two on one P/Invoke,
+    /// of which CoreCLR reads the first, on a P/Invoke whose import names no convention, taking a
+    /// pointer to a type missing at run time and called in a branch never taken, the escape analysis
+    /// agrees with the host's JIT: a `TypeLoadException` exactly where CoreCLR reads Swift's
+    /// convention from the blob, or the blob names a second base convention, which the VM refuses
+    /// as it begins its walk for whether the call needs marshalling; an unknown answer from the
+    /// caller's entry exactly where CoreCLR cannot read the blob (`UnreadableCallingConvention`);
+    /// and nothing otherwise. The attribute declares `CallConvs` alone, so a blob naming
+    /// `EntryPoint` does not parse. No blob names `CallConvSuppressGCTransition`: the JIT binds such
+    /// a P/Invoke's native library as it compiles the call, which raises `DllNotFoundException`.
+    [<Test>]
+    let ``the escape analysis reads a P/Invoke's UnmanagedCallConv blob as the host's JIT does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let complete = ucoProvider true
+        let incomplete = ucoProvider false
+        let typeLoad = "System.TypeLoadException"
+
+        // What compiling a caller raises where CoreCLR cannot parse the attribute's blob.
+        let unreadable =
+            Set.ofList
+                [
+                    "System.Runtime.InteropServices.COMException"
+                    "System.OverflowException"
+                    "System.ArgumentException"
+                ]
+
+        let namesSuppression (blob : byte[]) : bool =
+            (Text.Encoding.ASCII.GetString blob).Contains "SuppressGCTransition"
+
+        let applications : FsCheck.Gen<byte[] list> =
+            ucoApplications
+            |> FsCheck.FSharp.Gen.filter (List.exists namesSuppression >> not)
+
+        // An assembly `Client` whose type `Client.Calls` has, for each list of blobs, a P/Invoke
+        // `N<i>` carrying `[UnmanagedCallConv]` once with each blob in order, and a caller `M<i>`.
+        let image (goneStruct : Type) (blobs : byte[] list list) : byte[] =
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Client"
+
+            let calls =
+                modul.DefineType ("Client.Calls", TypeAttributes.Public ||| TypeAttributes.Class)
+
+            let never =
+                calls.DefineField ("Never", typeof<bool>, FieldAttributes.Public ||| FieldAttributes.Static)
+
+            let attribute =
+                typeof<Runtime.InteropServices.UnmanagedCallConvAttribute>.GetConstructor Type.EmptyTypes
+
+            blobs
+            |> List.iteri (fun i applications ->
+                let native =
+                    calls.DefinePInvokeMethod (
+                        $"N%d{i}",
+                        "nowhere",
+                        $"N%d{i}",
+                        MethodAttributes.Public
+                        ||| MethodAttributes.Static
+                        ||| MethodAttributes.PinvokeImpl,
+                        CallingConventions.Standard,
+                        typeof<Void>,
+                        [| goneStruct.MakePointerType () |],
+                        Runtime.InteropServices.CallingConvention.Winapi,
+                        Runtime.InteropServices.CharSet.Ansi
+                    )
+
+                native.SetImplementationFlags MethodImplAttributes.PreserveSig
+
+                for blob in applications do
+                    native.SetCustomAttribute (attribute, blob)
+
+                let caller =
+                    calls.DefineMethod (
+                        $"M%d{i}",
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<Void>,
+                        Type.EmptyTypes
+                    )
+
+                let il = caller.GetILGenerator ()
+                let skip = il.DefineLabel ()
+                il.Emit (Emit.OpCodes.Ldsfld, never)
+                il.Emit (Emit.OpCodes.Brfalse, skip)
+                il.Emit Emit.OpCodes.Ldc_I4_0
+                il.Emit Emit.OpCodes.Conv_U
+                il.Emit (Emit.OpCodes.Call, native)
+                il.MarkLabel skip
+                il.Emit Emit.OpCodes.Ret
+            )
+
+            calls.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let buildContext =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallConvBlobsBuild", isCollectible = true)
+
+        try
+            let goneStruct =
+                (buildContext.LoadFromStream (new MemoryStream (complete))).GetType "Provider.GoneStruct"
+
+            let property (blobs : byte[] list list) : unit =
+                let clientImage = image goneStruct blobs
+                let names = blobs |> List.mapi (fun i _ -> $"M%d{i}")
+
+                let host : Map<string, CallOutcome> =
+                    let context =
+                        Runtime.Loader.AssemblyLoadContext ("UnmanagedCallConvBlobs", isCollectible = true)
+
+                    context.add_Resolving (
+                        Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                            match name.Name with
+                            | "Provider" -> context.LoadFromStream (new MemoryStream (incomplete))
+                            | _ -> null
+                        )
+                    )
+
+                    try
+                        let calls =
+                            context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                        names
+                        |> List.map (fun name ->
+                            let outcome =
+                                try
+                                    calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                                    CallOutcome.Runs
+                                with :? TargetInvocationException as e ->
+                                    CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                            name, outcome
+                        )
+                        |> Map.ofList
+                    finally
+                        context.Unload ()
+
+                let read (name : string) (bytes : byte[]) : DumpedAssembly =
+                    Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (bytes))
+
+                let clientAssembly = read "Client" clientImage
+                let providerAssembly = read "Provider" incomplete
+
+                let reference =
+                    clientAssembly.AssemblyReferences.Values
+                    |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                let mutable analysis =
+                    analysisOver
+                        [ clientAssembly ; providerAssembly ]
+                        (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+                let failures =
+                    [
+                        for i, blob in List.indexed blobs do
+                            let name = $"M%d{i}"
+                            let key = methodNamed clientAssembly "Client.Calls" name
+                            let next, escapes = EscapeAnalysis.escapes analysis key
+                            analysis <- next
+                            let next, sources = EscapeAnalysis.unknownSources analysis key
+                            analysis <- next
+                            let escapesTypeLoad = (render analysis escapes).Contains $"=%s{typeLoad}"
+
+                            let unreadableHere =
+                                sources
+                                |> Seq.map (renderSite analysis)
+                                |> Seq.contains $"Client.Calls::%s{name} entry UnreadableCallingConvention"
+
+                            let agrees =
+                                match host.[name] with
+                                | CallOutcome.Runs -> not escapesTypeLoad && not unreadableHere
+                                | CallOutcome.Escapes raised when raised = typeLoad ->
+                                    escapesTypeLoad && not unreadableHere
+                                | CallOutcome.Escapes raised when unreadable.Contains raised -> unreadableHere
+                                | _ -> false
+
+                            if not agrees then
+                                let shown =
+                                    blob
+                                    |> List.map (Array.map (sprintf "%02X") >> String.concat " ")
+                                    |> String.concat "] ["
+
+                                yield
+                                    $"[%s{shown}]: the host %A{host.[name]}, the analysis lets TypeLoadException escape %b{escapesTypeLoad}, unreadable %b{unreadableHere}"
+                    ]
+
+                if not failures.IsEmpty then
+                    failures |> String.concat Environment.NewLine |> failwith
+
+            FsCheck.Check.One (
+                FsCheck.Config.QuickThrowOnFailure.WithMaxTest 40,
+                FsCheck.FSharp.Prop.forAll
+                    (FsCheck.FSharp.Arb.fromGen (
+                        FsCheck.FSharp.Gen.choose (1, 10)
+                        |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n applications)
+                    ))
+                    property
+            )
+        finally
+            buildContext.Unload ()
+
     /// Callers of unmanaged code whose signature names an instantiation of a class that fails to
     /// load, which CoreCLR's walk for whether the call needs marshalling loads where the JIT makes the
     /// transition to unmanaged code in the caller's own code. The JIT does not make it there where
