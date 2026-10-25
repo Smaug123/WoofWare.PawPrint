@@ -836,10 +836,7 @@ module TypeLoad =
                         namedValueType definition.Namespace definition.Name
                     | _ -> false
 
-                not (
-                    isValueType
-                    && parameterMetadata.Constraint = Some GenericConstraint.NonNullableValue
-                )
+                not (isValueType && parameterMetadata.RequiresNonNullableValueType)
             )
             |> List.ofSeq
 
