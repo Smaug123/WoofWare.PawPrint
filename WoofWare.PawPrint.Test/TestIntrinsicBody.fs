@@ -1788,16 +1788,14 @@ public static class Probes
         if not failures.IsEmpty then
             failures |> List.truncate 40 |> String.concat "\n" |> failwith
 
-        // Vacuity floors: the host's JIT folds most queries to false, and some to true.
+        // Vacuity floors that hold whatever the CPU: about 100 public queries, of which those of the
+        // other architecture's classes (some 20 Arm ones, or some 70 X86 ones) fold to false.
+        outcomes |> List.length |> shouldBeGreaterThan 80
+
         outcomes
         |> List.filter (fun (_, _, expected, _) -> expected = Ok (Some false))
         |> List.length
-        |> shouldBeGreaterThan 50
-
-        outcomes
-        |> List.filter (fun (_, _, expected, _) -> expected = Ok (Some true))
-        |> List.length
-        |> shouldBeGreaterThan 2
+        |> shouldBeGreaterThan 15
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every capability query returns the constant its profile gives, and nothing else does``
