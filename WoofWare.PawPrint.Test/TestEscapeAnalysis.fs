@@ -3636,6 +3636,24 @@ public static class Cases
         try { UnlessAccelerated(); }
         catch (Guarded) { if (!Vector128.IsHardwareAccelerated) throw new HandlerRan(); }
     }
+
+    // Each architecture's base instruction set, and a class nested twice in one. On a CPU of the
+    // other architecture, CoreLib's query is a stub returning false, and the JIT compiles a call of
+    // it to false all the same.
+    public static void X86Guarded()
+    {
+        if (System.Runtime.Intrinsics.X86.X86Base.IsSupported) throw new Guarded();
+    }
+
+    public static void ArmGuarded()
+    {
+        if (System.Runtime.Intrinsics.Arm.ArmBase.IsSupported) throw new Guarded();
+    }
+
+    public static void NestedGuarded()
+    {
+        if (System.Runtime.Intrinsics.X86.Avx10v2.V512.X64.IsSupported) throw new Guarded();
+    }
 }
 """
 
@@ -3701,6 +3719,14 @@ public static class Cases
                 Excludes = [ guarded ; handlerRan ]
                 Unknown = Some false
             }
+            // Neither CPU has any of these instruction sets.
+            for accelerated in [ false ; true ] do
+                for guardedBy in [ "X86Guarded" ; "ArmGuarded" ; "NestedGuarded" ] do
+                    accelerated,
+                    { expect "Guarded.Cases" guardedBy with
+                        Excludes = [ guarded ]
+                        Unknown = Some false
+                    }
         ]
 
     [<Test>]
@@ -12943,6 +12969,579 @@ public static class Runners
 
                     if reported <> expected then
                         yield $"%s{name}: reported %A{reported} of the refusals, not %A{expected}"
+            ]
+
+        match runtimeFailures @ analysisFailures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    let private missingMethod = "System.MissingMethodException"
+
+    /// The tokens a runner of `operandRefusals` names. Each of `VoidRef`, `VoidSpec` and
+    /// `ValueTypeVoidSpec` names CoreLib's `System.Void`: by a TypeRef, by a TypeSpec spelling
+    /// `ELEMENT_TYPE_VOID`, and by one spelling `valuetype System.Void`.
+    type private RefusedOperands =
+        {
+            Int32 : EntityHandle
+            /// `int32&`
+            Byref : EntityHandle
+            VoidRef : EntityHandle
+            VoidSpec : EntityHandle
+            ValueTypeVoidSpec : EntityHandle
+            /// `class System.Gone&`, which CoreLib declares no `System.Gone` for
+            GoneByref : EntityHandle
+            /// `int32&` under `modopt(IsConst)`
+            ModifiedByref : EntityHandle
+            /// `pinned int32&`
+            PinnedByref : EntityHandle
+            /// `pinned void`
+            PinnedVoid : EntityHandle
+            Exception : EntityHandle
+            /// `Object::GetHashCode`
+            ObjectGetHashCode : EntityHandle
+            /// A reference to the instance method of this name, with the signature `Object`'s has
+            /// (`GetType`'s for `GetType`), through this parent.
+            Member : EntityHandle -> string -> EntityHandle
+        }
+
+    /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
+    /// `runners`, each with an `int32` local and the body `runners` writes for it. It emits the
+    /// image with System.Reflection.Metadata, because no compiler names a member through a type
+    /// that does not declare it, let alone through `System.Void`.
+    let private operandRefusals (runners : (string * (RefusedOperands -> InstructionEncoder -> unit)) list) : byte[] =
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Probe.dll",
+            metadata.GetOrAddGuid (Guid "5c2a9e41-7b3d-4f08-a6e1-93d4b0c7e215"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Probe",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let coreName = typeof<obj>.Assembly.GetName ()
+
+        let core =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString coreName.Name,
+                coreName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (coreName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let typeRef (ns : string) (name : string) : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit core : EntityHandle),
+                metadata.GetOrAddString ns,
+                metadata.GetOrAddString name
+            )
+            |> TypeReferenceHandle.op_Implicit
+
+        let objectRef = typeRef "System" "Object"
+        let int32Ref = typeRef "System" "Int32"
+        let voidRef = typeRef "System" "Void"
+        let typeRef' = typeRef "System" "Type"
+        let goneRef = typeRef "System" "Gone"
+        let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
+
+        let typeSpec (encode : BlobBuilder -> unit) : EntityHandle =
+            let blob = BlobBuilder ()
+            encode blob
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+            |> TypeSpecificationHandle.op_Implicit
+
+        // ECMA-335 II.23.1.16: ELEMENT_TYPE_BYREF is 0x10, ELEMENT_TYPE_VOID 0x01.
+        let byrefOf (encodeElement : SignatureTypeEncoder -> unit) (blob : BlobBuilder) : unit =
+            blob.WriteByte 0x10uy
+            encodeElement (SignatureTypeEncoder blob)
+
+        let instanceSignature
+            (returns : ReturnTypeEncoder -> unit)
+            (parameters : int)
+            (encodeParameters : ParametersEncoder -> unit)
+            : BlobHandle
+            =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (parameters, returns, encodeParameters)
+
+            metadata.GetOrAddBlob blob
+
+        let signatureOf (name : string) : BlobHandle =
+            match name with
+            | "ToString" -> instanceSignature (fun returns -> returns.Type().String ()) 0 ignore
+            | "GetHashCode" -> instanceSignature (fun returns -> returns.Type().Int32 ()) 0 ignore
+            | "Equals" ->
+                instanceSignature
+                    (fun returns -> returns.Type().Boolean ())
+                    1
+                    (fun parameters -> parameters.AddParameter().Type().Object ())
+            | "Finalize" -> instanceSignature (fun returns -> returns.Void ()) 0 ignore
+            | "GetType" -> instanceSignature (fun returns -> returns.Type().Type (typeRef', false)) 0 ignore
+            | other -> failwith $"BUG: no signature for %s{other}"
+
+        // One row for each parent and name, which the runners share.
+        let members =
+            System.Collections.Generic.Dictionary<struct (EntityHandle * string), EntityHandle> ()
+
+        let memberOf (parent : EntityHandle) (name : string) : EntityHandle =
+            match members.TryGetValue struct (parent, name) with
+            | true, existing -> existing
+            | false, _ ->
+                let reference =
+                    (MemberReferenceHandle.op_Implicit (
+                        metadata.AddMemberReference (parent, metadata.GetOrAddString name, signatureOf name)
+                    )
+                    : EntityHandle)
+
+                members.[struct (parent, name)] <- reference
+                reference
+
+        let operands =
+            {
+                Int32 = int32Ref
+                Byref = typeSpec (byrefOf _.Int32())
+                VoidRef = voidRef
+                VoidSpec = typeSpec (fun blob -> blob.WriteByte 0x01uy)
+                ValueTypeVoidSpec = typeSpec (fun blob -> SignatureTypeEncoder(blob).Type (voidRef, true))
+                GoneByref = typeSpec (byrefOf (fun element -> element.Type (goneRef, false)))
+                // ECMA-335 II.23.2.7: ELEMENT_TYPE_CMOD_OPT is 0x20, then the modifier's coded index.
+                // ECMA-335 II.23.1.16: ELEMENT_TYPE_PINNED is 0x45.
+                PinnedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        byrefOf _.Int32() blob
+                    )
+                PinnedVoid =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        blob.WriteByte 0x01uy
+                    )
+                ModifiedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x20uy
+                        blob.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec isConstRef)
+                        byrefOf _.Int32() blob
+                    )
+                Exception = typeRef "System" "Exception"
+                ObjectGetHashCode = memberOf objectRef "GetHashCode"
+                Member = memberOf
+            }
+
+        let locals =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).LocalVariableSignature(1).AddVariable().Type().Int32 ()
+            metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
+
+        let signature =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returns -> returns.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        for name, write in runners do
+            let code = InstructionEncoder (BlobBuilder (), ControlFlowBuilder ())
+            write operands code
+
+            let body =
+                bodies.AddMethodBody (
+                    code,
+                    maxStack = 3,
+                    localVariablesSignature = locals,
+                    attributes = MethodBodyAttributes.InitLocals
+                )
+
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                signature,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            Unchecked.defaultof<TypeAttributes>,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "Probe",
+            metadata.GetOrAddString "Runners",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let blob = BlobBuilder ()
+        peBuilder.Serialize blob |> ignore<BlobContentId>
+        blob.ToArray ()
+
+    /// Each runner of `operandRefusals` the test below emits, and what the JIT does compiling it.
+    /// CoreCLR's `CEEInfo::resolveToken` refuses a token whose type is a byref or `System.Void`,
+    /// for every kind of token but `ldtoken`'s, once it has loaded the type and found any member;
+    /// for a member's token, the type is the parent its reference names.
+    let private operandRefusalCases : (string * (RefusedOperands -> InstructionEncoder -> unit) * Refusal) list =
+        let token (op : ILOpCode) (handle : EntityHandle) (code : InstructionEncoder) : unit =
+            code.OpCode op
+            code.Token handle
+
+        let boxedInt (operands : RefusedOperands) (code : InstructionEncoder) : unit =
+            code.LoadConstantI4 7
+            token ILOpCode.Box operands.Int32 code
+
+        let intArray (operands : RefusedOperands) (code : InstructionEncoder) : unit =
+            code.LoadConstantI4 1
+            token ILOpCode.Newarr operands.Int32 code
+
+        // Each instruction that consumes a type, over the operand it is given, leaving the stack
+        // empty.
+        let typeShapes : (string * (RefusedOperands -> EntityHandle -> InstructionEncoder -> unit)) list =
+            [
+                "Isinst",
+                fun _ operand code ->
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Isinst operand code
+                    code.OpCode ILOpCode.Pop
+                "Castclass",
+                fun _ operand code ->
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Castclass operand code
+                    code.OpCode ILOpCode.Pop
+                "Box",
+                fun _ operand code ->
+                    code.LoadConstantI4 0
+                    token ILOpCode.Box operand code
+                    code.OpCode ILOpCode.Pop
+                "Unbox",
+                fun operands operand code ->
+                    boxedInt operands code
+                    token ILOpCode.Unbox operand code
+                    code.OpCode ILOpCode.Pop
+                "UnboxAny",
+                fun operands operand code ->
+                    boxedInt operands code
+                    token ILOpCode.Unbox_any operand code
+                    code.OpCode ILOpCode.Pop
+                "Newarr",
+                fun _ operand code ->
+                    code.LoadConstantI4 0
+                    token ILOpCode.Newarr operand code
+                    code.OpCode ILOpCode.Pop
+                "Sizeof",
+                fun _ operand code ->
+                    token ILOpCode.Sizeof operand code
+                    code.OpCode ILOpCode.Pop
+                "Initobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Initobj operand code
+                "Ldobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Ldobj operand code
+                    code.OpCode ILOpCode.Pop
+                "Stobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    code.LoadConstantI4 0
+                    token ILOpCode.Stobj operand code
+                "Cpobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Cpobj operand code
+                "Ldelema",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    token ILOpCode.Ldelema operand code
+                    code.OpCode ILOpCode.Pop
+                "ReadonlyLdelema",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    code.OpCode ILOpCode.Readonly
+                    token ILOpCode.Ldelema operand code
+                    code.OpCode ILOpCode.Pop
+                "Ldelem",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    token ILOpCode.Ldelem operand code
+                    code.OpCode ILOpCode.Pop
+                "Stelem",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    code.LoadConstantI4 0
+                    token ILOpCode.Stelem operand code
+                "Mkrefany",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Mkrefany operand code
+                    code.OpCode ILOpCode.Pop
+                "Refanyval",
+                fun operands operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Mkrefany operands.Int32 code
+                    token ILOpCode.Refanyval operand code
+                    code.OpCode ILOpCode.Pop
+                "Constrained",
+                fun operands operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Constrained operand code
+                    token ILOpCode.Callvirt operands.ObjectGetHashCode code
+                    code.OpCode ILOpCode.Pop
+                "Ldtoken",
+                fun _ operand code ->
+                    token ILOpCode.Ldtoken operand code
+                    code.OpCode ILOpCode.Pop
+            ]
+
+        let refusedOperands : (string * (RefusedOperands -> EntityHandle)) list =
+            [
+                "Byref", _.Byref
+                "VoidRef", _.VoidRef
+                "VoidSpec", _.VoidSpec
+                "ValueTypeVoidSpec", _.ValueTypeVoidSpec
+            ]
+
+        // Each instruction that names a method, through the parent it is given, leaving the stack
+        // empty. Looking a method up through a value type finds only the virtual methods it
+        // inherits, so each names one of `Object`'s.
+        let memberShapes : (string * (RefusedOperands -> EntityHandle -> InstructionEncoder -> unit)) list =
+            [
+                "Call",
+                fun operands parent code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Call (operands.Member parent "GetHashCode") code
+                    code.OpCode ILOpCode.Pop
+                "Callvirt",
+                fun operands parent code ->
+                    boxedInt operands code
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Callvirt (operands.Member parent "Equals") code
+                    code.OpCode ILOpCode.Pop
+                "Ldftn",
+                fun operands parent code ->
+                    token ILOpCode.Ldftn (operands.Member parent "ToString") code
+                    code.OpCode ILOpCode.Pop
+                "Ldvirtftn",
+                fun operands parent code ->
+                    boxedInt operands code
+                    token ILOpCode.Ldvirtftn (operands.Member parent "ToString") code
+                    code.OpCode ILOpCode.Pop
+                "Ldtoken",
+                fun operands parent code ->
+                    token ILOpCode.Ldtoken (operands.Member parent "Finalize") code
+                    code.OpCode ILOpCode.Pop
+            ]
+
+        let returning
+            (body : RefusedOperands -> InstructionEncoder -> unit)
+            (operands : RefusedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
+            body operands code
+            code.OpCode ILOpCode.Ret
+
+        // `try { } catch (type) { pop }`, naming the type `pick` chooses.
+        let catches (pick : RefusedOperands -> EntityHandle) (operands : RefusedOperands) (code : InstructionEncoder) =
+            let tryStart = code.DefineLabel ()
+            let handlerStart = code.DefineLabel ()
+            let handlerEnd = code.DefineLabel ()
+            code.MarkLabel tryStart
+            code.Branch (ILOpCode.Leave, handlerEnd)
+            code.MarkLabel handlerStart
+            code.OpCode ILOpCode.Pop
+            code.Branch (ILOpCode.Leave, handlerEnd)
+            code.MarkLabel handlerEnd
+            code.OpCode ILOpCode.Ret
+            code.ControlFlowBuilder.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, pick operands)
+
+        let castclass = typeShapes |> List.find (fun (name, _) -> name = "Castclass") |> snd
+
+        [
+            for name, shape in typeShapes do
+                yield $"%s{name}_Int32", returning (fun operands -> shape operands operands.Int32), Refusal.Compiles
+
+                for operandName, pick in refusedOperands do
+                    let refused =
+                        if name = "Ldtoken" then
+                            Refusal.Compiles
+                        else
+                            Refusal.Raises invalidProgram
+
+                    yield
+                        $"%s{name}_%s{operandName}", returning (fun operands -> shape operands (pick operands)), refused
+
+            for name, shape in memberShapes do
+                yield
+                    $"%s{name}Through_Int32",
+                    returning (fun operands -> shape operands operands.Int32),
+                    Refusal.Compiles
+
+                for parentName, pick in List.tail refusedOperands do
+                    let refused =
+                        if name = "Ldtoken" then
+                            Refusal.Compiles
+                        else
+                            Refusal.Raises invalidProgram
+
+                    yield
+                        $"%s{name}Through_%s{parentName}",
+                        returning (fun operands -> shape operands (pick operands)),
+                        refused
+
+            // `resolveToken` loads the type before it refuses it, and a load that fails raises
+            // instead.
+            yield
+                "Castclass_GoneByref",
+                returning (fun operands -> castclass operands operands.GoneByref),
+                Refusal.Raises typeLoad
+            // A custom modifier does not change the type a signature names.
+            yield
+                "Castclass_ModifiedByref",
+                returning (fun operands -> castclass operands operands.ModifiedByref),
+                Refusal.Raises invalidProgram
+            // Nor does `pinned`, which no TypeSpec should spell.
+            yield
+                "Castclass_PinnedByref",
+                returning (fun operands -> castclass operands operands.PinnedByref),
+                Refusal.Raises invalidProgram
+            yield
+                "Castclass_PinnedVoid",
+                returning (fun operands -> castclass operands operands.PinnedVoid),
+                Refusal.Raises invalidProgram
+            // And it finds the member before it refuses its parent: looking up through
+            // `System.Void` finds no non-virtual method it inherits.
+            yield
+                "CallThrough_VoidRef_GetType",
+                returning (fun operands code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Call (operands.Member operands.VoidRef "GetType") code
+                    code.OpCode ILOpCode.Pop
+                ),
+                Refusal.Raises missingMethod
+            yield "Catch_Exception", catches _.Exception, Refusal.Compiles
+            yield "Catch_Byref", catches _.Byref, Refusal.Raises invalidProgram
+            yield "Catch_VoidRef", catches _.VoidRef, Refusal.Raises invalidProgram
+        ]
+
+    [<Test>]
+    let ``the JIT's refusal of a byref or System.Void as an instruction's type is reported, as a type operand or a member's parent``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            operandRefusals (operandRefusalCases |> List.map (fun (name, write, _) -> name, write))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("OperandRefusals", isCollectible = true)
+
+        let runtimeFailures =
+            try
+                let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Probe.Runners"
+
+                [
+                    for name, _, refused in operandRefusalCases do
+                        let raised =
+                            try
+                                ty.GetMethod(name).Invoke ((null : obj), [||]) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some (e.InnerException.GetType().FullName)
+
+                        let expected =
+                            match refused with
+                            | Refusal.Compiles -> None
+                            | Refusal.Raises refusal -> Some refusal
+                            | Refusal.UnlessInlined _
+                            | Refusal.RaisesBesideBinding _ -> failwith $"BUG: %s{name} expects %A{refused}"
+
+                        if raised <> expected then
+                            yield $"%s{name}: the real runtime raised %A{raised}, not %A{expected}"
+                ]
+            finally
+                context.Unload ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let refusals =
+            Set.ofList [ invalidProgram ; typeLoad ; missingMethod ; badImageFormat ]
+
+        let analysisFailures =
+            [
+                for name, _, refused in operandRefusalCases do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Runners" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let refusalsIn (shown : Set<string>) : Set<string> =
+                        refusals |> Set.filter (fun refusal -> shown.Contains ("=" + refusal))
+
+                    // What making the refusal's exception raises escapes beside it.
+                    let expected =
+                        match refused with
+                        | Refusal.Raises refusal when refusal = typeLoad ->
+                            let next, escapes = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+                            analysis <- next
+                            Set.add refusal (refusalsIn (render analysis escapes))
+                        | Refusal.Raises refusal ->
+                            let next, made = making analysis refusal
+                            analysis <- next
+                            Set.add refusal (refusalsIn made)
+                        | _ -> Set.empty
+
+                    let reported = refusalsIn shown
+
+                    if reported <> expected then
+                        yield $"%s{name}: reported %A{Set.toList reported} of the refusals, not %A{Set.toList expected}"
             ]
 
         match runtimeFailures @ analysisFailures with

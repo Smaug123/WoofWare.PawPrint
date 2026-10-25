@@ -908,7 +908,8 @@ anything it inherits declares a field.
 
 **PawPrint**: raises the same exception, with the same message, when the instruction *executes*, or
 for a `DynamicMethod`'s `catch` clause when the method is first invoked, as CoreCLR does. A `catch`
-clause in metadata naming either is not refused: it matches no exception. `cpobj`, `mkrefany` and
+clause in metadata naming either is not refused: it matches no exception, where CoreCLR refuses the
+method (measured). `cpobj`, `mkrefany` and
 `refanyval` are not implemented at all.
 
 **Spec status**: ECMA-335 forbids some of these uses outright: a managed pointer as an array's
@@ -921,12 +922,15 @@ rules, or when, and says nothing of `isinst` or `sizeof` of either. No compiler 
 **Where this lives in code**: `TypeOperand.refusal`, asked by each type-consuming op through
 `UnaryMetadataIlOpContext.refuseTypeOperand`, by `DynamicMethodExecution.concretize` for a `catch`
 clause, and by `UnaryMetadataObjectOps.executeBox` of an instruction after a byref-like box; and
-`TypeOperand.ofDefinition`, asked of a MemberRef's parent by `IlMachineMemberResolution.resolveMember`,
-which answers `MemberReferenceResolution.RefusedParent` for each instruction to raise.
+`TypeOperand.ofTypeToken`, asked of a MemberRef's parent by `IlMachineMemberResolution.resolveMember`,
+which answers `MemberReferenceResolution.RefusedParent` for each instruction to raise. The escape
+analysis asks `TypeOperand.ofTypeToken` of each token that binds (`EscapeAnalysis.resolutionRefusal`),
+`catch` clauses' included, and reports the refusal where the method is called.
 `TestFabricatedTypeOperandRefusal` pins each instruction over metadata,
 `DynamicMethodTypeToken.cs` over a `DynamicScope`, and `TestFabricatedVoidParentMemberReference`
 each method instruction over a parent of `System.Void`, each with the instruction reached on every
-run and no handler of its own, where the two runtimes agree.
+run and no handler of its own, where the two runtimes agree. `TestEscapeAnalysis` holds the
+analysis to the real runtime over each of those, and over `catch` clauses.
 
 ## A field reference that binds nothing throws when it is reached
 

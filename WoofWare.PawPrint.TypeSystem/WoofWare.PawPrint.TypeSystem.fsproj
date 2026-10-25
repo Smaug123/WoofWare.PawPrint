@@ -23,6 +23,7 @@
         <Compile Include="..\WoofWare.PawPrint.Domain\ImmutableArray.fs" Link="ImmutableArray.fs" />
         <Compile Include="BindingStop.fs" />
         <Compile Include="TypeConcretisation.fs" />
+        <Compile Include="TypeOperand.fs" />
         <Compile Include="VtableSlot.fs" />
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />

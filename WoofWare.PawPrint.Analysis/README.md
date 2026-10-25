@@ -64,7 +64,7 @@ method) may add more:
   (`StringConstructor`);
 * code that a capability query rules out on that CPU, or that a test of whether an object is null
   or an integer is zero rules out, is left out. Where a call to an `IsSupported` or `IsHardwareAccelerated` that answers
-  a constant (`IntrinsicBody.constantResult`) is branched on straight away (`brtrue` or `brfalse`,
+  a constant (`IntrinsicBody.constantResult`; another architecture's query answers false) is branched on straight away (`brtrue` or `brfalse`,
   which nothing else reaches), only the way the answer goes is followed (`ControlFlow.mayExecute`),
   and so it is where the value branched on straight away is an object known to be null or not: one
   `newobj` or `ldstr` made, `ldnull`, or an argument whose callers all pass an object or all pass
