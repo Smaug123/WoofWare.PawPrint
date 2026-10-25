@@ -19,10 +19,17 @@ open Microsoft.Extensions.Logging
 /// type of a <c>const</c> field, or anything a method's signature names.
 /// </para>
 /// <para>
-/// Not followed: the constraints of a generic definition's type parameters and of its generic
-/// methods', which <c>MethodTable::DoFullyLoad</c> loads except in CoreLib and in ReadyToRun images
-/// that skip type validation. A reference only a constraint names can fail a load that this reports
-/// as meeting no miss.
+/// Once every type the load reaches has been through those levels (`CLASS_DEPENDENCIES_LOADED`),
+/// it loads, for each type definition outside CoreLib it has brought, the constraints of the
+/// definition's type parameters, each to that level: the constraint types and what they reach, but
+/// not their own constraints. It does not check that any instantiation satisfies its constraints.
+/// </para>
+/// <para>
+/// Not followed: the constraints of a definition's generic methods, which
+/// <c>MethodTable::DoFullyLoad</c> loads with its type parameters'. A reference only one of those
+/// names can fail a load that this reports as meeting no miss. CoreCLR also loads no constraints in
+/// a ReadyToRun image that skips type validation, which this does not tell from any other image
+/// outside CoreLib: such a load may meet a miss that CoreCLR never meets.
 /// </para>
 /// <para>
 /// No miss does not mean the load succeeds: CoreCLR's class loader fails a load for many other
@@ -57,7 +64,9 @@ module TypeLoad =
         | Approximate
         /// `CLASS_LOAD_EXACTPARENTS`.
         | ExactParents
-        /// `CLASS_LOADED`, through `MethodTable::DoFullyLoad`.
+        /// `CLASS_DEPENDENCIES_LOADED`, through `MethodTable::DoFullyLoad`.
+        | Dependencies
+        /// `CLASS_LOADED`: `CLASS_DEPENDENCIES_LOADED`, then the checks `DoFullyLoad` makes there.
         | Full
 
     /// The type definitions a walk of a load has brought to each of CoreCLR's load levels,
@@ -69,7 +78,10 @@ module TypeLoad =
             Approximate : Set<ResolvedTypeIdentity>
             /// Brought to `CLASS_LOAD_EXACTPARENTS`.
             Exact : Set<ResolvedTypeIdentity>
-            /// Through `MethodTable::DoFullyLoad`.
+            /// Brought to `CLASS_DEPENDENCIES_LOADED`.
+            Dependencies : Set<ResolvedTypeIdentity>
+            /// Brought to `CLASS_LOADED`: what `CLASS_DEPENDENCIES_LOADED` brings, and its
+            /// constraints.
             Full : Set<ResolvedTypeIdentity>
         }
 
@@ -516,10 +528,118 @@ module TypeLoad =
                     | walk, Error _ -> walk, false
         | _ -> walk, false
 
-    /// `MethodTable::DoFullyLoad` for a type already created, spelled in `spellingAssembly`, after
-    /// its exact-parents load: an instantiation's generic definition, then its arguments. This is how
-    /// a base or an interface is fully loaded.
-    let rec private fullyLoad
+    /// The types `DoAccessibilityCheckForConstraintSignature` loads of a constraint's signature, each
+    /// without its instantiation, in the order the signature names them: a generic type, then each
+    /// of its arguments; a vector's, pointer's or byref's element; a function pointer's return type,
+    /// then its parameters; past a custom modifier, the type it modifies. The walk ends at a part
+    /// CoreCLR refuses as malformed, or misreads, which is unmodelled.
+    let rec private constraintSignatureTypes (spelling : TypeDefn) : Result<TypeDefn, UnmodelledBinding> list =
+        let all (spellings : TypeDefn list) : Result<TypeDefn, UnmodelledBinding> list =
+            let rec go (walked : Result<TypeDefn, UnmodelledBinding> list) (spellings : TypeDefn list) =
+                match spellings with
+                | [] -> walked
+                | spelling :: rest ->
+                    let walked = walked @ constraintSignatureTypes spelling
+
+                    if walked |> List.exists Result.isError then
+                        walked
+                    else
+                        go walked rest
+
+            go [] spellings
+
+        match spelling with
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _ -> [ Ok spelling ]
+        | TypeDefn.GenericInstantiation (root, args) -> all (root :: List.ofSeq args)
+        // `SigParser::GetElemType` skips a custom modifier without loading its type.
+        | TypeDefn.Modified modified -> constraintSignatureTypes modified.Unmodified
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element -> constraintSignatureTypes element
+        | TypeDefn.Array _ ->
+            [
+                Error
+                    {
+                        Diagnostic =
+                            $"the constraint signature %O{spelling} has a multidimensional array, whose element type CoreCLR's DoAccessibilityCheckForConstraintSignature reads past before it walks the rest, which PawPrint does not follow"
+                    }
+            ]
+        | TypeDefn.FunctionPointer signature ->
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> []
+                | MethodReturnType.Returns ret -> [ ret ]
+
+            all (returned @ signature.ParameterTypes)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> []
+        | TypeDefn.Pinned _ ->
+            [
+                Error
+                    {
+                        Diagnostic =
+                            $"the constraint signature %O{spelling} has a pinned type, for which CoreCLR's DoAccessibilityCheckForConstraintSignature throws BadImageFormatException"
+                    }
+            ]
+
+    /// A load the constraint checks of a definition's type parameters make, in the order
+    /// `MethodTable::DoFullyLoad` makes them.
+    [<RequireQualifiedAccess>]
+    type private ConstraintLoad =
+        /// `TypeVarTypeDesc::LoadConstraints` for the type parameter at this index: each constraint,
+        /// except an interface instantiation, of which only the generic definition.
+        | Constraints of parameter : int
+        /// `DoAccessibilityCheckForConstraints` for the type parameter at this index: each type the
+        /// signature of its first constraint names, if that is an interface instantiation.
+        | Signatures of parameter : int
+
+    /// The order of the loads `DoFullyLoad` makes for the type parameters of a definition, each with
+    /// the constraints `constraints` gives: for each in turn, `Bounded` loads its constraints, and
+    /// then those of each type parameter it is constrained to, transitively, each once; then
+    /// `DoAccessibilityCheckForConstraints` walks the signature of its first constraint.
+    let private constraintLoadOrder (constraints : TypeDefn list list) : ConstraintLoad list =
+        let parameters = constraints.Length
+
+        // `Bounded`, to `depth`: it gives up at depth 0, which only constraints among the
+        // parameters that form a cycle reach.
+        let rec bounded
+            (loaded : Set<int>, order : ConstraintLoad list)
+            (parameter : int)
+            (depth : int)
+            : Set<int> * ConstraintLoad list
+            =
+            if depth = 0 then
+                loaded, order
+            else
+
+            let loaded, order =
+                if loaded.Contains parameter then
+                    loaded, order
+                else
+                    loaded.Add parameter, ConstraintLoad.Constraints parameter :: order
+
+            ((loaded, order), constraints.[parameter])
+            ||> List.fold (fun soFar bound ->
+                match TypeDefn.stripCustomModifiers bound with
+                | TypeDefn.GenericTypeParameter other -> bounded soFar other (depth - 1)
+                | _ -> soFar
+            )
+
+        ((Set.empty, []), List.init parameters id)
+        ||> List.fold (fun soFar parameter ->
+            let loaded, order = bounded soFar parameter parameters
+            loaded, ConstraintLoad.Signatures parameter :: order
+        )
+        |> snd
+        |> List.rev
+
+    /// `MethodTable::DoFullyLoad` to `CLASS_DEPENDENCIES_LOADED` for a type already created, spelled
+    /// in `spellingAssembly`, after its exact-parents load: an instantiation's generic definition,
+    /// then its arguments. This is how a base or an interface is brought to that level.
+    let rec private dependencies
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -534,15 +654,15 @@ module TypeLoad =
                 loggerFactory
                 dotnetRuntimeDirs
                 true
-                (fullyLoadDefinition loggerFactory dotnetRuntimeDirs baseClassTypes)
-                (fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly)
+                (dependenciesDefinition loggerFactory dotnetRuntimeDirs baseClassTypes)
+                (dependencies loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly)
                 spellingAssembly
                 spelling
         )
 
     /// A type definition's base, its interfaces, and the value types of its fields, instance then
     /// static.
-    and private fullyLoadDefinition
+    and private dependenciesDefinition
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -550,19 +670,19 @@ module TypeLoad =
         (walk : LoadWalk)
         : LoadWalk * LoadMiss option
         =
-        if walk.Full.Contains identity then
+        if walk.Dependencies.Contains identity then
             walk, None
         else
 
         let walk =
             { walk with
-                Full = walk.Full.Add identity
+                Dependencies = walk.Dependencies.Add identity
             }
 
         let definedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
         let definition = definedIn.TypeDefs.[identity.TypeDefinition.Get]
 
-        let load = fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes definedIn
+        let load = dependencies loggerFactory dotnetRuntimeDirs baseClassTypes definedIn
 
         // A field of an enum type has a primitive `FieldDesc`, which `DoFullyLoad` does not load.
         let loadField (spelling : TypeDefn) (walk : LoadWalk) =
@@ -603,8 +723,12 @@ module TypeLoad =
             match level with
             | LoadLevel.Approximate -> walk, None
             | LoadLevel.ExactParents -> exactDefinition loggerFactory dotnetRuntimeDirs identity walk
+            | LoadLevel.Dependencies ->
+                exactDefinition loggerFactory dotnetRuntimeDirs identity walk
+                |> andThen (dependenciesDefinition loggerFactory dotnetRuntimeDirs baseClassTypes identity)
             | LoadLevel.Full ->
                 exactDefinition loggerFactory dotnetRuntimeDirs identity walk
+                |> andThen (dependenciesDefinition loggerFactory dotnetRuntimeDirs baseClassTypes identity)
                 |> andThen (fullyLoadDefinition loggerFactory dotnetRuntimeDirs baseClassTypes identity)
 
         match spelling with
@@ -633,6 +757,181 @@ module TypeLoad =
             match constructedFrom constructed with
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
+
+    /// The checks `MethodTable::DoFullyLoad` makes of a type definition's type parameters at
+    /// `CLASS_LOADED`, as far as they load types: each constraint, spelled in the definition's
+    /// assembly, to `CLASS_DEPENDENCIES_LOADED`. An interface instantiation is not loaded: its generic
+    /// definition is, and later, if it is the type parameter's first constraint, each type its
+    /// signature names.
+    and private typeParameterConstraintSteps
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (definedIn : DumpedAssembly)
+        (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : (LoadWalk -> LoadWalk * LoadMiss option) list
+        =
+        let constraints =
+            definition.Generics
+            |> Seq.map (fun (_, metadata) -> List.ofSeq metadata.Constraints)
+            |> List.ofSeq
+
+        // `DoAccessibilityCheckForConstraints` finds the metadata row of an interface instantiation
+        // it did not load by counting rows up to its index, but never advances the count, so it
+        // finds the row only of a parameter's first constraint. That row is the first of
+        // `Constraints` unless it is the `System.ValueType` row that `struct` comes with, which
+        // `Constraints` leaves out.
+        let firstRowKept =
+            let metadata = definedIn.PeReader.GetMetadataReader ()
+
+            definition.Generics
+            |> Seq.map (fun (parameter, parameterMetadata) ->
+                let rows = metadata.GetGenericParameter(parameter.Handle.Get).GetConstraints ()
+
+                if rows.Count = 0 then
+                    false
+                else
+
+                let first = metadata.GetGenericParameterConstraint(rows.[0]).Type
+
+                let namedValueType (ns : StringHandle) (name : StringHandle) =
+                    metadata.GetString ns = "System" && metadata.GetString name = "ValueType"
+
+                let isValueType =
+                    match first.Kind with
+                    | HandleKind.TypeReference ->
+                        let reference = metadata.GetTypeReference (TypeReferenceHandle.op_Explicit first)
+                        namedValueType reference.Namespace reference.Name
+                    | HandleKind.TypeDefinition ->
+                        let definition = metadata.GetTypeDefinition (TypeDefinitionHandle.op_Explicit first)
+                        namedValueType definition.Namespace definition.Name
+                    | _ -> false
+
+                not (
+                    isValueType
+                    && parameterMetadata.Constraint = Some GenericConstraint.NonNullableValue
+                )
+            )
+            |> List.ofSeq
+
+        let load (spelling : TypeDefn) =
+            loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes LoadLevel.Dependencies definedIn spelling
+
+        // Whether a constraint's generic definition, already loaded, is an interface.
+        let isInterface (root : TypeDefn) (walk : LoadWalk) : LoadWalk * bool =
+            match definitionOf loggerFactory dotnetRuntimeDirs definedIn (TypeDefn.stripCustomModifiers root) walk with
+            | walk, Ok identity ->
+                let rootDefinedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
+                walk, rootDefinedIn.TypeDefs.[identity.TypeDefinition.Get].IsInterface
+            | _, Error miss -> failwith $"BUG: a constraint's generic definition was loaded, but now binds to %O{miss}"
+
+        // `LoadConstraints` and `DoAccessibilityCheckForConstraints` classify a constraint by the
+        // element type `SigParser::GetElemType` reads, which skips custom modifiers.
+        let loadConstraint (bound : TypeDefn) (walk : LoadWalk) : LoadWalk * LoadMiss option =
+            match TypeDefn.stripCustomModifiers bound with
+            | TypeDefn.GenericInstantiation (root, _) ->
+                load root walk
+                |> andThen (fun walk ->
+                    match isInterface root walk with
+                    | walk, true -> walk, None
+                    | walk, false -> load bound walk
+                )
+            | _ -> load bound walk
+
+        let walkSignature (bound : TypeDefn) (walk : LoadWalk) : LoadWalk * LoadMiss option =
+            match TypeDefn.stripCustomModifiers bound with
+            | TypeDefn.GenericInstantiation (root, _) ->
+                match isInterface root walk with
+                | walk, false -> walk, None
+                | walk, true ->
+                    let step (part : Result<TypeDefn, UnmodelledBinding>) =
+                        match part with
+                        | Ok spelling -> load spelling
+                        | Error unmodelled -> fun (walk : LoadWalk) -> walk, Some (LoadMiss.Unmodelled unmodelled)
+
+                    firstMiss (constraintSignatureTypes bound |> List.map step) walk
+            | _ -> walk, None
+
+        constraintLoadOrder constraints
+        |> List.map (fun step (walk : LoadWalk) ->
+            match step with
+            | ConstraintLoad.Constraints parameter -> firstMiss (List.map loadConstraint constraints.[parameter]) walk
+            | ConstraintLoad.Signatures parameter ->
+                match constraints.[parameter] with
+                | first :: _ when firstRowKept.[parameter] -> walkSignature first walk
+                | _ -> walk, None
+        )
+
+    /// `MethodTable::DoFullyLoad` to `CLASS_LOADED` for a type spelled in `spellingAssembly`, once
+    /// every type its load reaches has been brought to `CLASS_DEPENDENCIES_LOADED`: as that walk,
+    /// each type definition after what it reaches, with the checks each definition makes at the end,
+    /// but not a function pointer's signature.
+    and private fullyLoad
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (spellingAssembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        (walk : LoadWalk)
+        : LoadWalk * LoadMiss option
+        =
+        match spelling with
+        // `TypeDesc::DoFullyLoad` completes a function pointer without its signature's types, which
+        // stay at the level creating it brought them to.
+        | TypeDefn.FunctionPointer _ -> walk, None
+        | _ ->
+            walkSpelling
+                loggerFactory
+                dotnetRuntimeDirs
+                true
+                (fullyLoadDefinition loggerFactory dotnetRuntimeDirs baseClassTypes)
+                (fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes spellingAssembly)
+                spellingAssembly
+                spelling
+                walk
+
+    /// A type definition's base, its interfaces and the value types of its fields, instance then
+    /// static, each to `CLASS_LOADED`; then, outside CoreLib, which skips the checks, its type
+    /// parameters' constraints.
+    and private fullyLoadDefinition
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (identity : ResolvedTypeIdentity)
+        (walk : LoadWalk)
+        : LoadWalk * LoadMiss option
+        =
+        if walk.Full.Contains identity then
+            walk, None
+        else
+
+        let walk =
+            { walk with
+                Full = walk.Full.Add identity
+            }
+
+        let definedIn = walk.Assemblies.ByDefinitionName identity.AssemblyFullName
+        let definition = definedIn.TypeDefs.[identity.TypeDefinition.Get]
+
+        let load = fullyLoad loggerFactory dotnetRuntimeDirs baseClassTypes definedIn
+
+        let loadField (spelling : TypeDefn) (walk : LoadWalk) =
+            match isEnumField loggerFactory dotnetRuntimeDirs baseClassTypes definedIn spelling walk with
+            | walk, true -> walk, None
+            | walk, false -> load spelling walk
+
+        // `Module::SkipTypeValidation`, which CoreLib always sets.
+        let constraints =
+            if identity.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName then
+                []
+            else
+                typeParameterConstraintSteps loggerFactory dotnetRuntimeDirs baseClassTypes definedIn definition
+
+        firstMiss
+            (parentSteps load definedIn definition
+             @ List.map loadField (valueTypeFields definition)
+             @ constraints)
+            walk
 
     /// The type definitions that loads have brought in full without meeting a miss
     /// (`loadMissFrom`). A load from these passes over them at every level, as CoreCLR passes over a
@@ -676,6 +975,7 @@ module TypeLoad =
                 Assemblies = assemblies
                 Approximate = full
                 Exact = full
+                Dependencies = full
                 Full = full
             }
 
@@ -749,6 +1049,7 @@ module TypeLoad =
                 Assemblies = assemblies
                 Approximate = full
                 Exact = full
+                Dependencies = full
                 Full = full
             }
 
