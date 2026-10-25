@@ -162,6 +162,8 @@
           # pure cost, and on macOS the darwin fixup hooks would inspect them pointlessly.
           dontFixup = true;
         };
+      # `scripts/test_footprint.py` needs hypothesis; the devshell and the `footprint` check share it.
+      python = pkgs.python3.withPackages (ps: [ps.hypothesis]);
       dotnetTool = dllOverride: toolName: toolVersion: hash:
         pkgs.stdenvNoCC.mkDerivation rec {
           name = toolName;
@@ -226,6 +228,18 @@
                 ${./scripts/check-docstring-attachment.py}
               touch $out
             '';
+          # scripts/footprint.py decides which commits move each package's version and which pull
+          # requests run the tests, and its contract holds it to git's own sparse checkout and diff.
+          # Runs here so that a change to the script cannot quietly retire it.
+          footprint =
+            pkgs.runCommand "footprint" {
+              buildInputs = [python pkgs.git];
+            }
+            ''
+              export HOME=$TMPDIR
+              python3 ${./scripts/test_footprint.py} ${./scripts/footprint.py}
+              touch $out
+            '';
         }
         # One `runtime-version-pin-<name>` per runtime. Each fails the build (and so `nix flake
         # check` in CI) when nixpkgs's version of that runtime drifts away from the version we pin.
@@ -286,7 +300,7 @@
           pkgs.codex
           # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
           # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
-          pkgs.python3
+          python
         ];
       };
     });
