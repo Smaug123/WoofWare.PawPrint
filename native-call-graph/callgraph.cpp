@@ -33,7 +33,9 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/AST/VTableBuilder.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
@@ -54,6 +56,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -254,6 +257,82 @@ const CXXDestructorDecl *nonTrivialDestructor(QualType T, ASTContext &Context) {
   return D;
 }
 
+/// Whether a variable's initializer is evaluated as a constant rather than run: a constexpr
+/// variable's; one of static or thread storage whose initialization is constant; or a local whose
+/// value constant expressions could use and whose initializer evaluates, as a const int's does,
+/// which clang stores as a constant.
+bool initializedAsConstant(VarDecl *V, const ASTContext &Context) {
+  if (V->isConstexpr())
+    return true;
+  if (!V->hasLocalStorage())
+    return V->hasConstantInitialization();
+  return V->mightBeUsableInConstantExpressions(Context) && V->evaluateValue();
+}
+
+/// Whether a function of this type may throw.
+bool typeMayThrow(QualType T) {
+  T = T.getCanonicalType();
+  if (const auto *Ptr = T->getAs<PointerType>())
+    T = Ptr->getPointeeType();
+  else if (const auto *MemPtr = T->getAs<MemberPointerType>())
+    T = MemPtr->getPointeeType();
+  const auto *Proto = T->getAs<FunctionProtoType>();
+  return !Proto || !Proto->isNothrow();
+}
+
+bool functionMayThrow(const FunctionDecl *F) {
+  return !F->hasAttr<NoThrowAttr>() && typeMayThrow(F->getType());
+}
+
+/// Whether evaluating a statement may throw: whether it calls, constructs with or allocates by a
+/// function that may throw, or throws, in a language with exceptions.
+class ThrowFinder : public RecursiveASTVisitor<ThrowFinder> {
+public:
+  static bool mayThrow(const Stmt *S, const ASTContext &Context) {
+    if (!S || !Context.getLangOpts().CXXExceptions)
+      return false;
+    ThrowFinder Finder;
+    Finder.TraverseStmt(const_cast<Stmt *>(S));
+    return Finder.Found;
+  }
+
+  bool shouldVisitImplicitCode() const { return true; }
+  bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *) { return true; }
+  bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
+  bool TraverseLambdaExpr(LambdaExpr *E) {
+    for (Expr *Init : E->capture_inits())
+      if (Init)
+        TraverseStmt(Init);
+    return true;
+  }
+  bool TraverseCXXDefaultArgExpr(CXXDefaultArgExpr *E) { return TraverseStmt(E->getExpr()); }
+  bool TraverseCXXDefaultInitExpr(CXXDefaultInitExpr *E) { return TraverseStmt(E->getExpr()); }
+
+  bool VisitCallExpr(CallExpr *E) {
+    const auto *F = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
+    if (F ? functionMayThrow(F) : typeMayThrow(E->getCallee()->getType()))
+      Found = true;
+    return true;
+  }
+  bool VisitCXXConstructExpr(CXXConstructExpr *E) {
+    if (!E->getConstructor()->isTrivial() && functionMayThrow(E->getConstructor()))
+      Found = true;
+    return true;
+  }
+  bool VisitCXXNewExpr(CXXNewExpr *E) {
+    if (E->getOperatorNew() && functionMayThrow(E->getOperatorNew()))
+      Found = true;
+    return true;
+  }
+  bool VisitCXXThrowExpr(CXXThrowExpr *) {
+    Found = true;
+    return true;
+  }
+
+private:
+  bool Found = false;
+};
+
 /// Every call one routine's definition makes.
 class CallCollector : public RecursiveASTVisitor<CallCollector> {
 public:
@@ -294,8 +373,46 @@ public:
     return Result;
   }
 
-  // Unevaluated operands and compile-time evaluation run nothing.
-  bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *) { return true; }
+  // Unevaluated operands and compile-time evaluation run nothing. The operand of sizeof is
+  // evaluated only when its type is a variable-length array's, and a type's bounds are then
+  // what run.
+  bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *E) {
+    if (E->getKind() != UETT_SizeOf || !E->getTypeOfArgument()->isVariablyModifiedType())
+      return true;
+    if (!E->isArgumentType())
+      return TraverseStmt(E->getArgumentExpr());
+    for (QualType T = E->getArgumentType(); const ArrayType *Array = Context.getAsArrayType(T);
+         T = Array->getElementType())
+      if (const auto *Variable = dyn_cast<VariableArrayType>(Array))
+        if (!TraverseStmt(Variable->getSizeExpr()))
+          return false;
+    return true;
+  }
+  // A variable whose initializer is a constant, as a constexpr variable's is, or a variable of
+  // static storage whose initialization is constant, is initialized without running it.
+  bool TraverseVarDecl(VarDecl *V) {
+    if (V->getInit() && initializedAsConstant(V, Context)) {
+      VisitVarDecl(V);
+      return true;
+    }
+    return RecursiveASTVisitor::TraverseVarDecl(V);
+  }
+  // A parameter's default argument runs where a call uses it, as a CXXDefaultArgExpr.
+  bool TraverseParmVarDecl(ParmVarDecl *) { return true; }
+  // A lambda runs its captures' initializers where it is made, and its body, or for a generic
+  // lambda each instantiation of its body, where it is called; its pattern runs nothing.
+  bool TraverseLambdaExpr(LambdaExpr *E) {
+    for (Expr *Init : E->capture_inits())
+      if (Init && !TraverseStmt(Init))
+        return false;
+    if (FunctionTemplateDecl *Template = E->getDependentCallOperator()) {
+      for (FunctionDecl *Instance : Template->specializations())
+        if (Instance->doesThisDeclarationHaveABody() && !TraverseStmt(Instance->getBody()))
+          return false;
+      return true;
+    }
+    return TraverseStmt(E->getBody());
+  }
   bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
   bool TraverseDecltypeTypeLoc(DecltypeTypeLoc, bool = false) { return true; }
   bool TraverseTypeOfExprTypeLoc(TypeOfExprTypeLoc, bool = false) { return true; }
@@ -381,6 +498,11 @@ public:
     if (!E->getOperatorNew())
       fail("a new expression with no operator new at " + L.line(E->getBeginLoc()));
     emit(E->getBeginLoc(), "new", E->getOperatorNew(), "-");
+    // If the initializer throws, the matching deallocation function frees the memory.
+    const FunctionDecl *Cleanup = E->getOperatorDelete();
+    if (Cleanup && !Cleanup->isReservedGlobalPlacementOperator() &&
+        ThrowFinder::mayThrow(E->getInitializer(), Context))
+      emit(E->getBeginLoc(), "delete", Cleanup, "-");
     return true;
   }
 
@@ -388,6 +510,12 @@ public:
     if (E->getDestroyedType()->isDependentType())
       fail("a delete of a dependent type at " + L.line(E->getBeginLoc()));
     if (const CXXDestructorDecl *D = nonTrivialDestructor(E->getDestroyedType(), Context)) {
+      // The dynamic class's deleting destructor runs its destructor and frees the object by
+      // that class's operator delete.
+      if (D->isVirtual() && !E->isArrayForm() && !E->isGlobalDelete()) {
+        emit(E->getBeginLoc(), "dispatch-delete", D, "-", usrOf(D->getParent()->getDefinition()));
+        return true;
+      }
       if (D->isVirtual() && !E->isArrayForm())
         emit(E->getBeginLoc(), "dispatch", D, "-", usrOf(D->getParent()->getDefinition()));
       else
@@ -569,12 +697,24 @@ private:
   std::set<std::string> &Out;
 };
 
-/// Names, for each complete class that is not abstract, the final overrider of each needed method.
+/// A virtual call to resolve: the receiver's static class, the method the call names, and whether
+/// the call is a delete-expression's, which runs the deleting destructor.
+struct Need {
+  std::string Receiver;
+  std::string Method;
+  bool Deleting;
+  bool operator<(const Need &O) const {
+    return std::tie(Receiver, Method, Deleting) < std::tie(O.Receiver, O.Method, O.Deleting);
+  }
+};
+
+/// Names, for each complete class that is not abstract and is or derives from a needed receiver
+/// class, the function each needed call reaches in an object of that class, read from the slot of
+/// the class's vtable that the call loads: one for each subobject of the receiver's class.
 class OverriderFinder : public RecursiveASTVisitor<OverriderFinder> {
 public:
-  OverriderFinder(ASTContext &Context, const std::set<std::pair<std::string, std::string>> &Needs,
-                  std::set<std::string> &Out)
-      : P(policy(Context)), Needs(Needs), Out(Out) {}
+  OverriderFinder(ASTContext &Context, const std::set<Need> &Needs, std::set<std::string> &Out)
+      : Context(Context), P(policy(Context)), Needs(Needs), Out(Out) {}
 
   bool shouldVisitTemplateInstantiations() const { return true; }
   bool shouldVisitImplicitCode() const { return true; }
@@ -586,42 +726,107 @@ public:
     std::map<std::string, const CXXRecordDecl *> Classes; // USR -> RD or a base of it
     Classes.emplace(usrOf(RD), RD);
     RD->forallBases([&](const CXXRecordDecl *Base) {
-      Classes.emplace(usrOf(Base->getDefinition()), Base);
+      Classes.emplace(usrOf(Base->getDefinition()), Base->getDefinition());
       return true;
     });
-    std::optional<CXXFinalOverriderMap> Overriders;
-    for (const auto &[Receiver, Method] : Needs) {
-      if (!Classes.count(Receiver))
+    for (const Need &N : Needs) {
+      auto Receiver = Classes.find(N.Receiver);
+      if (Receiver == Classes.end())
         continue;
-      if (!Overriders) {
-        Overriders.emplace();
-        RD->getFinalOverriders(*Overriders);
-      }
-      for (const auto &[Virtual, BySubobject] : *Overriders) {
-        if (usrOf(Virtual) != Method)
-          continue;
-        for (const auto &[Subobject, Found] : BySubobject)
-          for (const UniqueVirtualMethod &Final : Found)
-            Out.insert("overrider\t" + Receiver + "\t" + Method + "\t" + usrOf(RD) + "\t" + nameOf(Final.Method, P) +
-                       "\t" + typeOf(Final.Method->getType(), P) + "\t" + usrOf(Final.Method));
+      const CXXMethodDecl *Method = methodOf(Receiver->second, N.Method);
+      for (CharUnits Offset : pathOffsets(RD, RD, Receiver->second, CharUnits::Zero())) {
+        const CXXMethodDecl *Final = slot(RD, Receiver->second, Offset, Method, N.Deleting);
+        std::string Head = "\t" + N.Receiver + "\t" + N.Method + "\t" + (N.Deleting ? "delete" : "call") + "\t" + usrOf(RD);
+        Out.insert("overrider" + Head + "\t" + nameOf(Final, P) + "\t" + typeOf(Final->getType(), P) + "\t" +
+                   usrOf(Final));
+        if (N.Deleting)
+          if (const FunctionDecl *Delete = cast<CXXDestructorDecl>(Final)->getOperatorDelete())
+            Out.insert("overrider-delete" + Head + "\t" + nameOf(Delete, P) + "\t" + typeOf(Delete->getType(), P) +
+                       "\t" + usrOf(Delete));
       }
     }
     return true;
   }
 
 private:
+  /// The method of Class or a base of it that has the USR.
+  const CXXMethodDecl *methodOf(const CXXRecordDecl *Class, const std::string &Usr) {
+    const CXXMethodDecl *Found = nullptr;
+    auto Search = [&](const CXXRecordDecl *C) {
+      for (const CXXMethodDecl *M : C->methods())
+        if (!Found && M->isVirtual() && usrOf(M) == Usr)
+          Found = M;
+      return true;
+    };
+    Search(Class);
+    Class->forallBases(Search);
+    if (!Found)
+      fail("no virtual method " + Usr + " in " + Class->getQualifiedNameAsString() + " or its bases");
+    return Found;
+  }
+
+  /// The offset in Complete of each subobject of type Base inside the subobject at Start of type
+  /// Derived, whose virtual bases are Complete's.
+  std::set<CharUnits> pathOffsets(const CXXRecordDecl *Complete, const CXXRecordDecl *Derived,
+                                  const CXXRecordDecl *Base, CharUnits Start) {
+    if (Derived->getCanonicalDecl() == Base->getCanonicalDecl())
+      return {Start};
+    CXXBasePaths Paths(/*FindAmbiguities=*/true, /*RecordPaths=*/true, /*DetectVirtual=*/false);
+    if (!Derived->isDerivedFrom(Base, Paths))
+      fail(Derived->getQualifiedNameAsString() + " does not derive from " + Base->getQualifiedNameAsString());
+    std::set<CharUnits> Offsets;
+    for (const CXXBasePath &Path : Paths) {
+      CharUnits Offset = Start;
+      for (const CXXBasePathElement &Step : Path) {
+        const CXXRecordDecl *Next = Step.Base->getType()->getAsCXXRecordDecl();
+        if (Step.Base->isVirtual())
+          Offset = Context.getASTRecordLayout(Complete).getVBaseClassOffset(Next);
+        else
+          Offset += Context.getASTRecordLayout(Step.Class).getBaseClassOffset(Next);
+      }
+      Offsets.insert(Offset);
+    }
+    return Offsets;
+  }
+
+  /// The function in the slot of Complete's vtable that a call of Method through the subobject at
+  /// Offset of type Receiver loads.
+  const CXXMethodDecl *slot(const CXXRecordDecl *Complete, const CXXRecordDecl *Receiver, CharUnits Offset,
+                            const CXXMethodDecl *Method, bool Deleting) {
+    std::set<CharUnits> Declaring = pathOffsets(Complete, Receiver, Method->getParent(), Offset);
+    if (Declaring.size() != 1)
+      fail("a call of " + Method->getQualifiedNameAsString() + " through " + Receiver->getQualifiedNameAsString() +
+           " reaches more than one subobject of " + Method->getParent()->getQualifiedNameAsString());
+    GlobalDecl Called(Method);
+    if (const auto *Dtor = dyn_cast<CXXDestructorDecl>(Method))
+      Called = GlobalDecl(Dtor, Deleting ? Dtor_Deleting : Dtor_Complete);
+    auto *VTables = cast<ItaniumVTableContext>(Context.getVTableContext());
+    const VTableLayout &Layout = VTables->getVTableLayout(Complete);
+    auto Point = Layout.getAddressPoints().find(BaseSubobject(Method->getParent(), *Declaring.begin()));
+    if (Point == Layout.getAddressPoints().end())
+      fail("no vtable address point for " + Method->getParent()->getQualifiedNameAsString() + " in " +
+           Complete->getQualifiedNameAsString());
+    size_t Index = Layout.getVTableOffset(Point->second.VTableIndex) + Point->second.AddressPointIndex +
+                   VTables->getMethodVTableIndex(Called);
+    const VTableComponent &Component = Layout.vtable_components()[Index];
+    if (!Component.isUsedFunctionPointerKind())
+      fail("the vtable slot of " + Method->getQualifiedNameAsString() + " in " + Complete->getQualifiedNameAsString() +
+           " holds no function");
+    return Component.getFunctionDecl();
+  }
+
+  ASTContext &Context;
   PrintingPolicy P;
-  const std::set<std::pair<std::string, std::string>> &Needs;
+  const std::set<Need> &Needs;
   std::set<std::string> &Out;
 };
-
 enum class Mode { Routines, Overriders };
 
 struct Inputs {
   Mode M;
   Trees T;
   std::multimap<std::string, Request> Requests;      // by the last component of the symbol
-  std::set<std::pair<std::string, std::string>> Needs; // (receiver class USR, method USR)
+  std::set<Need> Needs;
 };
 
 class Consumer : public ASTConsumer {
@@ -701,8 +906,11 @@ int main(int argc, char **argv) {
     for (auto &Row : readTsv(argv[3], 3))
       In.Requests.emplace(lastComponent(Row[2]), Request{Row[0], Row[1], Row[2]});
   else
-    for (auto &Row : readTsv(argv[3], 2))
-      In.Needs.emplace(Row[0], Row[1]);
+    for (auto &Row : readTsv(argv[3], 3)) {
+      if (Row[2] != "call" && Row[2] != "delete")
+        fail("a need is a call or a delete, not " + Row[2]);
+      In.Needs.insert(Need{Row[0], Row[1], Row[2] == "delete"});
+    }
 
   const std::string ResourceDir = CLANG_RESOURCE_DIR;
   std::string Error;

@@ -140,19 +140,31 @@ def main(argv):
             else:
                 sys.exit(f"generate.py: an unknown fact: {fact}")
 
-        needs = sorted({(c[8], c[6]) for c in calls if c[3] == "dispatch"})
-        overriders = {}  # (receiver, method) -> {(name, signature, usr)}
+        dispatches = {"dispatch": "call", "dispatch-delete": "delete"}
+        needs = sorted({(c[8], c[6], dispatches[c[3]]) for c in calls if c[3] in dispatches})
+        overriders = {}  # (receiver, method, call or delete) -> {(name, signature, usr)}
+        deletes = {}  # (receiver, method, delete, class) -> {(name, signature, usr)}
+        reached = set()  # (receiver, method, delete, class), for each class a deleting call reaches
         if needs:
             needs_path = os.path.join(scratch, "needs.tsv")
             with open(needs_path, "w", encoding="utf-8") as f:
-                for receiver, method in needs:
-                    f.write(f"{receiver}\t{method}\n")
+                for need in needs:
+                    f.write("\t".join(need) + "\n")
             for fact in run_all(args, units, "overriders", needs_path, scratch):
                 fields = fact.split("\t")
-                if fields[0] != "overrider":
+                if fields[0] == "overrider":
+                    _, receiver, method, variant, cls, name, signature, usr = fields
+                    overriders.setdefault((receiver, method, variant), set()).add((name, signature, usr))
+                    if variant == "delete":
+                        reached.add((receiver, method, variant, cls))
+                elif fields[0] == "overrider-delete":
+                    _, receiver, method, variant, cls, name, signature, usr = fields
+                    deletes.setdefault((receiver, method, variant, cls), set()).add((name, signature, usr))
+                else:
                     sys.exit(f"generate.py: an unknown fact: {fact}")
-                _, receiver, method, _cls, name, signature, usr = fields
-                overriders.setdefault((receiver, method), set()).add((name, signature, usr))
+        unfreed = sorted(reached - set(deletes))
+        if unfreed:
+            sys.exit(f"generate.py: no unit names the operator delete of these deleting destructors: {unfreed}")
 
     unknown = set(keys) | templates
     unknown -= set(requested)
@@ -176,13 +188,18 @@ def main(argv):
             sys.exit(f"generate.py: a call from a routine no unit defines: {routine_usr}")
         routine = routines[routine_usr]
         head = (routine[0], routine[1], routine_usr, location, macro)
-        if kind == "dispatch":
-            found = overriders.get((receiver, usr), set())
+        if kind in dispatches:
+            need = (receiver, usr, dispatches[kind])
+            found = overriders.get(need, set())
             if found:
                 for o_name, o_signature, o_usr in found:
                     rows.add(head + ("virtual", o_name, o_signature, o_usr, enums))
             else:
                 rows.add(head + ("virtual-unimplemented", name, signature, usr, enums))
+            for (r, m, v, _cls), freed in deletes.items():
+                if (r, m, v) == need:
+                    for d_name, d_signature, d_usr in freed:
+                        rows.add(head + ("delete", d_name, d_signature, d_usr, "-"))
         else:
             rows.add(head + (kind, name, signature, usr, enums))
     for row in sorted(rows, key=lambda r: (r[0], r[1], r[2], line_order(r[3]), r[4:])):
