@@ -68,7 +68,7 @@ public class Program
                     "ConstrainedGetTypeNullByref.cs"
                     (Some "ConstrainedGetTypeNullByref.cs")
                     peImage
-                    (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                    (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 |> ExpectRun.ended
                 |> ignore<RunOutcome>
             )

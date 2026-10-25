@@ -239,7 +239,7 @@ class Program
             LoggerFactory.makeTestWithProperties [ "case", description ]
 
         use _loggerFactoryResource = loggerFactory
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirsFor platform
         use peImage = new MemoryStream (Roslyn.compile [ source ])
 
         BoundedRun.run

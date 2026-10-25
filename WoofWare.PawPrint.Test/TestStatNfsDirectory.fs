@@ -84,7 +84,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirsFor nfs.UnixPlatform
 
         use peImage = new MemoryStream (image)
 

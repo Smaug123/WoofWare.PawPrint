@@ -28,6 +28,9 @@ type PInvokeMarshalling =
         ConvertsLocale : bool
         /// Whether it takes a variable argument list.
         TakesVariableArguments : bool
+        /// Whether the VM, describing it as the walk begins, refuses the calling conventions it
+        /// names, raising `TypeLoadException` (`UnmanagedCallingConvention.describingRefuses`).
+        RefusesConventions : bool
         /// Whether its assembly leaves runtime marshalling enabled (no `DisableRuntimeMarshalling`).
         RuntimeMarshalling : bool
         /// The positions, 0 its return type and then each parameter from 1, whose marshalling its
@@ -49,8 +52,8 @@ type UnmanagedTarget =
 /// (`JitTypeLoads.unmanagedMeetings`).
 type UnmanagedCall =
     {
-        /// The calling convention, as far as whether it is Swift's.
-        Convention : UnmanagedConvention
+        /// What CoreCLR reads as the call's calling convention.
+        Convention : UnmanagedConventionRead
         /// Where the call is in its method's body.
         Placement : UnmanagedCallPlacement
         /// Whether the calling method's assembly disables optimisation (`DebuggableAttribute`), so
@@ -169,6 +172,7 @@ module UnmanagedTarget =
                 ConvertsLocale = convertsLocale assembly method
                 TakesVariableArguments =
                     definition.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+                RefusesConventions = UnmanagedCallingConvention.describingRefuses assembly method
                 RuntimeMarshalling = runtimeMarshalling assembly
                 MarshalledPositions = marshalled
             }

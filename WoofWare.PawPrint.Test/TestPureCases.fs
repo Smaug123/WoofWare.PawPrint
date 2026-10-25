@@ -792,7 +792,7 @@ module TestPureCases =
         (image : byte array)
         : RunEnd
         =
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirsFor kernelConfig.UnixPlatform
 
         use peImage = new MemoryStream (image)
 

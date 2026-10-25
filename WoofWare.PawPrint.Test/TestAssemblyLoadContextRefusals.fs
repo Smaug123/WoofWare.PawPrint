@@ -45,7 +45,7 @@ public class Program
                 name
                 (Some name)
                 peImage
-                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
             |> ExpectRun.ended
             |> ignore<RunOutcome>
         )

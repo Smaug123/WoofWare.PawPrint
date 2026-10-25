@@ -102,6 +102,21 @@ module internal ExceptionMaking =
         | SignatureRefusal.VariableArguments ->
             "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
 
+    /// The exception CoreCLR raises refusing the unmanaged calling convention of a call whose
+    /// signature's modifiers name two base conventions (`UnmanagedConventionRead.MultipleBases`),
+    /// and how it makes it: `COMPlusThrowHR` with `COR_E_INVALIDPROGRAM` and one of the runtime's
+    /// own resources (`EEMessageException`), as for `ofSignatureRefusal`.
+    let multipleCallingConventions : string * ExceptionMaking =
+        "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
+
+    /// The exception CoreCLR raises refusing the calling conventions of a P/Invoke as it describes
+    /// it for the walk of its signature (`PInvokeMarshalling.RefusesConventions`), and how it makes
+    /// it: `COMPlusThrow` with one of the runtime's own resources (`EEMessageException`), which runs
+    /// the exception's parameterless constructor and then sets the message it reads from the
+    /// runtime's native resources.
+    let pInvokeConventionsRefused : string * ExceptionMaking =
+        "System.TypeLoadException", ExceptionMaking.ParameterlessConstructor
+
     /// The exception CoreCLR raises refusing to make a delegate over an `[UnmanagedCallersOnly]`
     /// method, and how it makes it: `COMDelegate::GetDelegateCtor` throws `NotSupportedException`
     /// by `COMPlusThrow` with the resource name `NotSupported_UnmanagedCallersOnlyTarget`.

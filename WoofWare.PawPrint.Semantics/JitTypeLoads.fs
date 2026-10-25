@@ -411,19 +411,54 @@ module JitTypeLoads =
         | TypeDefn.GenericMethodParameter _ -> WalkStep.EndsBefore
         | TypeDefn.Modified _ -> failwith "BUG: TypeDefn.stripCustomModifiers left a modifier"
 
-    /// Where the JIT compiling `call`, a call of unmanaged code, meets the types of `signature`,
-    /// the signature of the method it calls or the call site's, in the order it meets them, for an
-    /// instruction whose operand `memberPositions` answers `MemberPositions.BySignature`.
+    /// Whether the JIT compiling `call`, a call of unmanaged code whose convention CoreCLR reads,
+    /// may ask the VM to begin its walk of the signature for whether the call needs marshalling,
+    /// which it does only where it may make the transition to unmanaged code in the calling
+    /// method's own code (`impCheckForPInvokeCall`): not for a call in a handler or a protected
+    /// `try`, nor in a method of an assembly that disables optimisation, nor by Fastcall's
+    /// convention or its member-function variant, which only a stub makes the transition for, nor
+    /// of a P/Invoke that takes a variable argument list or does not preserve its signature
+    /// (`CEEInfo::pInvokeMarshalingRequired`, `PInvoke::MarshalingRequired`).
+    let private beginsWalk (call : UnmanagedCall) : bool =
+        call.Placement = UnmanagedCallPlacement.Unprotected
+        && not call.CallerDisablesOptimisation
+        && (
+            match call.Convention with
+            | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Fastcall, _) -> false
+            | UnmanagedConventionRead.Reads _ -> true
+            | UnmanagedConventionRead.MultipleBases
+            | UnmanagedConventionRead.Unreadable _
+            | UnmanagedConventionRead.NullArray -> false
+        )
+        && match call.Target with
+           | UnmanagedTarget.PInvoke facts -> facts.PreservesSignature && not facts.TakesVariableArguments
+           | UnmanagedTarget.FunctionPointer _ -> true
+
+    /// Whether the JIT compiling `call`, a call of unmanaged code, may have the VM refuse, as its
+    /// walk of the signature begins, the calling conventions of the P/Invoke the call calls
+    /// (`PInvokeMarshalling.RefusesConventions`), raising `TypeLoadException` and failing the
+    /// compilation. Whether it begins the walk turns on block weights, so this is a raise it may make
+    /// or not.
+    let unmanagedWalkRefuses (call : UnmanagedCall) : bool =
+        beginsWalk call
+        && match call.Target with
+           | UnmanagedTarget.PInvoke facts -> facts.RefusesConventions
+           | UnmanagedTarget.FunctionPointer _ -> false
+
+    /// Where the JIT for `target` compiling `call`, a call of unmanaged code, meets the types of
+    /// `signature`, the signature of the method it calls or the call site's, in the order it meets
+    /// them, for an instruction whose operand `memberPositions` answers `MemberPositions.BySignature`.
     ///
-    /// It meets the return type, and each parameter as any call passes it. Where it may make the
-    /// transition to unmanaged code in the calling method's own code, it asks the VM to walk the
-    /// signature for whether the call needs marshalling, which meets the return type and then each
-    /// parameter up to the first that needs marshalling; and if that may find none, by a convention
-    /// that may be Swift's, it meets each parameter again. It cannot make the transition there for
-    /// a call in a handler or a protected `try`, in a method of an assembly that disables
-    /// optimisation, or of a P/Invoke that does not preserve its signature, sets the last error,
-    /// converts a locale or takes a variable argument list (`impCheckForPInvokeCall`).
+    /// It meets the return type, and then reads the call's convention, which fails the compilation
+    /// where CoreCLR cannot read one (`UnmanagedConventionRead`): then it meets nothing more.
+    /// Otherwise it meets each parameter as any call passes it. Where it may begin the VM's walk of
+    /// the signature for whether the call needs marshalling (`unmanagedWalkRefuses` says where that
+    /// may refuse the call instead), the walk meets the return type and then each parameter up to
+    /// the first that needs marshalling, unless the P/Invoke sets the last error or converts a
+    /// locale, which need marshalling first; and if that may find none, by Swift's convention on a
+    /// target that compiles it, the JIT meets each parameter again.
     let unmanagedMeetings
+        (target : JitTarget)
         (call : UnmanagedCall)
         (signature : TypeMethodSignature<TypeDefn>)
         : (JitTypePosition * TypeDefn) list
@@ -436,15 +471,19 @@ module JitTypeLoads =
             | MethodReturnType.Void -> [], TypeDefn.Void
             | MethodReturnType.Returns returned -> [ JitTypePosition.CalleeReturn, returned ], returned
 
+        match call.Convention with
+        | UnmanagedConventionRead.MultipleBases
+        | UnmanagedConventionRead.Unreadable _
+        | UnmanagedConventionRead.NullArray -> returned
+        | UnmanagedConventionRead.Reads _ ->
+
         let walks =
-            call.Placement = UnmanagedCallPlacement.Unprotected
-            && not call.CallerDisablesOptimisation
+            beginsWalk call
             && match call.Target with
                | UnmanagedTarget.PInvoke facts ->
-                   facts.PreservesSignature
+                   not facts.RefusesConventions
                    && not facts.SetsLastError
                    && not facts.ConvertsLocale
-                   && not facts.TakesVariableArguments
                | UnmanagedTarget.FunctionPointer _ -> true
 
         let runtimeMarshalling, marshalled =
@@ -482,14 +521,14 @@ module JitTypeLoads =
             steps |> List.forall (fun step -> step = WalkStep.MayPass)
 
         let swift =
-            match call.Convention with
-            | UnmanagedConvention.NotSwift -> []
-            | UnmanagedConvention.Swift
-            | UnmanagedConvention.MaybeSwift ->
-                if walks && mayFindNoMarshalling then
-                    at JitTypePosition.SwiftCalleeParameter
-                else
-                    []
+            if
+                UnmanagedCallingConvention.isSwift target call.Convention
+                && walks
+                && mayFindNoMarshalling
+            then
+                at JitTypePosition.SwiftCalleeParameter
+            else
+                []
 
         let walk =
             if walks then

@@ -9,6 +9,7 @@ open FsUnitTyped
 open Microsoft.Extensions.Logging.Abstractions
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `FrameworkUnderTest` selects a framework only when it is exactly the one asked for, and never
 /// falls back to the test host's.
@@ -223,17 +224,85 @@ module TestFrameworkUnderTest =
                 "Trivial.cs"
                 (Some "Trivial.cs")
                 peImage
-                (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
 
         FrameworkUnderTest.assertOutcomeServes outcome
 
         match ExpectRun.ended outcome with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 3
+        | other -> failwith $"expected the guest to exit normally, got %O{other}"
+
+    /// A guest returning 3, run along `dirs` on a kernel of `platform`.
+    let private runTrivialOn (platform : SimulatedUnixPlatform) (dirs : ImmutableArray<string>) : RunEnd =
+        let image =
+            Roslyn.compile [ "public static class Program { public static int Main() { return 3; } }" ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+
+        BoundedRun.run
+            loggerFactory
+            "Trivial.cs"
+            (Some "Trivial.cs")
+            peImage
+            { HostConfig.Default dirs with
+                Guest =
+                    { GuestConfig.Default dirs with
+                        Kernel =
+                            { KernelConfig.Default with
+                                UnixPlatform = platform
+                            }
+                    }
+            }
+
+    let flavours : TestCaseData list =
+        [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
+        |> List.map (fun flavour -> TestCaseData(flavour).SetArgDisplayNames $"%A{flavour}")
+
+    [<TestCaseSource(nameof flavours)>]
+    let ``A guest runs on the pinned CoreLib of its kernel's flavour`` (flavour : SimulatedUnixFlavour) : unit =
+        let pack = FrameworkUnderTest.requireFrameworkPackDirectory flavour
+        let platform = HostPlatform.platformOf flavour
+        let dirs = FrameworkUnderTest.runtimeDirsFor platform
+
+        List.ofSeq dirs
+        |> shouldEqual (pack :: List.ofSeq (FrameworkUnderTest.runtimeDirs ()))
+
+        match ExpectRun.ended (runTrivialOn platform dirs) with
         | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 3
 
             (FrameworkUnderTest.loadedCoreLib state).OriginalPath
-            |> shouldEqual (Some (FrameworkUnderTest.selected ()).CoreLibPath)
+            |> shouldEqual (Some (Path.Combine (pack, "System.Private.CoreLib.dll")))
         | other -> failwith $"expected the guest to exit normally, got %O{other}"
+
+    /// The other flavour's pack, and the framework under test itself, which is the host's flavour
+    /// but is not the pack: the refusal does not depend on the host.
+    [<TestCaseSource(nameof flavours)>]
+    let ``A guest run on a CoreLib other than its kernel flavour's pack is refused``
+        (flavour : SimulatedUnixFlavour)
+        : unit
+        =
+        let other =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> SimulatedUnixFlavour.Darwin
+            | SimulatedUnixFlavour.Darwin -> SimulatedUnixFlavour.Linux
+
+        let platform = HostPlatform.platformOf flavour
+        // Outside the Nix devshell no pack is named, and nothing is refused.
+        FrameworkUnderTest.requireFrameworkPackDirectory flavour |> ignore<string>
+        FrameworkUnderTest.requireFrameworkPackDirectory other |> ignore<string>
+
+        for dirs in
+            [
+                FrameworkUnderTest.runtimeDirs ()
+                FrameworkUnderTest.runtimeDirsFor (HostPlatform.platformOf other)
+            ] do
+            let e =
+                Assert.Throws<Exception> (fun () -> runTrivialOn platform dirs |> ignore<RunEnd>)
+
+            e.Message |> shouldContainText "FrameworkUnderTest.runtimeDirsFor"
 
     [<TestCase 9us>]
     [<TestCase 12us>]
