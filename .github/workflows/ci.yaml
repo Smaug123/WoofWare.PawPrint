@@ -44,16 +44,25 @@ jobs:
       with:
         extra_nix_config: |
           access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-    - name: Decide whether this change can affect the tests
+    # The one definition of this step; the other jobs that skip on it refer to it by alias.
+    - &decide-whether-tests-are-affected
+      name: Decide whether this change can affect the tests
       id: affected
+      env:
+        # The commit a merge-queue group is built on, and empty for any other event.
+        MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
       run: |
-        # A merge-queue group or a push to main runs everything: those runs are what
-        # say main passes, which a pull request's skip takes on trust.
-        if [ "${{ github.event_name }}" = pull_request ]; then
-          tests="$(python3 scripts/footprint.py affected --merge HEAD)"
-        else
-          tests=true
-        fi
+        # A pull request or a merge-queue group runs the tests only if it changes a path they
+        # read, compared with what it is built on. For a pull request that is the first parent of
+        # GitHub's merge. For a group it is the group's base, not its commit's parent: the two
+        # are one commit when the queue squashes a single pull request, but a rebased or batched
+        # group stacks several commits on the base. A push to main runs everything: that run is
+        # what says main passes, which both skips take on trust.
+        case "${{ github.event_name }}" in
+          pull_request) tests="$(python3 scripts/footprint.py affected --merge HEAD)" ;;
+          merge_group) tests="$(python3 scripts/footprint.py affected "$MERGE_GROUP_BASE" HEAD)" ;;
+          *) tests=true ;;
+        esac
         echo "tests=$tests" >> "$GITHUB_OUTPUT"
     - name: Check out the test footprint alone
       if: ${{ steps.affected.outputs.tests == 'true' }}
@@ -126,17 +135,7 @@ jobs:
       with:
         extra_nix_config: |
           access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-    - name: Decide whether this change can affect the tests
-      id: affected
-      run: |
-        # A merge-queue group or a push to main runs everything: those runs are what
-        # say main passes, which a pull request's skip takes on trust.
-        if [ "${{ github.event_name }}" = pull_request ]; then
-          tests="$(python3 scripts/footprint.py affected --merge HEAD)"
-        else
-          tests=true
-        fi
-        echo "tests=$tests" >> "$GITHUB_OUTPUT"
+    - *decide-whether-tests-are-affected
     - name: Check out the test footprint alone
       if: ${{ steps.affected.outputs.tests == 'true' }}
       run: python3 scripts/footprint.py clone tests "$RUNNER_TEMP/footprint"
@@ -261,17 +260,7 @@ jobs:
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
       - name: Check the footprints are the ones the projects describe
         run: nix develop --command python3 scripts/footprint.py check
-      - name: Decide whether this change can affect the tests
-        id: affected
-        run: |
-          # A merge-queue group or a push to main runs everything: those runs are what
-          # say main passes, which a pull request's skip takes on trust.
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            tests="$(python3 scripts/footprint.py affected --merge HEAD)"
-          else
-            tests=true
-          fi
-          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+      - *decide-whether-tests-are-affected
       - name: Pack each package from its footprint alone
         if: ${{ steps.affected.outputs.tests == 'true' }}
         run: nix develop --command python3 scripts/footprint.py verify packages
