@@ -6975,7 +6975,10 @@ public static unsafe class Probe
             []
             [
                 "namespace Provider; public struct Kept { }"
-                + (if complete then " public struct GoneStruct { }" else "")
+                + (if complete then
+                       " public struct GoneStruct { } public class GoneClass { }"
+                   else
+                       "")
             ]
 
     /// How compiling each method of `typeName` named in `methods` ends on the host, with the
@@ -7241,15 +7244,26 @@ public static unsafe class Uco
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
 
+    /// What marks an `[UnmanagedCallersOnly]` probe besides its signature.
+    [<RequireQualifiedAccess>]
+    type private UcoProbeMark =
+        | Unmarked
+        /// Its first parameter carries `[MarshalAs(UnmanagedType.I4)]`.
+        | MarshalAsI4
+        /// The method carries `[LCIDConversion(0)]`.
+        | LcidConversion
+        /// Its first parameter is a pointer whose pointee carries a required modifier named
+        /// `System.Runtime.CompilerServices.IsCopyConstructed`.
+        | CopyConstructedPointee
+
     /// An assembly `Client` of `[UnmanagedCallersOnly]` methods, each named in `probes` with its
     /// return type, parameter types, the type of a local it declares if any, whether it is static,
-    /// and whether its first parameter carries `[MarshalAs(UnmanagedType.I4)]` or the method
-    /// `[LCIDConversion(0)]`; the class `V` declares them, and the generic class `G<T>` one more,
+    /// and its mark; the class `V` declares them, and the generic class `G<T>` one more,
     /// `InGeneric`, as does the generic method `V.GenericMethod<T>`. Where `disableMarshalling`, the
     /// assembly carries `[DisableRuntimeMarshalling]`.
     let private validityProbes
         (disableMarshalling : bool)
-        (probes : (string * Type * Type list * Type option * bool * bool * bool) list)
+        (probes : (string * Type * Type list * Type option * bool * UcoProbeMark) list)
         : byte[]
         =
         let builder =
@@ -7283,17 +7297,49 @@ public static unsafe class Uco
 
             il.Emit Emit.OpCodes.Ret
 
-        for name, returned, parameters, local, isStatic, marshalAs, lcid in probes do
+        // `PersistedAssemblyBuilder` puts a parameter's required modifiers before the whole
+        // parameter type; this one is moved onto the pointee once the image is saved.
+        let copyConstructed =
+            let builder =
+                modul.DefineType (
+                    "System.Runtime.CompilerServices.IsCopyConstructed",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            builder.CreateType ()
+
+        for name, returned, parameters, local, isStatic, mark in probes do
             let attributes =
                 if isStatic then
                     MethodAttributes.Public ||| MethodAttributes.Static
                 else
                     MethodAttributes.Public
 
-            let method = v.DefineMethod (name, attributes, returned, Array.ofList parameters)
+            let requiredModifiers =
+                match mark with
+                | UcoProbeMark.CopyConstructedPointee ->
+                    parameters
+                    |> List.mapi (fun i _ -> if i = 0 then [| copyConstructed |] else [||])
+                | UcoProbeMark.Unmarked
+                | UcoProbeMark.MarshalAsI4
+                | UcoProbeMark.LcidConversion -> parameters |> List.map (fun _ -> [||])
+
+            let method =
+                v.DefineMethod (
+                    name,
+                    attributes,
+                    CallingConventions.Standard,
+                    returned,
+                    null,
+                    null,
+                    Array.ofList parameters,
+                    Array.ofList requiredModifiers,
+                    null
+                )
+
             method.SetCustomAttribute unmanagedCallersOnly
 
-            if marshalAs then
+            if mark = UcoProbeMark.MarshalAsI4 then
                 (method.DefineParameter (1, ParameterAttributes.HasFieldMarshal, "x"))
                     .SetCustomAttribute (
                         Emit.CustomAttributeBuilder (
@@ -7303,7 +7349,7 @@ public static unsafe class Uco
                         )
                     )
 
-            if lcid then
+            if mark = UcoProbeMark.LcidConversion then
                 method.SetCustomAttribute (
                     Emit.CustomAttributeBuilder (
                         typeof<Runtime.InteropServices.LCIDConversionAttribute>.GetConstructor [| typeof<int> |],
@@ -7347,7 +7393,33 @@ public static unsafe class Uco
 
         use image = new MemoryStream ()
         builder.Save image
-        image.ToArray ()
+        let image = image.ToArray ()
+
+        // A static method returning void and taking one pointer to a value type, the pointer marked:
+        // `DEFAULT 1 VOID CMOD_REQD t PTR VALUETYPE` becomes `DEFAULT 1 VOID PTR CMOD_REQD t VALUETYPE`.
+        let marked =
+            probes
+            |> List.exists (fun (_, _, _, _, _, mark) -> mark = UcoProbeMark.CopyConstructedPointee)
+
+        if marked then
+            let at =
+                [ 0 .. image.Length - 7 ]
+                |> List.filter (fun i ->
+                    image.[i] = 0x00uy
+                    && image.[i + 1] = 0x01uy
+                    && image.[i + 2] = 0x01uy
+                    && image.[i + 3] = 0x1Fuy
+                    && image.[i + 5] = 0x0Fuy
+                    && image.[i + 6] = 0x11uy
+                )
+                |> List.exactlyOne
+
+            let modifier = image.[at + 4]
+            image.[at + 3] <- 0x0Fuy
+            image.[at + 4] <- 0x1Fuy
+            image.[at + 5] <- modifier
+
+        image
 
     /// CoreCLR refuses to compile an `[UnmanagedCallersOnly]` method that is not static, is generic
     /// or is declared in a generic type, or whose signature needs marshalling
@@ -7380,6 +7452,7 @@ public static unsafe class Uco
             let provider = context.LoadFromStream (new MemoryStream (complete))
             let kept = provider.GetType "Provider.Kept"
             let gone = provider.GetType "Provider.GoneStruct"
+            let goneClass = provider.GetType "Provider.GoneClass"
             let v = typeof<Void>
 
             // Each probe: its name, return type, parameters, local, static, [MarshalAs], [LCIDConversion],
@@ -7391,8 +7464,7 @@ public static unsafe class Uco
                     [ typeof<int> ],
                     None,
                     true,
-                    false,
-                    false,
+                    UcoProbeMark.Unmarked,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
                     "PointerParam",
@@ -7400,36 +7472,51 @@ public static unsafe class Uco
                     [ kept.MakePointerType () ],
                     None,
                     true,
-                    false,
-                    false,
+                    UcoProbeMark.Unmarked,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
-                    "BoolParam", v, [ typeof<bool> ], None, true, false, false, invalid, invalid
-                    "CharParam", v, [ typeof<char> ], None, true, false, false, invalid, invalid
-                    "BoolReturn", typeof<bool>, [], None, true, false, false, invalid, invalid
-                    "ObjectParam", v, [ typeof<obj> ], None, true, false, false, invalid, invalid
-                    "ArrayParam", v, [ typeof<int[]> ], None, true, false, false, invalid, invalid
-                    "ByrefParam", v, [ typeof<int>.MakeByRefType () ], None, true, false, false, invalid, invalid
-                    "MarshalAsInt", v, [ typeof<int> ], None, true, true, false, invalid, invalid
-                    "Lcid", v, [ typeof<int> ], None, true, false, true, invalid, invalid
-                    "Instance", v, [ typeof<int> ], None, false, false, false, invalid, invalid
-                    "KeptParam", v, [ kept ], None, true, false, false, UcoCompilation.Compiled, unknown
-                    "GoneParam", v, [ gone ], None, true, false, false, typeLoad, typeLoad
-                    "BoolThenGone", v, [ typeof<bool> ; gone ], None, true, false, false, invalid, invalid
-                    "GoneThenBool", v, [ gone ; typeof<bool> ], None, true, false, false, typeLoad, typeLoad
-                    "GoneReturnBool", gone, [ typeof<bool> ], None, true, false, false, typeLoad, typeLoad
-                    "BoolWithGoneLocal", v, [ typeof<bool> ], Some gone, true, false, false, invalid, invalid
-                    "IntWithGoneLocal", v, [ typeof<int> ], Some gone, true, false, false, typeLoad, typeLoad
+                    "BoolParam", v, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "CharParam", v, [ typeof<char> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "BoolReturn", typeof<bool>, [], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ArrayParam", v, [ typeof<int[]> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ByrefParam",
+                    v,
+                    [ typeof<int>.MakeByRefType () ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    invalid,
+                    invalid
+                    "MarshalAsInt", v, [ typeof<int> ], None, true, UcoProbeMark.MarshalAsI4, invalid, invalid
+                    "Lcid", v, [ typeof<int> ], None, true, UcoProbeMark.LcidConversion, invalid, invalid
+                    "Instance", v, [ typeof<int> ], None, false, UcoProbeMark.Unmarked, invalid, invalid
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "GoneParam", v, [ gone ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolThenGone", v, [ typeof<bool> ; gone ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "GoneThenBool", v, [ gone ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "GoneReturnBool", gone, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolWithGoneLocal", v, [ typeof<bool> ], Some gone, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "IntWithGoneLocal", v, [ typeof<int> ], Some gone, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
                     "ListOfInt",
                     v,
                     [ typeof<Collections.Generic.List<int>> ],
                     None,
                     true,
-                    false,
-                    false,
+                    UcoProbeMark.Unmarked,
                     invalid,
                     invalid
-                    "KeptThenBool", v, [ kept ; typeof<bool> ], None, true, false, false, invalid, invalid
+                    "KeptThenBool", v, [ kept ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    // The return type loads in full before anything else, though it needs marshalling too.
+                    "GoneClassReturn", goneClass, [ typeof<int> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    invalid,
+                    invalid
                 ]
 
             let disabled =
@@ -7439,21 +7526,27 @@ public static unsafe class Uco
                     [ typeof<bool> ],
                     None,
                     true,
-                    false,
-                    false,
+                    UcoProbeMark.Unmarked,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
-                    "ObjectParam", v, [ typeof<obj> ], None, true, false, false, invalid, invalid
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
                     "MarshalAsInt",
                     v,
                     [ typeof<int> ],
                     None,
                     true,
-                    true,
-                    false,
+                    UcoProbeMark.MarshalAsI4,
                     UcoCompilation.Compiled,
                     UcoCompilation.Compiled
-                    "KeptParam", v, [ kept ], None, true, false, false, UcoCompilation.Compiled, unknown
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
                 ]
 
             let check (label : string) (disableMarshalling : bool) probes : string list =
@@ -7461,16 +7554,16 @@ public static unsafe class Uco
                     validityProbes
                         disableMarshalling
                         (probes
-                         |> List.map (fun (name, returned, parameters, local, isStatic, marshalAs, lcid, _, _) ->
-                             name, returned, parameters, local, isStatic, marshalAs, lcid
+                         |> List.map (fun (name, returned, parameters, local, isStatic, mark, _, _) ->
+                             name, returned, parameters, local, isStatic, mark
                          ))
 
-                let names = probes |> List.map (fun (name, _, _, _, _, _, _, _, _) -> name)
+                let names = probes |> List.map (fun (name, _, _, _, _, _, _, _) -> name)
                 let host = ucoCompilations image incomplete "V" names
                 let analysed = ucoAnalysed image incomplete "V" names
 
                 [
-                    for name, _, _, _, _, _, _, onHost, byAnalysis in probes do
+                    for name, _, _, _, _, _, onHost, byAnalysis in probes do
                         if host.[name] <> onHost then
                             yield $"%s{label} %s{name}: the host's JIT %A{host.[name]}, not %A{onHost}"
 
