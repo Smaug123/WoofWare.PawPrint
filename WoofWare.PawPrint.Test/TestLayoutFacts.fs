@@ -829,6 +829,7 @@ module TestLayoutFacts =
     /// `HoldsWrapNest` hold each at `int`. `UsesHolder` holds a `Holder<UsesHolder>`, which holds
     /// only an `int`. `HoldsExpandingEnum` holds an `Outer<int>.E`, an enum over `Outer<Wrap<int>>.E`.
     /// `HoldsSwapped` holds a `Pair<Swap<int>, int>`, which reaches `Pair<int, Swap<int>>` and ends.
+    /// `HoldsPayload` holds a `Wrap<Payload>`, where `Payload` holds a `Wrap<Holder<Payload>>`.
     let private oddCorpus : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "OddTypes", typeof<obj>.Assembly)
@@ -865,6 +866,17 @@ module TestLayoutFacts =
         let swap =
             genericStruct "Swap" (fun t tb -> pair.MakeGenericType (t :> Type, tb.MakeGenericType (t :> Type)))
 
+        // `Payload { Wrap<Holder<Payload>> X; }`: `Wrap<Payload>` reaches `Wrap<Holder<Payload>>`,
+        // whose argument contains its own, but `Holder` stores none of its argument.
+        let payload =
+            let tb = md.DefineType ("Payload", sequential, typeof<ValueType>)
+
+            tb.DefineField ("X", wrap.MakeGenericType (holder.MakeGenericType (tb :> Type)), FieldAttributes.Public)
+            |> ignore
+
+            tb.CreateType () |> ignore
+            tb :> Type
+
         // `Outer<T>.E`, an enum whose field is `Outer<Wrap<T>>.E`. An enum may be generic only
         // through the type it is nested in.
         let expandingEnum =
@@ -898,6 +910,7 @@ module TestLayoutFacts =
                 "UsesHolder", (fun tb -> holder.MakeGenericType (tb :> Type))
                 "HoldsExpandingEnum", (fun _ -> expandingEnum.MakeGenericType typeof<int>)
                 "HoldsSwapped", (fun _ -> pair.MakeGenericType (swap.MakeGenericType typeof<int>, typeof<int>))
+                "HoldsPayload", (fun _ -> wrap.MakeGenericType payload)
             ] do
             let tb = md.DefineType (name, sequential, typeof<ValueType>)
             tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
@@ -982,6 +995,7 @@ module TestLayoutFacts =
                     "UsesHolder"
                     "HoldsExpandingEnum"
                     "HoldsSwapped"
+                    "HoldsPayload"
                 ]
                 |> List.map (fun name ->
                     // The host may refuse the type as soon as it is named.
@@ -1059,6 +1073,7 @@ module TestLayoutFacts =
                     "UsesHolder", true
                     "HoldsExpandingEnum", false
                     "HoldsSwapped", true
+                    "HoldsPayload", true
                 ]
         finally
             context.Unload ()
