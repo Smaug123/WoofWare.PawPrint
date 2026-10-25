@@ -36,6 +36,7 @@ public interface IMarker { }
 public interface IOut<out T> { }
 public interface ISvm { static abstract void Make(); }
 public interface IInheritsSvm : ISvm { }
+public interface ISvmDefault { static virtual void Make() { } }
 public class BaseType { }
 public class DerivedType : BaseType, IMarker { }
 public class Unrelated { }
@@ -48,6 +49,7 @@ public abstract class AbstractSvm : ISvm { public static void Make() { } }
 public class ConcreteSvm : ISvm { public static void Make() { } }
 public abstract class AbstractInheritsSvm : IInheritsSvm { public static void Make() { } }
 public abstract class AbstractPublicCtor { public AbstractPublicCtor() { } }
+public abstract class AbstractDefault : ISvmDefault { }
 public struct MarkedStruct : IMarker { public int X; }
 public struct PlainStruct { public int X; }
 public enum MyEnum { A }
@@ -77,6 +79,7 @@ public class H_NewBase<T> where T : BaseType, new() { }
 public class H_Unmanaged<T> where T : unmanaged { }
 public class H_Svm<T> where T : ISvm { }
 public class H_InheritsSvm<T> where T : IInheritsSvm { }
+public class H_SvmDefault<T> where T : ISvmDefault { }
 public class H2_MarkerThenBase<A, B> where A : IMarker where B : BaseType { }
 public class H2_FirstBoundsSecond<A, B> where B : A { }
 
@@ -113,6 +116,7 @@ public static class Outer<U>
             "H_Unmanaged`1"
             "H_Svm`1"
             "H_InheritsSvm`1"
+            "H_SvmDefault`1"
         ]
 
     let private pairHolders : string list =
@@ -207,6 +211,7 @@ public static class Outer<U>
             ofCorpus "ConcreteSvm" false false
             ofCorpus "AbstractInheritsSvm" false false
             ofCorpus "AbstractPublicCtor" false false
+            ofCorpus "AbstractDefault" false false
             ofCorpus "MarkedStruct" true false
             ofCorpus "PlainStruct" true false
             ofCorpus "MyEnum" true false
@@ -900,3 +905,14 @@ public static class Outer<U>
 
         host "HolderOfDerived`1" |> shouldEqual None
         verdict "HolderOfDerived`1" |> shouldEqual ConstraintVerdict.Satisfied
+
+    /// CoreCLR asks an abstract argument to resolve only the abstract static virtual methods of an
+    /// interface constraint: one whose only static virtual method has a body leaves nothing to decide.
+    [<Test>]
+    let ``an abstract class against an interface whose static virtual method has a body is satisfied`` () : unit =
+        hostVerdict (fun () -> box ((hostType "H_SvmDefault`1").MakeGenericType (hostType "AbstractDefault")))
+        |> shouldEqual None
+
+        typeVerdict initialState "H_SvmDefault`1" [ Leaf "AbstractDefault" ]
+        |> snd
+        |> shouldEqual ConstraintVerdict.Satisfied
