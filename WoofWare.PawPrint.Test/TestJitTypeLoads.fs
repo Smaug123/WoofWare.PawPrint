@@ -177,6 +177,9 @@ public class ThingException : System.Exception { }
             MethodSignature : string -> TypeMethodSignature<TypeDefn>
             /// What CoreCLR reads of the P/Invoke of `Probes` of this name (`UnmanagedTarget.ofPInvoke`).
             PInvoke : string -> UnmanagedTarget
+            /// What CoreCLR reads as the calling convention of the P/Invoke of `Probes` of this name
+            /// (`UnmanagedCallingConvention.ofPInvoke`).
+            PInvokeConvention : string -> UnmanagedConventionRead
         }
 
     /// Where a probe, and a method it calls, meet a type, each in the order the JIT meets them.
@@ -295,6 +298,17 @@ public class ThingException : System.Exception { }
             Callee = callee
         }
 
+    /// The architecture the host's JIT compiles for.
+    let private hostTarget : JitTarget =
+        match Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
+        | Runtime.InteropServices.Architecture.Arm64 -> JitTarget.Arm64
+        | Runtime.InteropServices.Architecture.X64 -> JitTarget.X64
+        | other -> failwith $"No JIT table describes the host's architecture, %O{other}"
+
+    /// What CoreCLR reads as a convention naming this base convention and no modifier.
+    let private reads (convention : UnmanagedCallConvBase) : UnmanagedConventionRead =
+        UnmanagedConventionRead.Reads (convention, Set.empty)
+
     /// Whether the host's JIT compiles Swift's calling convention as such: it does on Arm64, and on
     /// x64 other than Windows'.
     let private compilesSwift : bool =
@@ -379,12 +393,13 @@ public class ThingException : System.Exception { }
 
         // A probe calling the method of `Probes` named `helper`, whose compilation calls unmanaged
         // code at `placement` by `convention`, by the signature of the method of `Probes` named
-        // `native`: that P/Invoke, or, where `indirect`, a function pointer.
+        // `native`: that P/Invoke, whose convention CoreCLR must read as `convention`, or, where
+        // `indirect`, a function pointer.
         let unmanagedProbe
             (name : string)
             (helper : string)
             (native : string)
-            (convention : UnmanagedConvention)
+            (convention : UnmanagedConventionRead)
             (placement : UnmanagedCallPlacement)
             (indirect : bool)
             : Probe
@@ -393,6 +408,10 @@ public class ThingException : System.Exception { }
                 name
                 $"%s{helper}();"
                 (fun spelt ->
+                    if not indirect && spelt.PInvokeConvention native <> convention then
+                        failwith
+                            $"CoreCLR reads %A{spelt.PInvokeConvention native} as the convention of %s{native}, not %A{convention}"
+
                     let unmanagedCall =
                         {
                             Convention = convention
@@ -407,7 +426,7 @@ public class ThingException : System.Exception { }
 
                     meets
                         (signatureMeetings call TypeDefn.Void [])
-                        (JitTypeLoads.unmanagedMeetings unmanagedCall (spelt.MethodSignature native))
+                        (JitTypeLoads.unmanagedMeetings hostTarget unmanagedCall (spelt.MethodSignature native))
                 )
 
         [
@@ -677,7 +696,7 @@ public class ThingException : System.Exception { }
                 "UnmanagedReturn"
                 $"CallsNativeReturns%d{k}"
                 $"NativeReturns%d{k}"
-                UnmanagedConvention.NotSwift
+                (reads UnmanagedCallConvBase.Cdecl)
                 UnmanagedCallPlacement.Unprotected
                 false
             probe
@@ -716,7 +735,7 @@ public class ThingException : System.Exception { }
                     "UnmanagedParameter"
                     $"CallsNative%d{k}"
                     $"NativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Cdecl)
                     UnmanagedCallPlacement.Unprotected
                     false
 
@@ -724,7 +743,7 @@ public class ThingException : System.Exception { }
                     "CaughtUnmanagedParameter"
                     $"CatchesNative%d{k}"
                     $"NativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Cdecl)
                     UnmanagedCallPlacement.Protected
                     false
 
@@ -732,7 +751,7 @@ public class ThingException : System.Exception { }
                     "CaughtSwiftUnmanagedParameter"
                     $"CatchesSwiftNative%d{k}"
                     $"SwiftNativeTakes%d{k}"
-                    UnmanagedConvention.MaybeSwift
+                    (reads UnmanagedCallConvBase.Swift)
                     UnmanagedCallPlacement.Protected
                     false
 
@@ -740,7 +759,7 @@ public class ThingException : System.Exception { }
                     "BoolThenUnmanagedParameter"
                     $"CallsBoolThenNative%d{k}"
                     $"BoolThenNativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Cdecl)
                     UnmanagedCallPlacement.Unprotected
                     false
 
@@ -748,7 +767,7 @@ public class ThingException : System.Exception { }
                     "IndirectUnmanagedParameter"
                     $"CallsUnmanaged%d{k}"
                     $"NativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Cdecl)
                     UnmanagedCallPlacement.Unprotected
                     true
 
@@ -757,7 +776,7 @@ public class ThingException : System.Exception { }
                     "FastcallUnmanagedParameter"
                     $"CallsFastcallNative%d{k}"
                     $"FastcallNativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Fastcall)
                     UnmanagedCallPlacement.Unprotected
                     false
 
@@ -765,7 +784,7 @@ public class ThingException : System.Exception { }
                     "FastcallIndirectUnmanagedParameter"
                     $"CallsFastcallUnmanaged%d{k}"
                     $"NativeTakes%d{k}"
-                    UnmanagedConvention.NotSwift
+                    (reads UnmanagedCallConvBase.Fastcall)
                     UnmanagedCallPlacement.Unprotected
                     true
 
@@ -774,7 +793,7 @@ public class ThingException : System.Exception { }
                         "SwiftUnmanagedParameter"
                         $"CallsSwiftNative%d{k}"
                         $"SwiftNativeTakes%d{k}"
-                        UnmanagedConvention.MaybeSwift
+                        (reads UnmanagedCallConvBase.Swift)
                         UnmanagedCallPlacement.Unprotected
                         false
 
@@ -782,7 +801,7 @@ public class ThingException : System.Exception { }
                         "SwiftIndirectUnmanagedParameter"
                         $"CallsSwiftUnmanaged%d{k}"
                         $"NativeTakes%d{k}"
-                        UnmanagedConvention.Swift
+                        (reads UnmanagedCallConvBase.Swift)
                         UnmanagedCallPlacement.Unprotected
                         true
             if isTypeArgument shape then
@@ -1100,6 +1119,10 @@ public class ThingException : System.Exception { }
             let method = probesType.Methods |> List.find (fun m -> m.Name = name)
             UnmanagedTarget.ofPInvoke client method.TryMetadata.Value.Handle
 
+        let pInvokeConvention (name : string) : UnmanagedConventionRead =
+            let method = probesType.Methods |> List.find (fun m -> m.Name = name)
+            UnmanagedCallingConvention.ofPInvoke client method.TryMetadata.Value.Handle
+
         let signature (name : string) : TypeDefn * TypeDefn list =
             let signature = methodSignature name
 
@@ -1206,6 +1229,7 @@ public class ThingException : System.Exception { }
                                 Signature = signature
                                 MethodSignature = methodSignature
                                 PInvoke = pInvoke
+                                PInvokeConvention = pInvokeConvention
                             }
 
                         ((assemblies, outcomes), probes)

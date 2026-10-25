@@ -8105,7 +8105,7 @@ public static unsafe class Program
         let once = CustomAttribute.parseUnmanagedCallersOnly (blob 1)
 
         once
-        |> shouldEqual (UnmanagedCallersOnlyApplication.Parsed (UnmanagedCallersOnlyCallConvs.Unnamed, true))
+        |> shouldEqual (UnmanagedCallersOnlyApplication.Parsed (CallConvsArgument.Unnamed, true))
 
         match CustomAttribute.parseUnmanagedCallersOnly (blob 2) with
         | UnmanagedCallersOnlyApplication.Malformed _ -> ()
