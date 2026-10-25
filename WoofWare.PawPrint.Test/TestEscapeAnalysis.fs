@@ -7198,6 +7198,54 @@ public static unsafe class Calls
     let ``the JIT refuses a signature with a variable argument list wherever it reads one`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { }"
+            + (if complete then " public struct GoneStruct { }" else "")
+
+        let compileProvider (complete : bool) : byte[] =
+            Roslyn.compileOptimizedAssembly "Provider" OutputKind.DynamicallyLinkedLibrary [ provider complete ]
+
+        // The image with the `ldvirtftn` of `Target.Plain` in `Calls.VirtualAddressOfHoldsGone`
+        // retargeted to `Target.Variadic`, whose address C# takes nowhere.
+        let retargetAddress (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let methodToken (typeName : string) (methodName : string) : int * MethodDefinition =
+                metadata.TypeDefinitions
+                |> Seq.map metadata.GetTypeDefinition
+                |> Seq.filter (fun ty -> metadata.GetString ty.Name = typeName)
+                |> Seq.exactlyOne
+                |> fun ty -> ty.GetMethods ()
+                |> Seq.filter (fun handle -> metadata.GetString (metadata.GetMethodDefinition handle).Name = methodName)
+                |> Seq.exactlyOne
+                |> fun handle ->
+                    MetadataTokens.GetToken (MethodDefinitionHandle.op_Implicit handle : EntityHandle),
+                    metadata.GetMethodDefinition handle
+
+            let plain, _ = methodToken "Target" "Plain"
+            let variadic, _ = methodToken "Target" "Variadic"
+            let _, caller = methodToken "Calls" "VirtualAddressOfHoldsGone"
+            let rva = caller.RelativeVirtualAddress
+
+            let section =
+                pe.PEHeaders.SectionHeaders
+                |> Seq.find (fun s -> rva >= s.VirtualAddress && rva < s.VirtualAddress + s.VirtualSize)
+
+            let start = rva - section.VirtualAddress + section.PointerToRawData
+            let size = (pe.GetMethodBody rva).Size
+            let ldvirtftn = Array.append [| 0xFEuy ; 0x07uy |] (BitConverter.GetBytes plain)
+
+            match
+                [ start .. start + size - ldvirtftn.Length ]
+                |> List.filter (fun i -> patched.[i .. i + ldvirtftn.Length - 1] = ldvirtftn)
+            with
+            | [ at ] -> Array.blit (BitConverter.GetBytes variadic) 0 patched (at + 2) 4
+            | found -> failwith $"VirtualAddressOfHoldsGone takes Plain's address %d{found.Length} times, not once"
+
+            patched
+
         // C# spells a call of a method with a variable argument list, and of a P/Invoke with one.
         let source =
             """
@@ -7205,9 +7253,13 @@ using System.Runtime.InteropServices;
 
 namespace Arglist;
 
+public struct HoldsGone { public Provider.GoneStruct G; }
+
 public class Target
 {
     public Target(int a, __arglist) { }
+    public virtual void Plain() { }
+    public virtual void Variadic(HoldsGone h, __arglist) { }
     public Target() { }
     public static void Static(int a, __arglist) { }
     public virtual void Virtual(int a, __arglist) { }
@@ -7227,6 +7279,13 @@ public static class Calls
     public static void Callvirt() { if (never) new Target().Virtual(1, __arglist(2)); }
     public static void Newobj() { if (never) new Target(1, __arglist(2)); }
     public static void Native() { if (never) Target.Native(1, __arglist(2)); }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void Use(object o) { }
+    // Retargeted to `Variadic` after compiling.
+    public static void VirtualAddressOfHoldsGone()
+    {
+        if (never) Use(new System.Action(new Target().Plain));
+    }
     public static void NativeCaught()
     {
         try { if (never) Target.Native(1, __arglist(2)); } catch (System.Exception) { }
@@ -7235,7 +7294,17 @@ public static class Calls
 """
 
         let arglistImage =
-            Roslyn.compileOptimizedAssembly "Arglist" OutputKind.DynamicallyLinkedLibrary [ source ]
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Arglist"
+                OutputKind.DynamicallyLinkedLibrary
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (compileProvider true))
+                    :> MetadataReference
+                ]
+                [ source ]
+            |> retargetAddress
+
+        let incompleteProvider = compileProvider false
 
         // C# spells no `ldftn`, `ldvirtftn`, `calli` or `ldtoken` of one, so this emits them, each
         // in a branch never taken.
@@ -7394,6 +7463,9 @@ public static class Calls
                 "Arglist", "Arglist.Calls", "Newobj", false, Some invalidProgram
                 "Arglist", "Arglist.Calls", "Native", false, Some invalidProgram
                 "Arglist", "Arglist.Calls", "NativeCaught", false, Some invalidProgram
+                // CoreCLR prepares the method as a function pointer, loading the value types of its
+                // signature, before it converts the signature.
+                "Arglist", "Arglist.Calls", "VirtualAddressOfHoldsGone", false, Some "System.TypeLoadException"
                 "Arglist", "Arglist.Target", "Static", true, Some invalidProgram
                 "Varargs", "Varargs.Targets", "Address", false, Some invalidProgram
                 "Varargs", "Varargs.Targets", "VirtualAddress", false, Some invalidProgram
@@ -7413,6 +7485,14 @@ public static class Calls
         let hostOutcomes (collectible : bool) : Map<string * string, string option> =
             let context =
                 Runtime.Loader.AssemblyLoadContext ($"Varargs%b{collectible}", isCollectible = collectible)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
 
             try
                 let loaded =
@@ -7451,7 +7531,34 @@ public static class Calls
 
         let assemblies = images |> Map.map read
 
-        let mutable analysis = analysisOver (assemblies |> Map.toList |> List.map snd) id
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let reference =
+            assemblies.["Arglist"].AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOver
+                (providerAssembly :: (assemblies |> Map.toList |> List.map snd))
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let madeBy : Map<string, Set<string>> =
+            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            analysis <- next
+            let madeTypeLoad = render analysis madeTypeLoad
+            let next, madeInvalidProgram = making analysis invalidProgram
+            analysis <- next
+            let next, madeBadImage = making analysis "System.BadImageFormatException"
+            analysis <- next
+
+            Map.ofList
+                [
+                    "System.TypeLoadException", madeTypeLoad
+                    invalidProgram, madeInvalidProgram
+                    "System.BadImageFormatException", madeBadImage
+                ]
 
         let failures =
             [
@@ -7469,12 +7576,26 @@ public static class Calls
                     let shown = render analysis escapes
 
                     let escaping =
-                        [ invalidProgram ; "System.BadImageFormatException" ]
+                        [
+                            invalidProgram
+                            "System.BadImageFormatException"
+                            "System.TypeLoadException"
+                        ]
                         |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
 
-                    if escaping <> Option.toList expected then
+                    let unexplained =
+                        match expected with
+                        | None -> escaping
+                        | Some expected when not (List.contains expected escaping) -> escaping @ [ $"no %s{expected}" ]
+                        | Some expected ->
+                            escaping
+                            |> List.filter (fun escaped ->
+                                escaped <> expected && not (madeBy.[expected].Contains $"=%s{escaped}")
+                            )
+
+                    if not unexplained.IsEmpty then
                         yield
-                            $"%s{typeName}.%s{name}: the analysis lets %A{escaping} escape, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+                            $"%s{typeName}.%s{name}: %A{unexplained} in the analysis, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
 
         if not failures.IsEmpty then
