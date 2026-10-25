@@ -157,6 +157,10 @@ module ConcreteInterfaceDispatch =
         let state, parentHandle =
             TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state typeHandle
 
+        match parentHandle with
+        | Error failure -> state, Error failure
+        | Ok parentHandle ->
+
         let state, inherited =
             match parentHandle with
             | None -> state, Ok []
@@ -666,6 +670,10 @@ module ConcreteInterfaceDispatch =
         let state, parentHandle =
             TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state typeHandle
 
+        match parentHandle with
+        | Error failure -> state, Error failure
+        | Ok parentHandle ->
+
         let parentIsAbstract =
             match parentHandle with
             | None -> false
@@ -1062,6 +1070,10 @@ module ConcreteInterfaceDispatch =
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
 
             match baseType with
+            | Error failure -> state, Error failure
+            | Ok baseType ->
+
+            match baseType with
             | None -> state, Ok false
             | Some baseType ->
                 isMappedOnChain
@@ -1166,6 +1178,10 @@ module ConcreteInterfaceDispatch =
             | Ok None ->
                 let state, baseType =
                     TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
+
+                match baseType with
+                | Error failure -> state, Error failure
+                | Ok baseType ->
 
                 match baseType with
                 | None -> state, Ok None

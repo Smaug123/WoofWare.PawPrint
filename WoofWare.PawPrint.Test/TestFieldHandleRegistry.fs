@@ -90,8 +90,13 @@ public class GenericHolder<T>
             |> Seq.find (fun field -> field.DeclaringType.Name = "HasField" && field.Name = "Other")
 
         let state : IlMachineState =
+            // CoreLib's own directory is where a run would find it: concretising a type of the
+            // compiled assembly loads its base chain, which binds the assembly's CoreLib reference.
             let initialState =
-                IlMachineState.initial loggerFactory ImmutableArray.Empty assembly
+                IlMachineState.initial
+                    loggerFactory
+                    (ImmutableArray.Create (Path.GetDirectoryName corelibPath))
+                    assembly
 
             initialState.WithLoadedAssembly corelib
 
@@ -157,7 +162,12 @@ public class GenericHolder<T>
                     }
 
                 let handle, ctx =
-                    TypeConcretization.concretizeTypeDefinition ctx field.DeclaringType.Identity
+                    TypeConcretization.concretizeTypeDefinition
+                        (TypeResolution.directoryLoader fixture.LoggerFactory state.DotnetRuntimeDirs)
+                        ctx
+                        field.DeclaringType.Identity
+
+                let handle = BindingResult.value handle
 
                 let state =
                     { state with

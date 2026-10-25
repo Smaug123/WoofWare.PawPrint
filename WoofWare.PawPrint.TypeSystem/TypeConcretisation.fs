@@ -758,6 +758,44 @@ module TypeConcretization =
 
         handle, newCtx
 
+    /// Register the nominal type `identity` instantiated at `generics`, having first loaded every
+    /// assembly its base-type chain runs through: CoreCLR loads a type's parent before the type, so a
+    /// type whose base chain does not bind has no runtime type. The failure is the chain's, with what
+    /// loaded before it in the context.
+    let private registerNominal
+        (loadAssembly : IAssemblyLoad)
+        (ctx : ConcretizationContext<'corelib>)
+        (identity : ResolvedTypeIdentity)
+        (ns : string)
+        (name : string)
+        (generics : ConcreteTypeHandle ImmutableArray)
+        : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<'corelib>
+        =
+        match
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                loadAssembly
+                ctx.LoadedAssemblies
+                (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                identity.TypeDefinition.Get
+        with
+        | assemblies, Some failure ->
+            Error (TypeBindingFailure.ofBaseChain failure),
+            { ctx with
+                LoadedAssemblies = assemblies
+            }
+        | assemblies, None ->
+            let handle, ctx =
+                createAndAddConcreteType
+                    { ctx with
+                        LoadedAssemblies = assemblies
+                    }
+                    identity
+                    ns
+                    name
+                    generics
+
+            Ok handle, ctx
+
     /// What `f` makes of a value that bound, or the failure that stopped it, with the context either
     /// way.
     let private andThen
@@ -871,10 +909,13 @@ module TypeConcretization =
         =
         ConcreteTypeHandle.OneDimArrayZero elementHandle, ctx
 
+    /// The concrete type of the non-generic definition `identity`. Its base-type chain is loaded
+    /// first, and a type on it that does not bind is the failure.
     let concretizeTypeDefinition
+        (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
         (identity : ResolvedTypeIdentity)
-        : ConcreteTypeHandle * ConcretizationContext<'corelib>
+        : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<'corelib>
         =
 
         let assembly = ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
@@ -889,10 +930,8 @@ module TypeConcretization =
                 typeInfo.Generics.Length
 
         match findExistingType ctx.ConcreteTypes identity ImmutableArray.Empty with
-        | Some handle -> handle, ctx
-        | None ->
-            // Create and add the concrete type (no generic arguments since it's not generic)
-            createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty // No generic parameters
+        | Some handle -> Ok handle, ctx
+        | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
     let private concretizeTypeReference
         (loadAssembly : IAssemblyLoad)
@@ -913,11 +952,7 @@ module TypeConcretization =
             // Create or find the concrete type
             match findExistingType ctx.ConcreteTypes identity ImmutableArray.Empty with
             | Some handle -> Ok handle, ctx
-            | None ->
-                let handle, ctx =
-                    createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
-
-                Ok handle, ctx
+            | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
         )
 
     /// Does this signature type carry an ECMA-335 custom modifier (`modreq`/`modopt`) anywhere
@@ -1011,8 +1046,7 @@ module TypeConcretization =
                     $"Cannot concretize open generic type %s{typeInfo.Namespace}.%s{typeInfo.Name} - it has %d{typeInfo.Generics.Length} generic parameters",
                 ctx
             else
-                let handle, ctx = concretizeTypeDefinition ctx identity
-                Ok handle, ctx
+                concretizeTypeDefinition loadAssembly ctx identity
 
         | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assemblyFullName typeRef
 
@@ -1221,17 +1255,7 @@ module TypeConcretization =
                 | Some existingHandle ->
                     // Type already exists, return it
                     Ok existingHandle, ctxAfterArgs
-                | None ->
-                    let concreteType =
-                        ConcreteType.makeFromIdentity baseIdentity baseNamespace baseName argHandles
-
-                    let handle, newConcreteTypes =
-                        AllConcreteTypes.add concreteType ctxAfterArgs.ConcreteTypes
-
-                    Ok handle,
-                    { ctxAfterArgs with
-                        ConcreteTypes = newConcreteTypes
-                    }
+                | None -> registerNominal loadAssembly ctxAfterArgs baseIdentity baseNamespace baseName argHandles
             )
         )
 

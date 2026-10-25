@@ -213,6 +213,10 @@ module ConcreteMethodTable =
                     concreteType
 
             match baseHandle with
+            | Error failure -> state, Error failure
+            | Ok baseHandle ->
+
+            match baseHandle with
             | None -> state, Ok None
             | Some baseHandle ->
                 dispatchTableOfClosed loggerFactory dotnetRuntimeDirs baseClassTypes operation state baseHandle
@@ -313,6 +317,10 @@ module ConcreteMethodTable =
                     baseClassTypes
                     state
                     concreteType
+
+            match baseHandle with
+            | Error failure -> state, Error failure
+            | Ok baseHandle ->
 
             match baseHandle with
             | None -> state, Ok []

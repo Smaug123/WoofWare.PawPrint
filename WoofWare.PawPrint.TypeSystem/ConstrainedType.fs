@@ -117,8 +117,9 @@ module ConstrainedType =
         : TypeSystemState * Result<ConstrainedType, TypeBindingFailure>
         =
         match TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state named with
-        | state, false -> state, Ok (ConstrainedType.AsNamed named)
-        | state, true ->
+        | state, Error failure -> state, Error failure
+        | state, Ok false -> state, Ok (ConstrainedType.AsNamed named)
+        | state, Ok true ->
 
         match
             slotOf operation loggerFactory dotnetRuntimeDirs baseClassTypes state (objectGetHashCode baseClassTypes)
