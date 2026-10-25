@@ -665,8 +665,9 @@ public static class Outer<U>
         |> shouldEqual None
 
     /// Arguments C# cannot declare, against `new()`: an abstract value type, which CoreCLR loads but
-    /// whose abstractness `new()` rejects; and a class whose only parameterless instance `.ctor` is
-    /// not marked `RTSpecialName`, which CoreCLR does not take for a constructor at all.
+    /// whose abstractness `new()` rejects; a class whose only parameterless instance `.ctor` is not
+    /// marked `RTSpecialName`, which CoreCLR does not take for a constructor at all; and classes with
+    /// two parameterless constructors, of which CoreCLR takes the last as the default one.
     [<Test>]
     let ``new() rejects an abstract value type, and a .ctor without RTSpecialName, as on the host`` () : unit =
         let fabricated =
@@ -718,6 +719,32 @@ public static class Outer<U>
 
             ordinary.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
             notSpecial.CreateType () |> ignore<Type>
+
+            // Two parameterless constructors, in the order given: `MethodTableBuilder` takes the
+            // last for the default one, whose visibility `new()` then asks.
+            let twoConstructors (name : string) (visibilities : Reflection.MethodAttributes list) =
+                let ty =
+                    modul.DefineType (name, Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+                for visibility in visibilities do
+                    let constructor =
+                        ty.DefineConstructor (visibility, Reflection.CallingConventions.Standard, Type.EmptyTypes)
+
+                    let il = constructor.GetILGenerator ()
+                    il.Emit Reflection.Emit.OpCodes.Ldarg_0
+                    il.Emit (Reflection.Emit.OpCodes.Call, baseConstructor)
+                    il.Emit Reflection.Emit.OpCodes.Ret
+
+                ty.CreateType () |> ignore<Type>
+
+            twoConstructors
+                "PublicThenPrivate"
+                [ Reflection.MethodAttributes.Public ; Reflection.MethodAttributes.Private ]
+
+            twoConstructors
+                "PrivateThenPublic"
+                [ Reflection.MethodAttributes.Private ; Reflection.MethodAttributes.Public ]
+
             use stream = new MemoryStream ()
             builder.Save stream
             stream.ToArray ()
@@ -733,14 +760,22 @@ public static class Outer<U>
 
         let failures =
             [
-                for name in [ "AbstractStruct" ; "NotSpecialCtor" ] do
+                for name, rejected in
+                    [
+                        "AbstractStruct", true
+                        "NotSpecialCtor", true
+                        "PublicThenPrivate", true
+                        "PrivateThenPublic", false
+                    ] do
                     let typeInfo = assembly.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+                    let expected = if rejected then Some 0 else None
 
                     match
                         hostVerdict (fun () -> box ((hostType "H_New`1").MakeGenericType (hostAssembly.GetType name)))
                     with
-                    | Some 0 -> ()
-                    | other -> yield $"H_New<%s{name}>: the host's verdict is %A{other}, not a rejection"
+                    | verdict when verdict = expected -> ()
+                    | other -> yield $"H_New<%s{name}>: the host's verdict is %A{other}, not %A{expected}"
 
                     let next, handle =
                         match
@@ -773,9 +808,10 @@ public static class Outer<U>
                             [ handle ]
                     with
                     | next, Ok (ConstraintVerdict.Violated violation) when
-                        violation.Rule = ConstraintRule.ParameterlessConstructor
+                        rejected && violation.Rule = ConstraintRule.ParameterlessConstructor
                         ->
                         state <- next
+                    | next, Ok ConstraintVerdict.Satisfied when not rejected -> state <- next
                     | _, other -> yield $"H_New<%s{name}>: TypeSystem's verdict is %A{other}"
             ]
 
