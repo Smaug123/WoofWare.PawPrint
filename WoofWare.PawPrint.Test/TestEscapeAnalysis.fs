@@ -8818,11 +8818,12 @@ public static class Calls
     public static void Callvirt() { if (never) new Target().Virtual(1, __arglist(2)); }
     public static void Newobj() { if (never) new Target(1, __arglist(2)); }
     public static void Native() { if (never) Target.Native(1, __arglist(2)); }
-    // The JIT folds away a branch capability queries rule out, as no CPU has both of these, and
-    // compiles no call in it.
+    // The JIT folds away a branch a capability query rules out, and compiles no call in it: an
+    // Arm64 CoreLib's Avx10v2 query is a stub returning false, and on x64 the JIT leaves AVX10.2
+    // off unless DOTNET_EnableAVX10v2 turns it on.
     public static void Guarded()
     {
-        if (System.Runtime.Intrinsics.X86.Sse.IsSupported && System.Runtime.Intrinsics.Arm.AdvSimd.IsSupported)
+        if (System.Runtime.Intrinsics.X86.Avx10v2.IsSupported)
             Target.Static(1, __arglist(2));
     }
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
