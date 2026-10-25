@@ -7331,6 +7331,43 @@ public static class Calls
             caller "Indirect" false functionPointer
             caller "IndirectCaught" true functionPointer
 
+            let abstractType =
+                modul.DefineType (
+                    "Varargs.Abstract",
+                    TypeAttributes.Public ||| TypeAttributes.Class ||| TypeAttributes.Abstract
+                )
+
+            let abstractTarget =
+                abstractType.DefineMethod (
+                    "Target",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Virtual
+                    ||| MethodAttributes.NewSlot
+                    ||| MethodAttributes.Abstract,
+                    CallingConventions.VarArgs ||| CallingConventions.HasThis,
+                    typeof<Void>,
+                    [| typeof<int> |]
+                )
+
+            abstractType.CreateType () |> ignore<Type>
+
+            caller
+                "AbstractAddress"
+                false
+                (fun il ->
+                    il.Emit (Emit.OpCodes.Ldftn, abstractTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
+            caller
+                "AbstractVirtualAddress"
+                false
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldvirtftn, abstractTarget)
+                    il.Emit Emit.OpCodes.Pop
+                )
+
             caller
                 "Token"
                 false
@@ -7347,22 +7384,26 @@ public static class Calls
         let invalidProgram = "System.InvalidProgramException"
 
         // Each method, by its assembly's name and type, and its name; whether the host runs it as a
-        // caller or prepares it as a method compiled by itself; and whether compiling it fails.
+        // caller or prepares it as a method compiled by itself; and the exception compiling it fails
+        // with, if any.
         let methods =
             [
-                "Arglist", "Arglist.Calls", "Call", false, true
-                "Arglist", "Arglist.Calls", "CallCaught", false, true
-                "Arglist", "Arglist.Calls", "Callvirt", false, true
-                "Arglist", "Arglist.Calls", "Newobj", false, true
-                "Arglist", "Arglist.Calls", "Native", false, true
-                "Arglist", "Arglist.Calls", "NativeCaught", false, true
-                "Arglist", "Arglist.Target", "Static", true, true
-                "Varargs", "Varargs.Targets", "Address", false, true
-                "Varargs", "Varargs.Targets", "VirtualAddress", false, true
-                "Varargs", "Varargs.Targets", "Indirect", false, true
-                "Varargs", "Varargs.Targets", "IndirectCaught", false, true
-                "Varargs", "Varargs.Targets", "Token", false, false
-                "Varargs", "Varargs.Targets", "Static", true, true
+                "Arglist", "Arglist.Calls", "Call", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "CallCaught", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Callvirt", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Newobj", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "Native", false, Some invalidProgram
+                "Arglist", "Arglist.Calls", "NativeCaught", false, Some invalidProgram
+                "Arglist", "Arglist.Target", "Static", true, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Address", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "VirtualAddress", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Indirect", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "IndirectCaught", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Token", false, None
+                // Resolving a call of an abstract method itself, CoreCLR refuses it first.
+                "Varargs", "Varargs.Targets", "AbstractAddress", false, Some "System.BadImageFormatException"
+                "Varargs", "Varargs.Targets", "AbstractVirtualAddress", false, Some invalidProgram
+                "Varargs", "Varargs.Targets", "Static", true, Some invalidProgram
             ]
 
         let images = Map.ofList [ "Arglist", arglistImage ; "Varargs", emittedImage ]
@@ -7414,8 +7455,7 @@ public static class Calls
 
         let failures =
             [
-                for assemblyName, typeName, name, _, refused in methods do
-                    let expected = if refused then Some invalidProgram else None
+                for assemblyName, typeName, name, _, expected in methods do
 
                     for outcomes in host do
                         if outcomes.[typeName, name] <> expected then
@@ -7428,9 +7468,13 @@ public static class Calls
                     analysis <- next
                     let shown = render analysis escapes
 
-                    if shown.Contains $"=%s{invalidProgram}" <> refused then
+                    let escaping =
+                        [ invalidProgram ; "System.BadImageFormatException" ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    if escaping <> Option.toList expected then
                         yield
-                            $"%s{typeName}.%s{name}: InvalidProgramException escapes %b{not refused} in the analysis, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+                            $"%s{typeName}.%s{name}: the analysis lets %A{escaping} escape, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
 
         if not failures.IsEmpty then
