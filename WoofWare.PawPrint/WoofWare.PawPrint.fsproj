@@ -70,6 +70,7 @@
     <Compile Include="MemoryPools.fs" />
     <Compile Include="NativeReferenceCell.fs" />
     <Compile Include="CorelibEntryPoint.fs" />
+    <Compile Include="CatchClauseRefusal.fs" />
     <Compile Include="MethodState.fs" />
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />

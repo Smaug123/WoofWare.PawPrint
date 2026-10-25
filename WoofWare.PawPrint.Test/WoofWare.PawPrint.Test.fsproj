@@ -404,6 +404,7 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedInheritedMemberReference.fs" />
     <Compile Include="TestFabricatedVoidParentMemberReference.fs" />
+    <Compile Include="TestFabricatedCatchClauseRefusal.fs" />
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />

@@ -98,7 +98,13 @@ module IlMachineMemberResolution =
         (state : IlMachineState)
         : TypeOperandRefusal option
         =
-        TypeOperand.ofTypeToken baseClassTypes state.TypeSystem._LoadedAssemblies assy assy.Members.[m].Parent
+        match
+            TypeOperand.ofTypeToken baseClassTypes state.TypeSystem._LoadedAssemblies assy assy.Members.[m].Parent
+        with
+        | Ok refusal -> refusal
+        | Error typeRef ->
+            failwith
+                $"BUG: the parent of a MemberRef in %s{assy.DefinitionFullName}, %O{typeRef}, resolved when the row was resolved, but not now"
 
     /// `TypeLoadException._resourceId` for a type reference that names nothing:
     /// `IDS_CLASSLOAD_GENERAL` (mscorrc/resource.h), "Could not load type '%1' from assembly '%2'."

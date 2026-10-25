@@ -501,6 +501,8 @@ and MethodState =
                 failwith
                     $"%s{shape} {method.Name} should have had %i{expected} parameters, but was given %i{args.Length}"
 
+            CatchClauseRefusal.check baseClassTypes loadedAssemblies containingAssembly method
+
         let localVariableSig =
             match MethodInfo.tryIlBody method with
             | None -> ImmutableArray.Empty
