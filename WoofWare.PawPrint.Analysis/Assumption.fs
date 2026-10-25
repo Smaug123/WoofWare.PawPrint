@@ -95,7 +95,12 @@ type Assumption =
     /// assembly); and when no assembly asks CoreCLR to ignore access checks to the field's
     /// (`IgnoresAccessChecksToAttribute`).
     /// This assumption stands in for no method's body, so `Assumption.raises` and
-    /// `Assumption.constructs` list nothing for it.
+    /// `Assumption.constructs` list nothing for it. The analysis follows a field under it only
+    /// where nothing but such an instruction can reach the field (`EscapeAnalysis.followsField`
+    /// says which), and a load of a field it follows relies on it, whether or not what the field
+    /// holds changes the answer. Without this, a virtual call on what a field holds dispatches on
+    /// the field's declared type: on .NET 10's CoreLib, twelve methods are known with it that are
+    /// "unknown" without, `Random`'s parameterless constructor among them.
     | FieldsWrittenVisibly
 
 [<RequireQualifiedAccess>]
