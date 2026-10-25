@@ -180,6 +180,9 @@ public class ThingException : System.Exception { }
             /// What CoreCLR reads as the calling convention of the P/Invoke of `Probes` of this name
             /// (`UnmanagedCallingConvention.ofPInvoke`).
             PInvokeConvention : string -> UnmanagedConventionRead
+            /// What the VM's walk of a call's signature for whether it needs marshalling does
+            /// (`MarshalingRequired`).
+            MarshalingWalk : UnmanagedCall -> TypeMethodSignature<TypeDefn> -> MarshalingWalk
         }
 
     /// Where a probe, and a method it calls, meet a type, each in the order the JIT meets them.
@@ -426,7 +429,11 @@ public class ThingException : System.Exception { }
 
                     meets
                         (signatureMeetings call TypeDefn.Void [])
-                        (JitTypeLoads.unmanagedMeetings hostTarget unmanagedCall (spelt.MethodSignature native))
+                        (JitTypeLoads.unmanagedMeetings
+                            hostTarget
+                            unmanagedCall
+                            (spelt.MethodSignature native)
+                            (spelt.MarshalingWalk unmanagedCall (spelt.MethodSignature native)))
                 )
 
         [
@@ -1123,6 +1130,25 @@ public class ThingException : System.Exception { }
             let method = probesType.Methods |> List.find (fun m -> m.Name = name)
             UnmanagedCallingConvention.ofPInvoke client method.TryMetadata.Value.Handle
 
+        // No probe passes a value type to unmanaged code, so the walk needs no value type's
+        // verdict but a return type's, which ends nothing.
+        let marshalingWalk (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : MarshalingWalk =
+            let runtimeMarshalling = JitTypeLoads.unmanagedRuntimeMarshalling call
+
+            let rec run (state : MarshalingWalkState) : MarshalingWalk =
+                match state with
+                | MarshalingWalkState.Ended walk -> walk
+                | MarshalingWalkState.LoadsValueType (_, _, pending) ->
+                    run (MarshalingRequired.resume pending ValueTypeVerdictInput.Undecided)
+
+            MarshalingRequired.positions
+                client
+                runtimeMarshalling
+                signature
+                (JitTypeLoads.unmanagedParameterMarshalling call)
+            |> MarshalingRequired.start runtimeMarshalling
+            |> run
+
         let signature (name : string) : TypeDefn * TypeDefn list =
             let signature = methodSignature name
 
@@ -1230,6 +1256,7 @@ public class ThingException : System.Exception { }
                                 MethodSignature = methodSignature
                                 PInvoke = pInvoke
                                 PInvokeConvention = pInvokeConvention
+                                MarshalingWalk = marshalingWalk
                             }
 
                         ((assemblies, outcomes), probes)

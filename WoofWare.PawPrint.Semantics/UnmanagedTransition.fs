@@ -33,9 +33,9 @@ type PInvokeMarshalling =
         RefusesConventions : bool
         /// Whether its assembly leaves runtime marshalling enabled (no `DisableRuntimeMarshalling`).
         RuntimeMarshalling : bool
-        /// The positions, 0 its return type and then each parameter from 1, whose marshalling its
-        /// metadata spells in a way that CoreCLR reads as other than the default (`MarshalAs`).
-        MarshalledPositions : Set<int>
+        /// The `[MarshalAs]` of each of its Param rows, by sequence number: 0 its return type and
+        /// then each parameter from 1 (`MethodInfo.parameterMarshalling`).
+        ParameterMarshalling : (int * ParameterMarshal) list
     }
 
 /// What a call of unmanaged code calls, as far as CoreCLR reads it to decide whether the call
@@ -103,10 +103,6 @@ module UnmanagedTarget =
     let private lcidConversion : string =
         "System.Runtime.InteropServices.LCIDConversionAttribute"
 
-    /// The first byte of a marshalling blob that CoreCLR reads as the default native type
-    /// (`NATIVE_TYPE_DEFAULT`, which is `NATIVE_TYPE_MAX`).
-    let private defaultNativeType : byte = 0x50uy
-
     /// Whether `method`, a P/Invoke of `assembly`, passes a locale as an argument: its first
     /// `LCIDConversion` attribute names, as its one fixed argument, a parameter index other than -1.
     /// CoreCLR reads -1 where the attribute is missing or its blob does not parse
@@ -132,7 +128,6 @@ module UnmanagedTarget =
         : UnmanagedTarget
         =
         let definition = assembly.Methods.[method]
-        let metadata = assembly.PeReader.GetMetadataReader ()
 
         let preservesSignature =
             match definition with
@@ -145,26 +140,6 @@ module UnmanagedTarget =
             | Some import -> import.Attributes.HasFlag MethodImportAttributes.SetLastError
             | None -> false
 
-        // CoreCLR finds a parameter's marshalling row by the parameter alone, whatever its
-        // `HasFieldMarshal` flag says, and reads a row whose blob is empty, or does not begin with
-        // the default native type, as spelling a marshalling (`ParseNativeTypeInfo`). A row whose
-        // blob index is zero looks here like no row, and is taken as none, which keeps the loads the
-        // walk may make.
-        let marshalled =
-            metadata.GetMethodDefinition(method).GetParameters ()
-            |> Seq.map metadata.GetParameter
-            |> Seq.filter (fun (parameter : Parameter) ->
-                let descriptor = parameter.GetMarshallingDescriptor ()
-
-                if descriptor.IsNil then
-                    false
-                else
-                    let blob = metadata.GetBlobBytes descriptor
-                    blob.Length = 0 || blob.[0] <> defaultNativeType
-            )
-            |> Seq.map (fun (parameter : Parameter) -> parameter.SequenceNumber)
-            |> Set.ofSeq
-
         UnmanagedTarget.PInvoke
             {
                 PreservesSignature = preservesSignature
@@ -174,7 +149,7 @@ module UnmanagedTarget =
                     definition.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
                 RefusesConventions = UnmanagedCallingConvention.describingRefuses assembly method
                 RuntimeMarshalling = runtimeMarshalling assembly
-                MarshalledPositions = marshalled
+                ParameterMarshalling = MethodInfo.parameterMarshalling definition
             }
 
     /// What CoreCLR reads of a function pointer that a `calli` of `assembly` calls.

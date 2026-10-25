@@ -7751,17 +7751,15 @@ public static class Uco
             "System.Runtime.CompilerServices", "IsCopyConstructedNot"
             "", "IsCopyConstructed"
         ]
-        |> List.map (fun (ns, name) ->
-            UnmanagedCallersOnly.signatureTypeMarshalling assembly true (pointerModifiedBy ns name)
-        )
+        |> List.map (fun (ns, name) -> MarshalingRequired.ofSpelling assembly true (pointerModifiedBy ns name))
         |> shouldEqual
             [
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.NotRequired
-                SignatureTypeMarshalling.NotRequired
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.NotRequired
+                MarshalingStep.NotRequired
             ]
 
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
