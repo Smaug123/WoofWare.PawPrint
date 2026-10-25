@@ -46,6 +46,8 @@ public class InternalCtor { internal InternalCtor() { } }
 public class OutOfDerived : IOut<DerivedType> { }
 public abstract class AbstractSvm : ISvm { public static void Make() { } }
 public class ConcreteSvm : ISvm { public static void Make() { } }
+public abstract class AbstractInheritsSvm : IInheritsSvm { public static void Make() { } }
+public abstract class AbstractPublicCtor { public AbstractPublicCtor() { } }
 public struct MarkedStruct : IMarker { public int X; }
 public struct PlainStruct { public int X; }
 public enum MyEnum { A }
@@ -203,6 +205,8 @@ public static class Outer<U>
             ofCorpus "OutOfDerived" false false
             ofCorpus "AbstractSvm" false false
             ofCorpus "ConcreteSvm" false false
+            ofCorpus "AbstractInheritsSvm" false false
+            ofCorpus "AbstractPublicCtor" false false
             ofCorpus "MarkedStruct" true false
             ofCorpus "PlainStruct" true false
             ofCorpus "MyEnum" true false

@@ -299,7 +299,6 @@ module ConstraintSatisfaction =
                 | Some _ -> state, Ok found
                 | None ->
 
-                // `SigParser` reads past a requireds custom modifiers, which `unmanaged` spells.
                 match
                     TypeSystemState.concretizeType
                         loggerFactory
@@ -309,7 +308,7 @@ module ConstraintSatisfaction =
                         declaringAssembly
                         typeGenerics
                         methodGenerics
-                        (TypeDefn.stripCustomModifiers spelling)
+                        spelling
                 with
                 | state, Error failure -> state, Error failure
                 | state, Ok required ->
