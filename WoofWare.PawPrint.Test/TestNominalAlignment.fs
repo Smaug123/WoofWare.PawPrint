@@ -116,6 +116,8 @@ module TestNominalAlignment =
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (ti.Identity, SignatureTypeKind.ValueType))
 
+        let handle = BindingResult.value handle
+
         let value, concreteTypes, _ =
             CliType.zeroOf IAssemblyLoad.alreadyLoadedOnly ctx.ConcreteTypes ctx.LoadedAssemblies bct handle
 

@@ -114,6 +114,8 @@ public static class Methods
                         ImmutableArray.Empty
                         (TypeDefn.PrimitiveType prim)
 
+                let handle = BindingResult.value handle
+
                 handle :: handles, ctx
             )
 
@@ -142,7 +144,7 @@ public static class Methods
         (methodArgs : ImmutableArray<ConcreteTypeHandle>)
         : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
-        let concretized, _, _ =
+        let concretizedResult, _, _ =
             Concretization.concretizeMethod
                 fixture.ConcreteTypes
                 fixture.LoadAssembly
@@ -151,6 +153,8 @@ public static class Methods
                 method
                 typeArgs
                 methodArgs
+
+        let concretized = BindingResult.value concretizedResult
 
         concretized
 

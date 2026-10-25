@@ -75,6 +75,7 @@ module TestMarshalLayout =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
                 (TypeDefn.FromDefinition (ty.Identity, stk))
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         let dateTime, ctx = concretize ctx bct.DateTime
         let decimalHandle, ctx = concretize ctx bct.Decimal

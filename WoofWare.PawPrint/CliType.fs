@@ -5603,6 +5603,8 @@ module CliType =
                 methodGenerics
                 fieldType
 
+        let handle = BindingStop.bound handle
+
         handle, newCtx.ConcreteTypes, newCtx.LoadedAssemblies
 
     let withFieldSet (field : string) (value : CliType) (c : CliType) : CliType =

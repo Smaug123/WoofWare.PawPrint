@@ -620,6 +620,8 @@ namespace {scenario.Namespace}
                 ImmutableArray.Empty
                 (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
 
+        let genericArgumentHandle = BindingResult.value genericArgumentHandle
+
         let typeGenerics = ImmutableArray.Create genericArgumentHandle
 
         let unmodified = TypeDefn.Byref (TypeDefn.GenericTypeParameter 0)
@@ -640,6 +642,8 @@ namespace {scenario.Namespace}
                 typeGenerics
                 ImmutableArray.Empty
                 modified
+
+        let actual = BindingResult.value actual
 
         actual |> shouldEqual (ConcreteTypeHandle.Byref genericArgumentHandle)
 
@@ -887,6 +891,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             instantiated
 
+                    let firstHandle = BindingResult.value firstHandle
+
                     let secondHandle, _ =
                         TypeConcretization.concretizeType
                             ctx
@@ -895,6 +901,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             instantiated
+
+                    let secondHandle = BindingResult.value secondHandle
 
                     firstHandle |> shouldEqual secondHandle
                 )
@@ -925,6 +933,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             firstInstantiated
 
+                    let firstHandle = BindingResult.value firstHandle
+
                     let secondHandle, _ =
                         TypeConcretization.concretizeType
                             ctx
@@ -933,6 +943,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             secondInstantiated
+
+                    let secondHandle = BindingResult.value secondHandle
 
                     firstHandle |> shouldNotEqual secondHandle
                 )
@@ -963,6 +975,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             leftInstantiated
 
+                    let leftHandle = BindingResult.value leftHandle
+
                     let rightHandle, _ =
                         TypeConcretization.concretizeType
                             ctx
@@ -971,6 +985,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             rightInstantiated
+
+                    let rightHandle = BindingResult.value rightHandle
 
                     leftHandle |> shouldNotEqual rightHandle
                 )
@@ -1014,6 +1030,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             firstInstantiated
 
+                    let firstHandle = BindingResult.value firstHandle
+
                     let repeatedFirstHandle, ctx =
                         TypeConcretization.concretizeType
                             ctx
@@ -1023,6 +1041,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             firstInstantiated
 
+                    let repeatedFirstHandle = BindingResult.value repeatedFirstHandle
+
                     let secondHandle, ctx =
                         TypeConcretization.concretizeType
                             ctx
@@ -1031,6 +1051,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             ImmutableArray.Empty
                             secondInstantiated
+
+                    let secondHandle = BindingResult.value secondHandle
 
                     firstHandle |> shouldEqual repeatedFirstHandle
                     firstHandle |> shouldNotEqual secondHandle
@@ -1069,6 +1091,8 @@ namespace {scenario.Namespace}
                             ImmutableArray.Empty
                             (asClassTypeDefn compiled.Assembly compiled.FirstArgument)
 
+                    let genericArgumentHandle = BindingResult.value genericArgumentHandle
+
                     let typeGenerics = ImmutableArray.Create genericArgumentHandle
 
                     // Vary what sits in the `Modifier` slot as well as the `Unmodified` slot: the
@@ -1099,6 +1123,8 @@ namespace {scenario.Namespace}
                                 ImmutableArray.Empty
                                 unmodified
 
+                        let expected = BindingResult.value expected
+
                         for modifier in modifiers do
                             for modificationRequired in [ true ; false ] do
                                 let modified =
@@ -1117,6 +1143,8 @@ namespace {scenario.Namespace}
                                         typeGenerics
                                         ImmutableArray.Empty
                                         modified
+
+                                let actual = BindingResult.value actual
 
                                 actual |> shouldEqual expected
                 )
