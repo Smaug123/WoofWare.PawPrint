@@ -499,3 +499,177 @@ module TestFieldReferenceResolution =
             missing |> shouldEqual (cases.Length - 4)
         finally
             context.Unload ()
+
+    /// What binding a field reference does, as the host and as PawPrint say.
+    [<RequireQualifiedAccess>]
+    type private Binding =
+        /// It binds the field of this name.
+        | Field of name : string
+        /// It throws an exception of this name.
+        | Throws of exceptionName : string
+
+    /// Field references of a client into a provider, both compiled against an assembly `Optional`
+    /// that is then missing. CoreCLR compares a field reference's signature with each candidate's of
+    /// the same name, and comparing two references to one type binds them, so a reference whose
+    /// type is `Optional.Thing` throws `FileNotFoundException`, and one whose type is not binds as
+    /// usual. The Loader and the type system say the same, and name the assembly.
+    [<Test>]
+    let ``a field reference whose signature names a type in an assembly that is missing throws FileNotFoundException``
+        ()
+        : unit
+        =
+        let frameworkDir = HostImage.frameworkDirectory
+        let runtimeDirs = HostImage.runtimeDirs
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     Microsoft.CodeAnalysis.MetadataReference.CreateFromImage (
+                         System.Collections.Immutable.ImmutableArray.CreateRange image
+                     )
+                 ))
+                [ text ]
+
+        let optional = compile "Optional" [] "namespace Optional; public class Thing { }"
+
+        let providerImage =
+            compile
+                "Provider"
+                [ optional ]
+                "namespace Provider; public static class Api { public static Optional.Thing ThingField; public static int IntField; }"
+
+        let clientImage =
+            compile
+                "Client"
+                [ optional ; providerImage ]
+                """
+namespace Client;
+public static class Uses
+{
+    public static object ReadsThingField() => Provider.Api.ThingField;
+    public static int ReadsIntField() => Provider.Api.IntField;
+}
+"""
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let corelib =
+            Assembly.readFile loggerFactory (Path.Combine (frameworkDir, "System.Private.CoreLib.dll"))
+
+        let client = read "Client" clientImage
+        let provider = read "Provider" providerImage
+        let baseClassTypes = BaseClassTypes.ofCorelib corelib
+
+        let loaded =
+            let reference =
+                client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+            fst ((LoadedAssemblies.ofAssemblies [ corelib ; client ; provider ]).WithBoundReference reference provider)
+
+        // The field reference each caller's body makes.
+        let referenceOf (caller : string) : MemberReferenceHandle =
+            let method =
+                client.Methods.Values |> Seq.filter (fun m -> m.Name = caller) |> Seq.exactlyOne
+
+            match method.Body with
+            | MethodBody.Il body ->
+                body.Instructions
+                |> List.pick (fun (op, _) ->
+                    match op with
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld,
+                                               MetadataOperand.FromMetadata {
+                                                                                Token = MetadataToken.MemberReference handle
+                                                                            }) -> Some handle
+                    | _ -> None
+                )
+            | body -> failwith $"%s{caller}: no IL body: %A{body}"
+
+        let fileNotFound = "System.IO.FileNotFoundException"
+
+        let callers =
+            [
+                "ReadsThingField", Binding.Throws fileNotFound
+                "ReadsIntField", Binding.Field "IntField"
+            ]
+
+        let context =
+            new TestMethodReferenceResolution.ImagesContext (
+                Map.ofList [ "Provider", providerImage ; "Client", clientImage ]
+            )
+
+        try
+            let reflected = context.LoadFromAssemblyName (AssemblyName "Client")
+
+            let failures =
+                [
+                    for caller, expected in callers do
+                        let handle = referenceOf caller
+
+                        let token =
+                            MetadataTokens.GetToken (MemberReferenceHandle.op_Implicit handle : EntityHandle)
+
+                        let host =
+                            try
+                                Binding.Field (reflected.ManifestModule.ResolveField(token).Name)
+                            with e ->
+                                Binding.Throws (e.GetType().FullName)
+
+                        let _, target =
+                            FieldReferenceResolution.resolve
+                                loggerFactory
+                                runtimeDirs
+                                baseClassTypes
+                                loaded
+                                client
+                                handle
+
+                        let loader =
+                            match target with
+                            | FieldReferenceTarget.Defined (assembly, field) ->
+                                Binding.Field assembly.Fields.[field].Name
+                            | other -> Binding.Throws $"%A{other}"
+
+                        let _, bound =
+                            MemberReferenceInstantiation.resolveMemberWithGenerics
+                                loggerFactory
+                                runtimeDirs
+                                baseClassTypes
+                                client
+                                System.Collections.Immutable.ImmutableArray.Empty
+                                System.Collections.Immutable.ImmutableArray.Empty
+                                handle
+                                { TypeSystemState.Empty with
+                                    _LoadedAssemblies = loaded
+                                }
+
+                        let typeSystem =
+                            match bound with
+                            | Ok resolved ->
+                                match resolved.Member with
+                                | Choice2Of2 (FieldReferenceBinding.Bound field) -> Binding.Field field.Name
+                                | other -> Binding.Throws $"%A{other}"
+                            | Error (MemberBindingFailure.TypeUnbound (TypeBindingFailure.AssemblyUnavailable reference)) when
+                                reference.Name.Name = "Optional"
+                                ->
+                                Binding.Throws fileNotFound
+                            | Error other -> Binding.Throws $"%A{other}"
+
+                        if host <> expected then
+                            yield $"%s{caller}: the host says %A{host}, not %A{expected}"
+
+                        if loader <> expected then
+                            yield $"%s{caller}: the Loader says %A{loader}, not %A{expected}"
+
+                        if typeSystem <> expected then
+                            yield $"%s{caller}: the type system says %A{typeSystem}, not %A{expected}"
+                ]
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
