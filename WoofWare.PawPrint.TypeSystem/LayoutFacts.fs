@@ -255,6 +255,87 @@ module LayoutFacts =
                 Diagnostic = diagnostic
             }
 
+    /// The internal element type of `handle`, an enum whose row is `typeInfo`: that of its one
+    /// instance field, which must be of a CoreLib primitive once an enum-typed field is stripped
+    /// down to that enum's own (`#FieldDescTypeMorph`, methodtablebuilder.cpp). `stripping` holds the
+    /// enums already being stripped, whose recurrence is a cycle CoreCLR refuses to load.
+    let rec private enumElement
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (stripping : Set<ConcreteTypeHandle>)
+        (handle : ConcreteTypeHandle)
+        (concrete : ConcreteType<ConcreteTypeHandle>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeSystemState * Result<FieldElement, TypeBindingFailure>
+        =
+        let refused () =
+            state,
+            Error (
+                unmodelled
+                    $"the enum %O{concrete} has an instance field of no primitive type, which CoreCLR refuses to load"
+            )
+
+        if stripping.Contains handle then
+            refused ()
+        else
+
+        match typeInfo.Fields |> List.filter (fun field -> not field.IsStatic) with
+        | [ value ] ->
+            match
+                TypeSystemState.concretizeType
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    state
+                    concrete.AssemblyFullName
+                    concrete.Generics
+                    ImmutableArray.Empty
+                    value.Signature
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok underlying ->
+
+            match TypeSystemState.tryGetConcreteTypeInfo state underlying with
+            | None -> refused ()
+            | Some (underlyingType, underlyingInfo) ->
+
+            let primitive =
+                if
+                    underlyingType.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
+                    && underlyingType.Namespace = "System"
+                    && not underlyingInfo.IsNested
+                then
+                    systemPrimitive underlyingType.Name
+                else
+                    None
+
+            match primitive with
+            | Some FieldElement.Void
+            | Some FieldElement.TypedReference -> refused ()
+            | Some element -> state, Ok element
+            | None ->
+                if LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies underlyingInfo then
+                    enumElement
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        state
+                        (stripping.Add handle)
+                        underlying
+                        underlyingType
+                        underlyingInfo
+                else
+                    refused ()
+        | fields ->
+            state,
+            Error (
+                unmodelled
+                    $"the enum %O{concrete} has %d{fields.Length} instance fields, not one, which CoreCLR refuses to load"
+            )
+
+
     /// The facts of `handle`, a value type whose row is `typeInfo`.
     let rec private factsIn
         (loggerFactory : ILoggerFactory)
@@ -280,7 +361,12 @@ module LayoutFacts =
 
         if LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
             if layoutMask = TypeAttributes.AutoLayout then
-                state, Ok (seen.Add (handle, Completed ValueTypeLayoutFacts.Enum), ValueTypeLayoutFacts.Enum)
+                match
+                    enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok _ ->
+                    state, Ok (seen.Add (handle, Completed ValueTypeLayoutFacts.Enum), ValueTypeLayoutFacts.Enum)
             else
                 // `HasLayoutMetadata` refuses layout on a type whose parent has none.
                 state,
@@ -470,38 +556,11 @@ module LayoutFacts =
         if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
             state, Ok (seen, FieldElement.Reference)
         elif LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
-            // An enum's internal element type is that of its one instance field.
-            match typeInfo.Fields |> List.filter (fun field -> not field.IsStatic) with
-            | [ value ] ->
-                match
-                    TypeSystemState.concretizeType
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        state
-                        concrete.AssemblyFullName
-                        concrete.Generics
-                        ImmutableArray.Empty
-                        value.Signature
-                with
-                | state, Error failure -> state, Error failure
-                | state, Ok underlying ->
-
-                match fieldElementIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen underlying with
-                | state, Error failure -> state, Error failure
-                | state, Ok (seen, (FieldElement.ValueType _ | FieldElement.Reference)) ->
-                    state,
-                    Error (
-                        unmodelled
-                            $"the enum %O{concrete} has an instance field of no primitive type, which CoreCLR refuses to load"
-                    )
-                | state, Ok (seen, element) -> state, Ok (seen, element)
-            | fields ->
-                state,
-                Error (
-                    unmodelled
-                        $"the enum %O{concrete} has %d{fields.Length} instance fields, not one, which CoreCLR refuses to load"
-                )
+            match
+                enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok element -> state, Ok (seen, element)
         else
 
         match factsIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen handle concrete typeInfo with
