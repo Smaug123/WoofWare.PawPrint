@@ -262,7 +262,9 @@ module UnmanagedCallingConvention =
 
     /// What CoreCLR reads as the convention of a call of `method`, a P/Invoke of `assembly`
     /// (`getUnmanagedCallConvForMethod`). Where its signature names an unmanaged convention, that
-    /// one (`ofCallSite`). Otherwise the first of these that names one
+    /// one (`ofCallSite`), though CoreCLR's type loader refuses the type declaring such a method
+    /// definition first (`validateTokenSig`, `BFA_BAD_SIGNATURE`), where it validates the module's
+    /// types. Otherwise the first of these that names one
     /// (`PInvoke::GetCallingConvention_IgnoreErrors`): its import's; its first
     /// `[UnmanagedCallConv]`'s, which counts for nothing where it names a second base convention;
     /// its signature's modifiers', up to any naming a second base convention; and otherwise the
@@ -399,8 +401,10 @@ module UnmanagedCallingConvention =
     /// which ECMA-335 gives every method definition (`getUnmanagedCallConvForMethod`). Where the
     /// attribute names no `CallConvs`, or names a second base convention,
     /// `CallConv::TryGetCallingConventionFromUnmanagedCallersOnly` answers false and CoreCLR takes
-    /// the platform's default; this never answers `MultipleBases`. CoreCLR reads another
-    /// convention, which only hand-written IL can give the method, from the signature instead.
+    /// the platform's default; this never answers `MultipleBases`. Hand-written IL can give a
+    /// method definition another calling convention, but CoreCLR's type loader then refuses the
+    /// type declaring it (`validateTokenSig`, `BFA_BAD_SIGNATURE`), where it validates the module's
+    /// types, before it compiles any of the type's methods.
     let ofCallersOnly
         (runtime : EmulatedRuntime)
         (application : UnmanagedCallersOnlyApplication)
