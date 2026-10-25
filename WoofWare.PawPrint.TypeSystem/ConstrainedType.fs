@@ -85,24 +85,28 @@ module ConstrainedType =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (method : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
-        : TypeSystemState * int option
+        : TypeSystemState * Result<int option, TypeBindingFailure>
         =
         match method.TryDeclaringType with
-        | None -> state, None
+        | None -> state, Ok None
         | Some declaringType ->
-            let state, table =
-                ConcreteMethodTable.slotTableOfDefinition
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    operation
-                    state
-                    declaringType.Identity
-
-            state, MethodTableLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey) table
+            ConcreteMethodTable.slotTableOfDefinition
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                operation
+                state
+                declaringType.Identity
+            |> fun (state, table) ->
+                state,
+                table
+                |> Result.map (
+                    MethodTableLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey)
+                )
 
     /// The type CoreCLR resolves a `constrained.` call of `called` against, where the prefix names
-    /// the closed type `named`.
+    /// the closed type `named`. A type that laying out a method table on the way reaches and that
+    /// does not bind is the failure.
     let resolve
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -110,25 +114,26 @@ module ConstrainedType =
         (state : TypeSystemState)
         (named : ConcreteTypeHandle)
         (called : MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars>)
-        : TypeSystemState * ConstrainedType
+        : TypeSystemState * Result<ConstrainedType, TypeBindingFailure>
         =
         match TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state named with
-        | state, false -> state, ConstrainedType.AsNamed named
+        | state, false -> state, Ok (ConstrainedType.AsNamed named)
         | state, true ->
 
-        let state, hashCodeSlot =
-            match
-                slotOf operation loggerFactory dotnetRuntimeDirs baseClassTypes state (objectGetHashCode baseClassTypes)
-            with
-            | state, Some slot -> state, slot
-            | _, None -> failwith $"BUG: %s{operation}: Object.GetHashCode holds no slot in Object's method table"
+        match
+            slotOf operation loggerFactory dotnetRuntimeDirs baseClassTypes state (objectGetHashCode baseClassTypes)
+        with
+        | state, Error failure -> state, Error failure
+        | _, Ok None -> failwith $"BUG: %s{operation}: Object.GetHashCode holds no slot in Object's method table"
+        | state, Ok (Some hashCodeSlot) ->
 
         match slotOf operation loggerFactory dotnetRuntimeDirs baseClassTypes state called with
-        | state, None -> state, ConstrainedType.Undecided named
-        | state, Some slot when slot <> hashCodeSlot -> state, ConstrainedType.AsNamed named
-        | state, Some _ ->
+        | state, Error failure -> state, Error failure
+        | state, Ok None -> state, Ok (ConstrainedType.Undecided named)
+        | state, Ok (Some slot) when slot <> hashCodeSlot -> state, Ok (ConstrainedType.AsNamed named)
+        | state, Ok (Some _) ->
             match TypeSystemState.enumUnderlyingHandle loggerFactory dotnetRuntimeDirs baseClassTypes state named with
-            | None -> state, ConstrainedType.Undecided named
+            | None -> state, Ok (ConstrainedType.Undecided named)
             | Some (state, underlying) ->
                 // `slotOf` found a slot, so the method has a declaring type.
                 let _, declaring =
@@ -143,11 +148,12 @@ module ConstrainedType =
                     else
                         RetargetedCall.ObjectGetHashCode
 
-                state, ConstrainedType.EnumUnderlying (named, underlying, dispatches)
+                state, Ok (ConstrainedType.EnumUnderlying (named, underlying, dispatches))
 
     /// What CoreCLR's `MethodTable::TryResolveConstraintMethodApprox` (methodtable.cpp) resolves a
     /// `constrained.` call of `called`, an instance method of a class, to, where the prefix names
-    /// the closed value type `valueType` (or `ConstrainedType.resolve` resolves it against that).
+    /// the closed value type `valueType` (or `ConstrainedType.resolve` resolves it against that). A
+    /// type that laying out a method table on the way reaches and that does not bind is the failure.
     let resolveClassMethodOnValueType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -155,7 +161,7 @@ module ConstrainedType =
         (state : TypeSystemState)
         (valueType : ConcreteTypeHandle)
         (called : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        : TypeSystemState * ClassMethodOnValueType
+        : TypeSystemState * Result<ClassMethodOnValueType, TypeBindingFailure>
         =
         let operation = "resolving a constrained. call of a class's method on a value type"
 
@@ -169,7 +175,7 @@ module ConstrainedType =
             failwith $"BUG: %s{operation}: %s{called.Name} is static"
 
         match called.TryDeclaringType with
-        | None -> state, ClassMethodOnValueType.Undecided
+        | None -> state, Ok ClassMethodOnValueType.Undecided
         | Some declaringType ->
 
         let _, declaring =
@@ -180,20 +186,25 @@ module ConstrainedType =
 
         if not called.IsVirtual then
             // "The pMD will be NULL if calling a non-virtual instance methods on System.Object".
-            state, ClassMethodOnValueType.Boxes
+            state, Ok ClassMethodOnValueType.Boxes
         elif LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies declaring then
             // A value type's virtual has no vtable slot of its own (its unboxing stub holds that), so
             // `TryResolveConstraintMethodApprox` takes the method itself ("GetMethodDescForSlot would AV
             // for this slot").
-            state, ClassMethodOnValueType.Resolves called
+            state, Ok (ClassMethodOnValueType.Resolves called)
         else
 
         match slotOf operation loggerFactory dotnetRuntimeDirs baseClassTypes state called with
-        | state, None -> state, ClassMethodOnValueType.Undecided
-        | state, Some slot ->
+        | state, Error failure -> state, Error failure
+        | state, Ok None -> state, Ok ClassMethodOnValueType.Undecided
+        | state, Ok (Some slot) ->
 
         // A definition and the classes it derives from, itself first.
-        let rec chainOf (state : TypeSystemState) (identity : ResolvedTypeIdentity) =
+        let rec chainOf
+            (state : TypeSystemState)
+            (identity : ResolvedTypeIdentity)
+            : TypeSystemState * Result<ResolvedTypeIdentity list, TypeBindingFailure>
+            =
             let owner = ConcreteMethodTable.ownerOfDefinition operation state identity
 
             let _, typeInfo =
@@ -209,13 +220,19 @@ module ConstrainedType =
                     owner
                     typeInfo
             with
-            | state, None -> state, [ identity ]
-            | state, Some (parent, _) ->
-                let state, rest = chainOf state parent
-                state, identity :: rest
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok [ identity ]
+            | state, Ok (Some (parent, _)) ->
+                chainOf state parent
+                |> fun (state, rest) -> state, rest |> Result.map (fun rest -> identity :: rest)
 
-        let state, valueTypeChain = chainOf state valueTypeIdentity
-        let state, calledChain = chainOf state declaringType.Identity
+        match chainOf state valueTypeIdentity with
+        | state, Error failure -> state, Error failure
+        | state, Ok valueTypeChain ->
+
+        match chainOf state declaringType.Identity with
+        | state, Error failure -> state, Error failure
+        | state, Ok calledChain ->
 
         // `GetMethodDescForSlot` reads the slot by its number alone, which means the same in both
         // tables only below the vtable of a class both derive from: each type's table begins with
@@ -226,7 +243,7 @@ module ConstrainedType =
                 calledChain
                 |> List.tryFind (fun identity -> List.contains identity valueTypeChain)
             with
-            | None -> state, 0
+            | None -> state, Ok 0
             | Some shared ->
                 ConcreteMethodTable.numVirtualsOfDefinition
                     loggerFactory
@@ -236,8 +253,12 @@ module ConstrainedType =
                     state
                     shared
 
+        match sharedSlots with
+        | Error failure -> state, Error failure
+        | Ok sharedSlots ->
+
         if slot >= sharedSlots then
-            state, ClassMethodOnValueType.Undecided
+            state, Ok ClassMethodOnValueType.Undecided
         else
 
         match
@@ -249,12 +270,13 @@ module ConstrainedType =
                 state
                 valueType
         with
-        | _, None -> failwith $"BUG: %s{operation}: value type %O{valueType} has no method table"
-        | state, Some table ->
+        | state, Error failure -> state, Error failure
+        | _, Ok None -> failwith $"BUG: %s{operation}: value type %O{valueType} has no method table"
+        | state, Ok (Some table) ->
             let occupant = table.Occupants.[slot]
 
             // "Only return a method if the value type itself declares the method".
             if occupant.DeclaredBy.Identity = valueTypeIdentity then
-                state, ClassMethodOnValueType.Resolves occupant.Method
+                state, Ok (ClassMethodOnValueType.Resolves occupant.Method)
             else
-                state, ClassMethodOnValueType.Boxes
+                state, Ok ClassMethodOnValueType.Boxes

@@ -107,7 +107,6 @@ module StaticVirtualDispatch =
     ///
     /// A type the search reaches that does not bind is the failure, returned with what loaded before
     /// it.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let resolve
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -312,7 +311,6 @@ module StaticVirtualDispatch =
     ///
     /// A type the resolution reaches that does not bind is the failure, returned with what loaded
     /// before it.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let resolveConstrainedStaticInterfaceMethod
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)

@@ -44,7 +44,6 @@ module internal DefaultInterfaceImplementation =
     /// `TryGetCandidateImplementation`), and for a static method the body of the first such
     /// MethodImpl row (`MethodTable::TryResolveVirtualStaticMethodOnThisType`). A type the search
     /// reaches that does not bind is the failure.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let internal implementationOnType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -155,7 +154,7 @@ module internal DefaultInterfaceImplementation =
             match List.rev bodies with
             | [] -> state, Ok None
             | bodies ->
-                let state, table =
+                match
                     ConcreteMethodTable.slotTableOfDefinition
                         loggerFactory
                         dotnetRuntimeDirs
@@ -163,6 +162,9 @@ module internal DefaultInterfaceImplementation =
                         operation
                         state
                         levelTy.Identity
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok table ->
 
                 let slotOf
                     (body : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -332,7 +334,6 @@ module internal DefaultInterfaceImplementation =
     /// abstract, which is a reabstraction.
     ///
     /// A type the search reaches that does not bind is the failure.
-    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let internal search
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)

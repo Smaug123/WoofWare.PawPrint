@@ -215,6 +215,7 @@ module TestConstrainedType =
 
             let next, actual =
                 ConstrainedType.resolve loggerFactory HostImage.runtimeDirs bct state handle (pawPrintMethod methodInfo)
+                |> BindingResult.bound
 
             state <- next
 
@@ -353,6 +354,7 @@ module TestConstrainedType =
                         state
                         handle
                         (pawPrintMethod called)
+                    |> BindingResult.bound
 
                 state <- next
 
