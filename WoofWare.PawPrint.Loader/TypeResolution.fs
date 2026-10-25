@@ -567,12 +567,13 @@ module TypeResolution =
     /// </summary>
     /// <remarks>
     /// A non-generic definition is the type itself; the environment belongs to whatever the
-    /// spelling sits inside and says nothing about this type. No signature can spell a generic
-    /// definition bare (an instantiation's head is resolved at the instantiation's own arguments,
-    /// not here), so for one the convention is that it names <c>T&lt;!0, ..., !(n-1)&gt;</c> read
-    /// in the environment: the environment's first <c>n</c> entries, copied as they stand. An
-    /// empty environment leaves the type open, and an environment with fewer than <c>n</c>
-    /// entries is unmodelled rather than leaving some parameters unsubstituted.
+    /// spelling sits inside and says nothing about this type. CoreCLR refuses a signature that
+    /// spells a generic definition bare (an instantiation's head is resolved at the
+    /// instantiation's own arguments, not here), so for one the convention is that it names
+    /// <c>T&lt;!0, ..., !(n-1)&gt;</c> read in the environment: the environment's first <c>n</c>
+    /// entries, copied as they stand. An empty environment leaves the type open, and an
+    /// environment with fewer than <c>n</c> entries is unmodelled rather than leaving some
+    /// parameters unsubstituted.
     /// </remarks>
     let private instantiateBareSpelling
         (typeGenericArgs : ImmutableArray<TypeDefn>)
@@ -822,6 +823,20 @@ module TypeResolution =
             // substituted like any other.
             match preserved ty typeGenericArgs memo assemblies with
             | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (TypeDefn.GenericInstantiation (head, _)) when typeGenericArgs.IsEmpty ->
+                // With no environment the definition comes back open, and its parameters have
+                // nothing to be substituted with. A guest can spell this, as an instantiation's
+                // argument naming a generic definition bare; CoreCLR's
+                // `SigPointer::GetTypeHandleThrowing` loads such an argument with
+                // `FailIfUninstDefOrRef`, and so throws `TypeLoadException`.
+                assemblies,
+                Error (
+                    TypeBindingFailure.Unmodelled
+                        {
+                            Diagnostic =
+                                $"An instantiation's argument %O{ty} names the generic definition %O{head} without instantiating it; CoreCLR refuses that with TypeLoadException, which is not modelled"
+                        }
+                )
             | assemblies, Ok (TypeDefn.GenericInstantiation (head, injected)) ->
                 match
                     traverseLoaded
