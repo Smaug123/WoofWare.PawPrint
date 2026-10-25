@@ -36,6 +36,15 @@ type Opacity =
     /// runs, which the analysis does not follow. So too such a call on a type variable that allows a
     /// byref-like type, in a definition analysed for every instantiation at once.
     | BoxedByRefLikeReceiver
+    /// An <c>[UnmanagedCallersOnly]</c> method whose attribute CoreCLR cannot read the calling
+    /// conventions of (<c>CallersOnlyConvention</c>), which it reads as the JIT begins to compile the
+    /// method (<c>getUnmanagedCallConv</c>), before any of it runs. Where it cannot parse the blob,
+    /// <c>IfFailThrow</c> raises the exception of the failure's <c>HRESULT</c>: a
+    /// <c>COMException</c> for most such blobs, an <c>OverflowException</c> where a string runs past
+    /// the blob's end; where the blob says
+    /// <c>CallConvs = null</c>, CoreCLR reads the elements of the null array it parsed, and the
+    /// compilation faults in the runtime, which kills the process.
+    | UnreadableCallingConvention
     /// A <c>constrained.</c> call on a value type of a class's method that cannot be overridden (it is
     /// final, on a sealed class, or not virtual), where the value type does not declare the method
     /// holding that slot itself and does not derive from the class: CoreCLR boxes the receiver and
@@ -86,7 +95,7 @@ type OpaqueSite =
         /// the analysis follows (<c>NativeBody</c>, <c>AbstractBody</c>, <c>IntrinsicExpansion</c>),
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
-        /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>).
+        /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>).
         Offset : int option
         Reason : Opacity
         /// The method the instruction's token names, where it names one. For a call, that need not
@@ -2341,6 +2350,34 @@ module EscapeAnalysis =
             state, TokenReferent.Other, raisesOf failure
         | _ -> state, TokenReferent.Other, []
 
+    /// What CoreCLR's `CEEInfo::resolveToken` raises refusing a token that binds, for the type it
+    /// names: a byref or `System.Void` (`TypeOperand.ofTypeToken`), refused with
+    /// `InvalidProgramException` for every kind of token but `ldtoken`'s, whose caller must not ask.
+    /// For a member's token the type is the parent its reference names, and for a method
+    /// specification's the parent of the method it instantiates.
+    let rec private resolutionRefusal
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : OutsideBodyFact list
+        =
+        match token with
+        | MetadataToken.MethodSpecification handle ->
+            resolutionRefusal state assembly assembly.MethodSpecs.[handle].Method
+        | _ ->
+
+        let typeToken =
+            match token with
+            | MetadataToken.MemberReference handle -> assembly.Members.[handle].Parent
+            | _ -> token
+
+        match TypeOperand.ofTypeToken state.BaseTypes state.TypeSystem._LoadedAssemblies assembly typeToken with
+        | None -> []
+        // `COMPlusThrow(kInvalidProgramException)` makes it as `EEException::CreateThrowable` does.
+        | Some _ ->
+            let thrown, made = constructedRaise state "System.InvalidProgramException"
+            [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
     /// The signature of the method `token` names, as `assembly` spells it at the token, or a
     /// `calli`'s call-site signature; `None` for a token naming anything else.
     let rec private spelledSignature
@@ -3952,6 +3989,13 @@ module EscapeAnalysis =
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, referent, failures = bindToken state assembly token.Token
 
+                    // A token that binds may still be refused for the type it names.
+                    let failures =
+                        match tokenOp, failures with
+                        | UnaryMetadataTokenIlOp.Ldtoken, _
+                        | _, _ :: _ -> failures
+                        | _, [] -> resolutionRefusal state assembly token.Token
+
                     let target =
                         match referent with
                         | TokenReferent.Method target -> Some target
@@ -4467,14 +4511,26 @@ module EscapeAnalysis =
 
         // The JIT loads the method's return type, the type of each of its parameters and locals,
         // and the type of every `catch` clause before the body runs, as it binds every token.
-        // Swift's calling convention makes it load more of a parameter's type; nothing here reads
-        // which convention an `[UnmanagedCallersOnly]` method names, so each such method is taken
-        // to be called by Swift's, which loads at least as much as any other.
-        let parameterPosition =
-            if MethodInfo.isUnmanagedCallersOnly method then
-                JitTypePosition.SwiftOwnParameter
-            else
-                JitTypePosition.OwnParameter
+        // Swift's calling convention, which an `[UnmanagedCallersOnly]` method may name, makes it
+        // load more of a parameter's type. A convention the JIT cannot read raises, or kills the
+        // process, before it loads the parameters' types; as where the JIT refuses a body
+        // (`BoxedByRefLikeReceiver`), the answer keeps what the method would otherwise raise, and
+        // is unknown from its entry. A method whose own signature names an unmanaged convention,
+        // which only hand-written IL can spell, CoreCLR reads from that signature instead; that is
+        // not modelled, and such a method is read here by its attribute.
+        let parameterPosition, conventionFailures =
+            match MethodInfo.unmanagedCallersOnly method with
+            | None -> JitTypePosition.OwnParameter, Set.empty
+            | Some application ->
+                match UnmanagedCallingConvention.ofCallersOnly state.Runtime application with
+                | CallersOnlyConvention.Unreadable _
+                | CallersOnlyConvention.NullArray ->
+                    JitTypePosition.OwnParameter,
+                    Set.singleton (OutsideBodyFact.Opaque Opacity.UnreadableCallingConvention)
+                | convention when UnmanagedCallingConvention.isSwift state.Target convention ->
+                    JitTypePosition.SwiftOwnParameter, Set.empty
+                | CallersOnlyConvention.Named _
+                | CallersOnlyConvention.PlatformDefault -> JitTypePosition.OwnParameter, Set.empty
 
         let ownTypes =
             [
@@ -4488,7 +4544,7 @@ module EscapeAnalysis =
             ]
 
         let state, localFailures =
-            ((state, Set.empty), ownTypes)
+            ((state, conventionFailures), ownTypes)
             ||> List.fold (fun (state, failures) (position, spelling) ->
                 match JitTypeLoads.load position spelling with
                 | None -> state, failures
@@ -4507,6 +4563,12 @@ module EscapeAnalysis =
                 match region with
                 | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
                     let state, _, clauseFailures = bindToken state assembly token
+
+                    let clauseFailures =
+                        match clauseFailures with
+                        | [] -> resolutionRefusal state assembly token
+                        | _ :: _ -> clauseFailures
+
                     state, Set.union failures (Set.ofList clauseFailures)
                 | _ -> state, failures
             )
@@ -5206,8 +5268,9 @@ module EscapeAnalysis =
                             | ResolutionFault.MethodAccess
                             | ResolutionFault.FieldAccess
                             | ResolutionFault.TypeAccess -> true
-                            // Bound at `bind`, above. The JIT refusing to compile the body for
-                            // what a token binds to is `abstractCallees`' and `refusals`'.
+                            // Bound, and refused for the type it names (`resolutionRefusal`), at
+                            // `bind`, above. The JIT refusing to compile the body for what a token
+                            // binds to is `abstractCallees`' and `refusals`'.
                             | ResolutionFault.TokenBinding -> false
                             // Only a `DynamicMethod`'s body has scope entries, and the analysis
                             // reads bodies from metadata.

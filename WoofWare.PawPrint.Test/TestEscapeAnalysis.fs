@@ -3652,6 +3652,24 @@ public static class Cases
         try { UnlessAccelerated(); }
         catch (Guarded) { if (!Vector128.IsHardwareAccelerated) throw new HandlerRan(); }
     }
+
+    // Each architecture's base instruction set, and a class nested twice in one. On a CPU of the
+    // other architecture, CoreLib's query is a stub returning false, and the JIT compiles a call of
+    // it to false all the same.
+    public static void X86Guarded()
+    {
+        if (System.Runtime.Intrinsics.X86.X86Base.IsSupported) throw new Guarded();
+    }
+
+    public static void ArmGuarded()
+    {
+        if (System.Runtime.Intrinsics.Arm.ArmBase.IsSupported) throw new Guarded();
+    }
+
+    public static void NestedGuarded()
+    {
+        if (System.Runtime.Intrinsics.X86.Avx10v2.V512.X64.IsSupported) throw new Guarded();
+    }
 }
 """
 
@@ -3717,6 +3735,14 @@ public static class Cases
                 Excludes = [ guarded ; handlerRan ]
                 Unknown = Some false
             }
+            // Neither CPU has any of these instruction sets.
+            for accelerated in [ false ; true ] do
+                for guardedBy in [ "X86Guarded" ; "ArmGuarded" ; "NestedGuarded" ] do
+                    accelerated,
+                    { expect "Guarded.Cases" guardedBy with
+                        Excludes = [ guarded ]
+                        Unknown = Some false
+                    }
         ]
 
     [<Test>]
@@ -6786,69 +6812,698 @@ public static unsafe class Probe
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// An `[UnmanagedCallersOnly]` method that Swift's calling convention calls: the JIT compiling
-    /// it loads in full what a pointer parameter points to, as well as what the method's other
-    /// parameters load (`lvaInitSpecialSwiftParam`). No exception may leave such a method, so the
-    /// host cannot run it to say so.
-    [<Test>]
-    let ``a pointer parameter of a method Swift calls loads what it points to`` () : unit =
+    /// How compiling an `[UnmanagedCallersOnly]` method ends on the host's CoreCLR, which
+    /// `RuntimeHelpers.PrepareMethod` asks of it: the JIT compiles the method as native code calls
+    /// it, a reverse P/Invoke, and the exception compiling it raises comes out of `PrepareMethod`.
+    [<RequireQualifiedAccess>]
+    type private UcoCompilation =
+        | Compiled
+        | Raises of exceptionName : string
+
+    /// A provider whose `GoneStruct` the client is compiled against, and a version of it without
+    /// that type, which the client runs against.
+    let private ucoProvider (complete : bool) : byte[] =
+        Roslyn.compileAssembly
+            "Provider"
+            OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                "namespace Provider; public struct Kept { }"
+                + (if complete then " public struct GoneStruct { }" else "")
+            ]
+
+    /// How compiling each method of `typeName` named in `methods` ends on the host, with the
+    /// assembly `image` loaded beside `provider`.
+    let private ucoCompilations
+        (image : byte[])
+        (provider : byte[])
+        (typeName : string)
+        (methods : string list)
+        : Map<string, UcoCompilation>
+        =
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyConventions", isCollectible = true)
+
+        context.add_Resolving (
+            Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                match name.Name with
+                | "Provider" -> context.LoadFromStream (new MemoryStream (provider))
+                | _ -> null
+            )
+        )
+
+        try
+            let declaring = (context.LoadFromStream (new MemoryStream (image))).GetType typeName
+
+            methods
+            |> List.map (fun name ->
+                // Looking a method up by name alone reads none of its signature's types.
+                let handle = (declaring.GetMethod name).MethodHandle
+
+                let outcome =
+                    try
+                        Runtime.CompilerServices.RuntimeHelpers.PrepareMethod handle
+                        UcoCompilation.Compiled
+                    with e ->
+                        UcoCompilation.Raises (e.GetType().FullName)
+
+                name, outcome
+            )
+            |> Map.ofList
+        finally
+            context.Unload ()
+
+    /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
+    /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
+    /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
+    /// `Compiled`; with the places that make each answer unknown. The analysis is over the test
+    /// host's own framework, as `ucoCompilations` compiles on the test host's own CoreCLR.
+    let private ucoAnalysed
+        (image : byte[])
+        (provider : byte[])
+        (typeName : string)
+        (methods : string list)
+        : Map<string, UcoCompilation * Set<string>>
+        =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let provider (complete : bool) : string =
-            "namespace Provider; public struct Kept { }"
-            + (if complete then " public struct GoneStruct { }" else "")
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
 
+        let client = read "Client" image
+        let providerAssembly = read "Provider" provider
+
+        let reference =
+            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOf
+                (Assembly.readFile loggerFactory HostImage.coreLibPath)
+                HostImage.runtimeDirs
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                [ client ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        methods
+        |> List.map (fun name ->
+            let key = methodNamed client typeName name
+            let next, escapes = EscapeAnalysis.escapes analysis key
+            let next, sources = EscapeAnalysis.unknownSources next key
+            analysis <- next
+
+            let outcome =
+                if (render analysis escapes).Contains "=System.TypeLoadException" then
+                    UcoCompilation.Raises "System.TypeLoadException"
+                elif escapes.Unknown then
+                    UcoCompilation.Raises "Unknown"
+                else
+                    UcoCompilation.Compiled
+
+            name, (outcome, sources |> Seq.map (renderSite analysis) |> Set.ofSeq)
+        )
+        |> Map.ofList
+
+    /// Each method takes a pointer to a type missing at run time. CoreCLR compiles an
+    /// `[UnmanagedCallersOnly]` method for the calling convention it reads from the attribute's
+    /// `CallConvs`, matching each type by its serialised name alone; a second base convention, or
+    /// none, gives the platform's default, and the modifiers combine with Swift. Only where it
+    /// reads Swift's, on a target that compiles Swift calls, does the JIT load what a pointer
+    /// parameter points to (`lvaInitSpecialSwiftParam`), and fail to. The host says which.
+    [<Test>]
+    let ``the JIT loads a pointer parameter's target only where CoreCLR reads Swift's convention from UnmanagedCallersOnly``
+        ()
+        : unit
+        =
         let client =
             """
+using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Client;
 
-public static unsafe class Swift
+public static unsafe class Uco
 {
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
-    public static void PointerToKept(Provider.Kept* x) { }
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
-    public static void PointerToGoneStruct(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly] public static void NoCallConvs(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void Swift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void SwiftKept(Provider.Kept* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })] public static void SwiftByte(byte* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })] public static void Cdecl(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })] public static void SwiftThenCdecl(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl), typeof(CallConvSwift) })] public static void CdeclThenSwift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvSwift) })] public static void SwiftTwice(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvSuppressGCTransition) })] public static void SwiftSuppress(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvMemberFunction), typeof(CallConvSwift) })] public static void MemberSwift(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvMemberFunction) })] public static void Member(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new Type[0])] public static void Empty(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) }, EntryPoint = "e")] public static void SwiftEntryPoint(Provider.GoneStruct* x) { }
+    [UnmanagedCallersOnly(EntryPoint = "e", CallConvs = new[] { typeof(CallConvSwift) })] public static void EntryPointSwift(Provider.GoneStruct* x) { }
 }
 """
 
-        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+        let clientImage =
             Roslyn.compileAssembly
-                name
+                "Client"
                 OutputKind.DynamicallyLinkedLibrary
-                (references
-                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
-                [ text ]
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (ucoProvider true))
+                ]
+                [ client ]
 
-        let read (name : string) (image : byte[]) : DumpedAssembly =
-            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+        let typeLoad = UcoCompilation.Raises "System.TypeLoadException"
 
-        let clientAssembly =
-            read "Client" (compile "Client" [ compile "Provider" [] (provider true) ] client)
+        let expected =
+            [
+                "NoCallConvs", UcoCompilation.Compiled
+                "Swift", typeLoad
+                "SwiftKept", UcoCompilation.Compiled
+                "SwiftByte", UcoCompilation.Compiled
+                "Cdecl", UcoCompilation.Compiled
+                "SwiftThenCdecl", UcoCompilation.Compiled
+                "CdeclThenSwift", UcoCompilation.Compiled
+                "SwiftTwice", UcoCompilation.Compiled
+                "SwiftSuppress", typeLoad
+                "MemberSwift", typeLoad
+                "Member", UcoCompilation.Compiled
+                "Empty", UcoCompilation.Compiled
+                "SwiftEntryPoint", typeLoad
+                "EntryPointSwift", typeLoad
+            ]
 
-        let providerAssembly = read "Provider" (compile "Provider" [] (provider false))
+        let names = List.map fst expected
+        let incomplete = ucoProvider false
+        let host = ucoCompilations clientImage incomplete "Client.Uco" names
+        let analysed = ucoAnalysed clientImage incomplete "Client.Uco" names
 
-        let reference =
-            clientAssembly.AssemblyReferences.Values
-            |> Seq.find (fun r -> r.Name.Name = "Provider")
+        let failures =
+            [
+                for name, wanted in expected do
+                    if host.[name] <> wanted then
+                        yield $"%s{name}: the host's JIT %A{host.[name]}, not %A{wanted}"
 
-        let analysis =
-            analysisOver
-                [ clientAssembly ; providerAssembly ]
-                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+                    let outcome, sources = analysed.[name]
 
-        let raisesTypeLoad (analysis : EscapeAnalysisState) (name : string) : EscapeAnalysisState * bool =
-            let analysis, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Swift" name)
+                    if outcome <> wanted then
+                        yield $"%s{name}: the analysis says %A{outcome}, unknown at %A{Set.toList sources}"
+            ]
 
-            analysis, (render analysis escapes).Contains "=System.TypeLoadException"
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
-        let analysis, kept = raisesTypeLoad analysis "PointerToKept"
-        let _, gone = raisesTypeLoad analysis "PointerToGoneStruct"
-        (kept, gone) |> shouldEqual (false, true)
+    /// `CallConvs = null`, which C# accepts, serialises the array's length as the null sentinel,
+    /// and CoreCLR reads the elements of the null array it parsed: compiling the method faults in
+    /// the runtime and the process dies (`TryGetCallingConventionFromTypeArray`). The analysis
+    /// cannot say that, so its answer is unknown, from the method's entry. The host runs the
+    /// compilation in a process of its own.
+    [<Test>]
+    let ``compiling an UnmanagedCallersOnly method whose CallConvs is null kills the process, which the analysis does not name``
+        ()
+        : unit
+        =
+        let guest =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+public static class Program
+{
+    [UnmanagedCallersOnly(CallConvs = null)]
+    public static void NullArray(int x) { }
+
+    public static int Main()
+    {
+        RuntimeHelpers.PrepareMethod(typeof(Program).GetMethod("NullArray").MethodHandle);
+        return 0;
+    }
+}
+"""
+
+        match
+            RealRuntime.executeWithRealRuntime
+                [||]
+                (Roslyn.compileAssembly "NullCallConvs" OutputKind.ConsoleApplication [] [ guest ])
+        with
+        // A signal reports as `128 + signo`: SIGSEGV's 11.
+        | RealRuntimeResult.NormalExit 139
+        | RealRuntimeResult.Aborted _ -> ()
+        | other -> failwith $"Compiling the method ends %A{other}, not in the process's death"
+
+        let client =
+            """
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static unsafe class Uco
+{
+    [UnmanagedCallersOnly(CallConvs = null)] public static void NullArray(Provider.GoneStruct* x) { }
+}
+"""
+
+        let clientImage =
+            Roslyn.compileAssembly
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [
+                    MetadataReference.CreateFromImage (ImmutableArray.CreateRange (ucoProvider true))
+                ]
+                [ client ]
+
+        let outcome, sources =
+            (ucoAnalysed clientImage (ucoProvider false) "Client.Uco" [ "NullArray" ]).["NullArray"]
+
+        (outcome, Set.toList sources)
+        |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// .NET 11's `UnmanagedCallersOnlyAttribute` declares an `AssociatedSourceType` named argument,
+    /// which .NET 10's does not, and each runtime's VM parses the attribute's blob against its own
+    /// attribute: .NET 10 refuses a blob naming it (a `COMException`), and .NET 11 reads the
+    /// conventions beside it. A `SwiftSelf*` parameter shows which it read: the JIT refuses one only
+    /// for Swift's convention (`lvaInitSpecialSwiftParam`'s `BADCODE`, an
+    /// `InvalidProgramException`). C# cannot spell the argument against .NET 10's reference
+    /// assemblies, so the guest spells an `EntryPoint` of the same length and the image is patched.
+    /// The runtime under test runs the guest, in a process of its own.
+    [<Test>]
+    let ``each runtime reads an UnmanagedCallersOnly naming AssociatedSourceType as its own attribute declares``
+        ()
+        : unit
+        =
+        let guest =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Swift;
+
+public static unsafe class Program
+{
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static void Control(SwiftSelf* x) { }
+
+    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvSwift) }, EntryPoint = "0123456789")]
+    public static void Associated(SwiftSelf* x) { }
+
+    static int Compile(string name)
+    {
+        try { RuntimeHelpers.PrepareMethod(typeof(Program).GetMethod(name).MethodHandle); return 0; }
+        catch (InvalidProgramException) { return 1; }
+        catch (COMException) { return 2; }
+    }
+
+    public static int Main() => 10 * Compile("Control") + Compile("Associated");
+}
+"""
+
+        let compiled =
+            Roslyn.compileAssembly "AssociatedSourceType" OutputKind.ConsoleApplication [] [ guest ]
+
+        // `FIELD STRING "EntryPoint" "0123456789"` and `FIELD TYPE "AssociatedSourceType" null`
+        // are the same length.
+        let bytesOf (parts : byte list list) : byte[] = parts |> List.concat |> Array.ofList
+
+        let ascii (text : string) : byte list =
+            Text.Encoding.ASCII.GetBytes text |> List.ofArray
+
+        let entryPoint =
+            bytesOf
+                [
+                    [ 0x53uy ; 0x0Euy ; 10uy ]
+                    ascii "EntryPoint"
+                    [ 10uy ]
+                    ascii "0123456789"
+                ]
+
+        let associated =
+            bytesOf [ [ 0x53uy ; 0x50uy ; 20uy ] ; ascii "AssociatedSourceType" ; [ 0xFFuy ] ]
+
+        let at =
+            [ 0 .. compiled.Length - entryPoint.Length ]
+            |> List.filter (fun i -> compiled.AsSpan(i, entryPoint.Length).SequenceEqual (ReadOnlySpan entryPoint))
+            |> List.exactlyOne
+
+        let image = Array.copy compiled
+        Array.blit associated 0 image at associated.Length
+
+        let runtime = FrameworkUnderTest.runtime ()
+
+        // Control compiles for Swift's convention on each runtime; Associated for it on .NET 11, and
+        // not at all on .NET 10.
+        let expected =
+            match runtime with
+            | EmulatedRuntime.Net10 -> 12
+            | EmulatedRuntime.Net11 -> 11
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit code when code = expected -> ()
+        | other -> failwith $"On %A{runtime}, the guest ends %A{other}, not exiting %d{expected}"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "AssociatedSourceType.dll") (new MemoryStream (image))
+
+        let readings =
+            [ "Control" ; "Associated" ]
+            |> List.map (fun name ->
+                let method = assembly.Methods.[(methodNamed assembly "Program" name).Method.Get]
+
+                match MethodInfo.unmanagedCallersOnly method with
+                | None -> failwith $"%s{name} carries no UnmanagedCallersOnly"
+                | Some application ->
+                    UnmanagedCallingConvention.ofCallersOnly runtime application
+                    |> UnmanagedCallingConvention.isSwift (hostTarget ())
+            )
+
+        let associatedIsSwift =
+            match runtime with
+            | EmulatedRuntime.Net10 -> false
+            | EmulatedRuntime.Net11 -> true
+
+        readings |> shouldEqual [ true ; associatedIsSwift ]
+
+        let analysis = analysisOver [ assembly ] id
+
+        let _, sources =
+            EscapeAnalysis.unknownSources analysis (methodNamed assembly "Program" "Associated")
+
+        let unreadable =
+            sources
+            |> Seq.map (renderSite analysis)
+            |> Seq.filter (fun site -> site.StartsWith "Program::Associated entry")
+            |> List.ofSeq
+
+        let expectedSites =
+            match runtime with
+            | EmulatedRuntime.Net10 -> [ "Program::Associated entry UnreadableCallingConvention" ]
+            | EmulatedRuntime.Net11 -> []
+
+        unreadable |> shouldEqual expectedSites
+
+    /// The bytes of a `SerString`: the null sentinel, or a `PackedLen` and the UTF-8 bytes.
+    let private serString (text : string option) : byte list =
+        match text with
+        | None -> [ 0xFFuy ]
+        | Some text ->
+            let bytes = Text.Encoding.UTF8.GetBytes text |> List.ofArray
+
+            let length =
+                match bytes.Length with
+                | n when n < 0x80 -> [ byte n ]
+                | n when n < 0x4000 -> [ byte (0x80 ||| (n >>> 8)) ; byte (n &&& 0xFF) ]
+                | n -> failwith $"No generated SerString is %d{n} bytes long"
+
+            length @ bytes
+
+    /// The little-endian bytes of a 32-bit count.
+    let private count32 (count : int) : byte list =
+        BitConverter.GetBytes count |> List.ofArray
+
+    /// .NET 11's VM refuses a named argument its attribute declares where the blob names it twice
+    /// (`META_E_CA_REPEATED_ARG`, which the host's .NET 10 shows for `CallConvs` and `EntryPoint`),
+    /// `AssociatedSourceType` among them. C# cannot spell that blob, and the in-process host cannot
+    /// run .NET 11, so this holds the parse to the rule rather than to a measurement.
+    [<Test>]
+    let ``an UnmanagedCallersOnly blob naming AssociatedSourceType twice does not parse`` () : unit =
+        let associated =
+            [ 0x53uy ; 0x50uy ] @ serString (Some "AssociatedSourceType") @ serString None
+
+        let blob (count : int) =
+            [ 0x01uy ; 0x00uy ; byte count ; 0x00uy ]
+            @ List.concat (List.replicate count associated)
+            |> ImmutableArray.CreateRange
+
+        let once = CustomAttribute.parseUnmanagedCallersOnly (blob 1)
+
+        once
+        |> shouldEqual (UnmanagedCallersOnlyApplication.Parsed (UnmanagedCallersOnlyCallConvs.Unnamed, true))
+
+        match CustomAttribute.parseUnmanagedCallersOnly (blob 2) with
+        | UnmanagedCallersOnlyApplication.Malformed _ -> ()
+        | other -> failwith $"Naming AssociatedSourceType twice parses as %A{other}"
+
+    /// Serialised type names an `[UnmanagedCallersOnly]` blob may list in its `CallConvs`, some of
+    /// which CoreCLR recognises and some of which it does not.
+    let private callConvNames : string option list =
+        let ns = "System.Runtime.CompilerServices."
+
+        let qualified =
+            ", System.Runtime, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a"
+
+        [
+            for name in
+                [
+                    "CallConvSwift"
+                    "CallConvCdecl"
+                    "CallConvStdcall"
+                    "CallConvThiscall"
+                    "CallConvFastcall"
+                    "CallConvSuppressGCTransition"
+                    "CallConvMemberFunction"
+                ] do
+                yield Some (ns + name)
+                yield Some (ns + name + qualified)
+
+            yield Some (ns + "CallConvSwift,Nowhere")
+            yield Some (ns + "CallConvSwift ,Nowhere")
+            yield Some (ns + "CallConvSwiftX")
+            yield Some (ns + "CallConvSwif")
+            yield Some (ns + "CallConvSwift+Nested")
+            yield Some ("System.Runtime.InteropServices.CallConvSwift" + qualified)
+            yield Some "CallConvSwift"
+            yield Some ""
+            yield None
+        ]
+
+    /// One named argument of a generated `[UnmanagedCallersOnly]` blob, as bytes: mostly the two
+    /// the attribute declares on every runtime, sometimes `AssociatedSourceType`, which only .NET
+    /// 11's declares, and sometimes one CoreCLR refuses.
+    let private ucoNamedArgument : FsCheck.Gen<byte list> =
+        let kind = FsCheck.FSharp.Gen.elements [ 0x53uy ; 0x54uy ]
+
+        let callConvs =
+            FsCheck.FSharp.Gen.map3
+                (fun kind elements skew ->
+                    [ kind ; 0x1Duy ; 0x50uy ]
+                    @ serString (Some "CallConvs")
+                    @ count32 (max 0 (List.length elements + skew))
+                    @ List.collect serString elements
+                )
+                kind
+                (FsCheck.FSharp.Gen.choose (0, 4)
+                 |> FsCheck.FSharp.Gen.bind (fun n ->
+                     FsCheck.FSharp.Gen.listOfLength n (FsCheck.FSharp.Gen.elements callConvNames)
+                 ))
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        8, FsCheck.FSharp.Gen.constant 0
+                        1, FsCheck.FSharp.Gen.constant 1
+                        1, FsCheck.FSharp.Gen.constant -1
+                    ])
+
+        let stringArgument (name : string option) =
+            FsCheck.FSharp.Gen.map2
+                (fun kind value -> [ kind ; 0x0Euy ] @ serString name @ serString value)
+                kind
+                (FsCheck.FSharp.Gen.elements [ Some "e" ; None ; Some "" ])
+
+        FsCheck.FSharp.Gen.frequency
+            [
+                8, callConvs
+                4, stringArgument (Some "EntryPoint")
+                1, stringArgument (Some "EntryPoinx")
+                1, stringArgument (Some "AssociatedSourceType")
+                1,
+                FsCheck.FSharp.Gen.map2
+                    (fun kind value -> [ kind ; 0x50uy ] @ serString (Some "AssociatedSourceType") @ serString value)
+                    kind
+                    (FsCheck.FSharp.Gen.elements [ Some "System.Int32" ; None ])
+                1, stringArgument (Some "CallConvs")
+                1, stringArgument None
+                1, stringArgument (Some "")
+                1,
+                kind
+                |> FsCheck.FSharp.Gen.map (fun kind ->
+                    [ kind ; 0x1Duy ; 0x0Euy ] @ serString (Some "CallConvs") @ count32 0
+                )
+                1,
+                kind
+                |> FsCheck.FSharp.Gen.map (fun kind ->
+                    [ kind ; 0x1Duy ; 0x51uy ] @ serString (Some "CallConvs") @ count32 0
+                )
+                1,
+                FsCheck.FSharp.Gen.constant ([ 0x52uy ; 0x0Euy ] @ serString (Some "EntryPoint") @ serString (Some "e"))
+            ]
+
+    /// A generated `[UnmanagedCallersOnly]` blob: a prolog, a count of named arguments, and the
+    /// arguments, each sometimes wrong, and sometimes cut short. None holds four `0xFF` bytes in a
+    /// row, so that no reading of it finds the null array's length, whose compilation kills the
+    /// process.
+    let private ucoBlob : FsCheck.Gen<byte[]> =
+        let blob =
+            FsCheck.FSharp.Gen.map4
+                (fun prolog arguments countForm cut ->
+                    let count = List.length arguments
+
+                    let countBytes =
+                        match countForm with
+                        | 0 when count = 0 -> []
+                        | 1 -> [ 0x00uy ; 0x80uy ]
+                        | 2 -> [ byte (count + 1) ; 0x00uy ]
+                        | _ -> [ byte count ; 0x00uy ]
+
+                    let whole = prolog @ countBytes @ List.concat arguments
+                    let kept = max 0 (List.length whole - cut)
+                    List.truncate kept whole |> Array.ofList
+                )
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        12, FsCheck.FSharp.Gen.constant [ 0x01uy ; 0x00uy ]
+                        1, FsCheck.FSharp.Gen.constant [ 0x02uy ; 0x00uy ]
+                    ])
+                (FsCheck.FSharp.Gen.choose (0, 3)
+                 |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoNamedArgument))
+                (FsCheck.FSharp.Gen.frequency
+                    [
+                        8, FsCheck.FSharp.Gen.constant 3
+                        2, FsCheck.FSharp.Gen.constant 0
+                        1, FsCheck.FSharp.Gen.constant 1
+                        1, FsCheck.FSharp.Gen.constant 2
+                    ])
+                (FsCheck.FSharp.Gen.frequency
+                    [ 8, FsCheck.FSharp.Gen.constant 0 ; 2, FsCheck.FSharp.Gen.choose (1, 12) ])
+
+        let hasNullLength (bytes : byte[]) : bool =
+            bytes |> Array.windowed 4 |> Array.exists (Array.forall (fun b -> b = 0xFFuy))
+
+        blob |> FsCheck.FSharp.Gen.filter (hasNullLength >> not)
+
+    /// The blobs of each application of `[UnmanagedCallersOnly]` to one method: mostly one, and
+    /// sometimes two, of which CoreCLR reads the first.
+    let private ucoApplications : FsCheck.Gen<byte[] list> =
+        FsCheck.FSharp.Gen.frequency
+            [
+                8, FsCheck.FSharp.Gen.map List.singleton ucoBlob
+                1, FsCheck.FSharp.Gen.listOfLength 2 ucoBlob
+            ]
+
+    /// An assembly `Client` whose type `Uco` has a static `[UnmanagedCallersOnly]` method `M<i>`
+    /// for each list of blobs, applying the attribute once with each blob in order, and taking a
+    /// pointer to `goneStruct`.
+    let private ucoMethods (goneStruct : Type) (blobs : byte[] list list) : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Client"
+
+        let uco =
+            modul.DefineType ("Uco", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        let attribute =
+            typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes
+
+        blobs
+        |> List.iteri (fun i applications ->
+            let method =
+                uco.DefineMethod (
+                    $"M%d{i}",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [| goneStruct.MakePointerType () |]
+                )
+
+            for blob in applications do
+                method.SetCustomAttribute (attribute, blob)
+
+            method.GetILGenerator().Emit Emit.OpCodes.Ret
+        )
+
+        uco.CreateType () |> ignore<Type>
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// For generated `[UnmanagedCallersOnly]` blobs, well-formed and not, sometimes two on one method,
+    /// of which CoreCLR reads the first, on a method taking a
+    /// pointer to a type missing at run time, the escape analysis agrees with the host's JIT: a
+    /// `TypeLoadException` exactly where CoreCLR reads Swift's convention from the blob, an unknown
+    /// answer from the method's entry exactly where CoreCLR cannot read the blob (and raises
+    /// the exception of the failure's `HRESULT`: `COMException` for most, `OverflowException` where a
+    /// string runs past the blob's end, `ArgumentException` for a bad length), and nothing otherwise.
+    [<Test>]
+    let ``the escape analysis reads an UnmanagedCallersOnly blob's conventions as the host's JIT does`` () : unit =
+        let complete = ucoProvider true
+        let incomplete = ucoProvider false
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyBlobs", isCollectible = true)
+
+        try
+            let goneStruct =
+                (context.LoadFromStream (new MemoryStream (complete))).GetType "Provider.GoneStruct"
+
+            // What compiling a method raises where CoreCLR cannot parse its attribute's blob.
+            let unreadable =
+                Set.ofList
+                    [
+                        "System.Runtime.InteropServices.COMException"
+                        "System.OverflowException"
+                        "System.ArgumentException"
+                    ]
+
+            let property (blobs : byte[] list list) : unit =
+                let image = ucoMethods goneStruct blobs
+                let names = blobs |> List.mapi (fun i _ -> $"M%d{i}")
+                let host = ucoCompilations image incomplete "Uco" names
+                let analysed = ucoAnalysed image incomplete "Uco" names
+
+                let failures =
+                    [
+                        for i, blob in List.indexed blobs do
+                            let name = $"M%d{i}"
+                            let outcome, sources = analysed.[name]
+                            let entry = $"Uco::%s{name} entry "
+
+                            // Making a `TypeLoadException` runs code whose answer is itself
+                            // unknown, so only the method's own entry says whether the analysis
+                            // read the blob.
+                            let agrees =
+                                match host.[name], outcome with
+                                | UcoCompilation.Compiled, UcoCompilation.Compiled -> sources.IsEmpty
+                                | UcoCompilation.Raises "System.TypeLoadException",
+                                  UcoCompilation.Raises "System.TypeLoadException" ->
+                                    not (sources |> Set.exists (fun site -> site.StartsWith entry))
+                                | UcoCompilation.Raises raised, UcoCompilation.Raises "Unknown" when
+                                    unreadable.Contains raised
+                                    ->
+                                    sources = Set.singleton (entry + "UnreadableCallingConvention")
+                                | _ -> false
+
+                            if not agrees then
+                                let shown =
+                                    blob
+                                    |> List.map (Array.map (sprintf "%02X") >> String.concat " ")
+                                    |> String.concat "] ["
+
+                                yield
+                                    $"[%s{shown}]: the host's JIT %A{host.[name]}, the analysis %A{outcome} unknown at %A{Set.toList sources}"
+                    ]
+
+                if not failures.IsEmpty then
+                    failures |> String.concat Environment.NewLine |> failwith
+
+            FsCheck.Check.One (
+                FsCheck.Config.QuickThrowOnFailure.WithMaxTest 40,
+                FsCheck.FSharp.Prop.forAll
+                    (FsCheck.FSharp.Arb.fromGen (
+                        FsCheck.FSharp.Gen.choose (1, 10)
+                        |> FsCheck.FSharp.Gen.bind (fun n -> FsCheck.FSharp.Gen.listOfLength n ucoApplications)
+                    ))
+                    property
+            )
+        finally
+            context.Unload ()
 
     /// What running a method of `Client.Calls` does, each of which makes one call inside a `catch`
     /// of every exception.
@@ -12960,6 +13615,579 @@ public static class Runners
 
                     if reported <> expected then
                         yield $"%s{name}: reported %A{reported} of the refusals, not %A{expected}"
+            ]
+
+        match runtimeFailures @ analysisFailures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    let private missingMethod = "System.MissingMethodException"
+
+    /// The tokens a runner of `operandRefusals` names. Each of `VoidRef`, `VoidSpec` and
+    /// `ValueTypeVoidSpec` names CoreLib's `System.Void`: by a TypeRef, by a TypeSpec spelling
+    /// `ELEMENT_TYPE_VOID`, and by one spelling `valuetype System.Void`.
+    type private RefusedOperands =
+        {
+            Int32 : EntityHandle
+            /// `int32&`
+            Byref : EntityHandle
+            VoidRef : EntityHandle
+            VoidSpec : EntityHandle
+            ValueTypeVoidSpec : EntityHandle
+            /// `class System.Gone&`, which CoreLib declares no `System.Gone` for
+            GoneByref : EntityHandle
+            /// `int32&` under `modopt(IsConst)`
+            ModifiedByref : EntityHandle
+            /// `pinned int32&`
+            PinnedByref : EntityHandle
+            /// `pinned void`
+            PinnedVoid : EntityHandle
+            Exception : EntityHandle
+            /// `Object::GetHashCode`
+            ObjectGetHashCode : EntityHandle
+            /// A reference to the instance method of this name, with the signature `Object`'s has
+            /// (`GetType`'s for `GetType`), through this parent.
+            Member : EntityHandle -> string -> EntityHandle
+        }
+
+    /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
+    /// `runners`, each with an `int32` local and the body `runners` writes for it. It emits the
+    /// image with System.Reflection.Metadata, because no compiler names a member through a type
+    /// that does not declare it, let alone through `System.Void`.
+    let private operandRefusals (runners : (string * (RefusedOperands -> InstructionEncoder -> unit)) list) : byte[] =
+        let metadata = MetadataBuilder ()
+        let ilStream = BlobBuilder ()
+        let bodies = MethodBodyStreamEncoder ilStream
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Probe.dll",
+            metadata.GetOrAddGuid (Guid "5c2a9e41-7b3d-4f08-a6e1-93d4b0c7e215"),
+            Unchecked.defaultof<GuidHandle>,
+            Unchecked.defaultof<GuidHandle>
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Probe",
+            Version (1, 0, 0, 0),
+            Unchecked.defaultof<StringHandle>,
+            Unchecked.defaultof<BlobHandle>,
+            Unchecked.defaultof<AssemblyFlags>,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let coreName = typeof<obj>.Assembly.GetName ()
+
+        let core =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString coreName.Name,
+                coreName.Version,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddBlob (coreName.GetPublicKeyToken ()),
+                Unchecked.defaultof<AssemblyFlags>,
+                Unchecked.defaultof<BlobHandle>
+            )
+
+        let typeRef (ns : string) (name : string) : EntityHandle =
+            metadata.AddTypeReference (
+                (AssemblyReferenceHandle.op_Implicit core : EntityHandle),
+                metadata.GetOrAddString ns,
+                metadata.GetOrAddString name
+            )
+            |> TypeReferenceHandle.op_Implicit
+
+        let objectRef = typeRef "System" "Object"
+        let int32Ref = typeRef "System" "Int32"
+        let voidRef = typeRef "System" "Void"
+        let typeRef' = typeRef "System" "Type"
+        let goneRef = typeRef "System" "Gone"
+        let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
+
+        let typeSpec (encode : BlobBuilder -> unit) : EntityHandle =
+            let blob = BlobBuilder ()
+            encode blob
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+            |> TypeSpecificationHandle.op_Implicit
+
+        // ECMA-335 II.23.1.16: ELEMENT_TYPE_BYREF is 0x10, ELEMENT_TYPE_VOID 0x01.
+        let byrefOf (encodeElement : SignatureTypeEncoder -> unit) (blob : BlobBuilder) : unit =
+            blob.WriteByte 0x10uy
+            encodeElement (SignatureTypeEncoder blob)
+
+        let instanceSignature
+            (returns : ReturnTypeEncoder -> unit)
+            (parameters : int)
+            (encodeParameters : ParametersEncoder -> unit)
+            : BlobHandle
+            =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (parameters, returns, encodeParameters)
+
+            metadata.GetOrAddBlob blob
+
+        let signatureOf (name : string) : BlobHandle =
+            match name with
+            | "ToString" -> instanceSignature (fun returns -> returns.Type().String ()) 0 ignore
+            | "GetHashCode" -> instanceSignature (fun returns -> returns.Type().Int32 ()) 0 ignore
+            | "Equals" ->
+                instanceSignature
+                    (fun returns -> returns.Type().Boolean ())
+                    1
+                    (fun parameters -> parameters.AddParameter().Type().Object ())
+            | "Finalize" -> instanceSignature (fun returns -> returns.Void ()) 0 ignore
+            | "GetType" -> instanceSignature (fun returns -> returns.Type().Type (typeRef', false)) 0 ignore
+            | other -> failwith $"BUG: no signature for %s{other}"
+
+        // One row for each parent and name, which the runners share.
+        let members =
+            System.Collections.Generic.Dictionary<struct (EntityHandle * string), EntityHandle> ()
+
+        let memberOf (parent : EntityHandle) (name : string) : EntityHandle =
+            match members.TryGetValue struct (parent, name) with
+            | true, existing -> existing
+            | false, _ ->
+                let reference =
+                    (MemberReferenceHandle.op_Implicit (
+                        metadata.AddMemberReference (parent, metadata.GetOrAddString name, signatureOf name)
+                    )
+                    : EntityHandle)
+
+                members.[struct (parent, name)] <- reference
+                reference
+
+        let operands =
+            {
+                Int32 = int32Ref
+                Byref = typeSpec (byrefOf _.Int32())
+                VoidRef = voidRef
+                VoidSpec = typeSpec (fun blob -> blob.WriteByte 0x01uy)
+                ValueTypeVoidSpec = typeSpec (fun blob -> SignatureTypeEncoder(blob).Type (voidRef, true))
+                GoneByref = typeSpec (byrefOf (fun element -> element.Type (goneRef, false)))
+                // ECMA-335 II.23.2.7: ELEMENT_TYPE_CMOD_OPT is 0x20, then the modifier's coded index.
+                // ECMA-335 II.23.1.16: ELEMENT_TYPE_PINNED is 0x45.
+                PinnedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        byrefOf _.Int32() blob
+                    )
+                PinnedVoid =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x45uy
+                        blob.WriteByte 0x01uy
+                    )
+                ModifiedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x20uy
+                        blob.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec isConstRef)
+                        byrefOf _.Int32() blob
+                    )
+                Exception = typeRef "System" "Exception"
+                ObjectGetHashCode = memberOf objectRef "GetHashCode"
+                Member = memberOf
+            }
+
+        let locals =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).LocalVariableSignature(1).AddVariable().Type().Int32 ()
+            metadata.AddStandaloneSignature (metadata.GetOrAddBlob blob)
+
+        let signature =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature()
+                .Parameters (0, (fun returns -> returns.Void ()), ignore<ParametersEncoder>)
+
+            metadata.GetOrAddBlob blob
+
+        for name, write in runners do
+            let code = InstructionEncoder (BlobBuilder (), ControlFlowBuilder ())
+            write operands code
+
+            let body =
+                bodies.AddMethodBody (
+                    code,
+                    maxStack = 3,
+                    localVariablesSignature = locals,
+                    attributes = MethodBodyAttributes.InitLocals
+                )
+
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString name,
+                signature,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            Unchecked.defaultof<TypeAttributes>,
+            Unchecked.defaultof<StringHandle>,
+            metadata.GetOrAddString "<Module>",
+            Unchecked.defaultof<EntityHandle>,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        metadata.AddTypeDefinition (
+            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed,
+            metadata.GetOrAddString "Probe",
+            metadata.GetOrAddString "Runners",
+            objectRef,
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let peBuilder =
+            ManagedPEBuilder (
+                PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                MetadataRootBuilder metadata,
+                ilStream
+            )
+
+        let blob = BlobBuilder ()
+        peBuilder.Serialize blob |> ignore<BlobContentId>
+        blob.ToArray ()
+
+    /// Each runner of `operandRefusals` the test below emits, and what the JIT does compiling it.
+    /// CoreCLR's `CEEInfo::resolveToken` refuses a token whose type is a byref or `System.Void`,
+    /// for every kind of token but `ldtoken`'s, once it has loaded the type and found any member;
+    /// for a member's token, the type is the parent its reference names.
+    let private operandRefusalCases : (string * (RefusedOperands -> InstructionEncoder -> unit) * Refusal) list =
+        let token (op : ILOpCode) (handle : EntityHandle) (code : InstructionEncoder) : unit =
+            code.OpCode op
+            code.Token handle
+
+        let boxedInt (operands : RefusedOperands) (code : InstructionEncoder) : unit =
+            code.LoadConstantI4 7
+            token ILOpCode.Box operands.Int32 code
+
+        let intArray (operands : RefusedOperands) (code : InstructionEncoder) : unit =
+            code.LoadConstantI4 1
+            token ILOpCode.Newarr operands.Int32 code
+
+        // Each instruction that consumes a type, over the operand it is given, leaving the stack
+        // empty.
+        let typeShapes : (string * (RefusedOperands -> EntityHandle -> InstructionEncoder -> unit)) list =
+            [
+                "Isinst",
+                fun _ operand code ->
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Isinst operand code
+                    code.OpCode ILOpCode.Pop
+                "Castclass",
+                fun _ operand code ->
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Castclass operand code
+                    code.OpCode ILOpCode.Pop
+                "Box",
+                fun _ operand code ->
+                    code.LoadConstantI4 0
+                    token ILOpCode.Box operand code
+                    code.OpCode ILOpCode.Pop
+                "Unbox",
+                fun operands operand code ->
+                    boxedInt operands code
+                    token ILOpCode.Unbox operand code
+                    code.OpCode ILOpCode.Pop
+                "UnboxAny",
+                fun operands operand code ->
+                    boxedInt operands code
+                    token ILOpCode.Unbox_any operand code
+                    code.OpCode ILOpCode.Pop
+                "Newarr",
+                fun _ operand code ->
+                    code.LoadConstantI4 0
+                    token ILOpCode.Newarr operand code
+                    code.OpCode ILOpCode.Pop
+                "Sizeof",
+                fun _ operand code ->
+                    token ILOpCode.Sizeof operand code
+                    code.OpCode ILOpCode.Pop
+                "Initobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Initobj operand code
+                "Ldobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Ldobj operand code
+                    code.OpCode ILOpCode.Pop
+                "Stobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    code.LoadConstantI4 0
+                    token ILOpCode.Stobj operand code
+                "Cpobj",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Cpobj operand code
+                "Ldelema",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    token ILOpCode.Ldelema operand code
+                    code.OpCode ILOpCode.Pop
+                "ReadonlyLdelema",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    code.OpCode ILOpCode.Readonly
+                    token ILOpCode.Ldelema operand code
+                    code.OpCode ILOpCode.Pop
+                "Ldelem",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    token ILOpCode.Ldelem operand code
+                    code.OpCode ILOpCode.Pop
+                "Stelem",
+                fun operands operand code ->
+                    intArray operands code
+                    code.LoadConstantI4 0
+                    code.LoadConstantI4 0
+                    token ILOpCode.Stelem operand code
+                "Mkrefany",
+                fun _ operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Mkrefany operand code
+                    code.OpCode ILOpCode.Pop
+                "Refanyval",
+                fun operands operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Mkrefany operands.Int32 code
+                    token ILOpCode.Refanyval operand code
+                    code.OpCode ILOpCode.Pop
+                "Constrained",
+                fun operands operand code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Constrained operand code
+                    token ILOpCode.Callvirt operands.ObjectGetHashCode code
+                    code.OpCode ILOpCode.Pop
+                "Ldtoken",
+                fun _ operand code ->
+                    token ILOpCode.Ldtoken operand code
+                    code.OpCode ILOpCode.Pop
+            ]
+
+        let refusedOperands : (string * (RefusedOperands -> EntityHandle)) list =
+            [
+                "Byref", _.Byref
+                "VoidRef", _.VoidRef
+                "VoidSpec", _.VoidSpec
+                "ValueTypeVoidSpec", _.ValueTypeVoidSpec
+            ]
+
+        // Each instruction that names a method, through the parent it is given, leaving the stack
+        // empty. Looking a method up through a value type finds only the virtual methods it
+        // inherits, so each names one of `Object`'s.
+        let memberShapes : (string * (RefusedOperands -> EntityHandle -> InstructionEncoder -> unit)) list =
+            [
+                "Call",
+                fun operands parent code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Call (operands.Member parent "GetHashCode") code
+                    code.OpCode ILOpCode.Pop
+                "Callvirt",
+                fun operands parent code ->
+                    boxedInt operands code
+                    code.OpCode ILOpCode.Ldnull
+                    token ILOpCode.Callvirt (operands.Member parent "Equals") code
+                    code.OpCode ILOpCode.Pop
+                "Ldftn",
+                fun operands parent code ->
+                    token ILOpCode.Ldftn (operands.Member parent "ToString") code
+                    code.OpCode ILOpCode.Pop
+                "Ldvirtftn",
+                fun operands parent code ->
+                    boxedInt operands code
+                    token ILOpCode.Ldvirtftn (operands.Member parent "ToString") code
+                    code.OpCode ILOpCode.Pop
+                "Ldtoken",
+                fun operands parent code ->
+                    token ILOpCode.Ldtoken (operands.Member parent "Finalize") code
+                    code.OpCode ILOpCode.Pop
+            ]
+
+        let returning
+            (body : RefusedOperands -> InstructionEncoder -> unit)
+            (operands : RefusedOperands)
+            (code : InstructionEncoder)
+            : unit
+            =
+            body operands code
+            code.OpCode ILOpCode.Ret
+
+        // `try { } catch (type) { pop }`, naming the type `pick` chooses.
+        let catches (pick : RefusedOperands -> EntityHandle) (operands : RefusedOperands) (code : InstructionEncoder) =
+            let tryStart = code.DefineLabel ()
+            let handlerStart = code.DefineLabel ()
+            let handlerEnd = code.DefineLabel ()
+            code.MarkLabel tryStart
+            code.Branch (ILOpCode.Leave, handlerEnd)
+            code.MarkLabel handlerStart
+            code.OpCode ILOpCode.Pop
+            code.Branch (ILOpCode.Leave, handlerEnd)
+            code.MarkLabel handlerEnd
+            code.OpCode ILOpCode.Ret
+            code.ControlFlowBuilder.AddCatchRegion (tryStart, handlerStart, handlerStart, handlerEnd, pick operands)
+
+        let castclass = typeShapes |> List.find (fun (name, _) -> name = "Castclass") |> snd
+
+        [
+            for name, shape in typeShapes do
+                yield $"%s{name}_Int32", returning (fun operands -> shape operands operands.Int32), Refusal.Compiles
+
+                for operandName, pick in refusedOperands do
+                    let refused =
+                        if name = "Ldtoken" then
+                            Refusal.Compiles
+                        else
+                            Refusal.Raises invalidProgram
+
+                    yield
+                        $"%s{name}_%s{operandName}", returning (fun operands -> shape operands (pick operands)), refused
+
+            for name, shape in memberShapes do
+                yield
+                    $"%s{name}Through_Int32",
+                    returning (fun operands -> shape operands operands.Int32),
+                    Refusal.Compiles
+
+                for parentName, pick in List.tail refusedOperands do
+                    let refused =
+                        if name = "Ldtoken" then
+                            Refusal.Compiles
+                        else
+                            Refusal.Raises invalidProgram
+
+                    yield
+                        $"%s{name}Through_%s{parentName}",
+                        returning (fun operands -> shape operands (pick operands)),
+                        refused
+
+            // `resolveToken` loads the type before it refuses it, and a load that fails raises
+            // instead.
+            yield
+                "Castclass_GoneByref",
+                returning (fun operands -> castclass operands operands.GoneByref),
+                Refusal.Raises typeLoad
+            // A custom modifier does not change the type a signature names.
+            yield
+                "Castclass_ModifiedByref",
+                returning (fun operands -> castclass operands operands.ModifiedByref),
+                Refusal.Raises invalidProgram
+            // Nor does `pinned`, which no TypeSpec should spell.
+            yield
+                "Castclass_PinnedByref",
+                returning (fun operands -> castclass operands operands.PinnedByref),
+                Refusal.Raises invalidProgram
+            yield
+                "Castclass_PinnedVoid",
+                returning (fun operands -> castclass operands operands.PinnedVoid),
+                Refusal.Raises invalidProgram
+            // And it finds the member before it refuses its parent: looking up through
+            // `System.Void` finds no non-virtual method it inherits.
+            yield
+                "CallThrough_VoidRef_GetType",
+                returning (fun operands code ->
+                    code.LoadLocalAddress 0
+                    token ILOpCode.Call (operands.Member operands.VoidRef "GetType") code
+                    code.OpCode ILOpCode.Pop
+                ),
+                Refusal.Raises missingMethod
+            yield "Catch_Exception", catches _.Exception, Refusal.Compiles
+            yield "Catch_Byref", catches _.Byref, Refusal.Raises invalidProgram
+            yield "Catch_VoidRef", catches _.VoidRef, Refusal.Raises invalidProgram
+        ]
+
+    [<Test>]
+    let ``the JIT's refusal of a byref or System.Void as an instruction's type is reported, as a type operand or a member's parent``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            operandRefusals (operandRefusalCases |> List.map (fun (name, write, _) -> name, write))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("OperandRefusals", isCollectible = true)
+
+        let runtimeFailures =
+            try
+                let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Probe.Runners"
+
+                [
+                    for name, _, refused in operandRefusalCases do
+                        let raised =
+                            try
+                                ty.GetMethod(name).Invoke ((null : obj), [||]) |> ignore<obj>
+                                None
+                            with :? TargetInvocationException as e ->
+                                Some (e.InnerException.GetType().FullName)
+
+                        let expected =
+                            match refused with
+                            | Refusal.Compiles -> None
+                            | Refusal.Raises refusal -> Some refusal
+                            | Refusal.UnlessInlined _
+                            | Refusal.RaisesBesideBinding _ -> failwith $"BUG: %s{name} expects %A{refused}"
+
+                        if raised <> expected then
+                            yield $"%s{name}: the real runtime raised %A{raised}, not %A{expected}"
+                ]
+            finally
+                context.Unload ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let refusals =
+            Set.ofList [ invalidProgram ; typeLoad ; missingMethod ; badImageFormat ]
+
+        let analysisFailures =
+            [
+                for name, _, refused in operandRefusalCases do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Probe.Runners" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let refusalsIn (shown : Set<string>) : Set<string> =
+                        refusals |> Set.filter (fun refusal -> shown.Contains ("=" + refusal))
+
+                    // What making the refusal's exception raises escapes beside it.
+                    let expected =
+                        match refused with
+                        | Refusal.Raises refusal when refusal = typeLoad ->
+                            let next, escapes = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+                            analysis <- next
+                            Set.add refusal (refusalsIn (render analysis escapes))
+                        | Refusal.Raises refusal ->
+                            let next, made = making analysis refusal
+                            analysis <- next
+                            Set.add refusal (refusalsIn made)
+                        | _ -> Set.empty
+
+                    let reported = refusalsIn shown
+
+                    if reported <> expected then
+                        yield $"%s{name}: reported %A{Set.toList reported} of the refusals, not %A{Set.toList expected}"
             ]
 
         match runtimeFailures @ analysisFailures with

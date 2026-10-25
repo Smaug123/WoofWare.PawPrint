@@ -41,6 +41,7 @@
         <Compile Include="SignatureRefusal.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <Compile Include="HardwareInstruction.fs" />
+        <Compile Include="UnmanagedCallingConvention.fs" />
         <EmbeddedResource Include="HardwareIntrinsicTable.Net10.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net10.tsv" />
         <EmbeddedResource Include="HardwareIntrinsicTable.Net11.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net11.tsv" />
         <EmbeddedResource Include="NativeContractTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.tsv" />
