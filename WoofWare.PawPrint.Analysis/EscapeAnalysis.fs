@@ -1612,6 +1612,7 @@ module EscapeAnalysis =
             | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing, false
             | MethodReferenceTarget.ParentAssemblyUnavailable _ -> state, CallTarget.AssemblyMissing, false
             | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation, false
+            | MethodReferenceTarget.Unbound failure -> failwith (TypeBindingFailure.describe failure)
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
 
     /// What a call instruction's metadata token names.
@@ -5367,7 +5368,9 @@ module EscapeAnalysis =
         { state with
             TypeSystem = typeSystem
         },
-        handle
+        match handle with
+        | Ok handle -> handle
+        | Error failure -> failwith (TypeBindingFailure.describe failure)
 
     /// The arguments of the declaring type and of the method that a call's token, of a body of
     /// `assembly` whose instantiation is `typeArguments` and `methodArguments`, instantiates its
@@ -5401,16 +5404,20 @@ module EscapeAnalysis =
 
             state, calleeTypeArguments, List.rev calleeMethodArguments
         | MetadataToken.MemberReference handle ->
-            let typeSystem, _, _, declaringTypeArguments =
-                MemberReferenceInstantiation.resolveMember
-                    state.LoggerFactory
-                    state.RuntimeDirs
-                    state.BaseTypes
-                    assembly
-                    (ImmutableArray.CreateRange typeArguments)
-                    (ImmutableArray.CreateRange methodArguments)
-                    handle
-                    state.TypeSystem
+            let typeSystem, declaringTypeArguments =
+                match
+                    MemberReferenceInstantiation.resolveMember
+                        state.LoggerFactory
+                        state.RuntimeDirs
+                        state.BaseTypes
+                        assembly
+                        (ImmutableArray.CreateRange typeArguments)
+                        (ImmutableArray.CreateRange methodArguments)
+                        handle
+                        state.TypeSystem
+                with
+                | typeSystem, Ok resolved -> typeSystem, resolved.TargetTypeGenerics
+                | _, Error failure -> failwith (MemberReferenceInstantiation.describeFailure assembly handle failure)
 
             let state =
                 { state with
@@ -5641,14 +5648,18 @@ module EscapeAnalysis =
         else
 
         let typeSystem, concretized, declaringType =
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                (ImmutableArray.CreateRange namedTypeArguments)
-                definition
-                (ImmutableArray.CreateRange namedMethodArguments)
-                state.TypeSystem
+            match
+                MethodConcretisation.concretizeMethodWithAllGenerics
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    (ImmutableArray.CreateRange namedTypeArguments)
+                    definition
+                    (ImmutableArray.CreateRange namedMethodArguments)
+                    state.TypeSystem
+            with
+            | typeSystem, Ok (concretized, declaringType) -> typeSystem, concretized, declaringType
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         let implementationOn (walkBaseTypes : bool) (typeSystem : TypeSystemState) =
             ConcreteVirtualDispatch.tryResolveVirtualImplementation
@@ -5771,13 +5782,17 @@ module EscapeAnalysis =
         : EscapeAnalysisState * (ConcreteTypeHandle * Callee) option
         =
         let typeSystem, spelling, spellingAssembly =
-            TypeSystemState.resolveTypeMetadataToken
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                state.TypeSystem
-                assembly
-                constrainedType
+            match
+                TypeSystemState.resolveTypeMetadataToken
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    state.TypeSystem
+                    assembly
+                    constrainedType
+            with
+            | typeSystem, Ok (spelling, spellingAssembly) -> typeSystem, spelling, spellingAssembly
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         let state =
             { state with

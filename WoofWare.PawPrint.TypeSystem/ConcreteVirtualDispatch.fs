@@ -249,6 +249,7 @@ module ConcreteVirtualDispatch =
                     baseClassTypes.Corelib.DefinitionFullName
                     ImmutableArray.Empty
                     ImmutableArray.Empty
+                |> fun (state, objectHandle) -> state, BindingStop.bound objectHandle
 
         // `this` is the array, not an SZArrayHelper — exactly the lie CoreCLR tells (see the
         // "! Warning: \"this\" is an array, not an SZArrayHelper" comments in
@@ -373,6 +374,8 @@ module ConcreteVirtualDispatch =
                     candidateComparand
                     targetComparand
 
+            let signatureMatches = BindingStop.bound signatureMatches
+
             if not signatureMatches then
                 state, false
             else
@@ -387,6 +390,8 @@ module ConcreteVirtualDispatch =
                     candidateAssemblyFullName
                     candidateTypeGenerics
                     methodToCall.Generics
+
+            let candidateReturn = BindingStop.bound candidateReturn
 
             match candidateReturn, methodToCall.Signature.ReturnType with
             | MethodReturnType.Void, MethodReturnType.Void -> state, true
@@ -451,6 +456,8 @@ module ConcreteVirtualDispatch =
                         methodGenerics
                         ty
 
+                let handle = BindingStop.bound handle
+
                 acc.Add handle
                 state, acc
             )
@@ -491,7 +498,7 @@ module ConcreteVirtualDispatch =
                 let contextTypeGenerics = concreteTypeHandlesToTypeDefns state contextTypeGenerics
                 let contextMethodGenerics = concreteTypeHandlesToTypeDefns state methodGenerics
 
-                let state, _, method, extractedTypeArgs =
+                let state, resolved =
                     MemberReferenceInstantiation.resolveMemberWithGenerics
                         loggerFactory
                         dotnetRuntimeDirs
@@ -501,6 +508,12 @@ module ConcreteVirtualDispatch =
                         contextMethodGenerics
                         h
                         state
+
+                let method, extractedTypeArgs =
+                    match resolved with
+                    | Ok resolved -> resolved.Member, resolved.TargetTypeGenerics
+                    | Error failure ->
+                        failwith (MemberReferenceInstantiation.describeFailure relativeAssembly h failure)
 
                 match method with
                 | Choice1Of2 method -> state, method, Some extractedTypeArgs
