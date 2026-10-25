@@ -3746,13 +3746,14 @@ module EscapeAnalysis =
                 targets : Map<int, CallTarget>,
                 unbound : Set<int>,
                 bindingFailures : Set<OutsideBodyFact>,
-                raisedWhereInlined : Set<OutsideBodyFact>
+                raisedWhereInlined : Set<OutsideBodyFact>,
+                refusedSignatures : Set<int>
             )
             (index : int)
             =
             let op, _ = ops.[index]
 
-            let state, methodTarget, unbound, bindingFailures, raisedWhereInlined =
+            let state, methodTarget, unbound, bindingFailures, raisedWhereInlined, refusedSignatures =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, referent, failures = bindToken state assembly token.Token
@@ -3773,7 +3774,7 @@ module EscapeAnalysis =
                     // bound; one it makes asking for an `ldftn`'s address it may make compiling
                     // whatever method the `ldftn` is inlined into, past every handler of that
                     // method too.
-                    let state, failures, possible, inlined =
+                    let state, failures, possible, inlined, refusedHere =
                         let bound =
                             failures
                             |> List.forall (fun fact ->
@@ -3832,7 +3833,7 @@ module EscapeAnalysis =
                                 |> Option.map (fun operand -> assembly, MemberSignature.Method signature, operand, None)
 
                         match operand with
-                        | None -> state, failures, [], []
+                        | None -> state, failures, [], [], false
                         | Some (spellingAssembly, signature, operand, delegateMade) ->
 
                         // A `call` or `ldftn` naming an abstract method itself, CoreCLR refuses as
@@ -3873,8 +3874,8 @@ module EscapeAnalysis =
                             let possible = loads.Possible |> List.collect (Some >> raisesOf)
 
                             match loads.Definite with
-                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, []
-                            | None -> state, failures @ signatureRefusalFacts state refusal, possible, []
+                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, [], false
+                            | None -> state, failures @ signatureRefusalFacts state refusal, possible, [], true
                         | None ->
 
                             let state, loads =
@@ -3905,7 +3906,7 @@ module EscapeAnalysis =
                                 | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested -> possible
                                 | _ -> []
 
-                            state, failures @ raisesOf loads.Definite, possible, inlined
+                            state, failures @ raisesOf loads.Definite, possible, inlined, false
 
                     // A token that fails to bind names nothing to instantiate: the JIT throws
                     // before the body runs.
@@ -3958,15 +3959,19 @@ module EscapeAnalysis =
                     target,
                     unbound,
                     Set.unionMany [ bindingFailures ; Set.ofList failures ; Set.ofList possible ],
-                    Set.union raisedWhereInlined (Set.ofList inlined)
-                | _ -> state, None, unbound, bindingFailures, raisedWhereInlined
+                    Set.union raisedWhereInlined (Set.ofList inlined),
+                    (if refusedHere then
+                         Set.add index refusedSignatures
+                     else
+                         refusedSignatures)
+                | _ -> state, None, unbound, bindingFailures, raisedWhereInlined, refusedSignatures
 
             let targets =
                 match methodTarget with
                 | Some target -> Map.add index target targets
                 | None -> targets
 
-            state, targets, unbound, bindingFailures, raisedWhereInlined
+            state, targets, unbound, bindingFailures, raisedWhereInlined, refusedSignatures
 
         let folder
             (targets : Map<int, CallTarget>)
@@ -4310,8 +4315,8 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
-        let state, targets, unbound, bindingFailures, raisedWhereInlined =
-            ((state, Map.empty, Set.empty, localFailures, Set.empty), [ 0 .. ops.Length - 1 ])
+        let state, targets, unbound, bindingFailures, raisedWhereInlined, refusedSignatures =
+            ((state, Map.empty, Set.empty, localFailures, Set.empty, Set.empty), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
 
         // Which objects each slot of the stack may hold, by the types the body spells.
@@ -4955,6 +4960,8 @@ module EscapeAnalysis =
                     executed.Contains (snd ops.[index])
                     && not (folded.Contains index)
                     && not (abstractCallees.Contains index)
+                    // CoreCLR refuses the signature it names, and none of it runs.
+                    && not (refusedSignatures.Contains index)
                 then
                     folder targets unbound spellings objectsAt integersAt calleeArguments passedAt acc index
                 else

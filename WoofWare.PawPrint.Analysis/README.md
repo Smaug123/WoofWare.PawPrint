@@ -209,8 +209,8 @@ method) may add more:
   past all its handlers and before the JIT loads any type of the signature (CoreCLR prepares a
   method as a function pointer first for an `ldvirtftn`, or an `ldftn` of a method specification,
   which may fail before), unless resolving a `call` or `ldftn` of an abstract method refuses that
-  first (`BadImageFormatException`); a method with one never compiles at all, so none of its body runs. `ldtoken` converts no signature. The call is
-  not followed;
+  first (`BadImageFormatException`); a method with one never compiles at all, so none of its body
+  runs. `ldtoken` converts no signature. The call is not followed, nor anything it would call;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),
