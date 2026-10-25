@@ -562,12 +562,16 @@ module internal DynamicScopeOperand =
     /// (<c>NativeRuntimeTypeHelpers.fs:140-144</c> preserves the <c>Closed</c> /
     /// <c>OpenGenericTypeDefinition</c> distinction), so the context is redundant information here.
     /// <c>Emit</c> writes both halves from one <c>FieldInfo</c>, so only a guest that rewrote the
-    /// scope through private reflection can make them differ, and real .NET's answers to that were
-    /// measured by doing so. A null context is no context at all, and the field is read as if
-    /// unwrapped. A context that is not closed is an <c>InvalidProgramException</c> whatever the
-    /// field, because CoreCLR refuses an open class handle before it looks at the field. A closed
-    /// context that disagrees is <c>Unsupported</c>. Real .NET resolves such a field by the *handle*
-    /// in every case measured but one: <c>St&lt;int&gt;.V</c> under <c>St&lt;uint&gt;</c> reads
+    /// scope through private reflection, or paired them itself through the public
+    /// <c>DynamicILInfo.GetTokenFor</c> (whose bodies <c>DynamicMethodBody</c> refuses), can make
+    /// them differ, and real .NET's answers were measured by doing both. A null context is no
+    /// context at all, and the field is read as if unwrapped. A context that is not closed is an
+    /// <c>InvalidProgramException</c> whatever the field, because CoreCLR refuses an open class
+    /// handle before it looks at the field. A closed context that disagrees is <c>Unsupported</c>.
+    /// A byref or <c>System.Void</c> context is an <c>InvalidProgramException</c> except under
+    /// <c>ldtoken</c>, because <c>resolveToken</c> checks the context as the token's type. Under any
+    /// other, real .NET resolves the field by the *handle* in every case measured but one:
+    /// <c>St&lt;int&gt;.V</c> under <c>St&lt;uint&gt;</c> reads
     /// <c>St&lt;int&gt;</c>'s static, and <c>St&lt;string&gt;.V</c> under <c>St&lt;object&gt;</c>
     /// reads <c>St&lt;string&gt;</c>'s. The exception is <c>Box&lt;string&gt;.Item</c> under
     /// <c>Box&lt;int&gt;</c>, which is a fatal error that kills the process. Without knowing which
@@ -703,7 +707,7 @@ module internal DynamicScopeOperand =
                     else
                         Error (
                             ScopeEntryRefusal.Unsupported
-                                $"TODO: %s{operation}: DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context names %O{context}, but its m_fieldHandle was allocated against declaring type %O{fieldHandle.GetDeclaringTypeHandle ()}, so the scope has been rewritten. Real .NET resolves most such fields by the handle but dies with a fatal error on some (measured: Box<string>.Item under the context Box<int>), and PawPrint cannot tell which"
+                                $"TODO: %s{operation}: DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context names %O{context}, but its m_fieldHandle was allocated against declaring type %O{fieldHandle.GetDeclaringTypeHandle ()}, which ILGenerator.Emit never pairs, so the scope was rewritten or built through DynamicILInfo. Real .NET raises InvalidProgramException for a byref or System.Void context, except under ldtoken; under any other it resolves most such fields by the handle but dies with a fatal error on some (measured: Box<string>.Item under the context Box<int>), and PawPrint cannot tell which"
                         )
                 | other ->
                     failwith
@@ -759,15 +763,18 @@ module internal DynamicScopeOperand =
     /// <para>
     /// <c>Emit</c> never stores a null handle, a handle to a dynamic method (whose
     /// <c>MethodHandle</c> throws), or a context other than the method's own, so the rest are shapes
-    /// only a guest that rewrote the scope through private reflection meets, and real .NET's answers
-    /// to them were measured by doing so. A null handle is <c>BadImageFormatException</c>, as any
-    /// entry naming no method is. A handle to a dynamic method, which a guest can get from
-    /// <c>GetMethodDescriptor</c>, names that method. A context that is not closed is an
-    /// <c>InvalidProgramException</c> whatever the method, because CoreCLR refuses an open class
-    /// handle before it looks at the method. A closed context that disagrees is unsupported: real
-    /// .NET re-instantiates the method over it (<c>Gen&lt;int&gt;.Name</c> under
-    /// <c>Gen&lt;long&gt;</c> answers <c>Int64</c>), and a context of an unrelated type crashes the
-    /// process.
+    /// only a guest meets that rewrote the scope through private reflection, or paired a context
+    /// itself through the public <c>DynamicILInfo.GetTokenFor</c> (whose bodies
+    /// <c>DynamicMethodBody</c> refuses), and real .NET's answers were measured by doing both. A
+    /// null handle is <c>BadImageFormatException</c>, as any entry naming no method is. A handle to
+    /// a dynamic method, which a guest can get from <c>GetMethodDescriptor</c>, names that method.
+    /// A context that is not closed is an <c>InvalidProgramException</c> whatever the method,
+    /// because CoreCLR refuses an open class handle before it looks at the method. A closed context
+    /// that disagrees is unsupported: real .NET re-instantiates the method over it
+    /// (<c>Gen&lt;int&gt;.Name</c> under <c>Gen&lt;long&gt;</c> answers <c>Int64</c>), raises
+    /// <c>InvalidProgramException</c> for a byref or <c>System.Void</c> context except under
+    /// <c>ldtoken</c>, because <c>resolveToken</c> checks the context as the token's type, and
+    /// crashes the process for a context of any other unrelated type.
     /// </para>
     /// </remarks>
     let private reflectedMethod
@@ -830,7 +837,7 @@ module internal DynamicScopeOperand =
             match context with
             | Some context when context <> identity.GetDeclaringType () ->
                 unsupported
-                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a GenericMethodInfo whose m_context names %O{context} but whose method is declared on %O{identity.GetDeclaringType ()}, so the scope has been rewritten. Real .NET re-instantiates the method over the context (measured: Gen<int>.Name under Gen<long> answers Int64) and crashes the process for a context of an unrelated type; PawPrint models neither"
+                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a GenericMethodInfo whose m_context names %O{context} but whose method is declared on %O{identity.GetDeclaringType ()}, which ILGenerator.Emit never pairs, so the scope was rewritten or built through DynamicILInfo. Real .NET re-instantiates the method over the context (measured: Gen<int>.Name under Gen<long> answers Int64), raises InvalidProgramException for a byref or System.Void context except under ldtoken, and crashes the process for a context of any other unrelated type; PawPrint models none of these"
             | _ ->
 
             match identity.GetDeclaringType () with
