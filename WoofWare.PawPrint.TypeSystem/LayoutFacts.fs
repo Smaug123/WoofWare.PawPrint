@@ -302,7 +302,7 @@ module LayoutFacts =
                 state, Ok Category.Struct
 
     /// Whether `needle` is `haystack`, or occurs in it: as a generic argument, an element type, or a
-    /// function pointer's parameter type, at any depth.
+    /// function pointer's parameter or return type, at any depth.
     let rec private occursIn
         (state : TypeSystemState)
         (needle : ConcreteTypeHandle)
@@ -321,11 +321,36 @@ module LayoutFacts =
            | ConcreteTypeHandle.Array (element, _) -> occursIn state needle element
            | ConcreteTypeHandle.FunctionPointer signature ->
                signature.ParameterTypes |> List.exists (occursIn state needle)
+               || match signature.ReturnType with
+                  | MethodReturnType.Void -> false
+                  | MethodReturnType.Returns returned -> occursIn state needle returned
+
+    /// Whether `concrete` is an instantiation of the same definition as one of `outers`, the types
+    /// the walk is already inside, over arguments that contain all of that one's. Then `D<A>`
+    /// reaches `D<B>`, with `B` built from `A`, and reaches by the same route a `D` built from `B`
+    /// and so on without end: CoreCLR refuses such a type. A nesting such as `Wrap<Wrap<int>>`
+    /// reaches a `D` over less, and is not caught.
+    let private expands
+        (state : TypeSystemState)
+        (outers : ConcreteTypeHandle seq)
+        (concrete : ConcreteType<ConcreteTypeHandle>)
+        : bool
+        =
+        outers
+        |> Seq.exists (fun outer ->
+            match AllConcreteTypes.lookup outer state.ConcreteTypes with
+            | Some outerType ->
+                outerType.Identity = concrete.Identity
+                && outerType.Generics
+                   |> Seq.forall (fun argument -> concrete.Generics |> Seq.exists (occursIn state argument))
+            | None -> failwith $"LayoutFacts: the concrete handle %O{outer} is not registered"
+        )
 
     /// The internal element type of `handle`, an enum whose row is `typeInfo`: that of its one
     /// instance field, which must be of a CoreLib primitive once an enum-typed field is stripped
     /// down to that enum's own (`#FieldDescTypeMorph`, methodtablebuilder.cpp). `stripping` holds the
-    /// enums already being stripped, whose recurrence is a cycle CoreCLR refuses to load.
+    /// enums already being stripped, whose recurrence, or expansion (see `expands`), CoreCLR refuses
+    /// to load.
     let rec private enumElement
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -354,7 +379,7 @@ module LayoutFacts =
                 unmodelled
                     $"the enum %O{concrete} declares sequential or explicit layout, which CoreCLR refuses to load"
             )
-        elif stripping.Contains handle then
+        elif stripping.Contains handle || expands state stripping concrete then
             refused state
         else
 
@@ -436,25 +461,15 @@ module LayoutFacts =
             Error (unmodelled $"the value type %O{concrete} holds itself by value, which CoreCLR refuses to load")
         | false, _ ->
 
-        // A type the walk is already inside, `D<A>`, that holds by value an instantiation `D<B>` of
-        // its own definition whose arguments contain all of `A`, builds `B` from `A` by the same
-        // fields again at each level: `D<B>` holds a larger `D` still. CoreCLR refuses such a type,
-        // and the walk would not end. (A nesting such as `Wrap<Wrap<int>>` holds a smaller one.)
-        let expanding =
+        let inside =
             seen
-            |> Seq.exists (fun (KeyValue (outer, status)) ->
+            |> Seq.choose (fun (KeyValue (outer, status)) ->
                 match status with
-                | Completed _ -> false
-                | InProgress ->
-                    match AllConcreteTypes.lookup outer state.ConcreteTypes with
-                    | Some outerType ->
-                        outerType.Identity = concrete.Identity
-                        && outerType.Generics
-                           |> Seq.forall (fun argument -> concrete.Generics |> Seq.exists (occursIn state argument))
-                    | None -> failwith $"LayoutFacts: the concrete handle %O{outer} is not registered"
+                | Completed _ -> None
+                | InProgress -> Some outer
             )
 
-        if expanding then
+        if expands state inside concrete then
             state,
             Error (
                 unmodelled
