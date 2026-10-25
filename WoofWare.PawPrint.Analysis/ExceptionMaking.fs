@@ -108,6 +108,12 @@ module internal ExceptionMaking =
     let unmanagedCallersOnlyDelegateTarget : string * ExceptionMaking =
         "System.NotSupportedException", ExceptionMaking.ResourceMessage
 
+    /// The exception CoreCLR raises refusing to compile an invalid `[UnmanagedCallersOnly]` method, and
+    /// how it makes it: `COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage` throws
+    /// `InvalidProgramException` as an `EEResourceException` naming the resource that says why.
+    let unmanagedCallersOnlyInvalid : string * ExceptionMaking =
+        "System.InvalidProgramException", ExceptionMaking.ResourceMessage
+
     /// How CoreCLR makes the exception of a fault one of its own operations raises: the CPU reports
     /// each, and the VM makes the exception (`EEException::CreateThrowable`).
     let ofPrimitiveFault (fault : PrimitiveFault) : ExceptionMaking =

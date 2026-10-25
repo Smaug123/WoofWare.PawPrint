@@ -185,13 +185,28 @@ method) may add more:
   reads where they name `CallConvSwift` and no second base convention; every target's JIT compiles
   Swift calls on the Unix runtime the analysis takes. Where CoreCLR cannot read those conventions,
   as it begins to compile the method, it raises, or for `CallConvs = null` kills the process,
-  which the analysis does not name (`Opacity.UnreadableCallingConvention`). A return type of a
-  pointer, byref or function pointer type it loads with what it points to. Of a call of unmanaged
+  which the analysis does not name (`Opacity.UnreadableCallingConvention`). Before any of that, once the
+  return type loads, CoreCLR refuses an `[UnmanagedCallersOnly]` method that is not static, is
+  generic or declared in a generic type, or needs marshalling, with an `InvalidProgramException`,
+  and the JIT loads none of the method's parameters' and locals' types: one carrying
+  `[LCIDConversion]`, or whose return type or a parameter is `bool` or `char`, a reference, a
+  byref, a pointer to a copy-constructed value type, or carries `[MarshalAs]`, with runtime
+  marshalling enabled; a reference or a byref with it disabled. It walks the return type and then
+  the parameters, loading in full each value type and instantiation it meets, so that one
+  missing raises `TypeLoadException` there. Whether a value type that loads needs marshalling it
+  decides by its layout, which the analysis does not model
+  (`Opacity.ValueTypeMarshallingVerdict`). A return type of a pointer, byref or function pointer
+  type it loads with what it points to. Of a call of unmanaged
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also
   loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by
-  Swift's convention, each pointer's target, which the analysis takes to be loads it may make, as
-  it does not decide where the JIT makes the transition. A class, a byref's target or, by another
+  Swift's convention, each pointer's target. It does not make the transition there in a handler or a
+  `try` with a `catch` or a filter, in an assembly whose `DebuggableAttribute` disables
+  optimisation, or for a P/Invoke that does not preserve its signature, sets the last error or
+  converts a locale, and the walk ends at the first type that needs marshalling by its kind (a
+  class, an array, a byref, `string`, and with runtime marshalling `bool`, `char` or a spelt
+  marshalling); elsewhere the analysis takes those to be loads it may make, as whether the JIT
+  makes the transition turns on block weights. A class, a byref's target or, by another
   convention, a pointer's target it does not load there; the stub CoreCLR otherwise makes for the
   call loads them as the call runs, where the caller's handlers can catch the failure. Of a
   method whose address the body takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value

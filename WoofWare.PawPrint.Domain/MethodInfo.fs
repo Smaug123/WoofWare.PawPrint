@@ -51,6 +51,16 @@ module Parameter =
 
         result.ToImmutable ()
 
+/// What the FieldMarshal table (ECMA-335 II.22.17) says of one Param row, as CoreCLR's
+/// `ParseNativeTypeInfo` reads it.
+[<RequireQualifiedAccess>]
+type ParameterMarshal =
+    /// No FieldMarshal row names the parameter: it has no `[MarshalAs]`.
+    | Absent
+    /// A FieldMarshal row names the parameter, and its blob parses as this, or fails to
+    /// (`NativeTypeParamInfo.parse`); a blob that spells out `NATIVE_TYPE_DEFAULT` parses.
+    | Present of NativeTypeParamInfo option
+
 type NativeMethodImport =
     {
         ModuleName : string
@@ -513,6 +523,16 @@ type MetadataMethodFacts =
         /// built together and so cannot drift apart.
         /// </remarks>
         UnmanagedCallersOnly : UnmanagedCallersOnlyApplication option
+
+        /// <summary>
+        /// The sequence number of each of the method's Param rows, in table order, with what its
+        /// FieldMarshal row says: 0 for the return value, then 1 for the first parameter.
+        /// </summary>
+        /// <remarks>
+        /// Unlike <see cref="Parameters"/>, this keeps the return value's row and every row as the
+        /// table has it, a duplicated or out-of-range sequence number included.
+        /// </remarks>
+        ParameterMarshalling : (int * ParameterMarshal) list
     }
 
 /// <summary>
@@ -982,6 +1002,14 @@ module MethodInfo =
         | MethodInfo.Synthesised _ -> None
         | MethodInfo.Metadata (_, facts) -> facts.UnmanagedCallersOnly
 
+    /// The sequence number of each of this method's Param rows, with what its FieldMarshal row says
+    /// (`MetadataMethodFacts.ParameterMarshalling`); none for a synthesised method, which has no
+    /// Param rows.
+    let parameterMarshalling (this : MethodInfo<'a, 'b, 'c>) : (int * ParameterMarshal) list =
+        match this with
+        | MethodInfo.Synthesised _ -> []
+        | MethodInfo.Metadata (_, facts) -> facts.ParameterMarshalling
+
     let mapTypeGenerics<'a, 'b, 'methodGen, 'vars>
         (f : 'a -> 'b)
         (m : MethodInfo<'a, 'methodGen, 'vars>)
@@ -1420,6 +1448,28 @@ module MethodInfo =
             else
                 None
 
+        let parameterMarshalling =
+            [
+                for handle in methodDef.GetParameters () do
+                    let parameter = metadataReader.GetParameter handle
+                    let blob = parameter.GetMarshallingDescriptor ()
+
+                    let marshal =
+                        if
+                            blob.IsNil
+                            && not (
+                                FieldInfo.hasFieldMarshalRow
+                                    metadataReader
+                                    (ParameterHandle.op_Implicit handle : EntityHandle)
+                            )
+                        then
+                            ParameterMarshal.Absent
+                        else
+                            ParameterMarshal.Present (NativeTypeParamInfo.parse (metadataReader.GetBlobContent blob))
+
+                    yield int parameter.SequenceNumber, marshal
+            ]
+
         let unmanagedCallersOnly =
             readUnmanagedCallersOnly
                 metadataReader
@@ -1464,6 +1514,7 @@ module MethodInfo =
                 ImplAttributes = implAttrs
                 NativeImport = nativeImport
                 UnmanagedCallersOnly = unmanagedCallersOnly
+                ParameterMarshalling = parameterMarshalling
             }
         )
 
