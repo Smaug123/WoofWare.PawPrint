@@ -255,6 +255,73 @@ module LayoutFacts =
                 Diagnostic = diagnostic
             }
 
+    /// What a nominal type is, for the walk.
+    [<RequireQualifiedAccess>]
+    type private Category =
+        | Reference
+        | Enum
+        | Struct
+
+    /// What `concrete`, whose row is `typeInfo`, is. Its base chain decides, so the assemblies on
+    /// that chain are loaded first; one that does not bind is the failure.
+    let private categoryOf
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (concrete : ConcreteType<ConcreteTypeHandle>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeSystemState * Result<Category, TypeBindingFailure>
+        =
+        let declaring =
+            state.LoadedAssembly concrete.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith $"LayoutFacts: the assembly of the concrete type %O{concrete} is not loaded"
+            )
+
+        let assemblies, failure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                state._LoadedAssemblies
+                declaring
+                concrete.Definition.Get
+
+        let state =
+            { state with
+                _LoadedAssemblies = assemblies
+            }
+
+        match failure with
+        | Some failure -> state, Error (TypeBindingFailure.ofBaseChain failure)
+        | None ->
+            if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
+                state, Ok Category.Reference
+            elif LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
+                state, Ok Category.Enum
+            else
+                state, Ok Category.Struct
+
+    /// Whether `needle` is `haystack`, or occurs in it: as a generic argument, an element type, or a
+    /// function pointer's parameter type, at any depth.
+    let rec private occursIn
+        (state : TypeSystemState)
+        (needle : ConcreteTypeHandle)
+        (haystack : ConcreteTypeHandle)
+        : bool
+        =
+        needle = haystack
+        || match haystack with
+           | ConcreteTypeHandle.Concrete _ ->
+               match AllConcreteTypes.lookup haystack state.ConcreteTypes with
+               | Some concrete -> concrete.Generics |> Seq.exists (occursIn state needle)
+               | None -> failwith $"LayoutFacts: the concrete handle %O{haystack} is not registered"
+           | ConcreteTypeHandle.Byref element
+           | ConcreteTypeHandle.Pointer element
+           | ConcreteTypeHandle.OneDimArrayZero element
+           | ConcreteTypeHandle.Array (element, _) -> occursIn state needle element
+           | ConcreteTypeHandle.FunctionPointer signature ->
+               signature.ParameterTypes |> List.exists (occursIn state needle)
+
     /// The internal element type of `handle`, an enum whose row is `typeInfo`: that of its one
     /// instance field, which must be of a CoreLib primitive once an enum-typed field is stripped
     /// down to that enum's own (`#FieldDescTypeMorph`, methodtablebuilder.cpp). `stripping` holds the
@@ -270,15 +337,25 @@ module LayoutFacts =
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : TypeSystemState * Result<FieldElement, TypeBindingFailure>
         =
-        let refused () =
+        let refused (state : TypeSystemState) =
             state,
             Error (
                 unmodelled
                     $"the enum %O{concrete} has an instance field of no primitive type, which CoreCLR refuses to load"
             )
 
-        if stripping.Contains handle then
-            refused ()
+        if
+            (typeInfo.TypeAttributes &&& TypeAttributes.LayoutMask)
+            <> TypeAttributes.AutoLayout
+        then
+            // `HasLayoutMetadata` refuses layout on a type whose parent has none.
+            state,
+            Error (
+                unmodelled
+                    $"the enum %O{concrete} declares sequential or explicit layout, which CoreCLR refuses to load"
+            )
+        elif stripping.Contains handle then
+            refused state
         else
 
         match typeInfo.Fields |> List.filter (fun field -> not field.IsStatic) with
@@ -298,7 +375,7 @@ module LayoutFacts =
             | state, Ok underlying ->
 
             match TypeSystemState.tryGetConcreteTypeInfo state underlying with
-            | None -> refused ()
+            | None -> refused state
             | Some (underlyingType, underlyingInfo) ->
 
             let primitive =
@@ -313,21 +390,24 @@ module LayoutFacts =
 
             match primitive with
             | Some FieldElement.Void
-            | Some FieldElement.TypedReference -> refused ()
+            | Some FieldElement.TypedReference -> refused state
             | Some element -> state, Ok element
             | None ->
-                if LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies underlyingInfo then
-                    enumElement
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        state
-                        (stripping.Add handle)
-                        underlying
-                        underlyingType
-                        underlyingInfo
-                else
-                    refused ()
+
+            match categoryOf loggerFactory dotnetRuntimeDirs baseClassTypes state underlyingType underlyingInfo with
+            | state, Error failure -> state, Error failure
+            | state, Ok Category.Enum ->
+                enumElement
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    state
+                    (stripping.Add handle)
+                    underlying
+                    underlyingType
+                    underlyingInfo
+            | state, Ok Category.Reference
+            | state, Ok Category.Struct -> refused state
         | fields ->
             state,
             Error (
@@ -335,8 +415,8 @@ module LayoutFacts =
                     $"the enum %O{concrete} has %d{fields.Length} instance fields, not one, which CoreCLR refuses to load"
             )
 
-
-    /// The facts of `handle`, a value type whose row is `typeInfo`.
+    /// The facts of `handle`, a value type other than an enum, whose row is `typeInfo`. The
+    /// handles `InProgress` in `seen` are those whose fields the walk is inside.
     let rec private factsIn
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -352,29 +432,37 @@ module LayoutFacts =
         match seen.TryGetValue handle with
         | true, Completed facts -> state, Ok (seen, facts)
         | true, InProgress ->
-            // CoreCLR refuses to load a value type that holds itself by value.
             state,
             Error (unmodelled $"the value type %O{concrete} holds itself by value, which CoreCLR refuses to load")
         | false, _ ->
 
-        let layoutMask = typeInfo.TypeAttributes &&& TypeAttributes.LayoutMask
+        // A type the walk is already inside, `D<A>`, that holds by value an instantiation `D<B>` of
+        // its own definition whose arguments contain all of `A`, builds `B` from `A` by the same
+        // fields again at each level: `D<B>` holds a larger `D` still. CoreCLR refuses such a type,
+        // and the walk would not end. (A nesting such as `Wrap<Wrap<int>>` holds a smaller one.)
+        let expanding =
+            seen
+            |> Seq.exists (fun (KeyValue (outer, status)) ->
+                match status with
+                | Completed _ -> false
+                | InProgress ->
+                    match AllConcreteTypes.lookup outer state.ConcreteTypes with
+                    | Some outerType ->
+                        outerType.Identity = concrete.Identity
+                        && outerType.Generics
+                           |> Seq.forall (fun argument -> concrete.Generics |> Seq.exists (occursIn state argument))
+                    | None -> failwith $"LayoutFacts: the concrete handle %O{outer} is not registered"
+            )
 
-        if LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
-            if layoutMask = TypeAttributes.AutoLayout then
-                match
-                    enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
-                with
-                | state, Error failure -> state, Error failure
-                | state, Ok _ ->
-                    state, Ok (seen.Add (handle, Completed ValueTypeLayoutFacts.Enum), ValueTypeLayoutFacts.Enum)
-            else
-                // `HasLayoutMetadata` refuses layout on a type whose parent has none.
-                state,
-                Error (
-                    unmodelled
-                        $"the enum %O{concrete} declares sequential or explicit layout, which CoreCLR refuses to load"
-                )
+        if expanding then
+            state,
+            Error (
+                unmodelled
+                    $"the value type %O{concrete} is held by value inside an instantiation of its own definition over less, which CoreCLR refuses to load"
+            )
         else
+
+        let layoutMask = typeInfo.TypeAttributes &&& TypeAttributes.LayoutMask
 
         let isCoreLib =
             concrete.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
@@ -553,15 +641,16 @@ module LayoutFacts =
         | Some element -> state, Ok (seen, element)
         | None ->
 
-        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
-            state, Ok (seen, FieldElement.Reference)
-        elif LoadedTypeInfo.isEnum baseClassTypes state._LoadedAssemblies typeInfo then
+        match categoryOf loggerFactory dotnetRuntimeDirs baseClassTypes state concrete typeInfo with
+        | state, Error failure -> state, Error failure
+        | state, Ok Category.Reference -> state, Ok (seen, FieldElement.Reference)
+        | state, Ok Category.Enum ->
             match
                 enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
             with
             | state, Error failure -> state, Error failure
             | state, Ok element -> state, Ok (seen, element)
-        else
+        | state, Ok Category.Struct ->
 
         match factsIn loggerFactory dotnetRuntimeDirs baseClassTypes state seen handle concrete typeInfo with
         | state, Error failure -> state, Error failure
@@ -574,9 +663,9 @@ module LayoutFacts =
             state, Ok (seen, FieldElement.ValueType (isDecimal, facts))
 
     /// The layout facts of `handle`, or `None` where it is not a value type: a class, an
-    /// interface, an array, a pointer or a byref. A field type on the way that does not bind is the
-    /// failure, as is a value type CoreCLR would refuse to load for a reason these facts read
-    /// (such as one holding itself by value), returned with what loaded before it.
+    /// interface, an array, a pointer or a byref. A type on the way that does not bind is the
+    /// failure, as is a value type CoreCLR would refuse to load for a reason these facts read (such
+    /// as one holding itself by value), returned with what loaded before it.
     let ofValueType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -589,9 +678,16 @@ module LayoutFacts =
         | None -> state, Ok None
         | Some (concrete, typeInfo) ->
 
-        if not (LoadedTypeInfo.isValueType baseClassTypes state._LoadedAssemblies typeInfo) then
-            state, Ok None
-        else
+        match categoryOf loggerFactory dotnetRuntimeDirs baseClassTypes state concrete typeInfo with
+        | state, Error failure -> state, Error failure
+        | state, Ok Category.Reference -> state, Ok None
+        | state, Ok Category.Enum ->
+            match
+                enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok _ -> state, Ok (Some ValueTypeLayoutFacts.Enum)
+        | state, Ok Category.Struct ->
 
         let state, result =
             factsIn
