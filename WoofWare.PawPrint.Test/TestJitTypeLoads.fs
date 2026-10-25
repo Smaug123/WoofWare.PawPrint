@@ -173,6 +173,8 @@ public class ThingException : System.Exception { }
             Definition : string -> TypeDefn
             /// The return type and the parameters of the method of `Probes` of this name.
             Signature : string -> TypeDefn * TypeDefn list
+            /// The signature of the method of `Probes` of this name, as its definition spells it.
+            MethodSignature : string -> TypeMethodSignature<TypeDefn>
         }
 
     /// Where a probe, and a method it calls, meet a type, each in the order the JIT meets them.
@@ -231,7 +233,7 @@ public class ThingException : System.Exception { }
         : (JitTypePosition * TypeDefn) list
         =
         match JitTypeLoads.memberPositions operand with
-        | MemberPositions.Undescribed -> failwith $"memberPositions does not describe %A{operand}"
+        | MemberPositions.BySignature -> failwith $"memberPositions gives %A{operand} by its signature"
         | MemberPositions.Described positions ->
 
         positions
@@ -277,7 +279,7 @@ public class ThingException : System.Exception { }
     let private fieldMeetings (owner : TypeDefn) (fieldType : TypeDefn) : (JitTypePosition * TypeDefn) list =
         (JitTypePosition.DeclaringType, owner)
         :: (match JitTypeLoads.memberPositions MemberOperand.FieldAccess with
-            | MemberPositions.Undescribed -> failwith "memberPositions does not describe a field access"
+            | MemberPositions.BySignature -> failwith "memberPositions gives a field access by its signature"
             | MemberPositions.Described positions -> positions
             |> List.map (fun position ->
                 match position with
@@ -319,6 +321,20 @@ public class ThingException : System.Exception { }
                 if isUnmanaged shape then
                     $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static void SwiftOwnBare%d{k}(%s{s} p) {{ }}"
                     $"[System.Runtime.InteropServices.UnmanagedCallersOnly(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvCdecl) }})] static void CdeclOwnBare%d{k}(%s{s} p) {{ }}"
+                // Calls of unmanaged code, each in a branch never taken, so that nothing makes the
+                // stub CoreCLR uses where the JIT leaves the transition to unmanaged code to one. The
+                // JIT inlining a caller into a probe would compile the call in the probe's `try`.
+                $"[System.Runtime.InteropServices.DllImport(\"nowhere\")] static extern %s{s} NativeReturns%d{k}();"
+                $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsNativeReturns%d{k}() {{ if (Never) NativeReturns%d{k}(); }}"
+                if takesNull shape then
+                    $"[System.Runtime.InteropServices.DllImport(\"nowhere\")] static extern void NativeTakes%d{k}(%s{s} p);"
+                    $"[System.Runtime.InteropServices.DllImport(\"nowhere\"), System.Runtime.InteropServices.UnmanagedCallConv(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static extern void SwiftNativeTakes%d{k}(%s{s} p);"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsNative%d{k}() {{ if (Never) NativeTakes%d{k}(null); }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesNative%d{k}() {{ try {{ if (Never) NativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftNative%d{k}() {{ if (Never) SwiftNativeTakes%d{k}(null); }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesSwiftNative%d{k}() {{ try {{ if (Never) SwiftNativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged<%s{s}, void>)Pointer)(null); }}"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftUnmanaged%d{k}() {{ if (Never) ((delegate* unmanaged[Swift]<%s{s}, void>)Pointer)(null); }}"
             ]
 
         let types =
@@ -353,6 +369,24 @@ public class ThingException : System.Exception { }
             }
 
         let call = MemberOperand.Call
+
+        // A probe calling the method of `Probes` named `helper`, whose compilation calls unmanaged
+        // code by `convention`, by the signature of the method of `Probes` named `native`.
+        let unmanagedProbe
+            (name : string)
+            (helper : string)
+            (native : string)
+            (convention : UnmanagedConvention)
+            : Probe
+            =
+            probe
+                name
+                $"%s{helper}();"
+                (fun spelt ->
+                    meets
+                        (signatureMeetings call TypeDefn.Void [])
+                        (JitTypeLoads.unmanagedMeetings convention (spelt.MethodSignature native))
+                )
 
         [
             probe
@@ -617,6 +651,11 @@ public class ThingException : System.Exception { }
                          @ signatureMeetings call TypeDefn.Void [ byref ])
                         [ JitTypePosition.OwnParameter, byref ]
                 )
+            unmanagedProbe
+                "UnmanagedReturn"
+                $"CallsNativeReturns%d{k}"
+                $"NativeReturns%d{k}"
+                UnmanagedConvention.NotSwift
             probe
                 "TypeToken"
                 $"UseType(typeof(%s{s}));"
@@ -645,6 +684,46 @@ public class ThingException : System.Exception { }
                     "IndirectParameter"
                     $"delegate*<%s{s}, void> f = null; if (Never) f(null);"
                     (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ spelt.Shape ]) [])
+
+                // Each calls a method whose compilation calls unmanaged code, `NativeTakes` by
+                // signature. The JIT makes the transition to unmanaged code there, so making the
+                // loads it may make or not, except inside a `try` with a `catch`.
+                unmanagedProbe "UnmanagedParameter" $"CallsNative%d{k}" $"NativeTakes%d{k}" UnmanagedConvention.NotSwift
+
+                { unmanagedProbe
+                      "CaughtUnmanagedParameter"
+                      $"CatchesNative%d{k}"
+                      $"NativeTakes%d{k}"
+                      UnmanagedConvention.NotSwift with
+                    Possible = fun _ -> PossibleLoads.Skipped
+                }
+
+                { unmanagedProbe
+                      "CaughtSwiftUnmanagedParameter"
+                      $"CatchesSwiftNative%d{k}"
+                      $"SwiftNativeTakes%d{k}"
+                      UnmanagedConvention.MaybeSwift with
+                    Possible = fun _ -> PossibleLoads.Skipped
+                }
+
+                unmanagedProbe
+                    "IndirectUnmanagedParameter"
+                    $"CallsUnmanaged%d{k}"
+                    $"NativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+
+                if compilesSwift then
+                    unmanagedProbe
+                        "SwiftUnmanagedParameter"
+                        $"CallsSwiftNative%d{k}"
+                        $"SwiftNativeTakes%d{k}"
+                        UnmanagedConvention.MaybeSwift
+
+                    unmanagedProbe
+                        "SwiftIndirectUnmanagedParameter"
+                        $"CallsSwiftUnmanaged%d{k}"
+                        $"NativeTakes%d{k}"
+                        UnmanagedConvention.Swift
             if isTypeArgument shape then
                 probe
                     "MethodArgument"
@@ -811,6 +890,7 @@ public class ThingException : System.Exception { }
             "public static unsafe class Probes"
             "{"
             "    static bool Never;"
+            "    static void* Pointer;"
             "    static void Use(void* p) => throw null;"
             "    static void UseType(System.Type t) => throw null;"
             "    static void Keep(object o) => throw null;"
@@ -952,15 +1032,18 @@ public class ThingException : System.Exception { }
 
         let probesType = clientType "Probes"
 
+        let methodSignature (name : string) : TypeMethodSignature<TypeDefn> =
+            (probesType.Methods |> List.find (fun m -> m.Name = name)).Signature
+
         let signature (name : string) : TypeDefn * TypeDefn list =
-            let method = probesType.Methods |> List.find (fun m -> m.Name = name)
+            let signature = methodSignature name
 
             let returned =
-                match method.Signature.ReturnType with
+                match signature.ReturnType with
                 | MethodReturnType.Returns returned -> returned
                 | MethodReturnType.Void -> TypeDefn.Void
 
-            returned, method.Signature.ParameterTypes
+            returned, signature.ParameterTypes
 
         // The provider is where the loader looks for assemblies, but not loaded.
         let directory = Directory.CreateTempSubdirectory "jit-type-loads"
@@ -1056,6 +1139,7 @@ public class ThingException : System.Exception { }
                                     | None -> TypeDefn.Void
                                 Definition = definition
                                 Signature = signature
+                                MethodSignature = methodSignature
                             }
 
                         ((assemblies, outcomes), probes)

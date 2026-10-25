@@ -106,7 +106,12 @@ What lives here:
   parameters' targets too. Making a delegate open over its target loads approximately each value
   type of the `Invoke` method's signature and then of the target's (`JitTypeLoad.Approximately`), as
   CoreCLR makes a thunk to shuffle the arguments; making one closed over its target loads nothing
-  more. What a call of unmanaged code loads it does not describe. `TestJitTypeLoads` puts each of a grammar of types
+  more. A call of unmanaged code (a P/Invoke, or `calli` by an unmanaged calling convention) loads
+  what any call does, and, where the JIT makes the transition to unmanaged code in the caller's own
+  code, each value type and instantiation that the VM's walk for whether the call needs marshalling
+  reaches, and by Swift's convention each pointer's target; whether the JIT makes the transition
+  there it does not decide, so those are loads it may make (`JitTypeLoads.unmanagedMeetings`, with
+  `UnmanagedConvention` saying whether the convention is Swift's). `TestJitTypeLoads` puts each of a grammar of types
   that load, fail to load or live in a missing assembly at each position, runs every probe on the
   host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
   rule and `TypeLoad` say, with the same exception.

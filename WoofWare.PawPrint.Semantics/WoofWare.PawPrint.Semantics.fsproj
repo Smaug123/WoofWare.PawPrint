@@ -35,6 +35,7 @@
         <Compile Include="SharedNativeField.fs" />
         <Compile Include="NativeMethod.fs" />
         <Compile Include="StringConstructor.fs" />
+        <Compile Include="UnmanagedConvention.fs" />
         <Compile Include="JitTypeLoads.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <Compile Include="HardwareInstruction.fs" />
