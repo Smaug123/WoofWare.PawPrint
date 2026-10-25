@@ -804,6 +804,146 @@ module TestLayoutFacts =
         blittable.GetValueOrDefault (Some true) |> shouldBeGreaterThan 0
         blittable.GetValueOrDefault (Some false) |> shouldBeGreaterThan 0
 
+    /// Enums whose one instance field is not of a primitive type, and a struct holding each:
+    /// `SelfEnum`'s field is of `SelfEnum` itself, `CycleA`'s and `CycleB`'s are of each other,
+    /// `EnumOfEnum`'s is of an ordinary enum, and `StructEnum`'s is of a struct.
+    let private oddEnumCorpus : byte[] =
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName "OddEnums", typeof<obj>.Assembly)
+
+        let md = builder.DefineDynamicModule "OddEnums"
+
+        let ordinary =
+            (md.DefineEnum ("Ordinary", TypeAttributes.Public, typeof<int>)).CreateType ()
+
+        let plain =
+            md.DefineType ("Plain", structAttributes Layout.Sequential CharSetChoice.Ansi, typeof<ValueType>)
+
+        plain.DefineField ("X", typeof<int>, FieldAttributes.Public) |> ignore
+        let plain = plain.CreateType ()
+
+        let enums =
+            [ "SelfEnum" ; "CycleA" ; "CycleB" ; "EnumOfEnum" ; "StructEnum" ]
+            |> List.map (fun name ->
+                name, md.DefineType (name, TypeAttributes.Public ||| TypeAttributes.Sealed, typeof<Enum>)
+            )
+            |> Map.ofList
+
+        for name, underlying in
+            [
+                "SelfEnum", (enums.["SelfEnum"] :> Type)
+                "CycleA", (enums.["CycleB"] :> Type)
+                "CycleB", (enums.["CycleA"] :> Type)
+                "EnumOfEnum", ordinary
+                "StructEnum", plain
+            ] do
+            enums.[name]
+                .DefineField (
+                    "value__",
+                    underlying,
+                    FieldAttributes.Public
+                    ||| FieldAttributes.SpecialName
+                    ||| FieldAttributes.RTSpecialName
+                )
+            |> ignore
+
+        for KeyValue (name, tb) in enums do
+            tb.CreateType () |> ignore
+
+            let holder =
+                md.DefineType ("Holds" + name, structAttributes Layout.Sequential CharSetChoice.Ansi, typeof<ValueType>)
+
+            holder.DefineField ("E", tb, FieldAttributes.Public) |> ignore
+            holder.CreateType () |> ignore
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// CoreCLR strips an enum-typed field of an enum down to that enum's underlying type
+    /// (`#FieldDescTypeMorph`, methodtablebuilder.cpp), then refuses an enum whose field is still
+    /// not of a primitive type. Where the host loads a type the facts must say what it says, and
+    /// where it refuses one they must be a failure, not a walk without end.
+    [<Test>]
+    let ``An enum's field is judged through enums to a primitive, and refused otherwise, as the host does`` () : unit =
+        let context = Runtime.Loader.AssemblyLoadContext ("OddEnums", isCollectible = true)
+
+        try
+            let hostAssembly = context.LoadFromStream (new MemoryStream (oddEnumCorpus))
+
+            let dumped =
+                Assembly.read loggerFactory (Some "OddEnums.dll") (new MemoryStream (oddEnumCorpus))
+
+            let mutable state = baseState.Force().WithLoadedAssembly dumped
+
+            let outcomes =
+                [ "SelfEnum" ; "CycleA" ; "CycleB" ; "EnumOfEnum" ; "StructEnum" ]
+                |> List.collect (fun name -> [ name ; "Holds" + name ])
+                |> List.map (fun name ->
+                    // The host may refuse the type as soon as it is named.
+                    let hostType =
+                        try
+                            let hostType = hostAssembly.GetType name
+                            RuntimeHelpers.GetUninitializedObject hostType |> ignore
+                            Some hostType
+                        with :? TypeLoadException ->
+                            None
+
+                    let hostLoads = hostType.IsSome
+
+                    let typeInfo =
+                        dumped.TypeDefs.Values |> Seq.filter (fun t -> t.Name = name) |> Seq.exactlyOne
+
+                    let next, handle =
+                        TypeSystemState.concretizeType
+                            loggerFactory
+                            HostImage.runtimeDirs
+                            bct
+                            state
+                            dumped.DefinitionFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            (TypeDefn.FromDefinition (
+                                typeInfo.Identity,
+                                System.Reflection.Metadata.SignatureTypeKind.ValueType
+                            ))
+                        |> BindingResult.bound
+
+                    let next, facts =
+                        LayoutFacts.ofValueType loggerFactory HostImage.runtimeDirs bct next handle
+
+                    state <- next
+
+                    match hostType, facts with
+                    | Some hostType, Ok (Some facts) ->
+                        if hostType.IsEnum then
+                            facts |> shouldEqual ValueTypeLayoutFacts.Enum
+                        else
+                            Some facts.IsBlittable |> shouldEqual (hostBlittable true hostType)
+                    | None, Error (TypeBindingFailure.Unmodelled _) -> ()
+                    | _, other -> failwith $"%s{name}: the host loads it %b{hostLoads}, but the facts are %A{other}"
+
+                    name, hostLoads
+                )
+
+            // The host draws the line where the comparison above needs it drawn.
+            outcomes
+            |> shouldEqual
+                [
+                    "SelfEnum", false
+                    "HoldsSelfEnum", false
+                    "CycleA", false
+                    "HoldsCycleA", false
+                    "CycleB", false
+                    "HoldsCycleB", false
+                    "EnumOfEnum", true
+                    "HoldsEnumOfEnum", true
+                    "StructEnum", false
+                    "HoldsStructEnum", false
+                ]
+        finally
+            context.Unload ()
+
     /// Byref-like structs, which hold a byref (or a `TypedReference`, or a `Span<T>`) and nothing
     /// that is an object reference, each with `[UnmanagedCallersOnly]` methods `Direct<name>` taking
     /// it. C# refuses to declare such a method, so they are emitted.
