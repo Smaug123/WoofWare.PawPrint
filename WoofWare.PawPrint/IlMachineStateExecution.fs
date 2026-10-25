@@ -35,7 +35,7 @@ module IlMachineStateExecution =
                 state.TypeSystem
                 receiverType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// What a virtual or interface call runs on a receiver of a known type.
     [<RequireQualifiedAccess>]
@@ -108,7 +108,7 @@ module IlMachineStateExecution =
                 walkBaseTypes
                 state.TypeSystem
 
-        match result with
+        match BindingStop.bound result with
         | VirtualImplementation.Found implementation ->
             let typeSystem, implementationResult =
                 MethodConcretisation.concretizeMethodWithAllGenerics

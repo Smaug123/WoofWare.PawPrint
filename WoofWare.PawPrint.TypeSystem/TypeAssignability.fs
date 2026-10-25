@@ -20,10 +20,10 @@ module TypeAssignability =
         (state : TypeSystemState)
         (objType : ConcreteTypeHandle)
         (targetType : ConcreteTypeHandle)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         if objType = targetType then
-            state, true
+            state, Ok true
         else
 
         let isReferenceTypeHandle =
@@ -38,18 +38,22 @@ module TypeAssignability =
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> None
 
-        let rec checkInterfaces (state : TypeSystemState) (current : ConcreteTypeHandle) : TypeSystemState * bool =
+        let rec checkInterfaces
+            (state : TypeSystemState)
+            (current : ConcreteTypeHandle)
+            : TypeSystemState * Result<bool, TypeBindingFailure>
+            =
             match TypeSystemState.tryGetConcreteTypeInfo state current with
             | None ->
                 // This node has no metadata-declared interfaces. The caller decides whether to walk its base.
-                state, false
+                state, Ok false
             | Some (ct, typeInfo) ->
                 let assy = state._LoadedAssemblies.ByDefinitionName ct.Identity.AssemblyFullName
 
-                ((state, false), typeInfo.ImplementedInterfaces)
-                ||> Seq.fold (fun (state, found) impl ->
+                (state, false, typeInfo.ImplementedInterfaces)
+                |||> StateResult.fold (fun state found impl ->
                     if found then
-                        state, true
+                        state, Ok true
                     else
                         let implAssy =
                             match state.LoadedAssembly impl.RelativeToAssembly.FullName with
@@ -68,9 +72,11 @@ module TypeAssignability =
                                 implAssy
                                 impl.InterfaceHandle
 
-                        let implTypeDefn, implResolvedAssy = BindingStop.bound implTypeDefnResult
+                        match implTypeDefnResult with
+                        | Error failure -> state, Error failure
+                        | Ok (implTypeDefn, implResolvedAssy) ->
 
-                        let state, implHandle =
+                        match
                             TypeSystemState.concretizeType
                                 loggerFactory
                                 dotnetRuntimeDirs
@@ -80,18 +86,22 @@ module TypeAssignability =
                                 ct.Generics
                                 ImmutableArray.Empty
                                 implTypeDefn
-
-                        let implHandle = BindingStop.bound implHandle
-
-                        // Check exact match, then recurse into the interface's own parent interfaces.
-                        walk state implHandle
+                        with
+                        | state, Error failure -> state, Error failure
+                        | state, Ok implHandle ->
+                            // Check exact match, then recurse into the interface's own parent interfaces.
+                            walk state implHandle
                 )
 
-        and walkBase (state : TypeSystemState) (current : ConcreteTypeHandle) : TypeSystemState * bool =
+        and walkBase
+            (state : TypeSystemState)
+            (current : ConcreteTypeHandle)
+            : TypeSystemState * Result<bool, TypeBindingFailure>
+            =
             match current with
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ -> state, false
+            | ConcreteTypeHandle.FunctionPointer _ -> state, Ok false
             | ConcreteTypeHandle.Concrete _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ ->
@@ -102,13 +112,17 @@ module TypeAssignability =
                 | None ->
                     // Every reference type (including interfaces) is assignable to System.Object.
                     match targetType with
-                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                    | _ -> state, false
+                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, Ok true
+                    | _ -> state, Ok false
                 | Some parent -> walk state parent
 
-        and walk (state : TypeSystemState) (current : ConcreteTypeHandle) : TypeSystemState * bool =
+        and walk
+            (state : TypeSystemState)
+            (current : ConcreteTypeHandle)
+            : TypeSystemState * Result<bool, TypeBindingFailure>
+            =
             if current = targetType then
-                state, true
+                state, Ok true
             else
 
             match TypeSystemState.tryGetConcreteTypeInfo state current with
@@ -143,9 +157,9 @@ module TypeAssignability =
 
                     if not hasVariantGenericParams then
                         // All generic parameters are invariant; same definition + different generics = not assignable.
-                        state, false
+                        state, Ok false
                     elif Set.contains (current, targetType) visited then
-                        state, false
+                        state, Ok false
                     else
                         checkVariantGenericArgs
                             (Set.add (current, targetType) visited)
@@ -154,12 +168,10 @@ module TypeAssignability =
                             targetCt
                             targetTypeInfo
                 | None ->
-                    let state, interfaceMatch = checkInterfaces state current
-
-                    if interfaceMatch then
-                        state, true
-                    else
-                        walkBase state current
+                    match checkInterfaces state current with
+                    | state, Ok true -> state, Ok true
+                    | state, Ok false -> walkBase state current
+                    | state, Error failure -> state, Error failure
 
         // ECMA-335 §I.8.7 / CoreCLR `MethodTable::CanCastByVarianceToInterfaceOrDelegate`:
         // when two generic instantiations share the same TypeDef and the
@@ -184,11 +196,11 @@ module TypeAssignability =
             (currentCt : ConcreteType<ConcreteTypeHandle>)
             (targetCt : ConcreteType<ConcreteTypeHandle>)
             (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-            : TypeSystemState * bool
+            : TypeSystemState * Result<bool, TypeBindingFailure>
             =
-            let rec loop (state : TypeSystemState) (i : int) : TypeSystemState * bool =
+            let rec loop (state : TypeSystemState) (i : int) : TypeSystemState * Result<bool, TypeBindingFailure> =
                 if i >= currentCt.Generics.Length then
-                    state, true
+                    state, Ok true
                 else
                     let fromArg = currentCt.Generics.[i]
                     let toArg = targetCt.Generics.[i]
@@ -202,10 +214,10 @@ module TypeAssignability =
                             match paramMetadata.Variance with
                             | None ->
                                 // Invariant parameter with non-identical arguments.
-                                state, false
+                                state, Ok false
                             | Some GenericVariance.Covariant ->
                                 if not (isReferenceTypeHandle state fromArg) then
-                                    state, false
+                                    state, Ok false
                                 else
                                     isConcreteTypeAssignableToVisiting
                                         visited
@@ -217,7 +229,7 @@ module TypeAssignability =
                                         toArg
                             | Some GenericVariance.Contravariant ->
                                 if not (isReferenceTypeHandle state toArg) then
-                                    state, false
+                                    state, Ok false
                                 else
                                     isConcreteTypeAssignableToVisiting
                                         visited
@@ -228,7 +240,10 @@ module TypeAssignability =
                                         toArg
                                         fromArg
 
-                        if argOk then loop state (i + 1) else state, false
+                        match argOk with
+                        | Ok true -> loop state (i + 1)
+                        | Ok false -> state, Ok false
+                        | Error failure -> state, Error failure
 
             loop state 0
 
@@ -296,10 +311,10 @@ module TypeAssignability =
             (state : TypeSystemState)
             (objElement : ConcreteTypeHandle)
             (targetElement : ConcreteTypeHandle)
-            : TypeSystemState * bool
+            : TypeSystemState * Result<bool, TypeBindingFailure>
             =
             if objElement = targetElement then
-                state, true
+                state, Ok true
             else
                 let objIsRef = isReferenceTypeHandle state objElement
                 let targetIsRef = isReferenceTypeHandle state targetElement
@@ -314,20 +329,20 @@ module TypeAssignability =
                         objElement
                         targetElement
                 elif objIsRef <> targetIsRef then
-                    state, false
+                    state, Ok false
                 else
                     let state, objNormalised = valueElementNormalisedIdentity state objElement
                     let state, targetNormalised = valueElementNormalisedIdentity state targetElement
 
                     match objNormalised, targetNormalised with
-                    | Some a, Some b when a = b -> state, true
-                    | _, _ -> state, false
+                    | Some a, Some b when a = b -> state, Ok true
+                    | _, _ -> state, Ok false
 
         let checkArraySpecificRules
             (state : TypeSystemState)
             (objType : ConcreteTypeHandle)
             (targetType : ConcreteTypeHandle)
-            : TypeSystemState * bool option
+            : TypeSystemState * Result<bool, TypeBindingFailure> option
             =
             match arrayShape objType, arrayShape targetType with
             | Some (objElement, objShape), Some (targetElement, targetShape) ->
@@ -343,7 +358,7 @@ module TypeAssignability =
                     | Some objRank, Some targetRank -> objRank = targetRank
 
                 if not ranksAgree then
-                    state, Some false
+                    state, Some (Ok false)
                 else
                     let state, compatible = elementCovariantlyCompatible state objElement targetElement
                     state, Some compatible
@@ -369,7 +384,7 @@ module TypeAssignability =
             (state : TypeSystemState)
             (objType : ConcreteTypeHandle)
             (targetType : ConcreteTypeHandle)
-            : (TypeSystemState * bool) option
+            : (TypeSystemState * Result<bool, TypeBindingFailure>) option
             =
             match objType with
             | ConcreteTypeHandle.OneDimArrayZero objElement ->
@@ -391,11 +406,10 @@ module TypeAssignability =
         match objType with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
-            let state, assignable = walk state objType
-
-            if assignable then
-                state, assignable
-            else
+            match walk state objType with
+            | state, Ok true -> state, Ok true
+            | state, Error failure -> state, Error failure
+            | state, Ok false ->
                 match checkArraySpecificRules state objType targetType with
                 | state, Some assignable -> state, assignable
                 | state, None ->
@@ -407,7 +421,7 @@ module TypeAssignability =
                         // a generic interface that isn't one of the five
                         // implicit ones — are definitively not assignable.
                         // CoreCLR's `ArraySupportsBizarreInterface` agrees.
-                        state, false
+                        state, Ok false
         | ConcreteTypeHandle.Concrete _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
@@ -417,6 +431,8 @@ module TypeAssignability =
     /// Walks the base type chain and checks implemented interfaces at each level.
     /// Returns true if objType = targetType, or targetType is a base class of objType,
     /// or targetType is an interface implemented by objType or any of its base classes.
+    /// An interface on the way that does not bind is the failure, returned with what loaded
+    /// before it.
     let isConcreteTypeAssignableTo
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -424,7 +440,7 @@ module TypeAssignability =
         (state : TypeSystemState)
         (objType : ConcreteTypeHandle)
         (targetType : ConcreteTypeHandle)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         isConcreteTypeAssignableToVisiting
             Set.empty

@@ -48,7 +48,7 @@ module internal IntrinsicHelpers =
         let typeSystem, result =
             GcReferences.containsReferences loggerFactory state.DotnetRuntimeDirs baseClassTypes state.TypeSystem handle
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// Compute `src + offset` worth of element-T steps over a byref source.
     /// The input byref may or may not carry an address-preserving

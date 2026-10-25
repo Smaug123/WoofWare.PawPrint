@@ -333,7 +333,7 @@ module TestSzArrayInterfaceDispatch =
                         true
                         state.TypeSystem
 
-                match resolved with
+                match BindingResult.value resolved with
                 | VirtualImplementation.Unmodelled reason -> reason |> shouldContainText "SZArrayHelper"
                 | other -> failwith $"expected a refusal, got %O{other}"
             with e ->

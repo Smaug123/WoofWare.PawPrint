@@ -42,7 +42,9 @@ module internal DefaultInterfaceImplementation =
     /// it is the one CoreCLR's search meets first: for an instance method the first body in
     /// `level`'s method table, in slot order (the MethodImpl search of
     /// `TryGetCandidateImplementation`), and for a static method the body of the first such
-    /// MethodImpl row (`MethodTable::TryResolveVirtualStaticMethodOnThisType`).
+    /// MethodImpl row (`MethodTable::TryResolveVirtualStaticMethodOnThisType`). A type the search
+    /// reaches that does not bind is the failure.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let internal implementationOnType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -50,13 +52,16 @@ module internal DefaultInterfaceImplementation =
         (level : ConcreteTypeHandle)
         (method : SlotIdentity)
         (statics : bool)
-        (accepts : TypeSystemState -> ConcreteTypeHandle -> TypeSystemState * bool)
+        (accepts : TypeSystemState -> ConcreteTypeHandle -> TypeSystemState * Result<bool, TypeBindingFailure>)
         (state : TypeSystemState)
         : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+          Result<
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option,
+              TypeBindingFailure
+           >
         =
         match TypeSystemState.tryGetConcreteTypeInfo state level with
-        | None -> state, None
+        | None -> state, Ok None
         | Some (levelTy, levelTypeInfo) ->
 
         let owner = ConcreteMethodTable.ownerOfDefinition operation state levelTy.Identity
@@ -77,9 +82,12 @@ module internal DefaultInterfaceImplementation =
             (state : TypeSystemState)
             (row : MethodImplParsed)
             : TypeSystemState *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+              Result<
+                  WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option,
+                  TypeBindingFailure
+               >
             =
-            let state, declaration =
+            match
                 ConcreteInterfaceDispatch.interfaceMethodImplDeclaration
                     loggerFactory
                     dotnetRuntimeDirs
@@ -92,47 +100,59 @@ module internal DefaultInterfaceImplementation =
                     owner.Substitution
                     assembly
                     row.Declaration
-
-            match declaration with
-            | Some (declaredOn, _, declared) when declared = method ->
+            with
+            | state, Error failure -> state, Error failure
+            | state, Ok (Some (declaredOn, _, declared)) when declared = method ->
                 match accepts state declaredOn with
-                | state, true ->
-                    let state, body =
-                        ConcreteInterfaceDispatch.methodImplBody
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            operation
-                            state
-                            owner
-                            levelTypeInfo
-                            assembly
-                            row.Body
-
-                    state, Some body
-                | state, false -> state, None
-            | _ -> state, None
+                | state, Error failure -> state, Error failure
+                | state, Ok true ->
+                    ConcreteInterfaceDispatch.methodImplBody
+                        loggerFactory
+                        dotnetRuntimeDirs
+                        baseClassTypes
+                        operation
+                        state
+                        owner
+                        levelTypeInfo
+                        assembly
+                        row.Body
+                    |> fun (state, body) -> state, Result.map Some body
+                | state, Ok false -> state, Ok None
+            | state, Ok _ -> state, Ok None
 
         if statics then
-            let rec first (state : TypeSystemState) (rows : MethodImplParsed list) =
+            let rec first
+                (state : TypeSystemState)
+                (rows : MethodImplParsed list)
+                : TypeSystemState *
+                  Result<
+                      WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option,
+                      TypeBindingFailure
+                   >
+                =
                 match rows with
-                | [] -> state, None
+                | [] -> state, Ok None
                 | row :: rows ->
                     match bodyOf state row with
-                    | state, Some body -> state, Some body
-                    | state, None -> first state rows
+                    | state, Ok None -> first state rows
+                    | found -> found
 
             first state rows
         else
-            let bodies, state =
-                (state, rows)
-                ||> List.mapFold (fun state row ->
-                    let state, body = bodyOf state row
-                    body, state
+            let state, bodies =
+                (state, [], rows)
+                |||> StateResult.fold (fun state acc row ->
+                    match bodyOf state row with
+                    | state, Ok body -> state, Ok (acc @ [ body ])
+                    | state, Error failure -> state, Error failure
                 )
 
+            match bodies with
+            | Error failure -> state, Error failure
+            | Ok bodies ->
+
             match List.choose id bodies with
-            | [] -> state, None
+            | [] -> state, Ok None
             | bodies ->
                 let state, table =
                     ConcreteMethodTable.slotTableOfDefinition
@@ -155,7 +175,7 @@ module internal DefaultInterfaceImplementation =
                         failwith
                             $"%s{operation}: the MethodImpl body %s{body.Name} holds no slot in the method table of %s{levelTy.Name}, which declares it"
 
-                state, Some (List.minBy slotOf bodies)
+                state, Ok (Some (List.minBy slotOf bodies))
 
     /// Whether `from` casts to `target`, which for two interfaces is identity or variance.
     let internal castsTo
@@ -165,7 +185,7 @@ module internal DefaultInterfaceImplementation =
         (target : ConcreteTypeHandle)
         (state : TypeSystemState)
         (from : ConcreteTypeHandle)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         TypeAssignability.isConcreteTypeAssignableTo loggerFactory dotnetRuntimeDirs baseClassTypes state from target
 
@@ -182,7 +202,7 @@ module internal DefaultInterfaceImplementation =
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (candidate : ConcreteTypeHandle)
         (state : TypeSystemState)
-        : TypeSystemState * Candidate option
+        : TypeSystemState * Result<Candidate option, TypeBindingFailure>
         =
         let own () =
             if method.Body.IsAbstract then
@@ -195,24 +215,29 @@ module internal DefaultInterfaceImplementation =
                     }
 
         if candidate = target then
-            state, own ()
+            state, Ok (own ())
         else
 
         match castsTo loggerFactory dotnetRuntimeDirs baseClassTypes target state candidate with
-        | state, false -> state, None
-        | state, true ->
+        | state, Error failure -> state, Error failure
+        | state, Ok false -> state, Ok None
+        | state, Ok true ->
 
         if sameDefinition state candidate target then
-            state, (if allowVariance then own () else None)
+            state, Ok (if allowVariance then own () else None)
         else
 
-        let accepts (state : TypeSystemState) (declaredOn : ConcreteTypeHandle) =
+        let accepts
+            (state : TypeSystemState)
+            (declaredOn : ConcreteTypeHandle)
+            : TypeSystemState * Result<bool, TypeBindingFailure>
+            =
             if declaredOn = target then
-                state, true
+                state, Ok true
             elif allowVariance && sameDefinition state declaredOn target then
                 castsTo loggerFactory dotnetRuntimeDirs baseClassTypes target state declaredOn
             else
-                state, false
+                state, Ok false
 
         let state, body =
             implementationOnType
@@ -227,11 +252,13 @@ module internal DefaultInterfaceImplementation =
 
         state,
         body
-        |> Option.map (fun body ->
-            {
-                Interface = candidate
-                Body = body
-            }
+        |> Result.map (
+            Option.map (fun body ->
+                {
+                    Interface = candidate
+                    Body = body
+                }
+            )
         )
 
     /// Add `current` to `candidates`, keeping only the most specific of those that cast to one
@@ -245,7 +272,7 @@ module internal DefaultInterfaceImplementation =
         (current : Candidate)
         (state : TypeSystemState)
         (candidates : Candidate option list)
-        : TypeSystemState * Candidate option list
+        : TypeSystemState * Result<Candidate option list, TypeBindingFailure>
         =
         // Walks the candidates in order, rebuilding the list: `seenMoreSpecific` says whether
         // `current` has already displaced one, and `insert` whether it still needs a place.
@@ -255,14 +282,15 @@ module internal DefaultInterfaceImplementation =
             (insert : bool)
             (before : Candidate option list)
             (after : Candidate option list)
+            : TypeSystemState * Result<Candidate option list * bool, TypeBindingFailure>
             =
             match after with
-            | [] -> state, List.rev before, insert
+            | [] -> state, Ok (List.rev before, insert)
             | None :: rest -> go state seenMoreSpecific insert (None :: before) rest
             | Some existing :: rest ->
                 if existing.Interface = current.Interface then
                     // A duplicate: nothing more to do.
-                    state, List.rev before @ after, false
+                    state, Ok (List.rev before @ after, false)
                 elif allowVariance && sameDefinition state existing.Interface current.Interface then
                     // Variant instantiations of one interface tie.
                     go state seenMoreSpecific insert (Some existing :: before) rest
@@ -271,23 +299,25 @@ module internal DefaultInterfaceImplementation =
                 match
                     castsTo loggerFactory dotnetRuntimeDirs baseClassTypes existing.Interface state current.Interface
                 with
-                | state, true ->
+                | state, Error failure -> state, Error failure
+                | state, Ok true ->
                     // `current` is more specific: it takes the first such place, and empties the rest.
                     let replaced = if seenMoreSpecific then None else Some current
                     go state true false (replaced :: before) rest
-                | state, false ->
+                | state, Ok false ->
 
                 match
                     castsTo loggerFactory dotnetRuntimeDirs baseClassTypes current.Interface state existing.Interface
                 with
-                | state, true ->
+                | state, Error failure -> state, Error failure
+                | state, Ok true ->
                     // `existing` already stands for `current`.
-                    state, List.rev before @ after, false
-                | state, false -> go state seenMoreSpecific insert (Some existing :: before) rest
+                    state, Ok (List.rev before @ after, false)
+                | state, Ok false -> go state seenMoreSpecific insert (Some existing :: before) rest
 
-        let state, candidates, insert = go state false true [] candidates
-
-        state, (if insert then candidates @ [ Some current ] else candidates)
+        match go state false true [] candidates with
+        | state, Error failure -> state, Error failure
+        | state, Ok (candidates, insert) -> state, Ok (if insert then candidates @ [ Some current ] else candidates)
 
     /// The default bodies for `method`, an interface method as the call instantiates it, which survive
     /// CoreCLR's search among `receiver` and the interfaces of every type on its chain
@@ -299,6 +329,9 @@ module internal DefaultInterfaceImplementation =
     /// The survivors are distinct interfaces, none of which casts to another except as variance
     /// allows; what more than one of them means is the caller's question. A survivor's body may be
     /// abstract, which is a reabstraction.
+    ///
+    /// A type the search reaches that does not bind is the failure.
+    /// One that building a method table (`ConcreteMethodTable`) reaches still stops the run.
     let internal search
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -307,7 +340,7 @@ module internal DefaultInterfaceImplementation =
         (receiver : ConcreteTypeHandle)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState * Candidate list
+        : TypeSystemState * Result<Candidate list, TypeBindingFailure>
         =
         let state, target =
             match
@@ -326,26 +359,37 @@ module internal DefaultInterfaceImplementation =
                 },
                 target
 
-        let consider (state : TypeSystemState, candidates : Candidate option list) (on : ConcreteTypeHandle) =
+        let consider
+            (state : TypeSystemState)
+            (candidates : Candidate option list)
+            (on : ConcreteTypeHandle)
+            : TypeSystemState * Result<Candidate option list, TypeBindingFailure>
+            =
             match candidateOn loggerFactory dotnetRuntimeDirs baseClassTypes allowVariance target method on state with
-            | state, None -> state, candidates
-            | state, Some current ->
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok candidates
+            | state, Ok (Some current) ->
                 insertCandidate loggerFactory dotnetRuntimeDirs baseClassTypes allowVariance current state candidates
 
         // The receiver itself, when it is an interface.
         let state, candidates =
             match TypeSystemState.tryGetConcreteTypeInfo state receiver with
-            | Some (_, typeInfo) when typeInfo.IsInterface -> consider (state, []) receiver
-            | _ -> state, []
+            | Some (_, typeInfo) when typeInfo.IsInterface -> consider state [] receiver
+            | _ -> state, Ok []
 
-        let rec levels (state : TypeSystemState, candidates : Candidate option list) (level : ConcreteTypeHandle) =
+        let rec levels
+            (state : TypeSystemState)
+            (candidates : Candidate option list)
+            (level : ConcreteTypeHandle)
+            : TypeSystemState * Result<Candidate option list, TypeBindingFailure>
+            =
             // A level with no TypeDef row, an array, declares no interfaces of its own; its base does.
             let state, candidates =
                 match TypeSystemState.tryGetConcreteTypeInfo state level with
-                | None -> state, candidates
+                | None -> state, Ok candidates
                 | Some _ ->
 
-                let state, map =
+                match
                     ConcreteInterfaceDispatch.interfaceMapOf
                         loggerFactory
                         dotnetRuntimeDirs
@@ -353,16 +397,26 @@ module internal DefaultInterfaceImplementation =
                         operation
                         state
                         level
+                with
+                | state, Error failure -> state, Error failure
+                | state, Ok map ->
+                    (state, candidates, map |> List.filter (fun entry -> not entry.ImplementedByParent))
+                    |||> StateResult.fold (fun state candidates entry -> consider state candidates entry.Interface)
 
-                ((state, candidates), map |> List.filter (fun entry -> not entry.ImplementedByParent))
-                ||> List.fold (fun acc entry -> consider acc entry.Interface)
+            match candidates with
+            | Error failure -> state, Error failure
+            | Ok candidates ->
 
             match
                 TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state level
             with
-            | state, None -> state, candidates
-            | state, Some parent -> levels (state, candidates) parent
+            | state, None -> state, Ok candidates
+            | state, Some parent -> levels state candidates parent
 
-        let state, candidates = levels (state, candidates) receiver
+        match candidates with
+        | Error failure -> state, Error failure
+        | Ok candidates ->
 
-        state, List.choose id candidates
+        let state, candidates = levels state candidates receiver
+
+        state, candidates |> Result.map (List.choose id)

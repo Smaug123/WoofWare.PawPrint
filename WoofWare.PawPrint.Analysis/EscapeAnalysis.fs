@@ -5817,16 +5817,24 @@ module EscapeAnalysis =
             | typeSystem, Ok (concretized, declaringType) -> typeSystem, concretized, declaringType
             | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
-        let implementationOn (walkBaseTypes : bool) (typeSystem : TypeSystemState) =
-            ConcreteVirtualDispatch.tryResolveVirtualImplementation
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                concretized.Generics
-                concretized
-                receiver
-                walkBaseTypes
-                typeSystem
+        let implementationOn
+            (walkBaseTypes : bool)
+            (typeSystem : TypeSystemState)
+            : TypeSystemState * VirtualImplementation
+            =
+            match
+                ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    concretized.Generics
+                    concretized
+                    receiver
+                    walkBaseTypes
+                    typeSystem
+            with
+            | typeSystem, Ok implementation -> typeSystem, implementation
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         // What `callvirt` runs on a receiver of exactly the type `receiver`: an override, or else
         // the method the call names.
@@ -5846,13 +5854,17 @@ module EscapeAnalysis =
         // A type that is not one the method's declaring type admits leaves what runs to the
         // receiver's class: one implementing `IDynamicInterfaceCastable` is asked for it.
         let typeSystem, admitted =
-            TypeAssignability.isConcreteTypeAssignableTo
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                typeSystem
-                receiver
-                declaringType
+            match
+                TypeAssignability.isConcreteTypeAssignableTo
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    typeSystem
+                    receiver
+                    declaringType
+            with
+            | typeSystem, Ok admitted -> typeSystem, admitted
+            | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         // `None` where the type does not decide what runs.
         let typeSystem, runs =
@@ -5873,8 +5885,10 @@ module EscapeAnalysis =
                             concretized
                             typeSystem
                     with
-                    | typeSystem, VirtualImplementation.Found runs when not runs.Definition.IsStatic -> typeSystem, None
-                    | typeSystem, decided -> typeSystem, Some decided
+                    | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+                    | typeSystem, Ok (VirtualImplementation.Found runs) when not runs.Definition.IsStatic ->
+                        typeSystem, None
+                    | typeSystem, Ok decided -> typeSystem, Some decided
                 elif LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
                     match implementationOn false typeSystem with
                     | typeSystem, VirtualImplementation.NotOverridden ->
@@ -6340,12 +6354,16 @@ module EscapeAnalysis =
                 | state, true ->
 
                 let typeSystem, holds =
-                    GcReferences.containsReferences
-                        state.LoggerFactory
-                        state.RuntimeDirs
-                        state.BaseTypes
-                        state.TypeSystem
-                        handle
+                    match
+                        GcReferences.containsReferences
+                            state.LoggerFactory
+                            state.RuntimeDirs
+                            state.BaseTypes
+                            state.TypeSystem
+                            handle
+                    with
+                    | typeSystem, Ok holds -> typeSystem, holds
+                    | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
                 { state with
                     TypeSystem = typeSystem

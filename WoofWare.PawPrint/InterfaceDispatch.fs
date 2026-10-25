@@ -18,7 +18,7 @@ module InterfaceDispatch =
           ConcreteType<ConcreteTypeHandle> *
           TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        let typeSystem, implHandle, implTy, typeInfo =
+        let typeSystem, result =
             ConcreteInterfaceDispatch.resolveImplementedInterface
                 loggerFactory
                 state.DotnetRuntimeDirs
@@ -26,6 +26,8 @@ module InterfaceDispatch =
                 ownerTy
                 impl
                 state.TypeSystem
+
+        let implHandle, implTy, typeInfo = BindingStop.bound result
 
         state.WithTypeSystem typeSystem, implHandle, implTy, typeInfo
 
@@ -47,7 +49,7 @@ module InterfaceDispatch =
                 state.TypeSystem
                 typeHandle
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteInterfaceDispatch.ownDispatchMapOf` against the machine's type system.
     let ownDispatchMapOf
@@ -67,7 +69,7 @@ module InterfaceDispatch =
                 state.TypeSystem
                 typeHandle
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `ConcreteInterfaceDispatch.tryFindImplementationSlot` against the machine's type system.
     let tryFindImplementationSlot
@@ -93,4 +95,4 @@ module InterfaceDispatch =
                 target
                 interfaceMethod
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
