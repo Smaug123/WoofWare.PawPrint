@@ -1419,6 +1419,11 @@ public static class SR
             loggerFactory
             (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
 
+    /// The test host's own CoreLib, which `analysisOverHostImage` analyses over.
+    let private hostImageCoreLib () : DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory HostImage.coreLibPath
+
     /// The parameterless instance constructor of `corelib`'s exception type of this namespace and
     /// name.
     let private parameterlessConstructor (corelib : DumpedAssembly) (ns : string) (name : string) : MethodKey =
@@ -1432,22 +1437,29 @@ public static class SR
         |> Seq.exactlyOne
         |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
 
-    /// What the parameterless constructor of the host CoreLib's exception type of this full name
-    /// lets escape: the runtime runs it to make that exception where it raises one by itself.
-    let private making (analysis : EscapeAnalysisState) (fullName : string) : EscapeAnalysisState * Set<string> =
+    /// What the parameterless constructor of `corelib`'s exception type of this full name lets
+    /// escape: the runtime runs it to make that exception where it raises one by itself.
+    let private makingIn
+        (corelib : DumpedAssembly)
+        (analysis : EscapeAnalysisState)
+        (fullName : string)
+        : EscapeAnalysisState * Set<string>
+        =
         let dot = fullName.LastIndexOf '.'
 
         let key =
-            parameterlessConstructor (hostCoreLib ()) (fullName.Substring (0, dot)) (fullName.Substring (dot + 1))
+            parameterlessConstructor corelib (fullName.Substring (0, dot)) (fullName.Substring (dot + 1))
 
         let analysis, escapes = EscapeAnalysis.escapes analysis key
         analysis, render analysis escapes
 
-    /// The host CoreLib's `TypeLoadException(string, string, string, int)` constructor, which the
-    /// runtime runs to make the exception of a type that fails to bind.
-    let private typeLoadConstructor () : MethodKey =
-        let corelib = hostCoreLib ()
+    /// As `makingIn`, of the host CoreLib.
+    let private making (analysis : EscapeAnalysisState) (fullName : string) : EscapeAnalysisState * Set<string> =
+        makingIn (hostCoreLib ()) analysis fullName
 
+    /// `corelib`'s `TypeLoadException(string, string, string, int)` constructor, which the runtime
+    /// runs to make the exception of a type that fails to bind.
+    let private typeLoadConstructorIn (corelib : DumpedAssembly) : MethodKey =
         match corelib.TryGetTopLevelTypeDef "System" "TypeLoadException" with
         | None -> failwith "CoreLib defines no System.TypeLoadException"
         | Some ty ->
@@ -1455,6 +1467,9 @@ public static class SR
             |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.Length = 4)
             |> Seq.exactlyOne
             |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+
+    /// As `typeLoadConstructorIn`, of the host CoreLib.
+    let private typeLoadConstructor () : MethodKey = typeLoadConstructorIn (hostCoreLib ())
 
     /// The host CoreLib's `String.Format(string, object, object, object)`, which formats a
     /// `TypeLoadException`'s message.
@@ -7029,10 +7044,8 @@ public static unsafe class Probe
         (bind : LoadedAssemblies -> LoadedAssemblies)
         : EscapeAnalysisState
         =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
         analysisOf
-            (Assembly.readFile loggerFactory HostImage.coreLibPath)
+            (hostImageCoreLib ())
             HostImage.runtimeDirs
             (hostTarget ())
             HardwareIntrinsicsProfile.ScalarOnly
@@ -9433,6 +9446,8 @@ public static unsafe class Calls
     /// modifiers name two fails it with `InvalidProgramException`, after the JIT loads the return
     /// type and before it reads anything else of the signature, wherever the call is. Each call is
     /// in a branch never taken; the host's CoreCLR says which callers fail to compile.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``CoreCLR reads an unmanaged call's convention from the import, the attribute or the call site's modifiers``
         ()
@@ -9708,16 +9723,21 @@ public static unsafe class Calls
             |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
         // The runtime makes each exception by running one of its constructors, and what that raises
         // escapes in its place.
         let made : Set<string> =
-            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
             analysis <- next
-            let next, madeInvalidProgram = making analysis invalidProgram
+
+            let next, madeInvalidProgram =
+                makingIn (hostImageCoreLib ()) analysis invalidProgram
+
             analysis <- next
             Set.union (render analysis madeTypeLoad) madeInvalidProgram
 
@@ -9774,6 +9794,8 @@ public static unsafe class Calls
     /// instantiation of a type that fails to load, which only the walk for whether the call needs
     /// marshalling loads. The host's CoreCLR says which callers fail to compile, and with what; the
     /// analysis must let that escape, and nothing else of those, from each.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``the analysis reads every unmanaged calling convention C# spells as the host's JIT does`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -9939,7 +9961,7 @@ public static unsafe class Calls
             |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -9949,12 +9971,17 @@ public static unsafe class Calls
         // The runtime makes each exception by running one of its constructors, and what that raises
         // escapes in its place.
         let madeBy : Map<string, Set<string>> =
-            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
             analysis <- next
             let madeTypeLoad = render analysis madeTypeLoad
-            let next, madeParameterless = making analysis typeLoad
+            let next, madeParameterless = makingIn (hostImageCoreLib ()) analysis typeLoad
             analysis <- next
-            let next, madeInvalidProgram = making analysis invalidProgram
+
+            let next, madeInvalidProgram =
+                makingIn (hostImageCoreLib ()) analysis invalidProgram
+
             analysis <- next
 
             Map.ofList
@@ -10011,6 +10038,8 @@ public static unsafe class Calls
     /// refuses, with a `TypeLoadException`, modifiers naming two base conventions, and an import or
     /// attribute naming one convention where the modifiers name another, a member-function variant
     /// counting as a convention of its own. The host's CoreCLR says which callers fail to compile.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``CoreCLR reads a P/Invoke's convention from its signature's modifiers where nothing else names one``
         ()
@@ -10267,16 +10296,18 @@ public static unsafe class Calls
             |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
         // The runtime makes each exception by running one of its constructors, and what that raises
         // escapes in its place.
         let made : Set<string> =
-            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
             analysis <- next
-            let next, madeParameterless = making analysis typeLoad
+            let next, madeParameterless = makingIn (hostImageCoreLib ()) analysis typeLoad
             analysis <- next
             Set.union (render analysis madeTypeLoad) madeParameterless
 
@@ -10314,6 +10345,8 @@ public static unsafe class Calls
     /// and nothing otherwise. The attribute declares `CallConvs` alone, so a blob naming
     /// `EntryPoint` does not parse. No blob names `CallConvSuppressGCTransition`: the JIT binds such
     /// a P/Invoke's native library as it compiles the call, which raises `DllNotFoundException`.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``the escape analysis reads a P/Invoke's UnmanagedCallConv blob as the host's JIT does`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -10453,7 +10486,7 @@ public static unsafe class Calls
                     |> Seq.find (fun r -> r.Name.Name = "Provider")
 
                 let mutable analysis =
-                    analysisOver
+                    analysisOverHostImage
                         [ clientAssembly ; providerAssembly ]
                         (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -10505,6 +10538,125 @@ public static unsafe class Calls
             )
         finally
             buildContext.Unload ()
+
+    /// P/Invokes whose `[SuppressGCTransition]`, `[UnmanagedCallConv]` and import differ, each called
+    /// in a branch never taken. Where CoreCLR has the JIT suppress the GC transition of a call, the
+    /// JIT binds the native library as it compiles the call, which raises `DllNotFoundException`
+    /// for one that is not there; so the host says where it suppresses the transition, which
+    /// `UnmanagedCallingConvention.ofPInvoke` must say too, as the GC-transition modifier of the
+    /// convention it reads. The attribute's modifier counts wherever CoreCLR reads the attribute,
+    /// though it names no base convention, and not where the attribute names a second one, nor
+    /// where the import names a convention.
+    [<Test>]
+    let ``UnmanagedCallingConvention reads where CoreCLR suppresses a P/Invoke's GC transition`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public static class Natives
+{
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void ByAttribute();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSuppressGCTransition) })] public static extern void ModifierAlone();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvSuppressGCTransition) })] public static extern void SwiftModifier();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSuppressGCTransition), typeof(CallConvSwift), typeof(CallConvCdecl) })] public static extern void TwoBasesModifier();
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSuppressGCTransition) })] public static extern void ImportCdeclModifier();
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), SuppressGCTransition] public static extern void ImportCdeclByAttribute();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvMemberFunction) })] public static extern void MemberFunction();
+    [DllImport("nowhere")] public static extern void Plain();
+}
+
+public static class Calls
+{
+    static bool never;
+    public static void ByAttribute() { if (never) Natives.ByAttribute(); }
+    public static void ModifierAlone() { if (never) Natives.ModifierAlone(); }
+    public static void SwiftModifier() { if (never) Natives.SwiftModifier(); }
+    public static void TwoBasesModifier() { if (never) Natives.TwoBasesModifier(); }
+    public static void ImportCdeclModifier() { if (never) Natives.ImportCdeclModifier(); }
+    public static void ImportCdeclByAttribute() { if (never) Natives.ImportCdeclByAttribute(); }
+    public static void MemberFunction() { if (never) Natives.MemberFunction(); }
+    public static void Plain() { if (never) Natives.Plain(); }
+}
+"""
+
+        let image =
+            Roslyn.compileOptimizedAssemblyWithReferences "Client" OutputKind.DynamicallyLinkedLibrary [] [ client ]
+
+        let suppress = UnmanagedCallConvModifier.SuppressGcTransition
+        let cdecl = UnmanagedCallConvBase.Cdecl
+
+        let expected =
+            [
+                "ByAttribute", UnmanagedConventionRead.Reads (cdecl, Set.singleton suppress)
+                "ModifierAlone", UnmanagedConventionRead.Reads (cdecl, Set.singleton suppress)
+                "SwiftModifier", UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Swift, Set.singleton suppress)
+                "TwoBasesModifier", UnmanagedConventionRead.Reads (cdecl, Set.empty)
+                "ImportCdeclModifier", UnmanagedConventionRead.Reads (cdecl, Set.empty)
+                "ImportCdeclByAttribute", UnmanagedConventionRead.Reads (cdecl, Set.singleton suppress)
+                "MemberFunction",
+                UnmanagedConventionRead.Reads (cdecl, Set.singleton UnmanagedCallConvModifier.MemberFunction)
+                "Plain", UnmanagedConventionRead.Reads (cdecl, Set.empty)
+            ]
+
+        // Whether compiling each caller on the host binds the native library.
+        let hostSuppresses : Map<string, bool> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("SuppressedTransitions", isCollectible = true)
+
+            try
+                let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Client.Calls"
+
+                expected
+                |> List.map (fun (name, _) ->
+                    let suppressed =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            false
+                        with :? TargetInvocationException as e ->
+                            e.InnerException :? DllNotFoundException
+
+                    name, suppressed
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let natives =
+            assembly.TypeDefs.Values
+            |> Seq.filter (fun ty -> ty.Namespace = "Client" && ty.Name = "Natives")
+            |> Seq.exactlyOne
+
+        let failures =
+            [
+                for name, wanted in expected do
+                    let method = natives.Methods |> List.find (fun m -> m.Name = name)
+
+                    let read =
+                        UnmanagedCallingConvention.ofPInvoke assembly method.TryMetadata.Value.Handle
+
+                    if read <> wanted then
+                        yield $"%s{name}: read %A{read}, not %A{wanted}"
+
+                    let readSuppresses =
+                        match read with
+                        | UnmanagedConventionRead.Reads (_, modifiers) -> modifiers.Contains suppress
+                        | _ -> false
+
+                    if readSuppresses <> hostSuppresses.[name] then
+                        yield
+                            $"%s{name}: the host suppresses the transition %b{hostSuppresses.[name]}, the read %b{readSuppresses}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
     /// Callers of unmanaged code whose signature names an instantiation of a class that fails to
     /// load, which CoreCLR's walk for whether the call needs marshalling loads where the JIT makes the

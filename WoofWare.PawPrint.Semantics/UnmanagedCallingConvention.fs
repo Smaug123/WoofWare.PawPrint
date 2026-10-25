@@ -35,9 +35,11 @@ type UnmanagedCallConvs =
 [<RequireQualifiedAccess>]
 type UnmanagedConventionRead =
     /// It reads this base convention, the platform's default where nothing it reads names one,
-    /// with the modifiers named where it found it. A member-function modifier makes the base
-    /// convention its member-function variant (`GetMemberFunctionUnmanagedCallingConventionVariant`),
-    /// which is the same convention for Thiscall and Swift.
+    /// with the modifiers it hands the JIT alongside: the member-function modifier, which makes the
+    /// base convention its member-function variant
+    /// (`GetMemberFunctionUnmanagedCallingConventionVariant`, the same convention for Thiscall and
+    /// Swift), and, for a call, the GC-transition modifier where it has the JIT suppress the
+    /// transition (`pSuppressGCTransition`).
     | Reads of baseConvention : UnmanagedCallConvBase * modifiers : Set<UnmanagedCallConvModifier>
     /// A signature by the `unmanaged` calling convention whose return type's modifiers name a second
     /// base convention: CoreCLR raises `InvalidProgramException` (`IDS_EE_MULTIPLE_CALLCONV_UNSUPPORTED`),
@@ -146,12 +148,18 @@ module UnmanagedCallingConvention =
             Some (platformDefault, conventions.Modifiers)
         | None -> None
 
+    /// As `current`, taking the platform's default where `conventions` name no base convention.
+    let private currentOrDefault
+        (conventions : UnmanagedCallConvs)
+        : UnmanagedCallConvBase * Set<UnmanagedCallConvModifier>
+        =
+        current conventions
+        |> Option.defaultValue (platformDefault, conventions.Modifiers)
+
     /// What CoreCLR reads from `conventions`, taking the platform's default where they name no base
     /// convention.
     let private readOrDefault (conventions : UnmanagedCallConvs) : UnmanagedConventionRead =
-        match current conventions with
-        | Some (convention, modifiers) -> UnmanagedConventionRead.Reads (convention, modifiers)
-        | None -> UnmanagedConventionRead.Reads (platformDefault, conventions.Modifiers)
+        UnmanagedConventionRead.Reads (currentOrDefault conventions)
 
     /// The namespace and name of the type a modifier in a signature of `assembly` names, where it
     /// is a type reference or definition (`GetNameOfTypeRefOrDef`); `None` for any other spelling,
@@ -231,6 +239,10 @@ module UnmanagedCallingConvention =
     let private unmanagedCallConv : string =
         "System.Runtime.InteropServices.UnmanagedCallConvAttribute"
 
+    /// The attribute that has the JIT suppress the GC transition of a call of a P/Invoke.
+    let private suppressGcTransition : string =
+        "System.Runtime.InteropServices.SuppressGCTransitionAttribute"
+
     /// The base convention `definition`'s import names, or `None` where it names none: it has no
     /// import, or its bits say `WinApi`, zero or a value out of range, all of which CoreCLR reads as
     /// naming none (`GetCallConvValueForPInvokeCallConv`).
@@ -261,10 +273,33 @@ module UnmanagedCallingConvention =
         match definition.Signature.Header.Get.CallingConvention with
         | SignatureCallingConvention.Default
         | SignatureCallingConvention.VarArgs ->
+            // CoreCLR has the JIT suppress the GC transition where the P/Invoke carries
+            // `[SuppressGCTransition]` (`HasSuppressGCTransitionAttribute`), or where the
+            // `[UnmanagedCallConv]` it reads names the modifier, whichever convention it then takes;
+            // never for the modifiers of its signature.
+            let reads
+                (suppressed : bool)
+                (convention : UnmanagedCallConvBase, modifiers : Set<UnmanagedCallConvModifier>)
+                =
+                let modifiers = Set.remove UnmanagedCallConvModifier.SuppressGcTransition modifiers
+
+                let modifiers =
+                    if suppressed then
+                        Set.add UnmanagedCallConvModifier.SuppressGcTransition modifiers
+                    else
+                        modifiers
+
+                UnmanagedConventionRead.Reads (convention, modifiers)
+
+            let suppressed =
+                not (NamedAttribute.ofMethod suppressGcTransition assembly method).IsEmpty
+
             match importConvention definition with
-            | Some convention -> UnmanagedConventionRead.Reads (convention, Set.empty)
+            | Some convention -> reads suppressed (convention, Set.empty)
             | None ->
 
+            // What the attribute names, where CoreCLR reads it: the convention it hands the JIT, if
+            // any, and the attribute's modifiers.
             let ofAttribute =
                 match NamedAttribute.ofMethod unmanagedCallConv assembly method with
                 | [] -> Ok None
@@ -275,18 +310,32 @@ module UnmanagedCallingConvention =
                     | UnmanagedCallConvApplication.Parsed CallConvsArgument.NullArray ->
                         Error UnmanagedConventionRead.NullArray
                     | UnmanagedCallConvApplication.Parsed (CallConvsArgument.Types typeNames) ->
-                        Ok (ofTypeNames typeNames |> Option.bind current)
+                        Ok (
+                            ofTypeNames typeNames
+                            |> Option.map (fun conventions -> current conventions, conventions)
+                        )
 
             match ofAttribute with
             | Error read -> read
-            | Ok (Some (convention, modifiers)) -> UnmanagedConventionRead.Reads (convention, modifiers)
-            | Ok None ->
+            | Ok attribute ->
+
+            let suppressed =
+                suppressed
+                || match attribute with
+                   | Some (_, conventions) ->
+                       conventions.Modifiers.Contains UnmanagedCallConvModifier.SuppressGcTransition
+                   | None -> false
+
+            match attribute with
+            | Some (Some named, _) -> reads suppressed named
+            | Some (None, _)
+            | None ->
 
             // A second base convention among the modifiers ends the reading, keeping what came
             // before it.
             match ofModifiers assembly definition.Signature with
             | Ok conventions
-            | Error conventions -> readOrDefault conventions
+            | Error conventions -> reads suppressed (currentOrDefault conventions)
         | _ -> ofCallSite assembly definition.Signature
 
     /// Whether CoreCLR, describing `method`, a P/Invoke of `assembly`, as it begins its walk for
@@ -369,7 +418,14 @@ module UnmanagedCallingConvention =
         | CallConvsArgument.NullArray -> UnmanagedConventionRead.NullArray
         | CallConvsArgument.Types typeNames ->
             match ofTypeNames typeNames with
-            | Some conventions -> readOrDefault conventions
+            | Some conventions ->
+                // CoreCLR suppresses no GC transition for the method's own convention.
+                let convention, modifiers = currentOrDefault conventions
+
+                UnmanagedConventionRead.Reads (
+                    convention,
+                    Set.remove UnmanagedCallConvModifier.SuppressGcTransition modifiers
+                )
             | None -> UnmanagedConventionRead.Reads (platformDefault, Set.empty)
 
     /// Whether CoreCLR's JIT for `target` compiles calls by Swift's calling convention
