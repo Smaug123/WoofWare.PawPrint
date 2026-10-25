@@ -38,6 +38,7 @@
         <Compile Include="NativeMethod.fs" />
         <Compile Include="StringConstructor.fs" />
         <Compile Include="UnmanagedConvention.fs" />
+        <Compile Include="UnmanagedTransition.fs" />
         <Compile Include="JitTypeLoads.fs" />
         <Compile Include="SignatureRefusal.fs" />
         <Compile Include="IntrinsicBody.fs" />

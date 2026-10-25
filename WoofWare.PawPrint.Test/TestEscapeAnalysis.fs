@@ -9161,8 +9161,9 @@ public static class Calls
     /// makes the transition to unmanaged code in the caller's own code, CoreCLR's walk for whether
     /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
     /// loads each pointer's target; a class, a byref's target or, by any other convention, a
-    /// pointer's target, it does not load at all. Whether the JIT makes the transition there the
-    /// analysis does not decide, so it takes those loads to be ones the JIT may make
+    /// pointer's target, it does not load at all. Where metadata allows the JIT to make the
+    /// transition there (the next test says where it does not), whether it does turns on block
+    /// weights the analysis does not model, so it takes those loads to be ones the JIT may make
     /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
     /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
     /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
@@ -9223,10 +9224,6 @@ public static unsafe class Calls
     public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
     public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
     public static void UnspecifiedPointerToGoneStruct() { if (never) Natives.UnspecifiedTakesPointerToGoneStruct(null); }
-    public static void CaughtGenericOfGone()
-    {
-        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
-    }
     public static void IndirectPointerToGoneStruct()
     {
         if (never) ((delegate* unmanaged<Provider.GoneStruct*, void>)pointer)(null);
@@ -9330,9 +9327,6 @@ public static unsafe class Calls
                 "CdeclPointerToGoneStruct", CallOutcome.Runs, []
                 // An import that names no calling convention CoreCLR reads as naming `WinApi`.
                 "UnspecifiedPointerToGoneStruct", swiftEscapes, [ typeLoad ]
-                // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
-                // analysis does not decide.
-                "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
                 "IndirectPointerToGoneStruct", CallOutcome.Runs, []
                 "IndirectGenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "SwiftIndirectPointerToGoneStruct", swiftEscapes, [ typeLoad ]
@@ -9422,6 +9416,420 @@ public static unsafe class Calls
 
                     if not unexplained.IsEmpty then
                         yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// Callers of unmanaged code whose signature names an instantiation of a class that fails to
+    /// load, which CoreCLR's walk for whether the call needs marshalling loads where the JIT makes the
+    /// transition to unmanaged code in the caller's own code. The JIT does not make it there where
+    /// the call is in a handler or in a `try` with a `catch` or a filter
+    /// (`impCanPInvokeInlineCallSite`), nor where the caller's assembly disables optimisation
+    /// (`impCanPInvokeInline`), nor where the walk is skipped because the P/Invoke sets the last
+    /// error, does not preserve its signature or converts a locale argument, nor where the walk ends
+    /// before the instantiation at a type that needs marshalling without being loaded, or at a
+    /// parameter whose marshalling the metadata spells (`PInvoke::MarshalingRequired`); with runtime
+    /// marshalling disabled, `bool`, `char` and a `MarshalAs` end it no longer. For Swift's
+    /// convention, what the walk ends at anywhere in the signature also stops the JIT reading a
+    /// pointer's target. Each call is in a branch never taken; the host's CoreCLR says which callers
+    /// fail to compile.
+    [<Test>]
+    let ``the JIT walks an unmanaged call's signature only where CoreCLR's inline decision lets it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { } public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let natives =
+            """
+public static unsafe class Natives
+{
+    [DllImport("nowhere")]
+    public static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern int ReturnsIntTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere", SetLastError = true)]
+    public static extern void LastErrorTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere", PreserveSig = false)]
+    public static extern void HResultTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), LCIDConversion(0)]
+    public static extern void LocaleTakesGenericOfGone(int locale, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), LCIDConversion(-1)]
+    public static extern void NoLocaleTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void BoolThenGenericOfGone(bool b, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void CharThenGenericOfGone(char c, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void MarshalledThenGenericOfGone([MarshalAs(UnmanagedType.I4)] int i, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    [return: MarshalAs(UnmanagedType.I4)]
+    public static extern int MarshalledReturnTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void IntThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
+    // Its first parameter says it has a marshalling, without one, after compiling.
+    [DllImport("nowhere")]
+    public static extern void FlaggedThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void PointerThenGenericOfGone(int* p, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void StringThenGenericOfGone(string s, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ObjectThenGenericOfGone(object o, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ArrayThenGenericOfGone(int[] a, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ByrefThenGenericOfGone(ref int r, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ClassThenGenericOfGone(Provider.Kept k, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void GenericThenGenericOfGone(Provider.KeptGeneric<Provider.Kept> k, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern bool ReturnsBoolTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern Provider.Kept ReturnsKeptTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftPointerThenString(Provider.GoneStruct* p, string s);
+    [DllImport("nowhere", SetLastError = true), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftLastErrorPointer(Provider.GoneStruct* p);
+}
+"""
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+"""
+            + natives
+            + """
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Use() { }
+
+    public static void Unprotected() { if (never) Natives.TakesGenericOfGone(null); }
+    public static void InTryCatch()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
+    }
+    public static void InTryFilter()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) when (never) { }
+    }
+    public static void InTryFinally()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } finally { Use(); }
+    }
+    public static void InTryFinallyInTryCatch()
+    {
+        try { try { if (never) Natives.TakesGenericOfGone(null); } finally { Use(); } } catch (System.Exception) { }
+    }
+    public static void InCatch()
+    {
+        try { Use(); } catch (System.Exception) { if (never) Natives.TakesGenericOfGone(null); }
+    }
+    public static void InFilter()
+    {
+        try { Use(); } catch (System.Exception) when (never && Natives.ReturnsIntTakesGenericOfGone(null) == 0) { }
+    }
+    public static void InFinally()
+    {
+        try { Use(); } finally { if (never) Natives.TakesGenericOfGone(null); }
+    }
+    public static void LastError() { if (never) Natives.LastErrorTakesGenericOfGone(null); }
+    public static void HResult() { if (never) Natives.HResultTakesGenericOfGone(null); }
+    public static void Locale() { if (never) Natives.LocaleTakesGenericOfGone(0, null); }
+    public static void NoLocale() { if (never) Natives.NoLocaleTakesGenericOfGone(null); }
+    public static void BoolThen() { if (never) Natives.BoolThenGenericOfGone(false, null); }
+    public static void CharThen() { if (never) Natives.CharThenGenericOfGone('a', null); }
+    public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
+    public static void MarshalledReturn() { if (never) Natives.MarshalledReturnTakesGenericOfGone(null); }
+    public static void IntThen() { if (never) Natives.IntThenGenericOfGone(0, null); }
+    public static void FlaggedThen() { if (never) Natives.FlaggedThenGenericOfGone(0, null); }
+    public static void PointerThen() { if (never) Natives.PointerThenGenericOfGone(null, null); }
+    public static void StringThen() { if (never) Natives.StringThenGenericOfGone(null, null); }
+    public static void ObjectThen() { if (never) Natives.ObjectThenGenericOfGone(null, null); }
+    public static void ArrayThen() { if (never) Natives.ArrayThenGenericOfGone(null, null); }
+    public static void ByrefThen() { if (never) Natives.ByrefThenGenericOfGone(ref *(int*)null, null); }
+    public static void ClassThen() { if (never) Natives.ClassThenGenericOfGone(null, null); }
+    public static void GenericThen() { if (never) Natives.GenericThenGenericOfGone(null, null); }
+    public static void ReturnsBool() { if (never) Natives.ReturnsBoolTakesGenericOfGone(null); }
+    public static void ReturnsKept() { if (never) Natives.ReturnsKeptTakesGenericOfGone(null); }
+    public static void SwiftPointerThenString() { if (never) Natives.SwiftPointerThenString(null, null); }
+    public static void SwiftLastError() { if (never) Natives.SwiftLastErrorPointer(null); }
+    public static void IndirectBoolThen()
+    {
+        if (never) ((delegate* unmanaged<bool, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(false, null);
+    }
+    public static void IndirectIntThen()
+    {
+        if (never) ((delegate* unmanaged<int, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(0, null);
+    }
+    public static void IndirectInTryCatch()
+    {
+        try { if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null); }
+        catch (System.Exception) { }
+    }
+}
+"""
+
+        // The same unoptimised: its `DebuggableAttribute` disables optimisation.
+        let debugClient =
+            """
+using System.Runtime.InteropServices;
+
+namespace DebugClient;
+
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    [DllImport("nowhere")]
+    static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+
+    public static void Unprotected() { if (never) TakesGenericOfGone(null); }
+    public static void Indirect()
+    {
+        if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+}
+"""
+
+        let drmClient =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[assembly: DisableRuntimeMarshalling]
+
+namespace DrmClient;
+"""
+            + natives
+            + """
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    public static void BoolThen() { if (never) Natives.BoolThenGenericOfGone(false, null); }
+    public static void CharThen() { if (never) Natives.CharThenGenericOfGone('a', null); }
+    public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
+    public static void ReturnsBool() { if (never) Natives.ReturnsBoolTakesGenericOfGone(null); }
+    public static void StringThen() { if (never) Natives.StringThenGenericOfGone(null, null); }
+    public static void IndirectBoolThen()
+    {
+        if (never) ((delegate* unmanaged<bool, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(false, null);
+    }
+}
+"""
+
+        let references (images : byte[] list) : MetadataReference list =
+            images
+            |> List.map (fun image ->
+                MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+            )
+
+        let compile (name : string) (referenced : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references referenced)
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        // The image with `HasFieldMarshal` set on the first parameter of the method named
+        // `methodName`, which has no marshalling row: C# never emits that, and CoreCLR finds a
+        // parameter's marshalling by its row alone.
+        let flagFieldMarshal (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let parameter =
+                metadata.MethodDefinitions
+                |> Seq.map metadata.GetMethodDefinition
+                |> Seq.filter (fun m -> metadata.GetString m.Name = methodName)
+                |> Seq.exactlyOne
+                |> fun m -> m.GetParameters ()
+                |> Seq.find (fun p -> (metadata.GetParameter p).SequenceNumber = 1)
+
+            let row =
+                MetadataTokens.GetRowNumber (ParameterHandle.op_Implicit parameter : EntityHandle)
+
+            let offset =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.Param
+                + (row - 1) * metadata.GetTableRowSize TableIndex.Param
+
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let flagged = flags ||| uint16 ParameterAttributes.HasFieldMarshal
+            Array.blit (BitConverter.GetBytes flagged) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> flagFieldMarshal "FlaggedThenGenericOfGone"
+
+        let drmImage = compile "DrmClient" [ completeProvider ] drmClient
+
+        let debugImage =
+            Roslyn.compileAssembly
+                "DebugClient"
+                OutputKind.DynamicallyLinkedLibrary
+                (references [ completeProvider ])
+                [ debugClient ]
+
+        let typeLoad = "System.TypeLoadException"
+
+        // Each caller, by the name of its assembly and type, and its name; and whether the JIT walks
+        // the signature far enough to load the instantiation, so that the caller fails to compile.
+        let methods =
+            [
+                "Client.Calls", "Unprotected", true
+                "Client.Calls", "InTryCatch", false
+                "Client.Calls", "InTryFilter", false
+                // A `try` whose only handler is a `finally` does not stop it.
+                "Client.Calls", "InTryFinally", true
+                "Client.Calls", "InTryFinallyInTryCatch", false
+                "Client.Calls", "InCatch", false
+                "Client.Calls", "InFilter", false
+                "Client.Calls", "InFinally", false
+                "Client.Calls", "LastError", false
+                "Client.Calls", "HResult", false
+                "Client.Calls", "Locale", false
+                // CoreCLR reads an index of -1 as converting no locale.
+                "Client.Calls", "NoLocale", true
+                "Client.Calls", "BoolThen", false
+                "Client.Calls", "CharThen", false
+                "Client.Calls", "MarshalledThen", false
+                "Client.Calls", "MarshalledReturn", false
+                "Client.Calls", "IntThen", true
+                // A flag saying a parameter has a marshalling, without one, CoreCLR ignores.
+                "Client.Calls", "FlaggedThen", true
+                "Client.Calls", "PointerThen", true
+                "Client.Calls", "StringThen", false
+                "Client.Calls", "ObjectThen", false
+                "Client.Calls", "ArrayThen", false
+                "Client.Calls", "ByrefThen", false
+                "Client.Calls", "ClassThen", false
+                // The walk loads an instantiation of a class, and ends there.
+                "Client.Calls", "GenericThen", false
+                "Client.Calls", "ReturnsBool", false
+                "Client.Calls", "ReturnsKept", false
+                // A pointer's target is what Swift's convention reads, which would fail here.
+                "Client.Calls", "SwiftPointerThenString", false
+                "Client.Calls", "SwiftLastError", false
+                "Client.Calls", "IndirectBoolThen", false
+                "Client.Calls", "IndirectIntThen", true
+                "Client.Calls", "IndirectInTryCatch", false
+                "DebugClient.Calls", "Unprotected", false
+                "DebugClient.Calls", "Indirect", false
+                "DrmClient.Calls", "BoolThen", true
+                "DrmClient.Calls", "CharThen", true
+                "DrmClient.Calls", "MarshalledThen", true
+                "DrmClient.Calls", "ReturnsBool", true
+                "DrmClient.Calls", "StringThen", false
+                "DrmClient.Calls", "IndirectBoolThen", true
+            ]
+
+        let images =
+            [ "Client", clientImage ; "DebugClient", debugImage ; "DrmClient", drmImage ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string * string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedWalkExclusions", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let loaded =
+                    images
+                    |> List.map (fun (name, image) -> name, context.LoadFromStream (new MemoryStream (image)))
+                    |> Map.ofList
+
+                methods
+                |> List.map (fun (typeName, name, _) ->
+                    let assemblyName = typeName.Substring (0, typeName.IndexOf '.')
+
+                    let outcome =
+                        try
+                            loaded.[assemblyName].GetType(typeName).GetMethod(name).Invoke ((null : obj), [||])
+                            |> ignore
+
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    (typeName, name), outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clients =
+            images |> List.map (fun (name, image) -> name, read name image) |> Map.ofList
+
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let mutable analysis =
+            analysisOver
+                (providerAssembly :: (clients |> Map.toList |> List.map snd))
+                (fun loaded ->
+                    (loaded, Map.toList clients)
+                    ||> List.fold (fun loaded (_, client) ->
+                        let reference =
+                            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                        fst (loaded.WithBoundReference reference providerAssembly)
+                    )
+                )
+
+        let failures =
+            [
+                for typeName, name, walked in methods do
+                    let expected =
+                        if walked then
+                            CallOutcome.Escapes typeLoad
+                        else
+                            CallOutcome.Runs
+
+                    if hostOutcomes.[typeName, name] <> expected then
+                        yield
+                            $"%s{typeName}.%s{name}: the host's outcome is %A{hostOutcomes.[typeName, name]}, not %A{expected}"
+
+                    let client = clients.[typeName.Substring (0, typeName.IndexOf '.')]
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed client typeName name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains $"=%s{typeLoad}" <> walked then
+                        yield
+                            $"%s{typeName}.%s{name}: the analysis lets TypeLoadException escape: %b{not walked}, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
 
         if not failures.IsEmpty then

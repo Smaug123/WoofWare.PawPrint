@@ -200,8 +200,13 @@ method) may add more:
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also
   loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by
-  Swift's convention, each pointer's target, which the analysis takes to be loads it may make, as
-  it does not decide where the JIT makes the transition. A class, a byref's target or, by another
+  Swift's convention, each pointer's target. It does not make the transition there in a handler or a
+  `try` with a `catch` or a filter, in an assembly whose `DebuggableAttribute` disables
+  optimisation, or for a P/Invoke that does not preserve its signature, sets the last error or
+  converts a locale, and the walk ends at the first type that needs marshalling by its kind (a
+  class, an array, a byref, `string`, and with runtime marshalling `bool`, `char` or a spelt
+  marshalling); elsewhere the analysis takes those to be loads it may make, as whether the JIT
+  makes the transition turns on block weights. A class, a byref's target or, by another
   convention, a pointer's target it does not load there; the stub CoreCLR otherwise makes for the
   call loads them as the call runs, where the caller's handlers can catch the failure. Of a
   method whose address the body takes (`ldftn`, `ldvirtftn`), the JIT loads the return type in full, and CoreCLR loads each value
