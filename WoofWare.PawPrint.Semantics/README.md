@@ -115,6 +115,11 @@ What lives here:
   that load, fail to load or live in a missing assembly at each position, runs every probe on the
   host's CoreCLR both at tier 0 and fully optimised, and checks that it fails exactly where the
   rule and `TypeLoad` say, with the same exception.
+* `SignatureRefusal` — which method signatures CoreCLR refuses to hand the JIT as it converts
+  them (`ConvToJitSig`): on Unix, one with a variable argument list, managed or native, raising
+  `InvalidProgramException`; and which instructions have it convert the signature of the member
+  they name (every call, `calli`, `jmp`, `ldftn` and `ldvirtftn`; not `ldtoken` nor a field
+  access), besides the method being compiled, whose own it converts first.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate
