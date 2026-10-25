@@ -276,12 +276,14 @@ type AttributeUsageParse =
     | Parsed of AttributeUsageBlob
 
 /// <summary>
-/// What an application of <c>[UnmanagedCallersOnly]</c> names in its <c>CallConvs</c> named
-/// argument, which CoreCLR's VM reads (<c>CallConv::TryGetCallingConventionFromUnmanagedCallersOnly</c>,
-/// <c>vm/callconvbuilder.cpp</c>): the types it lists, each by its serialised name.
+/// What an application of <c>[UnmanagedCallersOnly]</c> or <c>[UnmanagedCallConv]</c> names in its
+/// <c>CallConvs</c> named argument, which CoreCLR's VM reads
+/// (<c>CallConv::TryGetCallingConventionFromUnmanagedCallersOnly</c> and
+/// <c>CallConv::TryGetCallingConventionFromUnmanagedCallConv</c>, <c>vm/callconvbuilder.cpp</c>): the
+/// types it lists, each by its serialised name.
 /// </summary>
 [<RequireQualifiedAccess>]
-type UnmanagedCallersOnlyCallConvs =
+type CallConvsArgument =
     /// The blob names no <c>CallConvs</c>.
     | Unnamed
     /// <c>CallConvs = null</c>: the array's length is the null sentinel <c>0xFFFFFFFF</c>.
@@ -300,10 +302,23 @@ type UnmanagedCallersOnlyCallConvs =
 type UnmanagedCallersOnlyApplication =
     /// The blob parses, with these <c>CallConvs</c>; and it names <c>AssociatedSourceType</c>, which
     /// .NET 11's attribute declares and .NET 10's does not, or it does not.
-    | Parsed of callConvs : UnmanagedCallersOnlyCallConvs * namesAssociatedSourceType : bool
+    | Parsed of callConvs : CallConvsArgument * namesAssociatedSourceType : bool
     /// The blob does not parse on any supported runtime, for the reason given: a bad prolog, a named
     /// argument no runtime's attribute declares, or one named twice, a value cut short, among
     /// others.
+    | Malformed of reason : string
+
+/// <summary>
+/// What CoreCLR's VM reads from an application of <c>[UnmanagedCallConv]</c> to a P/Invoke, as its
+/// <c>CustomAttribute::ParseArgumentValues</c> parses the blob against the one named argument the
+/// attribute declares, <c>CallConvs</c>.
+/// </summary>
+[<RequireQualifiedAccess>]
+type UnmanagedCallConvApplication =
+    /// The blob parses, with these <c>CallConvs</c>.
+    | Parsed of callConvs : CallConvsArgument
+    /// The blob does not parse, for the reason given: a bad prolog, a named argument other than
+    /// <c>CallConvs</c>, or one named twice, a value cut short, among others.
     | Malformed of reason : string
 
 /// <summary>
@@ -1236,23 +1251,28 @@ module CustomAttribute =
         loop (int namedCount) afterCount None None
 
     /// <summary>
-    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[UnmanagedCallersOnly]</c>, as
-    /// CoreCLR's VM does where it reads the calling conventions of a method so marked: no
-    /// constructor arguments, then the named arguments, each as a field or as a property, among
-    /// <c>CallConvs</c> (an array of types), <c>EntryPoint</c> (a string) and, which only .NET 11's
-    /// attribute declares, <c>AssociatedSourceType</c> (a type).
+    /// Decode a <c>CustomAttrib</c> blob as CoreCLR's VM does an application of a calling-convention
+    /// attribute: no constructor arguments, then the named arguments, each as a field or as a
+    /// property, among <c>CallConvs</c> (an array of types) and, where the attribute (named
+    /// <c>attributeName</c> in a refusal) declares them, <c>EntryPoint</c> (a string) and
+    /// <c>AssociatedSourceType</c> (a type). It answers the <c>CallConvs</c> and whether the blob
+    /// names <c>AssociatedSourceType</c>, or why it does not parse.
     /// </summary>
     /// <remarks>
     /// The parse is <c>CustomAttribute::ParseArgumentValues</c> with the VM-local
-    /// <c>ParseCaNamedArgs</c> (<c>vm/customattribute.cpp</c>), which
-    /// <c>CallConv::TryGetCallingConventionFromUnmanagedCallersOnly</c> calls with no constructor
-    /// arguments whatever the attribute's constructor takes. Where that parse fails, CoreCLR's
-    /// <c>IfFailThrow</c> raises out of the compilation of the method.
+    /// <c>ParseCaNamedArgs</c> (<c>vm/customattribute.cpp</c>), which CoreCLR calls with no
+    /// constructor arguments whatever the attribute's constructor takes.
     /// </remarks>
-    let parseUnmanagedCallersOnly (blob : ImmutableArray<byte>) : UnmanagedCallersOnlyApplication =
+    let private parseCallConvsAttribute
+        (attributeName : string)
+        (declaresEntryPoint : bool)
+        (declaresAssociatedSourceType : bool)
+        (blob : ImmutableArray<byte>)
+        : Result<CallConvsArgument * bool, string>
+        =
         // `ParseCaCtorArgs` with no arguments is `ValidateProlog` alone.
         match readFixedArgs [] blob with
-        | Error e -> UnmanagedCallersOnlyApplication.Malformed e
+        | Error e -> Error e
         | Ok (_, afterProlog) ->
 
         // A failed `GetI2` reads as no named arguments ("Everett behavior"), and the signed count
@@ -1263,9 +1283,8 @@ module CustomAttribute =
             else
                 int (int16 (uint16 blob.[afterProlog] ||| (uint16 blob.[afterProlog + 1] <<< 8))), afterProlog + 2
 
-        let repeated (name : string) (cursor : int) : UnmanagedCallersOnlyApplication =
-            UnmanagedCallersOnlyApplication.Malformed
-                $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} appears more than once"
+        let repeated (name : string) (cursor : int) : Result<CallConvsArgument * bool, string> =
+            Error $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} appears more than once"
 
         let rec loop
             (remaining : int)
@@ -1273,14 +1292,14 @@ module CustomAttribute =
             (callConvs : CustomAttribFixedArg list option option)
             (entryPointSeen : bool)
             (associatedSourceTypeSeen : bool)
-            : UnmanagedCallersOnlyApplication
+            : Result<CallConvsArgument * bool, string>
             =
             if remaining <= 0 then
                 // Nothing checks that the blob was fully consumed.
                 let callConvs =
                     match callConvs with
-                    | None -> UnmanagedCallersOnlyCallConvs.Unnamed
-                    | Some None -> UnmanagedCallersOnlyCallConvs.NullArray
+                    | None -> CallConvsArgument.Unnamed
+                    | Some None -> CallConvsArgument.NullArray
                     | Some (Some elements) ->
                         elements
                         |> List.map (fun element ->
@@ -1290,23 +1309,23 @@ module CustomAttribute =
                                 failwith
                                     $"logic error: reading an array of types produced the element %A{other}, which is not a type"
                         )
-                        |> UnmanagedCallersOnlyCallConvs.Types
+                        |> CallConvsArgument.Types
 
-                UnmanagedCallersOnlyApplication.Parsed (callConvs, associatedSourceTypeSeen)
+                Ok (callConvs, associatedSourceTypeSeen)
             else
 
             // An argument whose type is none of those declared is refused while matching, as
             // CoreCLR refuses it, unless reading its type fails first. An enum's, CoreCLR loads by
             // name before refusing it, which is refused here without the load.
             match readNamedArgHeader blob cursor with
-            | Error e -> UnmanagedCallersOnlyApplication.Malformed e
+            | Error e -> Error e
             | Ok (header, valueOffset) ->
 
             // `GetNonEmptyString` refuses the null name and the empty one; the empty one matches no
             // argument below, which refuses it as well.
             match header.Name with
             | None ->
-                UnmanagedCallersOnlyApplication.Malformed
+                Error
                     $"CustomAttrib blob: named arg at offset %d{cursor} has the null name, which GetNonEmptyString refuses"
             | Some name ->
 
@@ -1317,30 +1336,65 @@ module CustomAttribute =
                     repeated name cursor
                 else
                     match readElem (CustomAttribArgShape.SzArray CustomAttribArgShape.Type) blob valueOffset with
-                    | Error e -> UnmanagedCallersOnlyApplication.Malformed e
+                    | Error e -> Error e
                     | Ok (CustomAttribFixedArg.Array elements, next) ->
                         loop (remaining - 1) next (Some elements) entryPointSeen associatedSourceTypeSeen
                     | Ok (other, _) ->
                         failwith $"logic error: reading an array of types produced %A{other}, which is not an array"
             | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive PrimitiveType.String),
-              "EntryPoint" ->
+              "EntryPoint" when declaresEntryPoint ->
                 if entryPointSeen then
                     repeated name cursor
                 else
                     match readSerString blob valueOffset with
-                    | Error e -> UnmanagedCallersOnlyApplication.Malformed e
+                    | Error e -> Error e
                     | Ok (_, next) -> loop (remaining - 1) next callConvs true associatedSourceTypeSeen
-            // .NET 10 refuses this argument before reading its value, which is refused on both
-            // runtimes where it does not read.
-            | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type, "AssociatedSourceType" ->
+            // .NET 10's `[UnmanagedCallersOnly]` refuses this argument before reading its value,
+            // which is refused on both runtimes where it does not read.
+            | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type, "AssociatedSourceType" when
+                declaresAssociatedSourceType
+                ->
                 if associatedSourceTypeSeen then
                     repeated name cursor
                 else
                     match readSerString blob valueOffset with
-                    | Error e -> UnmanagedCallersOnlyApplication.Malformed e
+                    | Error e -> Error e
                     | Ok (_, next) -> loop (remaining - 1) next callConvs entryPointSeen true
             | elemType, name ->
-                UnmanagedCallersOnlyApplication.Malformed
-                    $"CustomAttrib blob: named arg '%s{name}' of type %A{elemType} at offset %d{cursor} matches no argument of [UnmanagedCallersOnly]"
+                Error
+                    $"CustomAttrib blob: named arg '%s{name}' of type %A{elemType} at offset %d{cursor} matches no argument of %s{attributeName}"
 
         loop namedCount afterCount None false false
+
+    /// <summary>
+    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[UnmanagedCallersOnly]</c>, as
+    /// CoreCLR's VM does where it reads the calling conventions of a method so marked: no
+    /// constructor arguments, then the named arguments, each as a field or as a property, among
+    /// <c>CallConvs</c> (an array of types), <c>EntryPoint</c> (a string) and, which only .NET 11's
+    /// attribute declares, <c>AssociatedSourceType</c> (a type).
+    /// </summary>
+    /// <remarks>
+    /// <c>CallConv::TryGetCallingConventionFromUnmanagedCallersOnly</c> parses it. Where that parse
+    /// fails, CoreCLR's <c>IfFailThrow</c> raises out of the compilation of the method.
+    /// </remarks>
+    let parseUnmanagedCallersOnly (blob : ImmutableArray<byte>) : UnmanagedCallersOnlyApplication =
+        match parseCallConvsAttribute "[UnmanagedCallersOnly]" true true blob with
+        | Ok (callConvs, namesAssociatedSourceType) ->
+            UnmanagedCallersOnlyApplication.Parsed (callConvs, namesAssociatedSourceType)
+        | Error reason -> UnmanagedCallersOnlyApplication.Malformed reason
+
+    /// <summary>
+    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[UnmanagedCallConv]</c>, as
+    /// CoreCLR's VM does where it reads the calling conventions of a P/Invoke so marked: no
+    /// constructor arguments, then the named arguments, each as a field or as a property, of which
+    /// only <c>CallConvs</c> (an array of types) is declared.
+    /// </summary>
+    /// <remarks>
+    /// <c>CallConv::TryGetCallingConventionFromUnmanagedCallConv</c> parses it. Where that parse
+    /// fails, CoreCLR's <c>IfFailThrow</c> raises out of the compilation of the method calling the
+    /// P/Invoke.
+    /// </remarks>
+    let parseUnmanagedCallConv (blob : ImmutableArray<byte>) : UnmanagedCallConvApplication =
+        match parseCallConvsAttribute "[UnmanagedCallConv]" false false blob with
+        | Ok (callConvs, _) -> UnmanagedCallConvApplication.Parsed callConvs
+        | Error reason -> UnmanagedCallConvApplication.Malformed reason

@@ -200,10 +200,13 @@ method) may add more:
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also
   loads each instantiation the VM's walk for whether the call needs marshalling reaches and, by
-  Swift's convention, each pointer's target. It does not make the transition there in a handler or a
-  `try` with a `catch` or a filter, in an assembly whose `DebuggableAttribute` disables
-  optimisation, or for a P/Invoke that does not preserve its signature, sets the last error or
-  converts a locale, and the walk ends at the first type that needs marshalling by its kind (a
+  Swift's convention, each pointer's target. CoreCLR reads the call's convention, as for
+  `[UnmanagedCallersOnly]` (`UnmanagedCallingConvention`), from a P/Invoke's import, else its
+  `[UnmanagedCallConv]`, else its signature's modifiers, or from a `calli` signature's calling
+  convention and, for `unmanaged`, its modifiers. It does not make the transition there in a
+  handler or a `try` with a `catch` or a filter, in an assembly whose `DebuggableAttribute`
+  disables optimisation, by Fastcall's convention, or for a P/Invoke that does not preserve its
+  signature, sets the last error or converts a locale, and the walk ends at the first type that needs marshalling by its kind (a
   class, an array, a byref, `string`, and with runtime marshalling `bool`, `char` or a spelt
   marshalling); elsewhere the analysis takes those to be loads it may make, as whether the JIT
   makes the transition turns on block weights. A class, a byref's target or, by another
@@ -236,6 +239,15 @@ method) may add more:
   which may fail before), unless resolving a `call` or `ldftn` of an abstract method refuses that
   first (`BadImageFormatException`); a method with one never compiles at all, so none of its body
   runs. `ldtoken` converts no signature. The call is not followed, nor anything it would call;
+* of a call of unmanaged code, once it has loaded the return type, the JIT reads the calling
+  convention (`UnmanagedConventionRead`), wherever in the code it compiles the call is: a `calli`
+  signature by the `unmanaged` convention whose modifiers name two base conventions fails the
+  compilation of the method holding it with `InvalidProgramException`, and a P/Invoke's
+  `[UnmanagedCallConv]` CoreCLR cannot parse, or that says `CallConvs = null`, fails it with what
+  the analysis does not name (`Opacity.UnreadableCallingConvention`). The call is not followed. A
+  P/Invoke whose `[UnmanagedCallConv]` or signature's modifiers name two base conventions, or
+  whose import or attribute names one convention and its signature's modifiers another, the VM
+  refuses with a `TypeLoadException` where the JIT may begin its walk for whether the call needs marshalling;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),
