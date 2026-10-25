@@ -12964,6 +12964,8 @@ public static class Runners
             ValueTypeVoidSpec : EntityHandle
             /// `class System.Gone&`, which CoreLib declares no `System.Gone` for
             GoneByref : EntityHandle
+            /// `int32&` under `modopt(IsConst)`
+            ModifiedByref : EntityHandle
             Exception : EntityHandle
             /// `Object::GetHashCode`
             ObjectGetHashCode : EntityHandle
@@ -13025,6 +13027,7 @@ public static class Runners
         let voidRef = typeRef "System" "Void"
         let typeRef' = typeRef "System" "Type"
         let goneRef = typeRef "System" "Gone"
+        let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
 
         let typeSpec (encode : BlobBuilder -> unit) : EntityHandle =
             let blob = BlobBuilder ()
@@ -13090,6 +13093,13 @@ public static class Runners
                 VoidSpec = typeSpec (fun blob -> blob.WriteByte 0x01uy)
                 ValueTypeVoidSpec = typeSpec (fun blob -> SignatureTypeEncoder(blob).Type (voidRef, true))
                 GoneByref = typeSpec (byrefOf (fun element -> element.Type (goneRef, false)))
+                // ECMA-335 II.23.2.7: ELEMENT_TYPE_CMOD_OPT is 0x20, then the modifier's coded index.
+                ModifiedByref =
+                    typeSpec (fun blob ->
+                        blob.WriteByte 0x20uy
+                        blob.WriteCompressedInteger (CodedIndex.TypeDefOrRefOrSpec isConstRef)
+                        byrefOf _.Int32() blob
+                    )
                 Exception = typeRef "System" "Exception"
                 ObjectGetHashCode = memberOf objectRef "GetHashCode"
                 Member = memberOf
@@ -13386,6 +13396,11 @@ public static class Runners
                 "Castclass_GoneByref",
                 returning (fun operands -> castclass operands operands.GoneByref),
                 Refusal.Raises typeLoad
+            // A custom modifier does not change the type a signature names.
+            yield
+                "Castclass_ModifiedByref",
+                returning (fun operands -> castclass operands operands.ModifiedByref),
+                Refusal.Raises invalidProgram
             // And it finds the member before it refuses its parent: looking up through
             // `System.Void` finds no non-virtual method it inherits.
             yield
