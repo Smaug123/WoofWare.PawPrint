@@ -1,6 +1,7 @@
 elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
 probes.cpp:Allocate	probes.cpp	Allocate
 probes.cpp:Construct	probes.cpp	Construct
+probes.cpp:Convert	probes.cpp	Convert
 probes.cpp:Declared	probes.cpp	Declared
 probes.cpp:Defaults	probes.cpp	Defaults
 probes.cpp:DeleteShape	probes.cpp	DeleteShape
@@ -11,6 +12,9 @@ probes.cpp:Diamond	probes.cpp	Diamond
 probes.cpp:Enums	probes.cpp	Enums
 probes.cpp:FunctionPointer	probes.cpp	FunctionPointer
 probes.cpp:Generic	probes.cpp	Generic
+probes.cpp:Holds::Holds	probes.cpp	Holds::Holds
+probes.cpp:Lambda	probes.cpp	Lambda
+probes.cpp:Leaf::~Leaf	probes.cpp	Leaf::~Leaf
 probes.cpp:Macros	probes.cpp	Macros
 probes.cpp:MemberPointer	probes.cpp	MemberPointer
 probes.cpp:NeverInstantiated	probes.cpp	NeverInstantiated
@@ -19,7 +23,10 @@ probes.cpp:Pasting	probes.cpp	Pasting
 probes.cpp:Pure	probes.cpp	Pure
 probes.cpp:Qualified	probes.cpp	Qualified
 probes.cpp:Shadowing	probes.cpp	Shadowing
+probes.cpp:TakeOwned	probes.cpp	TakeOwned
 probes.cpp:Throws	probes.cpp	Throws
+probes.cpp:Trivial	probes.cpp	Trivial
 probes.cpp:Unevaluated	probes.cpp	Unevaluated
+probes.cpp:Unevaluated2	probes.cpp	Unevaluated2
 probes.cpp:WithDefault::WithDefault	probes.cpp	WithDefault::WithDefault
 probes.cpp:rived::Use	probes.cpp	rived::Use

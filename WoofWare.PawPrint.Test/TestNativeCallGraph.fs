@@ -199,7 +199,22 @@ module TestNativeCallGraph =
 
         Set.intersect g.Uninstantiated g.Undefined |> shouldEqual Set.empty
 
-    [<TestCaseSource(nameof graphs)>]
+    /// Each graph, but the table's citations name .NET 10's source, which .NET 11's moves and removes
+    /// some of.
+    let graphsOfTheTablesRuntime : TestCaseData list =
+        [
+            for runtime in [ "net10" ; "net11" ] do
+                for target in targets do
+                    let case = TestCaseData(runtime, target).SetArgDisplayNames (runtime, target)
+
+                    yield
+                        if runtime = "net10" then
+                            case
+                        else
+                            case.Ignore Net11Frontier.nativeContractTable
+        ]
+
+    [<TestCaseSource(nameof graphsOfTheTablesRuntime)>]
     let ``every C++ routine the contract table cites has a definition in the graph``
         (runtime : string)
         (target : string)

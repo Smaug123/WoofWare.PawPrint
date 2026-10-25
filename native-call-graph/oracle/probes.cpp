@@ -142,3 +142,51 @@ void Declared();
 
 // A call whose name a macro pastes together.
 void Pasting() { PASTE(Pasted); }
+
+// Constructions and destructions that are trivial, which run no code.
+struct Plain { int x; };
+void Trivial(Plain* from)
+{
+    Plain p;
+    Plain q = *from;
+    (void)p;
+    (void)q;
+}
+
+// A lambda's body, whose calls count as its enclosing routine's.
+void Lambda()
+{
+    auto f = [] { Helper(); };
+    f();
+}
+
+// More of what runs nothing: other unevaluated operands, and constant evaluation.
+namespace std { class type_info; }
+constexpr int Constant() { return 1; }
+void Unevaluated2(int n)
+{
+    (void)noexcept(Value());
+    (void)typeid(Value());
+    __typeof__(Value()) w = 0;
+    (void)w;
+    static_assert(Constant() == 1, "");
+    switch (n) { case Constant(): break; }
+}
+
+// A call no text names: a conversion operator's.
+struct Converts { operator int() const; };
+int Convert(Converts c) { return c; }
+
+// A parameter its callee destroys.
+struct [[clang::trivial_abi]] Owned { Owned(Owned&&); ~Owned(); };
+void TakeOwned(Owned o) { }
+
+// A constructor's members, which it constructs, and which unwinding it destroys.
+struct Holds { Guard g; Holds(); };
+Holds::Holds() { Helper(); }
+
+// A destructor's bases, a virtual one among them.
+struct VB { ~VB(); };
+struct Mid : virtual VB { };
+struct Leaf : Mid { ~Leaf(); };
+Leaf::~Leaf() { }
