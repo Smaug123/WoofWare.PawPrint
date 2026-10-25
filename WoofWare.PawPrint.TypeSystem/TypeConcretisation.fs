@@ -2027,21 +2027,18 @@ module TypeConcretization =
             (implParam : GenericParamMetadata, declParam : GenericParamMetadata)
             : Result<bool, TypeBindingFailure> * ConcretizationContext<DumpedAssembly>
             =
-            let isNotNullableValueType =
-                implParam.Constraint = Some GenericConstraint.NonNullableValue
+            let isNotNullableValueType = implParam.RequiresNonNullableValueType
 
             let specialsMatch =
                 // Each of these says the override must not demand more of a type argument than
                 // the method it overrides already demanded.
-                (match implParam.Constraint with
-                 | Some GenericConstraint.NonNullableValue ->
-                     declParam.Constraint = Some GenericConstraint.NonNullableValue
-                 | Some GenericConstraint.Reference -> declParam.Constraint = Some GenericConstraint.Reference
-                 | None -> true)
+                (not implParam.RequiresNonNullableValueType
+                 || declParam.RequiresNonNullableValueType)
+                && (not implParam.RequiresReferenceType || declParam.RequiresReferenceType)
                 && (not implParam.RequiresParameterlessConstructor
                     || declParam.RequiresParameterlessConstructor
                     // A non-nullable value type always has a parameterless constructor.
-                    || declParam.Constraint = Some GenericConstraint.NonNullableValue)
+                    || declParam.RequiresNonNullableValueType)
                 // `allows ref struct` runs the other way, because it *widens* what the parameter
                 // accepts: the override has to keep accepting what the base accepted.
                 && (not declParam.AllowsByRefLike || implParam.AllowsByRefLike)

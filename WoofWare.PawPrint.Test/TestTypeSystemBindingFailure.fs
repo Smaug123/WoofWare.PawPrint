@@ -353,6 +353,20 @@ module TestTypeSystemBindingFailure =
         |> snd
         |> unmodelledSaying fragment
 
+        // An environment has nothing to instantiate the bare argument at, however many arguments
+        // it holds.
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfBareList
+            f.Analysed
+            (ImmutableArray.Create int32)
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> unmodelledSaying fragment
+
         match bindMember f f.Shapes.ListOfBareListClear with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>) |> unmodelledSaying fragment
@@ -591,3 +605,67 @@ module TestTypeSystemBindingFailure =
         coverage.Count Resolved.Binds |> shouldBeGreaterThan 100
         coverage.Count Resolved.Fails |> shouldBeGreaterThan 100
         coverage.Count Resolved.RefusedForABareArgument |> shouldBeGreaterThan 5
+
+    [<RequireQualifiedAccess>]
+    type private Agreement =
+        | Binds
+        | Fails
+
+    /// The generated spellings mention no generic parameter, so the environment they are read in
+    /// has nothing to bind in them: in particular, it cannot instantiate a generic definition one
+    /// of them names bare.
+    [<Test>]
+    let ``the Loader resolves a spelling with no parameters alike in every environment`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+        let str = TypeDefn.PrimitiveType PrimitiveType.String
+
+        let resolveIn (environment : TypeDefn list) (ty : TypeDefn) : Result<TypeDefn, TypeBindingFailure> =
+            match
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ty
+                    (ImmutableArray.CreateRange environment)
+                    ImmutableArray.Empty
+                    f.Analysed
+                    f.Assemblies
+            with
+            | assemblies, Ok (_, info) -> Ok (LoadedTypeInfo.typeInfoToTypeDefn f.BaseClassTypes assemblies info)
+            | _, Error failure -> Error failure
+
+        let property (cover : Agreement -> unit) (spelling : Spelling) : bool =
+            let ty = toTypeDefn f spelling
+            let inEmpty = resolveIn [] ty
+
+            match inEmpty with
+            | Ok _ -> cover Agreement.Binds
+            | Error _ -> cover Agreement.Fails
+
+            [ [ int32 ] ; [ int32 ; str ] ; [ str ; int32 ; int32 ] ]
+            |> List.forall (fun environment -> resolveIn environment ty = inEmpty)
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+
+        coverage.Count Agreement.Binds |> shouldBeGreaterThan 100
+        coverage.Count Agreement.Fails |> shouldBeGreaterThan 100
+
+    [<Test>]
+    let ``an instantiation of a type reference whose arguments do not match its parameters is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let list = spelled f f.Shapes.List
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+        TypeResolution.resolveTypeFromDefn
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            (TypeDefn.GenericInstantiation (list, ImmutableArray.Create (int32, int32)))
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            f.Analysed
+            f.Assemblies
+        |> snd
+        |> unmodelledSaying "generic parameter"

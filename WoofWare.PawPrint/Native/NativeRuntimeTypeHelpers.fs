@@ -1100,8 +1100,7 @@ module NativeRuntimeTypeHelpers =
         // Appending at the *end* is what Roslyn's row order calls for: the synthetic row it
         // filters out is emitted last, while the `unmanaged` TypeSpec — which survives the
         // filter and so keeps its own position — is emitted first.
-        match parameterMetadata.Constraint with
-        | Some GenericConstraint.NonNullableValue ->
+        if parameterMetadata.RequiresNonNullableValueType then
             let state, _, valueTypeHandle =
                 concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System" "ValueType"
 
@@ -1126,8 +1125,8 @@ module NativeRuntimeTypeHelpers =
                 state, baseTargets
             else
                 state, baseTargets @ [ RuntimeTypeHandleTarget.Closed valueTypeHandle ]
-        | Some GenericConstraint.Reference
-        | None -> state, baseTargets
+        else
+            state, baseTargets
 
     let allocateManagedObjectOfConcreteType
         (loggerFactory : ILoggerFactory)
@@ -1546,7 +1545,7 @@ module NativeRuntimeTypeHelpers =
             let isValue = argumentIsValueType baseClassTypes state arg
 
             let valueTypeViolation () =
-                if paramMd.Constraint = Some GenericConstraint.NonNullableValue then
+                if paramMd.RequiresNonNullableValueType then
                     if not isValue || argumentIsNullable baseClassTypes state arg then
                         Some (violation param "System.ValueType")
                     else
@@ -1555,7 +1554,7 @@ module NativeRuntimeTypeHelpers =
                     None
 
             let referenceTypeViolation () =
-                if paramMd.Constraint = Some GenericConstraint.Reference && isValue then
+                if paramMd.RequiresReferenceType && isValue then
                     Some (violation param "class")
                 else
                     None

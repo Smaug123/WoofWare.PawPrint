@@ -110,7 +110,8 @@ module TestSignalTerminatedCases =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         use peImage = new MemoryStream (image)
 
@@ -164,7 +165,7 @@ module TestSignalTerminatedCases =
                         fileName
                         (Some fileName)
                         peImage
-                        (HostConfig.Default (FrameworkUnderTest.runtimeDirs ()))
+                        (HostConfig.Default (FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform))
                 )
 
         match ExpectRun.ended pawPrintResult with

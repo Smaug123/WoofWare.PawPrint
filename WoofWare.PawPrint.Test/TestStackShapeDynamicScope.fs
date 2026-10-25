@@ -20,7 +20,8 @@ module TestStackShapeDynamicScope =
         let source = Assembly.getEmbeddedResourceAsString sourceName assy
         let image = Roslyn.compile [ source ]
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes =
+            FrameworkUnderTest.runtimeDirsFor KernelConfig.Default.UnixPlatform
 
         use peImage = new MemoryStream (image)
 

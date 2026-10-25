@@ -2170,7 +2170,7 @@ module IlMachineRuntimeMetadata =
 
         let state, metadata, _ = typeVariableFacts state variable
 
-        if metadata.Constraint = Some GenericConstraint.Reference then
+        if metadata.RequiresReferenceType then
             state, true
         else
             constrainedAsObjRefByConstraints state variable
@@ -2296,7 +2296,7 @@ module IlMachineRuntimeMetadata =
                     state, true
                 elif isClosedNonGeneric state baseClassTypes.ValueType target then
                     let state, metadata, _ = typeVariableFacts state source
-                    state, metadata.Constraint = Some GenericConstraint.NonNullableValue
+                    state, metadata.RequiresNonNullableValueType
                 else
                     // Revisiting a (variable, target) pair is legal here: `G<T> where T : IIn<IIn<T>>`
                     // against `class C : IIn<IIn<C>>` comes back to it through variance, and that

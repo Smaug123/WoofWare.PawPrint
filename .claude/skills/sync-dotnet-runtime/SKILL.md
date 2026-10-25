@@ -30,7 +30,7 @@ Bumping is an edit to `flake.nix` and `WoofWare.PawPrint/EmulatedRuntime.fs` —
 
 3. Update the pin in `flake.nix`:
    - In that runtime's entry of `runtimes`, set `expectedRuntimeVersion` to the new version (e.g. `"10.0.8"`).
-   - Set its `sourceRev` to the public tag commit from step 2, set `sourceHash = pkgs.lib.fakeHash;`, then run `nix develop -c true` and copy the real `got: sha256-…` value back into `sourceHash`. Do the same for `linuxFrameworkHash`, since the pack is fetched at `expectedRuntimeVersion`.
+   - Set its `sourceRev` to the public tag commit from step 2, set `sourceHash = pkgs.lib.fakeHash;`, then run `nix develop -c true` and copy the real `got: sha256-…` value back into `sourceHash`. Do the same for `linuxFrameworkHash` and `osxFrameworkHash`, since the packs are fetched at `expectedRuntimeVersion`.
    - If you need a runtime tree outside the current sparse set, add it to `sparseCheckout`, which every runtime's source shares, then re-run the fakeHash → real-hash dance for every runtime's `sourceHash`, since each hash covers its checked-out tree.
 
 4. Update `EmulatedRuntime.pin` in `WoofWare.PawPrint/EmulatedRuntime.fs` for the runtime's major:
