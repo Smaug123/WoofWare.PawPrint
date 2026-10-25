@@ -8957,6 +8957,9 @@ public static unsafe class Natives
     public static extern int MarshalledReturnTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
     public static extern void IntThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
+    // Its first parameter says it has a marshalling, without one, after compiling.
+    [DllImport("nowhere")]
+    public static extern void FlaggedThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
     public static extern void PointerThenGenericOfGone(int* p, Provider.KeptGeneric<Provider.Gone> x);
     [DllImport("nowhere")]
@@ -9037,6 +9040,7 @@ public static unsafe class Calls
     public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
     public static void MarshalledReturn() { if (never) Natives.MarshalledReturnTakesGenericOfGone(null); }
     public static void IntThen() { if (never) Natives.IntThenGenericOfGone(0, null); }
+    public static void FlaggedThen() { if (never) Natives.FlaggedThenGenericOfGone(0, null); }
     public static void PointerThen() { if (never) Natives.PointerThenGenericOfGone(null, null); }
     public static void StringThen() { if (never) Natives.StringThenGenericOfGone(null, null); }
     public static void ObjectThen() { if (never) Natives.ObjectThenGenericOfGone(null, null); }
@@ -9130,7 +9134,39 @@ public static unsafe class Calls
 
         let completeProvider = compile "Provider" [] (provider true)
         let incompleteProvider = compile "Provider" [] (provider false)
-        let clientImage = compile "Client" [ completeProvider ] client
+        // The image with `HasFieldMarshal` set on the first parameter of the method named
+        // `methodName`, which has no marshalling row: C# never emits that, and CoreCLR finds a
+        // parameter's marshalling by its row alone.
+        let flagFieldMarshal (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let parameter =
+                metadata.MethodDefinitions
+                |> Seq.map metadata.GetMethodDefinition
+                |> Seq.filter (fun m -> metadata.GetString m.Name = methodName)
+                |> Seq.exactlyOne
+                |> fun m -> m.GetParameters ()
+                |> Seq.find (fun p -> (metadata.GetParameter p).SequenceNumber = 1)
+
+            let row =
+                MetadataTokens.GetRowNumber (ParameterHandle.op_Implicit parameter : EntityHandle)
+
+            let offset =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.Param
+                + (row - 1) * metadata.GetTableRowSize TableIndex.Param
+
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let flagged = flags ||| uint16 ParameterAttributes.HasFieldMarshal
+            Array.blit (BitConverter.GetBytes flagged) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> flagFieldMarshal "FlaggedThenGenericOfGone"
+
         let drmImage = compile "DrmClient" [ completeProvider ] drmClient
 
         let debugImage =
@@ -9165,6 +9201,8 @@ public static unsafe class Calls
                 "Client.Calls", "MarshalledThen", false
                 "Client.Calls", "MarshalledReturn", false
                 "Client.Calls", "IntThen", true
+                // A flag saying a parameter has a marshalling, without one, CoreCLR ignores.
+                "Client.Calls", "FlaggedThen", true
                 "Client.Calls", "PointerThen", true
                 "Client.Calls", "StringThen", false
                 "Client.Calls", "ObjectThen", false
