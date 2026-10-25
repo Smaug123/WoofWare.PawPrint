@@ -21,15 +21,14 @@ open Microsoft.Extensions.Logging
 /// <para>
 /// Once every type the load reaches has been through those levels (`CLASS_DEPENDENCIES_LOADED`),
 /// it loads, for each type definition outside CoreLib it has brought, the constraints of the
-/// definition's type parameters, each to that level: the constraint types and what they reach, but
-/// not their own constraints. It does not check that any instantiation satisfies its constraints.
+/// definition's type parameters, and then those of each generic method it declares, each to that
+/// level: the constraint types and what they reach, but not their own constraints. It does not
+/// check that any instantiation satisfies its constraints.
 /// </para>
 /// <para>
-/// Not followed: the constraints of a definition's generic methods, which
-/// <c>MethodTable::DoFullyLoad</c> loads with its type parameters'. A reference only one of those
-/// names can fail a load that this reports as meeting no miss. CoreCLR also loads no constraints in
-/// a ReadyToRun image that skips type validation, which this does not tell from any other image
-/// outside CoreLib: such a load may meet a miss that CoreCLR never meets.
+/// Not followed: CoreCLR loads no constraints in a ReadyToRun image that skips type validation,
+/// which this does not tell from any other image outside CoreLib: such a load may meet a miss that
+/// CoreCLR never meets.
 /// </para>
 /// <para>
 /// No miss does not mean the load succeeds: CoreCLR's class loader fails a load for many other
@@ -585,8 +584,8 @@ module TypeLoad =
                     }
             ]
 
-    /// A load the constraint checks of a definition's type parameters make, in the order
-    /// `MethodTable::DoFullyLoad` makes them.
+    /// A load the constraint checks of a type definition's or a generic method's type parameters
+    /// make, in the order `MethodTable::DoFullyLoad` makes them.
     [<RequireQualifiedAccess>]
     type private ConstraintLoad =
         /// `TypeVarTypeDesc::LoadConstraints` for the type parameter at this index: each constraint,
@@ -596,12 +595,30 @@ module TypeLoad =
         /// signature of its first constraint names, if that is an interface instantiation.
         | Signatures of parameter : int
 
-    /// The order of the loads `DoFullyLoad` makes for the type parameters of a definition, each with
-    /// the constraints `constraints` gives: for each in turn, `Bounded` loads its constraints, and
-    /// then those of each type parameter it is constrained to, transitively, each once; then
-    /// `DoAccessibilityCheckForConstraints` walks the signature of its first constraint.
-    let private constraintLoadOrder (constraints : TypeDefn list list) : ConstraintLoad list =
+    /// Whose type parameters a set of constraints constrains, which decides the order of the loads
+    /// their checks make, and which of the variables they name are the same kind as those parameters.
+    [<RequireQualifiedAccess>]
+    type private ConstraintOwner =
+        /// A type definition (`DoFullyLoad`): for each type parameter in turn, `Bounded`, then
+        /// `DoAccessibilityCheckForConstraints`.
+        | Type
+        /// A generic method (`MethodDesc::CheckConstraintMetadataValidity`): for each type parameter
+        /// in turn, `DoAccessibilityCheckForConstraints`, then `Bounded`.
+        | Method
+
+    /// The order of the loads `DoFullyLoad` makes for the type parameters of `owner`, each with the
+    /// constraints `constraints` gives. `DoAccessibilityCheckForConstraints` loads a parameter's
+    /// constraints, if nothing has yet, and walks the signature of its first one; `Bounded` loads its
+    /// constraints, and then those of each type parameter of the same kind it is constrained to,
+    /// transitively, each once.
+    let private constraintLoadOrder (owner : ConstraintOwner) (constraints : TypeDefn list list) : ConstraintLoad list =
         let parameters = constraints.Length
+
+        let sameKind (spelling : TypeDefn) : int option =
+            match owner, TypeDefn.stripCustomModifiers spelling with
+            | ConstraintOwner.Type, TypeDefn.GenericTypeParameter other
+            | ConstraintOwner.Method, TypeDefn.GenericMethodParameter other -> Some other
+            | _ -> None
 
         // `Bounded`, to `depth`: it gives up at depth 0, which only constraints among the
         // parameters that form a cycle reach.
@@ -623,15 +640,27 @@ module TypeLoad =
 
             ((loaded, order), constraints.[parameter])
             ||> List.fold (fun soFar bound ->
-                match TypeDefn.stripCustomModifiers bound with
-                | TypeDefn.GenericTypeParameter other -> bounded soFar other (depth - 1)
-                | _ -> soFar
+                match sameKind bound with
+                | Some other -> bounded soFar other (depth - 1)
+                | None -> soFar
             )
 
         ((Set.empty, []), List.init parameters id)
         ||> List.fold (fun soFar parameter ->
-            let loaded, order = bounded soFar parameter parameters
-            loaded, ConstraintLoad.Signatures parameter :: order
+            match owner with
+            | ConstraintOwner.Type ->
+                let loaded, order = bounded soFar parameter parameters
+                loaded, ConstraintLoad.Signatures parameter :: order
+            | ConstraintOwner.Method ->
+                let loaded, order = soFar
+
+                let loaded, order =
+                    if loaded.Contains parameter then
+                        loaded, order
+                    else
+                        loaded.Add parameter, ConstraintLoad.Constraints parameter :: order
+
+                bounded (loaded, ConstraintLoad.Signatures parameter :: order) parameter parameters
         )
         |> snd
         |> List.rev
@@ -758,21 +787,21 @@ module TypeLoad =
             | Some elements -> firstMiss (List.map recurse elements) walk
             | None -> failwith $"BUG: no load walk for %O{constructed}"
 
-    /// The checks `MethodTable::DoFullyLoad` makes of a type definition's type parameters at
-    /// `CLASS_LOADED`, as far as they load types: each constraint, spelled in the definition's
-    /// assembly, to `CLASS_DEPENDENCIES_LOADED`. An interface instantiation is not loaded: its generic
-    /// definition is, and later, if it is the type parameter's first constraint, each type its
-    /// signature names.
-    and private typeParameterConstraintSteps
+    /// The checks `MethodTable::DoFullyLoad` makes at `CLASS_LOADED` of `generics`, the type
+    /// parameters of `owner`, as far as they load types: each constraint, spelled in `definedIn`, to
+    /// `CLASS_DEPENDENCIES_LOADED`. An interface instantiation is not loaded: its generic definition
+    /// is, and later, if it is the type parameter's first constraint, each type its signature names.
+    and private constraintSteps
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (definedIn : DumpedAssembly)
-        (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (owner : ConstraintOwner)
+        (generics : GenericParamFromMetadata seq)
         : (LoadWalk -> LoadWalk * LoadMiss option) list
         =
         let constraints =
-            definition.Generics
+            generics
             |> Seq.map (fun (_, metadata) -> List.ofSeq metadata.Constraints)
             |> List.ofSeq
 
@@ -784,7 +813,7 @@ module TypeLoad =
         let firstRowKept =
             let metadata = definedIn.PeReader.GetMetadataReader ()
 
-            definition.Generics
+            generics
             |> Seq.map (fun (parameter, parameterMetadata) ->
                 let rows = metadata.GetGenericParameter(parameter.Handle.Get).GetConstraints ()
 
@@ -852,7 +881,7 @@ module TypeLoad =
                     firstMiss (constraintSignatureTypes bound |> List.map step) walk
             | _ -> walk, None
 
-        constraintLoadOrder constraints
+        constraintLoadOrder owner constraints
         |> List.map (fun step (walk : LoadWalk) ->
             match step with
             | ConstraintLoad.Constraints parameter -> firstMiss (List.map loadConstraint constraints.[parameter]) walk
@@ -892,7 +921,7 @@ module TypeLoad =
 
     /// A type definition's base, its interfaces and the value types of its fields, instance then
     /// static, each to `CLASS_LOADED`; then, outside CoreLib, which skips the checks, its type
-    /// parameters' constraints.
+    /// parameters' constraints, and those of each generic method it declares, in metadata order.
     and private fullyLoadDefinition
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -925,7 +954,12 @@ module TypeLoad =
             if identity.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName then
                 []
             else
-                typeParameterConstraintSteps loggerFactory dotnetRuntimeDirs baseClassTypes definedIn definition
+                let steps = constraintSteps loggerFactory dotnetRuntimeDirs baseClassTypes definedIn
+
+                steps ConstraintOwner.Type definition.Generics
+                @ (definition.Methods
+                   |> List.filter (fun method -> not method.Generics.IsEmpty)
+                   |> List.collect (fun method -> steps ConstraintOwner.Method method.Generics))
 
         firstMiss
             (parentSteps load definedIn definition

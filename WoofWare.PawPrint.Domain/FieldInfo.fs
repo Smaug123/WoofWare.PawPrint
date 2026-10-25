@@ -145,11 +145,12 @@ module FieldMarshalDescriptor =
 
 [<RequireQualifiedAccess>]
 module FieldInfo =
-    /// Whether the FieldMarshal table (ECMA-335 II.22.17) has a row whose Parent is `field`.
+    /// Whether the FieldMarshal table (ECMA-335 II.22.17) has a row whose Parent is `parent`, a field
+    /// or a parameter.
     /// System.Reflection.Metadata's `GetMarshallingDescriptor` answers a nil handle both for no row
     /// and for a row naming the empty blob at heap offset 0, which CoreCLR treats differently, so
     /// this reads the Parent column itself.
-    let private hasFieldMarshalRow (mr : MetadataReader) (field : FieldDefinitionHandle) : bool =
+    let internal hasFieldMarshalRow (mr : MetadataReader) (parent : EntityHandle) : bool =
         let rows = mr.GetTableRowCount TableIndex.FieldMarshal
 
         if rows = 0 then
@@ -171,8 +172,7 @@ module FieldInfo =
             failwith
                 $"FieldMarshal row size %d{rowSize} leaves %d{blobWidth} bytes for the NativeType blob index after a %d{parentWidth}-byte Parent; ECMA-335 II.24.2.6 allows only 2 or 4"
 
-        let target =
-            CodedIndex.HasFieldMarshal (FieldDefinitionHandle.op_Implicit field : EntityHandle)
+        let target = CodedIndex.HasFieldMarshal parent
 
         let offset = mr.GetTableMetadataOffset TableIndex.FieldMarshal
 
@@ -263,7 +263,10 @@ module FieldInfo =
         let marshallingDescriptor =
             let blob = def.GetMarshallingDescriptor ()
 
-            if blob.IsNil && not (hasFieldMarshalRow mr handle) then
+            if
+                blob.IsNil
+                && not (hasFieldMarshalRow mr (FieldDefinitionHandle.op_Implicit handle : EntityHandle))
+            then
                 None
             else
                 FieldMarshalDescriptor.parse mr blob

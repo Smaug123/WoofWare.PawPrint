@@ -175,6 +175,8 @@ public class ThingException : System.Exception { }
             Signature : string -> TypeDefn * TypeDefn list
             /// The signature of the method of `Probes` of this name, as its definition spells it.
             MethodSignature : string -> TypeMethodSignature<TypeDefn>
+            /// What CoreCLR reads of the P/Invoke of `Probes` of this name (`UnmanagedTarget.ofPInvoke`).
+            PInvoke : string -> UnmanagedTarget
         }
 
     /// Where a probe, and a method it calls, meet a type, each in the order the JIT meets them.
@@ -330,6 +332,8 @@ public class ThingException : System.Exception { }
                     $"[System.Runtime.InteropServices.DllImport(\"nowhere\")] static extern void NativeTakes%d{k}(%s{s} p);"
                     $"[System.Runtime.InteropServices.DllImport(\"nowhere\"), System.Runtime.InteropServices.UnmanagedCallConv(CallConvs = new[] {{ typeof(System.Runtime.CompilerServices.CallConvSwift) }})] static extern void SwiftNativeTakes%d{k}(%s{s} p);"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsNative%d{k}() {{ if (Never) NativeTakes%d{k}(null); }}"
+                    $"[System.Runtime.InteropServices.DllImport(\"nowhere\")] static extern void BoolThenNativeTakes%d{k}(bool b, %s{s} p);"
+                    $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsBoolThenNative%d{k}() {{ if (Never) BoolThenNativeTakes%d{k}(false, null); }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesNative%d{k}() {{ try {{ if (Never) NativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CallsSwiftNative%d{k}() {{ if (Never) SwiftNativeTakes%d{k}(null); }}"
                     $"[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)] static void CatchesSwiftNative%d{k}() {{ try {{ if (Never) SwiftNativeTakes%d{k}(null); }} catch (System.Exception) {{ }} }}"
@@ -371,21 +375,36 @@ public class ThingException : System.Exception { }
         let call = MemberOperand.Call
 
         // A probe calling the method of `Probes` named `helper`, whose compilation calls unmanaged
-        // code by `convention`, by the signature of the method of `Probes` named `native`.
+        // code at `placement` by `convention`, by the signature of the method of `Probes` named
+        // `native`: that P/Invoke, or, where `indirect`, a function pointer.
         let unmanagedProbe
             (name : string)
             (helper : string)
             (native : string)
             (convention : UnmanagedConvention)
+            (placement : UnmanagedCallPlacement)
+            (indirect : bool)
             : Probe
             =
             probe
                 name
                 $"%s{helper}();"
                 (fun spelt ->
+                    let unmanagedCall =
+                        {
+                            Convention = convention
+                            Placement = placement
+                            CallerDisablesOptimisation = false
+                            Target =
+                                if indirect then
+                                    UnmanagedTarget.FunctionPointer true
+                                else
+                                    spelt.PInvoke native
+                        }
+
                     meets
                         (signatureMeetings call TypeDefn.Void [])
-                        (JitTypeLoads.unmanagedMeetings convention (spelt.MethodSignature native))
+                        (JitTypeLoads.unmanagedMeetings unmanagedCall (spelt.MethodSignature native))
                 )
 
         [
@@ -656,6 +675,8 @@ public class ThingException : System.Exception { }
                 $"CallsNativeReturns%d{k}"
                 $"NativeReturns%d{k}"
                 UnmanagedConvention.NotSwift
+                UnmanagedCallPlacement.Unprotected
+                false
             probe
                 "TypeToken"
                 $"UseType(typeof(%s{s}));"
@@ -686,31 +707,47 @@ public class ThingException : System.Exception { }
                     (fun spelt -> meets (signatureMeetings call TypeDefn.Void [ spelt.Shape ]) [])
 
                 // Each calls a method whose compilation calls unmanaged code, `NativeTakes` by
-                // signature. The JIT makes the transition to unmanaged code there, so making the
-                // loads it may make or not, except inside a `try` with a `catch`.
-                unmanagedProbe "UnmanagedParameter" $"CallsNative%d{k}" $"NativeTakes%d{k}" UnmanagedConvention.NotSwift
+                // signature: without a handler, inside a `try` with a `catch`, after a `bool`, which
+                // ends the walk for whether the call needs marshalling.
+                unmanagedProbe
+                    "UnmanagedParameter"
+                    $"CallsNative%d{k}"
+                    $"NativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Unprotected
+                    false
 
-                { unmanagedProbe
-                      "CaughtUnmanagedParameter"
-                      $"CatchesNative%d{k}"
-                      $"NativeTakes%d{k}"
-                      UnmanagedConvention.NotSwift with
-                    Possible = fun _ -> PossibleLoads.Skipped
-                }
+                unmanagedProbe
+                    "CaughtUnmanagedParameter"
+                    $"CatchesNative%d{k}"
+                    $"NativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Protected
+                    false
 
-                { unmanagedProbe
-                      "CaughtSwiftUnmanagedParameter"
-                      $"CatchesSwiftNative%d{k}"
-                      $"SwiftNativeTakes%d{k}"
-                      UnmanagedConvention.MaybeSwift with
-                    Possible = fun _ -> PossibleLoads.Skipped
-                }
+                unmanagedProbe
+                    "CaughtSwiftUnmanagedParameter"
+                    $"CatchesSwiftNative%d{k}"
+                    $"SwiftNativeTakes%d{k}"
+                    UnmanagedConvention.MaybeSwift
+                    UnmanagedCallPlacement.Protected
+                    false
+
+                unmanagedProbe
+                    "BoolThenUnmanagedParameter"
+                    $"CallsBoolThenNative%d{k}"
+                    $"BoolThenNativeTakes%d{k}"
+                    UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Unprotected
+                    false
 
                 unmanagedProbe
                     "IndirectUnmanagedParameter"
                     $"CallsUnmanaged%d{k}"
                     $"NativeTakes%d{k}"
                     UnmanagedConvention.NotSwift
+                    UnmanagedCallPlacement.Unprotected
+                    true
 
                 if compilesSwift then
                     unmanagedProbe
@@ -718,12 +755,16 @@ public class ThingException : System.Exception { }
                         $"CallsSwiftNative%d{k}"
                         $"SwiftNativeTakes%d{k}"
                         UnmanagedConvention.MaybeSwift
+                        UnmanagedCallPlacement.Unprotected
+                        false
 
                     unmanagedProbe
                         "SwiftIndirectUnmanagedParameter"
                         $"CallsSwiftUnmanaged%d{k}"
                         $"NativeTakes%d{k}"
                         UnmanagedConvention.Swift
+                        UnmanagedCallPlacement.Unprotected
+                        true
             if isTypeArgument shape then
                 probe
                     "MethodArgument"
@@ -1035,6 +1076,10 @@ public class ThingException : System.Exception { }
         let methodSignature (name : string) : TypeMethodSignature<TypeDefn> =
             (probesType.Methods |> List.find (fun m -> m.Name = name)).Signature
 
+        let pInvoke (name : string) : UnmanagedTarget =
+            let method = probesType.Methods |> List.find (fun m -> m.Name = name)
+            UnmanagedTarget.ofPInvoke client method.TryMetadata.Value.Handle
+
         let signature (name : string) : TypeDefn * TypeDefn list =
             let signature = methodSignature name
 
@@ -1140,6 +1185,7 @@ public class ThingException : System.Exception { }
                                 Definition = definition
                                 Signature = signature
                                 MethodSignature = methodSignature
+                                PInvoke = pInvoke
                             }
 
                         ((assemblies, outcomes), probes)

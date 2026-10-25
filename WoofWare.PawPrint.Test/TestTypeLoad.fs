@@ -445,6 +445,101 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
         count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 10
         count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 4
 
+    /// Types declaring generic methods whose type parameters' constraints name types the provider
+    /// lacks, or an assembly that is not there, and types reaching those, each loaded through
+    /// `typeof`. A type that is only a constraint is loaded without its methods' constraints.
+    let private curatedMethodConstraintDeclarations : string =
+        """
+public class HasGoneMethod { public static int Fine() => 1; public static void M<U>() where U : Provider.Gone { } }
+public class HasGoneMethodGeneric<T> { public static void M<U>() where U : Provider.IGone { } }
+public interface IHasGoneMethod { void M<U>() where U : Provider.Gone; }
+public class InstanceGoneMethod { public void M<U>() where U : Provider.Gone { } }
+public class HasMissingMethod { public static void M<U>() where U : Optional.Thing { } }
+public class HasInterfaceOfGoneMethod { public static void M<U>() where U : Provider.IKeptGeneric<Provider.Gone> { } }
+public class HasInterfaceOfGoneSecondMethod { public static void M<U>() where U : Provider.IKept, Provider.IKeptGeneric<Provider.Gone> { } }
+public class HasKeptMethod { public static void M<U>() where U : Provider.Kept, Provider.IKept, new() { } }
+public class ConstrainedToInstanceGoneMethod<T> where T : InstanceGoneMethod { }
+public class ConstrainedToIHasGoneMethod<T> where T : IHasGoneMethod { }
+public class DerivesHasGoneMethod : HasGoneMethod { }
+public class ConstrainedToDerivesHasGoneMethod<T> where T : DerivesHasGoneMethod { }
+public class MethodsInOrder { public static void A<U>() where U : Provider.Gone { } public static void B<U>() where U : Optional.Thing { } }
+public class MethodsInOtherOrder { public static void A<U>() where U : Optional.Thing { } public static void B<U>() where U : Provider.Gone { } }
+public class StaticBeforeVirtual { public static void A<U>() where U : Optional.Thing { } public virtual void B<U>() where U : Provider.Gone { } }
+public class VirtualBeforeStatic { public virtual void A<U>() where U : Provider.Gone { } public static void B<U>() where U : Optional.Thing { } }
+public abstract class StaticBeforeAbstract { public static void A<U>() where U : Optional.Thing { } public abstract void B<U>() where U : Provider.Gone; }
+public class StaticBeforeConstructorBeforeVirtual { public static void A<U>() where U : Optional.Thing { } public StaticBeforeConstructorBeforeVirtual() { } public virtual void B<U>() where U : Provider.Gone { } }
+public class TypeParameterBeforeMethod<T> where T : Provider.Gone { public static void M<U>() where U : Optional.Thing { } }
+public class MethodParametersInOrder { public static void M<U, V>() where U : Provider.Gone where V : Optional.Thing { } }
+public class MethodParametersInOtherOrder { public static void M<U, V>() where U : Optional.Thing where V : Provider.Gone { } }
+public class MethodSignatureBeforeVariable { public static void M<U, V>() where U : Provider.IKeptGeneric<Optional.Thing>, V where V : Provider.Gone { } }
+public class MethodConstrainedToTypeParameter<T> { public static void M<U>() where U : T { } }
+public struct GoneMethodStruct { public static void M<U>() where U : Provider.Gone { } }
+public class HoldsGoneMethodStruct { public GoneMethodStruct F; }
+public class HoldsStaticGoneMethodStruct { public static GoneMethodStruct F; }
+public class HoldsGoneMethodClass { public HasGoneMethod F; }
+public class ImplementsIHasGoneMethod : IHasGoneMethod { public void M<U>() where U : Provider.Gone { } }
+public class DerivesKeptOfHasGoneMethod : Provider.KeptGeneric<HasGoneMethod> { }
+public class MissingMethodBase { public static void M<U>() where U : Optional.Thing { } }
+public class DerivesMissingMethodBaseWithGoneStatic : MissingMethodBase { public static Provider.GoneStruct F; }
+public struct MissingMethodStruct { public static void M<U>() where U : Optional.Thing { } }
+public class MissingMethodFieldBeforeGoneStatic { public static MissingMethodStruct A; public static Provider.GoneStruct B; }
+public class MissingMethodArgumentBeforeGoneStatic : Provider.KeptGeneric<MissingMethodBase> { public static Provider.GoneStruct B; }
+"""
+
+    let private curatedMethodConstraintNames : string list =
+        [
+            "HasGoneMethod"
+            "HasGoneMethodGeneric<>"
+            "IHasGoneMethod"
+            "InstanceGoneMethod"
+            "HasMissingMethod"
+            "HasInterfaceOfGoneMethod"
+            "HasInterfaceOfGoneSecondMethod"
+            "HasKeptMethod"
+            "ConstrainedToInstanceGoneMethod<>"
+            "ConstrainedToIHasGoneMethod<>"
+            "DerivesHasGoneMethod"
+            "ConstrainedToDerivesHasGoneMethod<>"
+            "MethodsInOrder"
+            "MethodsInOtherOrder"
+            "StaticBeforeVirtual"
+            "VirtualBeforeStatic"
+            "StaticBeforeAbstract"
+            "StaticBeforeConstructorBeforeVirtual"
+            "TypeParameterBeforeMethod<>"
+            "MethodParametersInOrder"
+            "MethodParametersInOtherOrder"
+            "MethodSignatureBeforeVariable"
+            "MethodConstrainedToTypeParameter<>"
+            "GoneMethodStruct"
+            "HoldsGoneMethodStruct"
+            "HoldsStaticGoneMethodStruct"
+            "HoldsGoneMethodClass"
+            "ImplementsIHasGoneMethod"
+            "DerivesKeptOfHasGoneMethod"
+            "DerivesMissingMethodBaseWithGoneStatic"
+            "MissingMethodFieldBeforeGoneStatic"
+            "MissingMethodArgumentBeforeGoneStatic"
+        ]
+
+    [<Test>]
+    let ``each of a curated set of types declaring constrained generic methods fails to load exactly where the host's does``
+        ()
+        : unit
+        =
+        let disagreements, host =
+            compare curatedMethodConstraintDeclarations curatedMethodConstraintNames
+
+        if not disagreements.IsEmpty then
+            failwith (String.concat Environment.NewLine disagreements)
+
+        let count (outcome : Outcome) =
+            host |> List.filter ((=) outcome) |> List.length
+
+        count Outcome.Loads |> shouldBeGreaterThan 4
+        count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 10
+        count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 4
+
     /// A type as a generated client spells it.
     type private Spelled =
         | Kept
@@ -467,6 +562,8 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
         | FunctionPointer of Spelled
         /// The type parameter at this index of the generic type spelling it, in a constraint.
         | Parameter of index : int
+        /// The type parameter at this index of the generic method spelling it, in a constraint.
+        | MethodParameter of index : int
 
     [<RequireQualifiedAccess>]
     type private Kind =
@@ -499,6 +596,8 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
             Interfaces : Spelled list
             Fields : (bool * Spelled) list
             Generics : ParameterConstraints list
+            /// The generic methods it declares, each by its type parameters' constraints.
+            Methods : ParameterConstraints list list
         }
 
     let rec private render (spelled : Spelled) : string =
@@ -521,6 +620,40 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
         | Pointer target -> $"%s{render target}*"
         | FunctionPointer returned -> $"delegate*<%s{render returned}>"
         | Parameter index -> $"P%d{index}"
+        | MethodParameter index -> $"Q%d{index}"
+
+    /// The type parameter list of generic parameters named `prefix` and their index, each with the
+    /// constraints `generics` gives, and its `where` clauses; empty for no parameters.
+    let private renderGenerics (prefix : string) (generics : ParameterConstraints list) : string * string =
+        match generics with
+        | [] -> "", ""
+        | generics ->
+            let parameters =
+                generics |> List.mapi (fun i _ -> $"%s{prefix}%d{i}") |> String.concat ", "
+
+            let constraints =
+                generics
+                |> List.mapi (fun i constraints ->
+                    let special =
+                        match constraints.Special with
+                        | None -> []
+                        | Some SpecialConstraint.Struct -> [ "struct" ]
+                        | Some SpecialConstraint.Class -> [ "class" ]
+
+                    match
+                        special
+                        @ (Option.toList constraints.ClassConstraint |> List.map render)
+                        @ (constraints.Others |> List.map render)
+                        @ (if constraints.New then [ "new()" ] else [])
+                    with
+                    | [] -> ""
+                    | parts ->
+                        let parts = String.concat ", " parts
+                        $" where %s{prefix}%d{i} : %s{parts}"
+                )
+                |> String.concat ""
+
+            $"<%s{parameters}>", constraints
 
     let private renderDeclaration (index : int) (declaration : Declaration) : string =
         let keyword =
@@ -544,37 +677,17 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
             )
             |> String.concat ""
 
-        let parameters, constraints =
-            match declaration.Generics with
-            | [] -> "", ""
-            | generics ->
-                let parameters = generics |> List.mapi (fun i _ -> $"P%d{i}") |> String.concat ", "
+        let parameters, constraints = renderGenerics "P" declaration.Generics
 
-                let constraints =
-                    generics
-                    |> List.mapi (fun i constraints ->
-                        let special =
-                            match constraints.Special with
-                            | None -> []
-                            | Some SpecialConstraint.Struct -> [ "struct" ]
-                            | Some SpecialConstraint.Class -> [ "class" ]
+        let methods =
+            declaration.Methods
+            |> List.mapi (fun i generics ->
+                let parameters, constraints = renderGenerics "Q" generics
+                $" public static void M%d{i}%s{parameters}()%s{constraints} {{ }}"
+            )
+            |> String.concat ""
 
-                        match
-                            special
-                            @ (Option.toList constraints.ClassConstraint |> List.map render)
-                            @ (constraints.Others |> List.map render)
-                            @ (if constraints.New then [ "new()" ] else [])
-                        with
-                        | [] -> ""
-                        | parts ->
-                            let parts = String.concat ", " parts
-                            $" where P%d{i} : %s{parts}"
-                    )
-                    |> String.concat ""
-
-                $"<%s{parameters}>", constraints
-
-        $"public unsafe %s{keyword} T%d{index}%s{parameters}%s{supertypes}%s{constraints} {{%s{fields} }}"
+        $"public unsafe %s{keyword} T%d{index}%s{parameters}%s{supertypes}%s{constraints} {{%s{fields}%s{methods} }}"
 
     /// One of `kept`, `gone` or `missing`, mostly `kept`, so that most generated types still load.
     let private weighted (kept : Spelled list) (gone : Spelled list) (missing : Spelled list) : Gen<Spelled> =
@@ -670,6 +783,7 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
                     Interfaces = interfaces
                     Fields = fields
                     Generics = []
+                    Methods = []
                 }
         }
 
@@ -708,13 +822,15 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
         coverage.Count (Outcome.Fails "TypeLoadException") |> shouldBeGreaterThan 40
         coverage.Count (Outcome.Fails "FileNotFoundException") |> shouldBeGreaterThan 30
 
-    /// The constraints of the type parameter at `index` of `count`, after those of the parameters
-    /// before it, `previous`, naming any of `earlier`, the kinds of the client's non-generic types.
+    /// The constraints of the type parameter at `index` of `count`, a type's or a method's, which
+    /// `variable` spells, after those of the parameters before it, `previous`, naming any of
+    /// `earlier`, the kinds of the client's non-generic types.
     /// It keeps to what C# accepts: `struct` with no class constraint and no `new()`, and an earlier
     /// type parameter as a constraint only on a parameter with neither `struct`, `class` nor a class
     /// constraint, and only where that parameter has no `struct`.
     let private genParameterConstraints
         (earlier : Kind list)
+        (variable : int -> Spelled)
         (count : int)
         (index : int)
         (previous : ParameterConstraints list)
@@ -727,7 +843,7 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
             |> List.map (fst >> Earlier)
 
         let argument =
-            Gen.frequency [ 3, genArgument earlier 1 ; 1, Gen.elements (List.init count Parameter) ]
+            Gen.frequency [ 3, genArgument earlier 1 ; 1, Gen.elements (List.init count variable) ]
 
         let genClass =
             Gen.oneof
@@ -751,7 +867,7 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
             previous
             |> List.indexed
             |> List.filter (fun (_, constraints) -> constraints.Special <> Some SpecialConstraint.Struct)
-            |> List.map (fst >> Parameter)
+            |> List.map (fst >> variable)
 
         let unconstrained =
             {
@@ -823,7 +939,7 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
                 ||> List.fold (fun soFar index ->
                     gen {
                         let! previous = soFar
-                        let! constraints = genParameterConstraints earlier count index previous
+                        let! constraints = genParameterConstraints earlier Parameter count index previous
                         return previous @ [ constraints ]
                     }
                 )
@@ -886,6 +1002,106 @@ public unsafe class DerivesKeptOfConstrainedArray : Provider.KeptGeneric<Constra
 
         // Among the generic definitions, enough of each outcome where the constraints name what is
         // not there, and where they do not, for the comparison to say something.
+        coverage.Count (Outcome.Loads, false) |> shouldBeGreaterThan 20
+
+        coverage.Count (Outcome.Fails "TypeLoadException", true)
+        |> shouldBeGreaterThan 20
+
+        coverage.Count (Outcome.Fails "FileNotFoundException", true)
+        |> shouldBeGreaterThan 15
+
+    /// The type parameters' constraints of a generic method that a type declares, naming any of
+    /// `earlier`, the kinds of the client's non-generic types declared before it.
+    let private genMethod (earlier : Kind list) : Gen<ParameterConstraints list> =
+        gen {
+            let! count = Gen.choose (1, 2)
+
+            return!
+                (Gen.constant [], List.init count id)
+                ||> List.fold (fun soFar index ->
+                    gen {
+                        let! previous = soFar
+                        let! constraints = genParameterConstraints earlier MethodParameter count index previous
+                        return previous @ [ constraints ]
+                    }
+                )
+        }
+
+    /// A client as `genConstrainedClient` makes one, with up to two generic methods on each type.
+    let private genClientWithMethods : Gen<Declaration list> =
+        gen {
+            let! declarations = genConstrainedClient
+
+            let plain =
+                declarations |> List.takeWhile (fun d -> d.Generics.IsEmpty) |> List.length
+
+            let kinds = declarations |> List.map (fun d -> d.Kind)
+
+            return!
+                declarations
+                |> List.mapi (fun i declaration ->
+                    gen {
+                        let! count = Gen.choose (0, 2)
+                        let! methods = Gen.listOfLength count (genMethod (List.truncate (min i plain) kinds))
+
+                        return
+                            { declaration with
+                                Methods = methods
+                            }
+                    }
+                )
+                |> Gen.sequenceToList
+        }
+
+    /// Whether a declaration's generic methods' constraints name a type the provider lacks or one
+    /// in the assembly that is not there.
+    let private methodConstraintsNameAbsent (declaration : Declaration) : bool =
+        declaration.Methods
+        |> List.exists (fun generics ->
+            generics
+            |> List.exists (fun constraints ->
+                Option.toList constraints.ClassConstraint @ constraints.Others
+                |> List.exists (fun spelled ->
+                    let rendered = render spelled
+                    rendered.Contains "Gone" || rendered.Contains "Optional."
+                )
+            )
+        )
+
+    [<Test>]
+    let ``a generated type declaring constrained generic methods fails to load exactly where the host's does``
+        ()
+        : unit
+        =
+        let property (cover : Outcome * bool -> unit) (declarations : Declaration list) : unit =
+            let names =
+                declarations
+                |> List.mapi (fun i declaration ->
+                    match declaration.Generics with
+                    | [] -> $"T%d{i}"
+                    | generics -> $"""T%d{i}<%s{String.replicate (generics.Length - 1) ","}>"""
+                )
+
+            let source =
+                declarations |> List.mapi renderDeclaration |> String.concat Environment.NewLine
+
+            let disagreements, host = compare source names
+
+            for declaration, outcome in List.zip declarations host do
+                if not declaration.Methods.IsEmpty then
+                    cover (outcome, methodConstraintsNameAbsent declaration)
+
+            if not disagreements.IsEmpty then
+                failwith (String.concat Environment.NewLine (source :: disagreements))
+
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 100)
+                (Arb.fromGen genClientWithMethods)
+                property
+
+        // Among the types declaring generic methods, enough of each outcome where the methods'
+        // constraints name what is not there, and where they do not.
         coverage.Count (Outcome.Loads, false) |> shouldBeGreaterThan 20
 
         coverage.Count (Outcome.Fails "TypeLoadException", true)

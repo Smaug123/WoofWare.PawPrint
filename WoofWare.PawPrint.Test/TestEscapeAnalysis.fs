@@ -6974,8 +6974,11 @@ public static unsafe class Probe
             OutputKind.DynamicallyLinkedLibrary
             []
             [
-                "namespace Provider; public struct Kept { }"
-                + (if complete then " public struct GoneStruct { }" else "")
+                "namespace Provider; public struct Kept { } public struct WithBool { public bool B; }"
+                + (if complete then
+                       " public struct GoneStruct { } public class GoneClass { }"
+                   else
+                       "")
             ]
 
     /// How compiling each method of `typeName` named in `methods` ends on the host, with the
@@ -7039,7 +7042,8 @@ public static unsafe class Probe
 
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
-    /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
+    /// names it, otherwise `Raises "System.InvalidProgramException"` where it names that, otherwise
+    /// `Raises "Unknown"` where the answer is unknown, and otherwise
     /// `Compiled`; with the places that make each answer unknown. The analysis is over the test
     /// host's own framework, as `ucoCompilations` compiles on the test host's own CoreCLR.
     let private ucoAnalysed
@@ -7073,8 +7077,12 @@ public static unsafe class Probe
             analysis <- next
 
             let outcome =
-                if (render analysis escapes).Contains "=System.TypeLoadException" then
+                let shown = render analysis escapes
+
+                if shown.Contains "=System.TypeLoadException" then
                     UcoCompilation.Raises "System.TypeLoadException"
+                elif shown.Contains "=System.InvalidProgramException" then
+                    UcoCompilation.Raises "System.InvalidProgramException"
                 elif escapes.Unknown then
                     UcoCompilation.Raises "Unknown"
                 else
@@ -7235,6 +7243,513 @@ public static unsafe class Uco
 
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// What marks an `[UnmanagedCallersOnly]` probe besides its signature.
+    [<RequireQualifiedAccess>]
+    type private UcoProbeMark =
+        | Unmarked
+        /// Its first parameter carries `[MarshalAs(UnmanagedType.I4)]`.
+        | MarshalAsI4
+        /// The method carries `[LCIDConversion(index)]`.
+        | LcidConversion of index : int
+        /// Its first parameter is a pointer whose pointee carries a required modifier named
+        /// `System.Runtime.CompilerServices.IsCopyConstructed`.
+        | CopyConstructedPointee
+
+    /// An assembly `Client` of `[UnmanagedCallersOnly]` methods, each named in `probes` with its
+    /// return type, parameter types, the type of a local it declares if any, whether it is static,
+    /// and its mark; the class `V` declares them, and the generic class `G<T>` one more,
+    /// `InGeneric`, as does the generic method `V.GenericMethod<T>`. Where `disableMarshalling`, the
+    /// assembly carries `[DisableRuntimeMarshalling]`.
+    let private validityProbes
+        (disableMarshalling : bool)
+        (probes : (string * Type * Type list * Type option * bool * UcoProbeMark) list)
+        : byte[]
+        =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+        if disableMarshalling then
+            builder.SetCustomAttribute (
+                Emit.CustomAttributeBuilder (
+                    typeof<Runtime.CompilerServices.DisableRuntimeMarshallingAttribute>.GetConstructor Type.EmptyTypes,
+                    [||]
+                )
+            )
+
+        let modul = builder.DefineDynamicModule "Client"
+        let v = modul.DefineType ("V", TypeAttributes.Public)
+
+        v.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let unmanagedCallersOnly =
+            Emit.CustomAttributeBuilder (
+                typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                [||]
+            )
+
+        let body (il : Emit.ILGenerator) (returned : Type) (local : Type option) : unit =
+            local |> Option.iter (il.DeclareLocal >> ignore<Emit.LocalBuilder>)
+
+            if returned <> typeof<Void> then
+                il.Emit (Emit.OpCodes.Ldloc, il.DeclareLocal returned)
+
+            il.Emit Emit.OpCodes.Ret
+
+        // `PersistedAssemblyBuilder` puts a parameter's required modifiers before the whole
+        // parameter type; this one is moved onto the pointee once the image is saved.
+        let copyConstructed =
+            let builder =
+                modul.DefineType (
+                    "System.Runtime.CompilerServices.IsCopyConstructed",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            builder.CreateType ()
+
+        for name, returned, parameters, local, isStatic, mark in probes do
+            let attributes =
+                if isStatic then
+                    MethodAttributes.Public ||| MethodAttributes.Static
+                else
+                    MethodAttributes.Public
+
+            let requiredModifiers =
+                match mark with
+                | UcoProbeMark.CopyConstructedPointee ->
+                    parameters
+                    |> List.mapi (fun i _ -> if i = 0 then [| copyConstructed |] else [||])
+                | UcoProbeMark.Unmarked
+                | UcoProbeMark.MarshalAsI4
+                | UcoProbeMark.LcidConversion _ -> parameters |> List.map (fun _ -> [||])
+
+            let method =
+                v.DefineMethod (
+                    name,
+                    attributes,
+                    CallingConventions.Standard,
+                    returned,
+                    null,
+                    null,
+                    Array.ofList parameters,
+                    Array.ofList requiredModifiers,
+                    null
+                )
+
+            method.SetCustomAttribute unmanagedCallersOnly
+
+            if mark = UcoProbeMark.MarshalAsI4 then
+                (method.DefineParameter (1, ParameterAttributes.HasFieldMarshal, "x"))
+                    .SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.InteropServices.MarshalAsAttribute>.GetConstructor
+                                [| typeof<Runtime.InteropServices.UnmanagedType> |],
+                            [| box Runtime.InteropServices.UnmanagedType.I4 |]
+                        )
+                    )
+
+            match mark with
+            | UcoProbeMark.LcidConversion index ->
+                method.SetCustomAttribute (
+                    Emit.CustomAttributeBuilder (
+                        typeof<Runtime.InteropServices.LCIDConversionAttribute>.GetConstructor [| typeof<int> |],
+                        [| box index |]
+                    )
+                )
+            | UcoProbeMark.Unmarked
+            | UcoProbeMark.MarshalAsI4
+            | UcoProbeMark.CopyConstructedPointee -> ()
+
+            body (method.GetILGenerator ()) returned local
+
+        let generic =
+            v.DefineMethod (
+                "GenericMethod",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| typeof<int> |]
+            )
+
+        generic.DefineGenericParameters [| "T" |]
+        |> ignore<Emit.GenericTypeParameterBuilder[]>
+
+        generic.SetCustomAttribute unmanagedCallersOnly
+        body (generic.GetILGenerator ()) typeof<Void> None
+        v.CreateType () |> ignore<Type>
+
+        let g = modul.DefineType ("G`1", TypeAttributes.Public)
+
+        g.DefineGenericParameters [| "T" |]
+        |> ignore<Emit.GenericTypeParameterBuilder[]>
+
+        let inGeneric =
+            g.DefineMethod (
+                "InGeneric",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                typeof<Void>,
+                [| typeof<int> |]
+            )
+
+        inGeneric.SetCustomAttribute unmanagedCallersOnly
+        body (inGeneric.GetILGenerator ()) typeof<Void> None
+        g.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        let image = image.ToArray ()
+
+        // A static method returning void and taking one pointer to a value type, the pointer marked:
+        // `DEFAULT 1 VOID CMOD_REQD t PTR VALUETYPE` becomes `DEFAULT 1 VOID PTR CMOD_REQD t VALUETYPE`.
+        let marked =
+            probes
+            |> List.exists (fun (_, _, _, _, _, mark) -> mark = UcoProbeMark.CopyConstructedPointee)
+
+        if marked then
+            let at =
+                [ 0 .. image.Length - 7 ]
+                |> List.filter (fun i ->
+                    image.[i] = 0x00uy
+                    && image.[i + 1] = 0x01uy
+                    && image.[i + 2] = 0x01uy
+                    && image.[i + 3] = 0x1Fuy
+                    && image.[i + 5] = 0x0Fuy
+                    && image.[i + 6] = 0x11uy
+                )
+                |> List.exactlyOne
+
+            let modifier = image.[at + 4]
+            image.[at + 3] <- 0x0Fuy
+            image.[at + 4] <- 0x1Fuy
+            image.[at + 5] <- modifier
+
+        image
+
+    /// CoreCLR refuses to compile an `[UnmanagedCallersOnly]` method that is not static, is generic
+    /// or is declared in a generic type, or whose signature needs marshalling
+    /// (`COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`, an
+    /// `InvalidProgramException`). It decides that after loading the return type and before the JIT
+    /// runs, so the JIT loads none of the parameters' and locals' types; `PInvoke::MarshalingRequired`
+    /// walks the return type and then the parameters, stopping at the first that needs marshalling,
+    /// and loads in full each value type and generic instantiation it reaches, so a missing one
+    /// raises `TypeLoadException` there. With runtime marshalling enabled, `bool`, `char`, a
+    /// reference, a byref, and a parameter with `[MarshalAs]` need marshalling, as does
+    /// `[LCIDConversion]`; with it disabled, only a reference or a byref. A value type needs it by
+    /// its layout, which the analysis does not decide: its answer is unknown from the method's
+    /// entry there (`ValueTypeMarshallingVerdict`). The host compiles each probe, against which the
+    /// analysis reads the host's own image.
+    [<Test>]
+    let ``the JIT refuses an UnmanagedCallersOnly method that is not static, is generic, or needs marshalling, before its own loads``
+        ()
+        : unit
+        =
+        let complete = ucoProvider true
+        let incomplete = ucoProvider false
+        let typeLoad = UcoCompilation.Raises "System.TypeLoadException"
+        let invalid = UcoCompilation.Raises "System.InvalidProgramException"
+        let unknown = UcoCompilation.Raises "Unknown"
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyValidity", isCollectible = true)
+
+        try
+            let provider = context.LoadFromStream (new MemoryStream (complete))
+            let kept = provider.GetType "Provider.Kept"
+            let gone = provider.GetType "Provider.GoneStruct"
+            let goneClass = provider.GetType "Provider.GoneClass"
+            let withBool = provider.GetType "Provider.WithBool"
+            let v = typeof<Void>
+
+            // Each probe: its name, return type, parameters, local, static, [MarshalAs], [LCIDConversion],
+            // what the host's JIT does, and what the analysis says.
+            let enabled =
+                [
+                    "IntParam",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "PointerParam",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "BoolParam", v, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "CharParam", v, [ typeof<char> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "BoolReturn", typeof<bool>, [], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ArrayParam", v, [ typeof<int[]> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "ByrefParam",
+                    v,
+                    [ typeof<int>.MakeByRefType () ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    invalid,
+                    invalid
+                    "MarshalAsInt", v, [ typeof<int> ], None, true, UcoProbeMark.MarshalAsI4, invalid, invalid
+                    "Lcid", v, [ typeof<int> ], None, true, UcoProbeMark.LcidConversion 0, invalid, invalid
+                    // `GetLCIDParameterIndex` reads -1 as no locale argument.
+                    "LcidNone",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.LcidConversion -1,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    // The value type's verdict refuses it first; the analysis names the later failure,
+                    // and keeps the verdict's opacity (`undecidedBefore`).
+                    "WithBoolThenGone", v, [ withBool ; gone ], None, true, UcoProbeMark.Unmarked, invalid, typeLoad
+                    "Instance", v, [ typeof<int> ], None, false, UcoProbeMark.Unmarked, invalid, invalid
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "GoneParam", v, [ gone ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolThenGone", v, [ typeof<bool> ; gone ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "GoneThenBool", v, [ gone ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "GoneReturnBool", gone, [ typeof<bool> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "BoolWithGoneLocal", v, [ typeof<bool> ], Some gone, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "IntWithGoneLocal", v, [ typeof<int> ], Some gone, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "ListOfInt",
+                    v,
+                    [ typeof<Collections.Generic.List<int>> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    invalid,
+                    invalid
+                    "KeptThenBool", v, [ kept ; typeof<bool> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    // The return type loads in full before anything else, though it needs marshalling too.
+                    "GoneClassReturn", goneClass, [ typeof<int> ], None, true, UcoProbeMark.Unmarked, typeLoad, typeLoad
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    invalid,
+                    invalid
+                ]
+
+            let disabled =
+                [
+                    "BoolParam",
+                    v,
+                    [ typeof<bool> ],
+                    None,
+                    true,
+                    UcoProbeMark.Unmarked,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "ObjectParam", v, [ typeof<obj> ], None, true, UcoProbeMark.Unmarked, invalid, invalid
+                    "MarshalAsInt",
+                    v,
+                    [ typeof<int> ],
+                    None,
+                    true,
+                    UcoProbeMark.MarshalAsI4,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                    "KeptParam", v, [ kept ], None, true, UcoProbeMark.Unmarked, UcoCompilation.Compiled, unknown
+                    "CopyConstructed",
+                    v,
+                    [ kept.MakePointerType () ],
+                    None,
+                    true,
+                    UcoProbeMark.CopyConstructedPointee,
+                    UcoCompilation.Compiled,
+                    UcoCompilation.Compiled
+                ]
+
+            // The probes whose answer is unknown from the entry besides what it names: a value type's
+            // verdict comes before the position that refuses the method.
+            let undecidedBefore = Set.ofList [ "WithBoolThenGone" ; "KeptThenBool" ]
+
+            let check (label : string) (disableMarshalling : bool) probes : string list =
+                let image =
+                    validityProbes
+                        disableMarshalling
+                        (probes
+                         |> List.map (fun (name, returned, parameters, local, isStatic, mark, _, _) ->
+                             name, returned, parameters, local, isStatic, mark
+                         ))
+
+                let names = probes |> List.map (fun (name, _, _, _, _, _, _, _) -> name)
+                let host = ucoCompilations image incomplete "V" names
+                let analysed = ucoAnalysed image incomplete "V" names
+
+                [
+                    for name, _, _, _, _, _, onHost, byAnalysis in probes do
+                        if host.[name] <> onHost then
+                            yield $"%s{label} %s{name}: the host's JIT %A{host.[name]}, not %A{onHost}"
+
+                        let outcome, sources = analysed.[name]
+                        let entry = sources |> Set.filter (fun site -> site.StartsWith $"V::%s{name} entry")
+
+                        let expectedEntry =
+                            if byAnalysis = unknown || undecidedBefore.Contains name then
+                                Set.singleton $"V::%s{name} entry ValueTypeMarshallingVerdict"
+                            else
+                                Set.empty
+
+                        if outcome <> byAnalysis || entry <> expectedEntry then
+                            yield
+                                $"%s{label} %s{name}: the analysis says %A{outcome}, unknown at %A{Set.toList entry}, not %A{byAnalysis}"
+
+                    // The generic method and the method of the generic type, instantiated over `int`.
+                    if not disableMarshalling then
+                        let loaded =
+                            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyGenerics", isCollectible = true)
+
+                        try
+                            let assembly = loaded.LoadFromStream (new MemoryStream (image))
+
+                            let generics =
+                                [
+                                    "GenericMethod",
+                                    ((assembly.GetType "V").GetMethod "GenericMethod").MakeGenericMethod typeof<int>
+                                    "InGeneric",
+                                    ((assembly.GetType "G`1").MakeGenericType typeof<int>).GetMethod "InGeneric"
+                                ]
+
+                            for name, method in generics do
+                                let raised =
+                                    try
+                                        Runtime.CompilerServices.RuntimeHelpers.PrepareMethod (
+                                            method.MethodHandle,
+                                            method.DeclaringType.GetGenericArguments ()
+                                            |> Array.append (method.GetGenericArguments ())
+                                            |> Array.map _.TypeHandle
+                                        )
+
+                                        UcoCompilation.Compiled
+                                    with e ->
+                                        UcoCompilation.Raises (e.GetType().FullName)
+
+                                if raised <> invalid then
+                                    yield $"%s{name}: the host's JIT %A{raised}, not %A{invalid}"
+                        finally
+                            loaded.Unload ()
+
+                        let _, loggerFactory = LoggerFactory.makeTest ()
+
+                        let client =
+                            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+                        let providerAssembly =
+                            Assembly.read loggerFactory (Some "Provider.dll") (new MemoryStream (incomplete))
+
+                        let reference =
+                            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                        let mutable analysis =
+                            analysisOverHostImage
+                                [ client ; providerAssembly ]
+                                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+                        for typeName, name in [ "V", "GenericMethod" ; "G`1", "InGeneric" ] do
+                            let next, escapes =
+                                EscapeAnalysis.escapes analysis (methodNamed client typeName name)
+
+                            analysis <- next
+
+                            if not ((render analysis escapes).Contains "=System.InvalidProgramException") then
+                                yield $"%s{name}: the analysis says %A{Set.toList (render analysis escapes)}"
+                ]
+
+            let failures = check "enabled" false enabled @ check "disabled" true disabled
+
+            if not failures.IsEmpty then
+                failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
+
+    /// Over the runtime under test's own CoreLib, the analysis names the `InvalidProgramException`
+    /// CoreCLR refuses an `[UnmanagedCallersOnly]` method taking a `bool` with, as each runtime
+    /// makes it (`ExceptionMaking.ResourceMessage`, whose lookup .NET 11 makes differently).
+    [<Test>]
+    let ``on the runtime under test, the analysis names the refusal of an UnmanagedCallersOnly method taking a bool``
+        ()
+        : unit
+        =
+        let source =
+            """
+using System.Runtime.InteropServices;
+
+public static class Uco
+{
+    [UnmanagedCallersOnly] public static void TakesBool(bool b) { }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Roslyn.compileAssembly "Client" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+            |> fun image -> Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ assembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "Uco" "TakesBool")
+
+        (render analysis escapes).Contains "=System.InvalidProgramException"
+        |> shouldEqual true
+
+    /// CoreCLR matches a copy-constructor modifier on a pointer's pointee by its namespace and name
+    /// joined with a dot, however the metadata splits the two (`IsTypeRefOrDef`).
+    [<Test>]
+    let ``a copy-constructor modifier is matched by its joined name, however the metadata splits it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Provider.dll") (new MemoryStream (ucoProvider true))
+
+        let anyRef = assembly.TypeRefs.Values |> Seq.head
+
+        let pointerModifiedBy (ns : string) (name : string) : TypeDefn =
+            TypeDefn.Pointer (
+                TypeDefn.Modified
+                    {
+                        Unmodified =
+                            TypeDefn.FromReference (anyRef, System.Reflection.Metadata.SignatureTypeKind.ValueType)
+                        Modifier =
+                            TypeDefn.FromReference (
+                                { anyRef with
+                                    Namespace = ns
+                                    Name = name
+                                },
+                                System.Reflection.Metadata.SignatureTypeKind.Class
+                            )
+                        IsRequired = true
+                    }
+            )
+
+        [
+            "System.Runtime.CompilerServices", "IsCopyConstructed"
+            "", "System.Runtime.CompilerServices.IsCopyConstructed"
+            "System.Runtime", "CompilerServices.IsCopyConstructed"
+            "Microsoft", "VisualC.NeedsCopyConstructorModifier"
+            "System.Runtime.CompilerServices", "IsCopyConstructedNot"
+            "", "IsCopyConstructed"
+        ]
+        |> List.map (fun (ns, name) ->
+            UnmanagedCallersOnly.signatureTypeMarshalling assembly true (pointerModifiedBy ns name)
+        )
+        |> shouldEqual
+            [
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.Required
+                SignatureTypeMarshalling.NotRequired
+                SignatureTypeMarshalling.NotRequired
+            ]
 
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
     /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
@@ -8646,8 +9161,9 @@ public static class Calls
     /// makes the transition to unmanaged code in the caller's own code, CoreCLR's walk for whether
     /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
     /// loads each pointer's target; a class, a byref's target or, by any other convention, a
-    /// pointer's target, it does not load at all. Whether the JIT makes the transition there the
-    /// analysis does not decide, so it takes those loads to be ones the JIT may make
+    /// pointer's target, it does not load at all. Where metadata allows the JIT to make the
+    /// transition there (the next test says where it does not), whether it does turns on block
+    /// weights the analysis does not model, so it takes those loads to be ones the JIT may make
     /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
     /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
     /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
@@ -8708,10 +9224,6 @@ public static unsafe class Calls
     public static void SwiftByrefToGoneStruct() { if (never) Natives.SwiftTakesByrefToGoneStruct(ref *(Provider.GoneStruct*)null); }
     public static void CdeclPointerToGoneStruct() { if (never) Natives.CdeclTakesPointerToGoneStruct(null); }
     public static void UnspecifiedPointerToGoneStruct() { if (never) Natives.UnspecifiedTakesPointerToGoneStruct(null); }
-    public static void CaughtGenericOfGone()
-    {
-        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
-    }
     public static void IndirectPointerToGoneStruct()
     {
         if (never) ((delegate* unmanaged<Provider.GoneStruct*, void>)pointer)(null);
@@ -8815,9 +9327,6 @@ public static unsafe class Calls
                 "CdeclPointerToGoneStruct", CallOutcome.Runs, []
                 // An import that names no calling convention CoreCLR reads as naming `WinApi`.
                 "UnspecifiedPointerToGoneStruct", swiftEscapes, [ typeLoad ]
-                // Inside a `try` with a `catch`, the JIT leaves the transition to the stub, which the
-                // analysis does not decide.
-                "CaughtGenericOfGone", CallOutcome.Runs, [ typeLoad ]
                 "IndirectPointerToGoneStruct", CallOutcome.Runs, []
                 "IndirectGenericOfGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
                 "SwiftIndirectPointerToGoneStruct", swiftEscapes, [ typeLoad ]
@@ -8907,6 +9416,420 @@ public static unsafe class Calls
 
                     if not unexplained.IsEmpty then
                         yield $"%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// Callers of unmanaged code whose signature names an instantiation of a class that fails to
+    /// load, which CoreCLR's walk for whether the call needs marshalling loads where the JIT makes the
+    /// transition to unmanaged code in the caller's own code. The JIT does not make it there where
+    /// the call is in a handler or in a `try` with a `catch` or a filter
+    /// (`impCanPInvokeInlineCallSite`), nor where the caller's assembly disables optimisation
+    /// (`impCanPInvokeInline`), nor where the walk is skipped because the P/Invoke sets the last
+    /// error, does not preserve its signature or converts a locale argument, nor where the walk ends
+    /// before the instantiation at a type that needs marshalling without being loaded, or at a
+    /// parameter whose marshalling the metadata spells (`PInvoke::MarshalingRequired`); with runtime
+    /// marshalling disabled, `bool`, `char` and a `MarshalAs` end it no longer. For Swift's
+    /// convention, what the walk ends at anywhere in the signature also stops the JIT reading a
+    /// pointer's target. Each call is in a branch never taken; the host's CoreCLR says which callers
+    /// fail to compile.
+    [<Test>]
+    let ``the JIT walks an unmanaged call's signature only where CoreCLR's inline decision lets it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class Kept { } public class KeptGeneric<T> { }"
+            + (if complete then
+                   " public class Gone { } public struct GoneStruct { }"
+               else
+                   "")
+
+        let natives =
+            """
+public static unsafe class Natives
+{
+    [DllImport("nowhere")]
+    public static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern int ReturnsIntTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere", SetLastError = true)]
+    public static extern void LastErrorTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere", PreserveSig = false)]
+    public static extern void HResultTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), LCIDConversion(0)]
+    public static extern void LocaleTakesGenericOfGone(int locale, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), LCIDConversion(-1)]
+    public static extern void NoLocaleTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void BoolThenGenericOfGone(bool b, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void CharThenGenericOfGone(char c, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void MarshalledThenGenericOfGone([MarshalAs(UnmanagedType.I4)] int i, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    [return: MarshalAs(UnmanagedType.I4)]
+    public static extern int MarshalledReturnTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void IntThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
+    // Its first parameter says it has a marshalling, without one, after compiling.
+    [DllImport("nowhere")]
+    public static extern void FlaggedThenGenericOfGone(int i, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void PointerThenGenericOfGone(int* p, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void StringThenGenericOfGone(string s, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ObjectThenGenericOfGone(object o, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ArrayThenGenericOfGone(int[] a, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ByrefThenGenericOfGone(ref int r, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void ClassThenGenericOfGone(Provider.Kept k, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern void GenericThenGenericOfGone(Provider.KeptGeneric<Provider.Kept> k, Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern bool ReturnsBoolTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere")]
+    public static extern Provider.Kept ReturnsKeptTakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftPointerThenString(Provider.GoneStruct* p, string s);
+    [DllImport("nowhere", SetLastError = true), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift) })]
+    public static extern void SwiftLastErrorPointer(Provider.GoneStruct* p);
+}
+"""
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+"""
+            + natives
+            + """
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Use() { }
+
+    public static void Unprotected() { if (never) Natives.TakesGenericOfGone(null); }
+    public static void InTryCatch()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) { }
+    }
+    public static void InTryFilter()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } catch (System.Exception) when (never) { }
+    }
+    public static void InTryFinally()
+    {
+        try { if (never) Natives.TakesGenericOfGone(null); } finally { Use(); }
+    }
+    public static void InTryFinallyInTryCatch()
+    {
+        try { try { if (never) Natives.TakesGenericOfGone(null); } finally { Use(); } } catch (System.Exception) { }
+    }
+    public static void InCatch()
+    {
+        try { Use(); } catch (System.Exception) { if (never) Natives.TakesGenericOfGone(null); }
+    }
+    public static void InFilter()
+    {
+        try { Use(); } catch (System.Exception) when (never && Natives.ReturnsIntTakesGenericOfGone(null) == 0) { }
+    }
+    public static void InFinally()
+    {
+        try { Use(); } finally { if (never) Natives.TakesGenericOfGone(null); }
+    }
+    public static void LastError() { if (never) Natives.LastErrorTakesGenericOfGone(null); }
+    public static void HResult() { if (never) Natives.HResultTakesGenericOfGone(null); }
+    public static void Locale() { if (never) Natives.LocaleTakesGenericOfGone(0, null); }
+    public static void NoLocale() { if (never) Natives.NoLocaleTakesGenericOfGone(null); }
+    public static void BoolThen() { if (never) Natives.BoolThenGenericOfGone(false, null); }
+    public static void CharThen() { if (never) Natives.CharThenGenericOfGone('a', null); }
+    public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
+    public static void MarshalledReturn() { if (never) Natives.MarshalledReturnTakesGenericOfGone(null); }
+    public static void IntThen() { if (never) Natives.IntThenGenericOfGone(0, null); }
+    public static void FlaggedThen() { if (never) Natives.FlaggedThenGenericOfGone(0, null); }
+    public static void PointerThen() { if (never) Natives.PointerThenGenericOfGone(null, null); }
+    public static void StringThen() { if (never) Natives.StringThenGenericOfGone(null, null); }
+    public static void ObjectThen() { if (never) Natives.ObjectThenGenericOfGone(null, null); }
+    public static void ArrayThen() { if (never) Natives.ArrayThenGenericOfGone(null, null); }
+    public static void ByrefThen() { if (never) Natives.ByrefThenGenericOfGone(ref *(int*)null, null); }
+    public static void ClassThen() { if (never) Natives.ClassThenGenericOfGone(null, null); }
+    public static void GenericThen() { if (never) Natives.GenericThenGenericOfGone(null, null); }
+    public static void ReturnsBool() { if (never) Natives.ReturnsBoolTakesGenericOfGone(null); }
+    public static void ReturnsKept() { if (never) Natives.ReturnsKeptTakesGenericOfGone(null); }
+    public static void SwiftPointerThenString() { if (never) Natives.SwiftPointerThenString(null, null); }
+    public static void SwiftLastError() { if (never) Natives.SwiftLastErrorPointer(null); }
+    public static void IndirectBoolThen()
+    {
+        if (never) ((delegate* unmanaged<bool, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(false, null);
+    }
+    public static void IndirectIntThen()
+    {
+        if (never) ((delegate* unmanaged<int, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(0, null);
+    }
+    public static void IndirectInTryCatch()
+    {
+        try { if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null); }
+        catch (System.Exception) { }
+    }
+}
+"""
+
+        // The same unoptimised: its `DebuggableAttribute` disables optimisation.
+        let debugClient =
+            """
+using System.Runtime.InteropServices;
+
+namespace DebugClient;
+
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    [DllImport("nowhere")]
+    static extern void TakesGenericOfGone(Provider.KeptGeneric<Provider.Gone> x);
+
+    public static void Unprotected() { if (never) TakesGenericOfGone(null); }
+    public static void Indirect()
+    {
+        if (never) ((delegate* unmanaged<Provider.KeptGeneric<Provider.Gone>, void>)pointer)(null);
+    }
+}
+"""
+
+        let drmClient =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[assembly: DisableRuntimeMarshalling]
+
+namespace DrmClient;
+"""
+            + natives
+            + """
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    public static void BoolThen() { if (never) Natives.BoolThenGenericOfGone(false, null); }
+    public static void CharThen() { if (never) Natives.CharThenGenericOfGone('a', null); }
+    public static void MarshalledThen() { if (never) Natives.MarshalledThenGenericOfGone(0, null); }
+    public static void ReturnsBool() { if (never) Natives.ReturnsBoolTakesGenericOfGone(null); }
+    public static void StringThen() { if (never) Natives.StringThenGenericOfGone(null, null); }
+    public static void IndirectBoolThen()
+    {
+        if (never) ((delegate* unmanaged<bool, Provider.KeptGeneric<Provider.Gone>, void>)pointer)(false, null);
+    }
+}
+"""
+
+        let references (images : byte[] list) : MetadataReference list =
+            images
+            |> List.map (fun image ->
+                MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+            )
+
+        let compile (name : string) (referenced : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references referenced)
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        // The image with `HasFieldMarshal` set on the first parameter of the method named
+        // `methodName`, which has no marshalling row: C# never emits that, and CoreCLR finds a
+        // parameter's marshalling by its row alone.
+        let flagFieldMarshal (methodName : string) (image : byte[]) : byte[] =
+            let patched = Array.copy image
+            use pe = new PEReader (ImmutableArray.CreateRange image)
+            let metadata = pe.GetMetadataReader ()
+
+            let parameter =
+                metadata.MethodDefinitions
+                |> Seq.map metadata.GetMethodDefinition
+                |> Seq.filter (fun m -> metadata.GetString m.Name = methodName)
+                |> Seq.exactlyOne
+                |> fun m -> m.GetParameters ()
+                |> Seq.find (fun p -> (metadata.GetParameter p).SequenceNumber = 1)
+
+            let row =
+                MetadataTokens.GetRowNumber (ParameterHandle.op_Implicit parameter : EntityHandle)
+
+            let offset =
+                pe.PEHeaders.MetadataStartOffset
+                + metadata.GetTableMetadataOffset TableIndex.Param
+                + (row - 1) * metadata.GetTableRowSize TableIndex.Param
+
+            let flags = BitConverter.ToUInt16 (patched, offset)
+            let flagged = flags ||| uint16 ParameterAttributes.HasFieldMarshal
+            Array.blit (BitConverter.GetBytes flagged) 0 patched offset 2
+            patched
+
+        let clientImage =
+            compile "Client" [ completeProvider ] client
+            |> flagFieldMarshal "FlaggedThenGenericOfGone"
+
+        let drmImage = compile "DrmClient" [ completeProvider ] drmClient
+
+        let debugImage =
+            Roslyn.compileAssembly
+                "DebugClient"
+                OutputKind.DynamicallyLinkedLibrary
+                (references [ completeProvider ])
+                [ debugClient ]
+
+        let typeLoad = "System.TypeLoadException"
+
+        // Each caller, by the name of its assembly and type, and its name; and whether the JIT walks
+        // the signature far enough to load the instantiation, so that the caller fails to compile.
+        let methods =
+            [
+                "Client.Calls", "Unprotected", true
+                "Client.Calls", "InTryCatch", false
+                "Client.Calls", "InTryFilter", false
+                // A `try` whose only handler is a `finally` does not stop it.
+                "Client.Calls", "InTryFinally", true
+                "Client.Calls", "InTryFinallyInTryCatch", false
+                "Client.Calls", "InCatch", false
+                "Client.Calls", "InFilter", false
+                "Client.Calls", "InFinally", false
+                "Client.Calls", "LastError", false
+                "Client.Calls", "HResult", false
+                "Client.Calls", "Locale", false
+                // CoreCLR reads an index of -1 as converting no locale.
+                "Client.Calls", "NoLocale", true
+                "Client.Calls", "BoolThen", false
+                "Client.Calls", "CharThen", false
+                "Client.Calls", "MarshalledThen", false
+                "Client.Calls", "MarshalledReturn", false
+                "Client.Calls", "IntThen", true
+                // A flag saying a parameter has a marshalling, without one, CoreCLR ignores.
+                "Client.Calls", "FlaggedThen", true
+                "Client.Calls", "PointerThen", true
+                "Client.Calls", "StringThen", false
+                "Client.Calls", "ObjectThen", false
+                "Client.Calls", "ArrayThen", false
+                "Client.Calls", "ByrefThen", false
+                "Client.Calls", "ClassThen", false
+                // The walk loads an instantiation of a class, and ends there.
+                "Client.Calls", "GenericThen", false
+                "Client.Calls", "ReturnsBool", false
+                "Client.Calls", "ReturnsKept", false
+                // A pointer's target is what Swift's convention reads, which would fail here.
+                "Client.Calls", "SwiftPointerThenString", false
+                "Client.Calls", "SwiftLastError", false
+                "Client.Calls", "IndirectBoolThen", false
+                "Client.Calls", "IndirectIntThen", true
+                "Client.Calls", "IndirectInTryCatch", false
+                "DebugClient.Calls", "Unprotected", false
+                "DebugClient.Calls", "Indirect", false
+                "DrmClient.Calls", "BoolThen", true
+                "DrmClient.Calls", "CharThen", true
+                "DrmClient.Calls", "MarshalledThen", true
+                "DrmClient.Calls", "ReturnsBool", true
+                "DrmClient.Calls", "StringThen", false
+                "DrmClient.Calls", "IndirectBoolThen", true
+            ]
+
+        let images =
+            [ "Client", clientImage ; "DebugClient", debugImage ; "DrmClient", drmImage ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string * string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedWalkExclusions", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let loaded =
+                    images
+                    |> List.map (fun (name, image) -> name, context.LoadFromStream (new MemoryStream (image)))
+                    |> Map.ofList
+
+                methods
+                |> List.map (fun (typeName, name, _) ->
+                    let assemblyName = typeName.Substring (0, typeName.IndexOf '.')
+
+                    let outcome =
+                        try
+                            loaded.[assemblyName].GetType(typeName).GetMethod(name).Invoke ((null : obj), [||])
+                            |> ignore
+
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    (typeName, name), outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clients =
+            images |> List.map (fun (name, image) -> name, read name image) |> Map.ofList
+
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let mutable analysis =
+            analysisOver
+                (providerAssembly :: (clients |> Map.toList |> List.map snd))
+                (fun loaded ->
+                    (loaded, Map.toList clients)
+                    ||> List.fold (fun loaded (_, client) ->
+                        let reference =
+                            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                        fst (loaded.WithBoundReference reference providerAssembly)
+                    )
+                )
+
+        let failures =
+            [
+                for typeName, name, walked in methods do
+                    let expected =
+                        if walked then
+                            CallOutcome.Escapes typeLoad
+                        else
+                            CallOutcome.Runs
+
+                    if hostOutcomes.[typeName, name] <> expected then
+                        yield
+                            $"%s{typeName}.%s{name}: the host's outcome is %A{hostOutcomes.[typeName, name]}, not %A{expected}"
+
+                    let client = clients.[typeName.Substring (0, typeName.IndexOf '.')]
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed client typeName name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains $"=%s{typeLoad}" <> walked then
+                        yield
+                            $"%s{typeName}.%s{name}: the analysis lets TypeLoadException escape: %b{not walked}, in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
             ]
 
         if not failures.IsEmpty then
@@ -9962,20 +10885,22 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
-    /// A client compiled against one version of a provider, run against another lacking one of its
-    /// types and without the assembly `Optional`, naming generic definitions whose type parameters'
-    /// constraints name that type or that assembly. CoreCLR's full load of a type loads its type
-    /// parameters' constraints (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method
-    /// names, fails to compile it, past the method's own `catch`, even in code shared between
-    /// instantiations. The host's CoreCLR, running each method against the same assemblies, says
-    /// which fail.
+    /// A client compiled against one version of a provider, run against another lacking two types
+    /// and without the assembly `Optional`, naming types whose type parameters' constraints, or whose
+    /// generic methods' constraints, name those types or that assembly. CoreCLR's full load of a type
+    /// loads both (`MethodTable::DoFullyLoad`), so the JIT, loading a type a method names, fails to
+    /// compile it, past the method's own `catch`, even in code shared between instantiations. The
+    /// host's CoreCLR, running each method against the same assemblies, says which fail.
     [<Test>]
-    let ``loading a generic type loads its type parameters' constraints`` () : unit =
+    let ``loading a type loads its type parameters' and its generic methods' constraints`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let provider (complete : bool) : string =
             "namespace Provider; public class Kept { } public interface IKeptGeneric<T> { }"
-            + (if complete then " public class Gone { }" else "")
+            + (if complete then
+                   " public class Gone { } public interface IGone { }"
+               else
+                   "")
 
         let optional = "namespace Optional; public class Thing { }"
 
@@ -9987,12 +10912,16 @@ public class ConstrainedToGone<T> where T : Provider.Gone { }
 public class ConstrainedToInterfaceOfGone<T> where T : Provider.IKeptGeneric<Provider.Gone> { }
 public class ConstrainedToMissing<T> where T : Optional.Thing { }
 public class ConstrainedToKept<T> where T : Provider.Kept { }
+public class HasGoneMethod { public static int Fine() => 1; public static void M<U>() where U : Provider.Gone { } }
+public class HasGoneMethodGeneric<T> { public static void M<U>() where U : Provider.IGone { } }
+public class HasMissingMethod { public static int Fine() => 1; public static void M<U>() where U : Optional.Thing { } }
+public class HasKeptMethod { public static int Fine() => 1; public static void M<U>() where U : Provider.Kept { } }
 
 public static class Shared
 {
     public static string OverTypeArgument<T>()
     {
-        try { return typeof(ConstrainedToInterfaceOfGone<>).Name; }
+        try { return typeof(HasGoneMethodGeneric<T>).Name; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
 }
@@ -10017,6 +10946,21 @@ public static class Members
     public static string TokenOfConstrainedToKept()
     {
         try { typeof(ConstrainedToKept<>).ToString(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasGoneMethod()
+    {
+        try { HasGoneMethod.Fine(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasMissingMethod()
+    {
+        try { HasMissingMethod.Fine(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string CallOnHasKeptMethod()
+    {
+        try { HasKeptMethod.Fine(); return null; }
         catch (System.Exception e) { return e.GetType().FullName; }
     }
     public static string SharedOverTypeArgument() => Shared.OverTypeArgument<string>();
@@ -10048,8 +10992,13 @@ public static class Members
                 "TokenOfConstrainedToInterfaceOfGone", CallOutcome.Escapes typeLoad
                 "TokenOfConstrainedToMissing", CallOutcome.Escapes fileNotFound
                 "TokenOfConstrainedToKept", CallOutcome.Runs
-                // Code shared between instantiations loads the type a token names when the JIT
-                // compiles it, as unshared code does.
+                // The owner of a method a call names, loaded in full, with its generic methods'
+                // constraints.
+                "CallOnHasGoneMethod", CallOutcome.Escapes typeLoad
+                "CallOnHasMissingMethod", CallOutcome.Escapes fileNotFound
+                "CallOnHasKeptMethod", CallOutcome.Runs
+                // Code shared between instantiations loads a type a token names over its type
+                // variables, and so that type's generic definition, when the JIT compiles it.
                 "SharedOverTypeArgument", CallOutcome.Escapes typeLoad
             ]
 

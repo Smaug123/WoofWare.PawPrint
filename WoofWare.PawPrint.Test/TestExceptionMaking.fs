@@ -103,6 +103,10 @@ static class Program
     [UnmanagedCallersOnly]
     static void UcoTarget(int x) { }
 
+    // CoreCLR refuses to compile an `[UnmanagedCallersOnly]` method whose signature needs marshalling.
+    [UnmanagedCallersOnly]
+    static void InvalidUco(bool b) { }
+
     // C# makes no delegate over an `[UnmanagedCallersOnly]` method, so this emits one, which the
     // JIT refuses to compile.
     static Action ucoDelegate;
@@ -162,6 +166,7 @@ static class Program
             case "Wrap": wrap("a string"); break;
             case "Vararg": CallsVariadic(); break;
             case "UcoDelegate": ucoDelegate(); break;
+            case "UcoInvalid": RuntimeHelpers.PrepareMethod(typeof(Program).GetMethod("InvalidUco", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).MethodHandle); break;
             default: throw new ArgumentException(fault);
         }
     }
@@ -502,6 +507,28 @@ static class Program
             run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
         else
             run "named" |> shouldEqual (RealRuntimeResult.NormalExit 0)
+
+    /// CoreCLR refuses to compile an `[UnmanagedCallersOnly]` method whose signature needs
+    /// marshalling with an exception it makes as `ExceptionMaking` says. The runtime under test
+    /// compiles the guest's method taking a `bool`.
+    [<Test>]
+    let ``the JIT refuses an invalid UnmanagedCallersOnly method with an exception made as ExceptionMaking says``
+        ()
+        : unit
+        =
+        let exceptionName, making = ExceptionMaking.unmanagedCallersOnlyInvalid
+
+        let run (mode : string) : RealRuntimeResult =
+            RealRuntime.executeWithRealRuntime [| "UcoInvalid" ; mode ; exceptionName |] image.Value
+
+        making |> shouldEqual ExceptionMaking.ResourceMessage
+        run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
+        run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
+
+        Net11Frontier.park Net11Frontier.exceptionMaking
+
+        run "after-constructor" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
 
     [<Test>]
     let ``a thrown object that is not an exception is wrapped by running RuntimeWrappedException's constructor``
