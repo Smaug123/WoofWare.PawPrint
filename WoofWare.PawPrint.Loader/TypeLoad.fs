@@ -531,21 +531,26 @@ module TypeLoad =
     /// The types `DoAccessibilityCheckForConstraintSignature` loads of a constraint's signature, each
     /// without its instantiation, in the order the signature names them: a generic type, then each
     /// of its arguments; a vector's, pointer's or byref's element; a function pointer's return type,
-    /// then its parameters; past a custom modifier, the type it modifies. A signature CoreCLR refuses
-    /// as malformed, or misreads, is unmodelled.
-    let rec private constraintSignatureTypes (spelling : TypeDefn) : Result<TypeDefn list, UnmodelledBinding> =
-        let all (spellings : TypeDefn list) : Result<TypeDefn list, UnmodelledBinding> =
-            (Ok [], spellings)
-            ||> List.fold (fun soFar spelling ->
-                match soFar, constraintSignatureTypes spelling with
-                | Ok soFar, Ok types -> Ok (soFar @ types)
-                | Error unmodelled, _
-                | _, Error unmodelled -> Error unmodelled
-            )
+    /// then its parameters; past a custom modifier, the type it modifies. The walk ends at a part
+    /// CoreCLR refuses as malformed, or misreads, which is unmodelled.
+    let rec private constraintSignatureTypes (spelling : TypeDefn) : Result<TypeDefn, UnmodelledBinding> list =
+        let all (spellings : TypeDefn list) : Result<TypeDefn, UnmodelledBinding> list =
+            let rec go (walked : Result<TypeDefn, UnmodelledBinding> list) (spellings : TypeDefn list) =
+                match spellings with
+                | [] -> walked
+                | spelling :: rest ->
+                    let walked = walked @ constraintSignatureTypes spelling
+
+                    if walked |> List.exists Result.isError then
+                        walked
+                    else
+                        go walked rest
+
+            go [] spellings
 
         match spelling with
         | TypeDefn.FromDefinition _
-        | TypeDefn.FromReference _ -> Ok [ spelling ]
+        | TypeDefn.FromReference _ -> [ Ok spelling ]
         | TypeDefn.GenericInstantiation (root, args) -> all (root :: List.ofSeq args)
         // `SigParser::GetElemType` skips a custom modifier without loading its type.
         | TypeDefn.Modified modified -> constraintSignatureTypes modified.Unmodified
@@ -553,11 +558,13 @@ module TypeLoad =
         | TypeDefn.Pointer element
         | TypeDefn.Byref element -> constraintSignatureTypes element
         | TypeDefn.Array _ ->
-            Error
-                {
-                    Diagnostic =
-                        $"the constraint signature %O{spelling} has a multidimensional array, whose element type CoreCLR's DoAccessibilityCheckForConstraintSignature reads past before it walks the rest, which PawPrint does not follow"
-                }
+            [
+                Error
+                    {
+                        Diagnostic =
+                            $"the constraint signature %O{spelling} has a multidimensional array, whose element type CoreCLR's DoAccessibilityCheckForConstraintSignature reads past before it walks the rest, which PawPrint does not follow"
+                    }
+            ]
         | TypeDefn.FunctionPointer signature ->
             let returned =
                 match signature.ReturnType with
@@ -568,13 +575,15 @@ module TypeLoad =
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void
         | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> Ok []
+        | TypeDefn.GenericMethodParameter _ -> []
         | TypeDefn.Pinned _ ->
-            Error
-                {
-                    Diagnostic =
-                        $"the constraint signature %O{spelling} has a pinned type, for which CoreCLR's DoAccessibilityCheckForConstraintSignature throws BadImageFormatException"
-                }
+            [
+                Error
+                    {
+                        Diagnostic =
+                            $"the constraint signature %O{spelling} has a pinned type, for which CoreCLR's DoAccessibilityCheckForConstraintSignature throws BadImageFormatException"
+                    }
+            ]
 
     /// A load the constraint checks of a definition's type parameters make, in the order
     /// `MethodTable::DoFullyLoad` makes them.
@@ -816,8 +825,10 @@ module TypeLoad =
                 walk, rootDefinedIn.TypeDefs.[identity.TypeDefinition.Get].IsInterface
             | _, Error miss -> failwith $"BUG: a constraint's generic definition was loaded, but now binds to %O{miss}"
 
+        // `LoadConstraints` and `DoAccessibilityCheckForConstraints` classify a constraint by the
+        // element type `SigParser::GetElemType` reads, which skips custom modifiers.
         let loadConstraint (bound : TypeDefn) (walk : LoadWalk) : LoadWalk * LoadMiss option =
-            match bound with
+            match TypeDefn.stripCustomModifiers bound with
             | TypeDefn.GenericInstantiation (root, _) ->
                 load root walk
                 |> andThen (fun walk ->
@@ -828,14 +839,17 @@ module TypeLoad =
             | _ -> load bound walk
 
         let walkSignature (bound : TypeDefn) (walk : LoadWalk) : LoadWalk * LoadMiss option =
-            match bound with
+            match TypeDefn.stripCustomModifiers bound with
             | TypeDefn.GenericInstantiation (root, _) ->
                 match isInterface root walk with
                 | walk, false -> walk, None
                 | walk, true ->
-                    match constraintSignatureTypes bound with
-                    | Ok types -> firstMiss (List.map load types) walk
-                    | Error unmodelled -> walk, Some (LoadMiss.Unmodelled unmodelled)
+                    let step (part : Result<TypeDefn, UnmodelledBinding>) =
+                        match part with
+                        | Ok spelling -> load spelling
+                        | Error unmodelled -> fun (walk : LoadWalk) -> walk, Some (LoadMiss.Unmodelled unmodelled)
+
+                    firstMiss (constraintSignatureTypes bound |> List.map step) walk
             | _ -> walk, None
 
         constraintLoadOrder constraints
