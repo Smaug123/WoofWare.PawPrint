@@ -6873,6 +6873,24 @@ public static unsafe class Probe
         finally
             context.Unload ()
 
+    /// As `analysisOver`, over the test host's own framework rather than the framework under test:
+    /// for an oracle that compiles on the test host's own CoreCLR, in process.
+    let private analysisOverHostImage
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        analysisOf
+            (Assembly.readFile loggerFactory HostImage.coreLibPath)
+            HostImage.runtimeDirs
+            (hostTarget ())
+            HardwareIntrinsicsProfile.ScalarOnly
+            Assumption.all
+            assemblies
+            bind
+
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
     /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
@@ -6897,12 +6915,7 @@ public static unsafe class Probe
             client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOf
-                (Assembly.readFile loggerFactory HostImage.coreLibPath)
-                HostImage.runtimeDirs
-                (hostTarget ())
-                HardwareIntrinsicsProfile.ScalarOnly
-                Assumption.all
+            analysisOverHostImage
                 [ client ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -7076,6 +7089,200 @@ public static unsafe class Uco
 
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
+    /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
+    /// matters), a static `Plain` without the attribute, and, each returning the delegate it makes
+    /// (an `Action<int>`, or null):
+    /// - `Adjacent`, `AdjacentPlain`, `Virtual`: the target's address instruction right before the
+    ///   `newobj` of the delegate's constructor (`ldftn`, or `dup; ldvirtftn` for `Virtual`);
+    /// - `ViaLocal`: the address stored in a local and loaded back before the `newobj`;
+    /// - `Caught`: `Adjacent` inside a `try` that catches `NotSupportedException`.
+    let private delegateProbes : Lazy<byte[]> =
+        lazy
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Probe", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Probe"
+            let c = modul.DefineType ("C", TypeAttributes.Public)
+
+            c.DefineDefaultConstructor MethodAttributes.Public
+            |> ignore<Emit.ConstructorBuilder>
+
+            let unmanagedCallersOnly =
+                Emit.CustomAttributeBuilder (
+                    typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                    [||]
+                )
+
+            let target (name : string) (attributes : MethodAttributes) (uco : bool) : MethodInfo =
+                let method = c.DefineMethod (name, attributes, typeof<Void>, [| typeof<int> |])
+
+                if uco then
+                    method.SetCustomAttribute unmanagedCallersOnly
+
+                method.GetILGenerator().Emit Emit.OpCodes.Ret
+                method :> MethodInfo
+
+            let uco = target "Uco" (MethodAttributes.Public ||| MethodAttributes.Static) true
+
+            let plain =
+                target "Plain" (MethodAttributes.Public ||| MethodAttributes.Static) false
+
+            let virt = target "Virt" (MethodAttributes.Public ||| MethodAttributes.Virtual) true
+
+            let constructor =
+                typeof<Action<int>>.GetConstructor [| typeof<obj> ; typeof<nativeint> |]
+
+            let define (name : string) (emit : Emit.ILGenerator -> unit) : unit =
+                let method =
+                    c.DefineMethod (
+                        name,
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<obj>,
+                        [| c :> Type |]
+                    )
+
+                let il = method.GetILGenerator ()
+                emit il
+                il.Emit Emit.OpCodes.Ret
+
+            define
+                "Adjacent"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "AdjacentPlain"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, plain)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "Virtual"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Ldvirtftn, virt)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "ViaLocal"
+                (fun il ->
+                    let address = il.DeclareLocal typeof<nativeint>
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Stloc, address)
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldloc, address)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "Caught"
+                (fun il ->
+                    let made = il.DeclareLocal typeof<obj>
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                    il.Emit (Emit.OpCodes.Stloc, made)
+                    il.BeginCatchBlock typeof<NotSupportedException>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+                    il.Emit (Emit.OpCodes.Ldloc, made)
+                )
+
+            c.CreateType () |> ignore<Type>
+            use image = new MemoryStream ()
+            builder.Save image
+            image.ToArray ()
+
+    /// .NET 10's CoreCLR refuses to make a delegate over an `[UnmanagedCallersOnly]` method
+    /// (`COMDelegate::GetDelegateCtor`, `NotSupported_UnmanagedCallersOnlyTarget`), which it asks
+    /// where the JIT compiles the `newobj` of the delegate's constructor and sees the method the
+    /// target's address instruction names (`fgOptimizeDelegateConstructor`), before it walks any
+    /// signature for a thunk. That fails the compilation of the method making the delegate, past
+    /// every handler of it, on both tiers. Where the address reaches the `newobj` any other way, the
+    /// JIT does not ask, and the runtime's construction of the delegate (`Delegate_Construct`) does
+    /// not refuse it. The host compiles each probe, at tier 0 and fully optimised, against which the
+    /// analysis reads the host's own image (.NET 11 refuses no such delegate,
+    /// `UnmanagedCallersOnly.refusesDelegateTarget`).
+    [<Test>]
+    let ``making a delegate over an UnmanagedCallersOnly method fails the compilation where the JIT names the target``
+        ()
+        : unit
+        =
+        let expected =
+            [
+                "Adjacent", true
+                "AdjacentPlain", false
+                "Virtual", true
+                "ViaLocal", false
+                "Caught", true
+            ]
+
+        let failures =
+            [
+                for collectible in [ false ; true ] do
+                    let context =
+                        Runtime.Loader.AssemblyLoadContext ("DelegateOverUco", isCollectible = collectible)
+
+                    try
+                        let c =
+                            (context.LoadFromStream (new MemoryStream (delegateProbes.Value))).GetType "C"
+
+                        for name, refused in expected do
+                            let raised =
+                                try
+                                    Runtime.CompilerServices.RuntimeHelpers.PrepareMethod
+                                        (c.GetMethod name).MethodHandle
+
+                                    None
+                                with e ->
+                                    Some (e.GetType().FullName)
+
+                            let wanted =
+                                if refused then
+                                    Some "System.NotSupportedException"
+                                else
+                                    None
+
+                            if raised <> wanted then
+                                yield
+                                    $"%s{name} (collectible %b{collectible}): the host's JIT raises %A{raised}, not %A{wanted}"
+                    finally
+                        if collectible then
+                            context.Unload ()
+            ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (delegateProbes.Value))
+
+        let mutable analysis = analysisOverHostImage [ assembly ] id
+
+        let failures =
+            [
+                yield! failures
+
+                for name, refused in expected do
+                    let next, escapes = EscapeAnalysis.escapes analysis (methodNamed assembly "C" name)
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.NotSupportedException" <> refused then
+                        yield $"%s{name}: the analysis says %A{Set.toList shown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
     /// .NET 11's `UnmanagedCallersOnlyAttribute` declares an `AssociatedSourceType` named argument,
     /// which .NET 10's does not, and each runtime's VM parses the attribute's blob against its own
