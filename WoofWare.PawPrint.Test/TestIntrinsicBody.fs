@@ -1496,6 +1496,309 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
         | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 1
         | other -> failwith $"expected the guest to exit normally, got %O{other}"
 
+    /// The capability-query getters of `corelib`, each with whether CoreCLR's JIT compiles a call
+    /// of it to a constant: an `IsSupported` or `IsHardwareAccelerated` getter, static and
+    /// parameterless, returning `bool`, on a class that is not generic in a hardware-intrinsic
+    /// namespace. The JIT answers one (`lookupNamedIntrinsic`, importercalls.cpp) only when the VM
+    /// marks it intrinsic, which it does when the getter carries `[Intrinsic]` itself, or when its
+    /// class does and is a hardware-intrinsic class of the architecture the CoreLib was built for
+    /// (`fIsHardwareIntrinsic`, methodtablebuilder.cpp). Decided from names and attributes, never
+    /// from IL.
+    let private capabilityGetters (corelib : DumpedAssembly) : (Method * bool) list =
+        let parentOf (handle : System.Reflection.Metadata.MemberReferenceHandle) : TypeRef =
+            match corelib.Members.[handle].Parent with
+            | MetadataToken.TypeReference r -> corelib.TypeRefs.[r]
+            | other -> failwith $"an attribute constructor's parent %O{other} is not a TypeRef"
+
+        // A CoreLib is built for one architecture, whose base instruction set's query calls itself.
+        let ownNamespace =
+            [
+                "System.Runtime.Intrinsics.X86", "X86Base"
+                "System.Runtime.Intrinsics.Arm", "ArmBase"
+            ]
+            |> List.filter (fun (ns, cls) ->
+                match IntrinsicBody.classify corelib (find corelib ns cls "get_IsSupported" []) with
+                | IntrinsicBody.JitExpansion _ -> true
+                | _ -> false
+            )
+            |> List.exactlyOne
+            |> fst
+
+        let isHardwareIntrinsicNamespace (ns : string) : bool =
+            ns = "System.Numerics"
+            || ns = "System.Runtime.Intrinsics"
+            || ns.StartsWith ("System.Runtime.Intrinsics.", StringComparison.Ordinal)
+
+        let rec isGeneric (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+            not ty.Generics.IsEmpty
+            || (ty.IsNested && isGeneric corelib.TypeDefs.[ty.DeclaringType])
+
+        [
+            for m in methodsOf corelib do
+                let definition = corelib.Methods.[m.Handle]
+
+                let declaringType =
+                    corelib.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
+
+                let intrinsicClass = classOf corelib m.Handle
+
+                if
+                    (m.Name = "get_IsSupported" || m.Name = "get_IsHardwareAccelerated")
+                    && definition.IsStatic
+                    && m.Parameters.IsEmpty
+                    && m.GenericArity = 0
+                    && definition.Signature.ReturnType = MethodReturnType.Returns (
+                        TypeDefn.PrimitiveType PrimitiveType.Boolean
+                    )
+                    && not (isGeneric declaringType)
+                    && isHardwareIntrinsicNamespace intrinsicClass.Namespace
+                then
+                    let markedIntrinsic =
+                        MethodInfo.isJITIntrinsic parentOf corelib.Methods definition
+                        || (intrinsicClass.Namespace = ownNamespace
+                            && MethodInfo.hasIntrinsicAttribute parentOf corelib.Methods declaringType.Attributes)
+
+                    yield m, markedIntrinsic
+        ]
+
+    [<TestCaseSource(nameof runtimes)>]
+    let ``every capability query the JIT answers has a constant result on a scalar-only CPU, on every runtime``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        // Each runtime's CoreLib for the host's architecture and for linux-x64, so that both
+        // architectures' classes are read as their own and as another architecture's.
+        let paths =
+            [
+                FrameworkUnderTest.requireCoreLibPathOf runtime
+                Path.Combine (FrameworkUnderTest.requireLinuxFrameworkDirectoryOf runtime, "System.Private.CoreLib.dll")
+            ]
+
+        let failures =
+            [
+                for path in paths do
+                    let corelib = readCoreLib path
+                    let getters = capabilityGetters corelib
+
+                    // About 100 in each CoreLib at the pinned runtimes.
+                    if (getters |> List.filter snd |> List.length) < 90 then
+                        yield $"%s{path}: only %d{getters.Length} capability queries"
+
+                    for m, answered in getters do
+                        let expected = if answered then Some false else None
+
+                        let actual =
+                            IntrinsicBody.constantResult HardwareIntrinsicsProfile.ScalarOnly corelib m.Handle
+
+                        if actual <> expected then
+                            yield
+                                $"%s{path}: %O{classOf corelib m.Handle}::%s{m.Name}: %A{actual}, expected %A{expected}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> List.truncate 40 |> String.concat "\n" |> failwith
+
+    /// Every public capability query of the test host's CoreLib, by reflection: a static `bool`
+    /// property `IsSupported` or `IsHardwareAccelerated` that a public class which is not generic
+    /// declares, in a hardware-intrinsic namespace; with its class, as `IntrinsicClass` spells it.
+    let private hostQueries () : (PropertyInfo * IntrinsicClass) list =
+        let rec path (ty : Type) : string list =
+            match ty.DeclaringType with
+            | null -> [ ty.Name ]
+            | outer -> path outer @ [ ty.Name ]
+
+        [
+            for ty in typeof<obj>.Assembly.GetExportedTypes () do
+                let ns =
+                    match ty.Namespace with
+                    | null -> ""
+                    | ns -> ns
+
+                if
+                    (ns = "System.Numerics"
+                     || ns = "System.Runtime.Intrinsics"
+                     || ns.StartsWith ("System.Runtime.Intrinsics.", StringComparison.Ordinal))
+                    && not ty.IsGenericType
+                then
+                    for name in [ "IsSupported" ; "IsHardwareAccelerated" ] do
+                        match
+                            ty.GetProperty (
+                                name,
+                                BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.DeclaredOnly
+                            )
+                        with
+                        | null -> ()
+                        | property when property.PropertyType = typeof<bool> ->
+                            yield
+                                property,
+                                {
+                                    Namespace = ns
+                                    Path = path ty
+                                }
+                        | _ -> ()
+        ]
+
+    [<Test>]
+    let ``the host's JIT compiles a call of each public capability query to its constant result`` () : unit =
+        // The probe is a call with a variable argument list, which CoreCLR refuses with
+        // InvalidProgramException where it compiles one, except on Windows.
+        if OperatingSystem.IsWindows () then
+            Assert.Ignore "CoreCLR compiles a vararg call on Windows, so it cannot tell a folded branch here."
+
+        let queries = hostQueries ()
+
+        // C# that names each query's class, and the diagnostics its attributes raise there.
+        let rec enclosing (ty : Type) : Type list =
+            match ty.DeclaringType with
+            | null -> [ ty ]
+            | outer -> ty :: enclosing outer
+
+        let suppressed =
+            [
+                for property, _ in queries do
+                    for ty in enclosing property.DeclaringType do
+                        for attribute in ty.GetCustomAttributes<Diagnostics.CodeAnalysis.ExperimentalAttribute> () do
+                            yield attribute.DiagnosticId
+
+                        for attribute in ty.GetCustomAttributes<ObsoleteAttribute> () do
+                            yield "CS0618"
+
+                            match attribute.DiagnosticId with
+                            | null -> ()
+                            | id -> yield id
+            ]
+            |> List.distinct
+
+        let source =
+            let probes =
+                queries
+                |> List.mapi (fun i (property, c) ->
+                    let name = String.concat "." (c.Namespace :: c.Path)
+
+                    $"    public static void Probe%d{i}() {{ if (global::%s{name}.%s{property.Name}) Variadic(1, __arglist(2)); }}"
+                )
+                |> String.concat "\n"
+
+            let pragma =
+                if suppressed.IsEmpty then
+                    ""
+                else
+                    let ids = String.concat ", " suppressed
+                    $"#pragma warning disable %s{ids}"
+
+            $"""
+%s{pragma}
+namespace HostQueries;
+
+public static class Probes
+{{
+    public static void Variadic(int a, __arglist) {{ }}
+%s{probes}
+}}
+"""
+
+        let image =
+            Roslyn.compileOptimizedAssembly
+                "HostQueries"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ source ]
+
+        // Whether calling each probe raised InvalidProgramException: tier 0 first, and then fully
+        // optimised, as CoreCLR compiles code in a collectible context.
+        let raised (collectible : bool) : bool list =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ($"HostQueries%b{collectible}", isCollectible = collectible)
+
+            try
+                let probes =
+                    context.LoadFromStream(new MemoryStream (image)).GetType ("HostQueries.Probes", true)
+
+                queries
+                |> List.mapi (fun i _ ->
+                    try
+                        probes.GetMethod($"Probe%d{i}").Invoke ((null : obj), [||]) |> ignore<obj>
+                        false
+                    with :? TargetInvocationException as e when (e.InnerException :? InvalidProgramException) ->
+                        true
+                )
+            finally
+                if collectible then
+                    context.Unload ()
+
+        let tier0 = raised false
+        let optimised = raised true
+
+        let answers =
+            queries
+            |> List.map (fun (property, c) -> property, c, property.GetValue (null : obj) :?> bool)
+
+        let profile =
+            {
+                IsSupported =
+                    answers
+                    |> List.filter (fun (p, _, answer) -> answer && p.Name = "IsSupported")
+                    |> List.map (fun (_, c, _) -> c)
+                    |> Set.ofList
+                IsHardwareAccelerated =
+                    answers
+                    |> List.filter (fun (p, _, answer) -> answer && p.Name = "IsHardwareAccelerated")
+                    |> List.map (fun (_, c, _) -> c)
+                    |> Set.ofList
+            }
+
+        let corelib = readCoreLib HostImage.coreLibPath
+
+        let outcomes =
+            List.zip3 answers tier0 optimised
+            |> List.map (fun ((property, c, answer), raisedAtTier0, raisedOptimised) ->
+                let handle =
+                    match
+                        methodsOf corelib
+                        |> List.filter (fun m ->
+                            m.Name = $"get_%s{property.Name}"
+                            && m.Parameters.IsEmpty
+                            && classOf corelib m.Handle = c
+                        )
+                    with
+                    | [ m ] -> m.Handle
+                    | found -> failwith $"expected one %O{c}::get_%s{property.Name}, found %d{found.Length}"
+
+                // A branch the JIT folds away compiles no call in it; one it compiles, it imports.
+                let expected =
+                    match raisedAtTier0, raisedOptimised, answer with
+                    | false, false, false -> Ok (Some false)
+                    | true, true, true -> Ok (Some true)
+                    | true, true, false -> Ok None
+                    | _ ->
+                        Error
+                            $"%O{c}.%s{property.Name} answers %b{answer}; the call compiled at tier 0 %b{raisedAtTier0}, optimised %b{raisedOptimised}"
+
+                c, property.Name, expected, IntrinsicBody.constantResult profile corelib handle
+            )
+
+        let failures =
+            [
+                for c, name, expected, actual in outcomes do
+                    match expected with
+                    | Error message -> yield message
+                    | Ok expected when expected <> actual -> yield $"%O{c}.%s{name}: %A{actual}, expected %A{expected}"
+                    | Ok _ -> ()
+            ]
+
+        if not failures.IsEmpty then
+            failures |> List.truncate 40 |> String.concat "\n" |> failwith
+
+        // Vacuity floors: the host's JIT folds most queries to false, and some to true.
+        outcomes
+        |> List.filter (fun (_, _, expected, _) -> expected = Ok (Some false))
+        |> List.length
+        |> shouldBeGreaterThan 50
+
+        outcomes
+        |> List.filter (fun (_, _, expected, _) -> expected = Ok (Some true))
+        |> List.length
+        |> shouldBeGreaterThan 2
+
     [<TestCaseSource(nameof coreLibs)>]
     let ``every capability query returns the constant its profile gives, and nothing else does``
         (which : AuditedCoreLib)
@@ -1534,11 +1837,46 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
             )
             |> System.Collections.Generic.HashSet
 
+        // Another architecture's classes, whose queries CoreLib makes stubs returning false, and the
+        // JIT answers false.
+        let stubs =
+            capabilityGetters corelib
+            |> List.filter (fun (m, answered) -> answered && not (queries.Contains m.Handle))
+            |> List.map (fun (m, _) -> m.Handle)
+            |> System.Collections.Generic.HashSet
+
+        // A CPU that claims every stub's class as well, which no CPU of this CoreLib's architecture
+        // can: the stub returns false whatever the profile says.
+        let claimingStubs =
+            let classes =
+                stubs |> Seq.map (fun handle -> handle, classOf corelib handle) |> List.ofSeq
+
+            let named (getter : string) =
+                classes
+                |> List.filter (fun (handle, _) -> corelib.Methods.[handle].Name = getter)
+                |> List.map snd
+                |> Set.ofList
+
+            {
+                IsSupported = Set.union answeringTrue.IsSupported (named "get_IsSupported")
+                IsHardwareAccelerated =
+                    Set.union answeringTrue.IsHardwareAccelerated (named "get_IsHardwareAccelerated")
+            }
+
         let failures =
             [
                 for m in methodsOf corelib do
-                    for profile, answer in [ HardwareIntrinsicsProfile.ScalarOnly, false ; answeringTrue, true ] do
-                        let expected = if queries.Contains m.Handle then Some answer else None
+                    for profile, answer, stubAnswer in
+                        [
+                            HardwareIntrinsicsProfile.ScalarOnly, false, Some false
+                            answeringTrue, true, Some false
+                            claimingStubs, true, None
+                        ] do
+                        let expected =
+                            if queries.Contains m.Handle then Some answer
+                            elif stubs.Contains m.Handle then stubAnswer
+                            else None
+
                         let actual = IntrinsicBody.constantResult profile corelib m.Handle
 
                         if actual <> expected then
@@ -1549,6 +1887,7 @@ unsafe class CallsSubstitutedIntrinsicThroughCalli
             failures |> List.truncate 40 |> String.concat "\n" |> failwith
 
         queries.Count |> shouldBeGreaterThan 20
+        stubs.Count |> shouldBeGreaterThan 15
 
     /// An image that calls itself System.Private.CoreLib, so that its getters in a hardware-intrinsic
     /// namespace are capability queries, each of whose IL does something different with its call to

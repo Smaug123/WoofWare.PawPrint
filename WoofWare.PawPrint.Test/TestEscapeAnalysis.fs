@@ -3636,6 +3636,24 @@ public static class Cases
         try { UnlessAccelerated(); }
         catch (Guarded) { if (!Vector128.IsHardwareAccelerated) throw new HandlerRan(); }
     }
+
+    // Each architecture's base instruction set, and a class nested twice in one. On a CPU of the
+    // other architecture, CoreLib's query is a stub returning false, and the JIT compiles a call of
+    // it to false all the same.
+    public static void X86Guarded()
+    {
+        if (System.Runtime.Intrinsics.X86.X86Base.IsSupported) throw new Guarded();
+    }
+
+    public static void ArmGuarded()
+    {
+        if (System.Runtime.Intrinsics.Arm.ArmBase.IsSupported) throw new Guarded();
+    }
+
+    public static void NestedGuarded()
+    {
+        if (System.Runtime.Intrinsics.X86.Avx10v2.V512.X64.IsSupported) throw new Guarded();
+    }
 }
 """
 
@@ -3701,6 +3719,14 @@ public static class Cases
                 Excludes = [ guarded ; handlerRan ]
                 Unknown = Some false
             }
+            // Neither CPU has any of these instruction sets.
+            for accelerated in [ false ; true ] do
+                for guardedBy in [ "X86Guarded" ; "ArmGuarded" ; "NestedGuarded" ] do
+                    accelerated,
+                    { expect "Guarded.Cases" guardedBy with
+                        Excludes = [ guarded ]
+                        Unknown = Some false
+                    }
         ]
 
     [<Test>]
