@@ -1632,10 +1632,7 @@ module internal UnaryMetadataCallOps =
                     | ClassMethodOnValueType.Undecided ->
                         failwith
                             $"refusing %s{describe ()}: the method holds a slot that does not mean the same in the value type's method table, or no slot PawPrint places, so CoreCLR runs whatever the value type's table holds there, if anything"
-                    | ClassMethodOnValueType.Resolves runs when
-                        runs.DeclaringAssemblyFullName = called.DeclaringAssemblyFullName
-                        && MethodInfo.sameDeclaredMethod runs called
-                        ->
+                    | ClassMethodOnValueType.Resolves runs when MethodInfo.sameDeclaredMethod runs called ->
                         // The method named is a value type's own, which runs on T's address.
                         if calledOn = tHandle then
                             state, ValueTypeReceiver.OnAddress concretizedMethod
