@@ -100,6 +100,25 @@ static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void CallsVariadic() => Variadic(__arglist(1));
 
+    [UnmanagedCallersOnly]
+    static void UcoTarget(int x) { }
+
+    // C# makes no delegate over an `[UnmanagedCallersOnly]` method, so this emits one, which the
+    // JIT refuses to compile.
+    static Action ucoDelegate;
+
+    static Action UcoDelegate()
+    {
+        var method = new DynamicMethod("UcoDelegate", typeof(void), Type.EmptyTypes, typeof(Program).Module);
+        var il = method.GetILGenerator();
+        il.Emit(OpCodes.Ldnull);
+        il.Emit(OpCodes.Ldftn, typeof(Program).GetMethod("UcoTarget", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
+        il.Emit(OpCodes.Newobj, typeof(Action<int>).GetConstructor(new[] { typeof(object), typeof(IntPtr) }));
+        il.Emit(OpCodes.Pop);
+        il.Emit(OpCodes.Ret);
+        return method.CreateDelegate<Action>();
+    }
+
     static Action<object> Wrap()
     {
         var method = new DynamicMethod("Wrap", typeof(void), new[] { typeof(object) });
@@ -142,6 +161,7 @@ static class Program
             case "Bounds": bounds(int.MaxValue, 2, 0, 1); break;
             case "Wrap": wrap("a string"); break;
             case "Vararg": CallsVariadic(); break;
+            case "UcoDelegate": ucoDelegate(); break;
             default: throw new ArgumentException(fault);
         }
     }
@@ -164,6 +184,7 @@ static class Program
         string fault = args[0], mode = args[1], expected = args[2];
         bounds = Bounds();
         wrap = Wrap();
+        ucoDelegate = UcoDelegate();
 
         if (mode == "twice")
         {
@@ -458,6 +479,29 @@ static class Program
             expect "nameless" "the exception itself" (RealRuntimeResult.NormalExit 1)
         | ExceptionMaking.InitializerFailure -> failwith $"%s{fault}: no case here raises a TypeInitializationException"
         | ExceptionMaking.TypeLoadConstructor -> failwith $"%s{fault}: no case here raises a TypeLoadException"
+
+    /// Where the JIT compiles the construction of a delegate over an `[UnmanagedCallersOnly]`
+    /// method, .NET 10 refuses it with an exception it makes as `ExceptionMaking` says, and .NET 11
+    /// makes the delegate (`UnmanagedCallersOnly.refusesDelegateTarget`). The runtime under test
+    /// compiles the guest's dynamic method making one.
+    [<Test>]
+    let ``the JIT refuses a delegate over an UnmanagedCallersOnly method only where the runtime does, making the exception as ExceptionMaking says``
+        ()
+        : unit
+        =
+        let exceptionName, making = ExceptionMaking.unmanagedCallersOnlyDelegateTarget
+
+        let run (mode : string) : RealRuntimeResult =
+            RealRuntime.executeWithRealRuntime [| "UcoDelegate" ; mode ; exceptionName |] image.Value
+
+        if UnmanagedCallersOnly.refusesDelegateTarget (FrameworkUnderTest.runtime ()) then
+            making |> shouldEqual ExceptionMaking.ResourceMessage
+            run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
+            run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
+            run "after-constructor" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+            run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        else
+            run "named" |> shouldEqual (RealRuntimeResult.NormalExit 0)
 
     [<Test>]
     let ``a thrown object that is not an exception is wrapped by running RuntimeWrappedException's constructor``

@@ -205,7 +205,10 @@ method) may add more:
   one closed over its target loads nothing more. For a static target that code shared between
   instantiations names through its type variables, CoreCLR makes the thunk as the delegate is made,
   where the method's own handlers can catch the failure, but the analysis takes it to fail the
-  compilation there too. The JIT asks for an `ldftn`'s address
+  compilation there too. Before any of that, .NET 10 refuses a target that is
+  `[UnmanagedCallersOnly]`, with a `NotSupportedException` that fails the compilation, where the
+  JIT compiles the delegate's construction right after the `ldftn` or `ldvirtftn` naming it; .NET
+  11 makes the delegate (`UnmanagedCallersOnly.refusesDelegateTarget`). The JIT asks for an `ldftn`'s address
   compiling whatever method it inlines the `ldftn` into, so what loading the value types then
   raises the analysis takes to escape every method that calls the body, directly or not, past all
   its handlers, as any of them may have the body inlined into it;

@@ -1534,9 +1534,18 @@ public static class SR
                         yield $"%s{describe ()}, expected unknown %b{unknown}"
                     | _ -> ()
 
+                    // Allowed, the assumption that no thread is aborted removes from every answer what it
+                    // would otherwise raise.
+                    let expected (assumes : Assumption list) : Set<Assumption> =
+                        if EscapeAnalysis.allows analysis Assumption.NoThreadAborts then
+                            Set.ofList assumes |> Set.add Assumption.NoThreadAborts
+                        else
+                            Set.ofList assumes
+
                     match expectation.Assumes with
-                    | Some assumes when Set.ofList assumes <> escapes.Assumes ->
-                        yield $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{assumes}"
+                    | Some assumes when expected assumes <> escapes.Assumes ->
+                        yield
+                            $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{Set.toList (expected assumes)}"
                     | _ -> ()
                 ]
 
@@ -1921,7 +1930,8 @@ public static class SR
             |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
             |> Map.ofList
 
-        // `JitOptimises`, `MembersAccessible` and `FieldsWrittenVisibly` stand in for no method.
+        // `JitOptimises`, `MembersAccessible`, `FieldsWrittenVisibly`, `MetadataWellFormed` and
+        // `NoThreadAborts` stand in for no method.
         summarised
         |> Map.keys
         |> Set.ofSeq
@@ -1932,6 +1942,8 @@ public static class SR
                     Assumption.JitOptimises
                     Assumption.MembersAccessible
                     Assumption.FieldsWrittenVisibly
+                    Assumption.MetadataWellFormed
+                    Assumption.NoThreadAborts
                 ]
         )
 
@@ -1945,7 +1957,9 @@ public static class SR
             | Assumption.DynamicCastsAsDocumented -> keys.Length |> shouldEqual 1
             | Assumption.JitOptimises
             | Assumption.MembersAccessible
-            | Assumption.FieldsWrittenVisibly -> failwith $"%A{assumption} summarises %A{keys}"
+            | Assumption.FieldsWrittenVisibly
+            | Assumption.MetadataWellFormed
+            | Assumption.NoThreadAborts -> failwith $"%A{assumption} summarises %A{keys}"
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -2001,7 +2015,13 @@ public static class SR
                 escapes.Unknown |> shouldEqual false
 
                 escapes.Assumes
-                |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+                |> shouldEqual (
+                    made
+                    |> List.map _.Assumes
+                    |> Set.unionMany
+                    |> Set.add assumption
+                    |> Set.add Assumption.NoThreadAborts
+                )
 
             // Those constructors are known allowed only the assumptions about what constructing a
             // CoreLib exception runs: its message's lookup runs `SR`'s type initializer, and may
@@ -2185,7 +2205,9 @@ public static class SR
         // A type initializer it runs may fail, and the runtime may throw that one's own exception
         // again, which reads its stack trace.
         let assuming, escapes =
-            EscapeAnalysis.escapes (analysis (Set.singleton Assumption.StackTracePreserved)) key
+            EscapeAnalysis.escapes
+                (analysis (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ]))
+                key
 
         render assuming escapes
         |> shouldEqual (
@@ -2195,7 +2217,9 @@ public static class SR
         )
 
         escapes.Unknown |> shouldEqual false
-        escapes.Assumes |> shouldEqual (Set.singleton Assumption.StackTracePreserved)
+
+        escapes.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.StackTracePreserved ; Assumption.NoThreadAborts ])
 
         // Allowed every other assumption, only reading that stack trace is hidden.
         let unassuming, escapes =
@@ -2266,6 +2290,8 @@ public static class SR
                 let analysis, (made, unknown) =
                     ((analysis, (made, false)), row.Contract.Runs)
                     ||> List.fold (fun (analysis, (made, unknown)) call ->
+                        let call = NativeCall.resolve (FrameworkUnderTest.runtime ()) call
+
                         let analysis, escapes =
                             EscapeAnalysis.escapes analysis (methodNamed corelib call.DeclaringType call.Method)
 
@@ -2279,6 +2305,124 @@ public static class SR
             )
 
         ()
+
+    /// A row that runs CoreCLR's lookup of a resource message (`NativeCall.ResourceMessage`) runs the
+    /// CoreLib method the runtime under test calls for it.
+    [<Test>]
+    let ``a native's lookup of a resource message runs the runtime's method for it`` () : unit =
+        let analysis = analysisOver [] id
+        let key, _ = EscapeAnalysis.nativeCallee analysis NativeCall.ResourceMessage
+
+        let expected =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> "System.Environment::GetResourceStringLocal"
+            | EmulatedRuntime.Net11 -> "System.Environment::GetResourceString"
+
+        EscapeAnalysis.methodName analysis key |> shouldEqual expected
+
+    /// Methods that do nothing, or that catch everything their bodies raise.
+    let private abortSource =
+        """
+using System;
+using System.Threading;
+
+namespace Aborts;
+
+public static class Cases
+{
+    public static int Constant() => 1;
+
+    public static void CatchesAll()
+    {
+        try { Constant(); } catch { }
+    }
+
+    public static void Filters()
+    {
+        try { Constant(); } catch (Exception) when (true) { }
+    }
+
+    public static void CatchesAbort()
+    {
+        try { Constant(); } catch (ThreadAbortException) { }
+    }
+
+    public static void Throws() => throw new InvalidOperationException();
+}
+"""
+
+    /// A requested abort (`Assumption.NoThreadAborts`) can arise in any method, and no handler stops
+    /// it, since a catch raises it again at its end. Where CoreCLR cannot allocate the abort's
+    /// exception, it raises its preallocated `OutOfMemoryException` instead, which can arise where
+    /// no handler of the method protects it. Assuming no thread is aborted removes both, and every
+    /// answer says it relies on that.
+    [<Test>]
+    let ``every method can raise ThreadAbortException, or OutOfMemoryException in its place, unless no thread is aborted``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let corelib = hostCoreLib ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "Aborts" OutputKind.DynamicallyLinkedLibrary [ abortSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "Aborts.dll") (new MemoryStream (image))
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                [ fixture ]
+                id
+
+        let methods =
+            [
+                for name in [ "Constant" ; "CatchesAll" ; "Filters" ; "CatchesAbort" ; "Throws" ] do
+                    yield name, methodNamed fixture "Aborts.Cases" name
+                // An FCall the contract table describes, and a method an assumption's contract
+                // stands in for.
+                yield "GetToken", methodNamed corelib "System.RuntimeTypeHandle" "GetToken"
+                yield "InternalPreserveStackTrace", methodNamed corelib "System.Exception" "InternalPreserveStackTrace"
+            ]
+
+        let abort = "=System.Threading.ThreadAbortException"
+        let outOfMemory = "=System.OutOfMemoryException"
+
+        let answers (analysis : EscapeAnalysisState) : (string * (bool * bool * bool)) list =
+            let _, answers =
+                ((analysis, []), methods)
+                ||> List.fold (fun (analysis, answers) (name, key) ->
+                    let analysis, escapes = EscapeAnalysis.escapes analysis key
+                    let rendered = render analysis escapes
+
+                    analysis,
+                    (name,
+                     (rendered.Contains abort,
+                      rendered.Contains outOfMemory,
+                      escapes.Assumes.Contains Assumption.NoThreadAborts))
+                    :: answers
+                )
+
+            List.rev answers
+
+        // Raising both, and not assuming them away.
+        answers (analysis (Set.remove Assumption.NoThreadAborts Assumption.all))
+        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (true, true, false)))
+
+        // Not raising the abort, and assuming it away. These raise no `OutOfMemoryException` then,
+        // so the abort's is not added where the assumption is allowed.
+        let raisesNoOutOfMemory = set [ "Constant" ; "CatchesAll" ; "CatchesAbort" ]
+
+        answers (analysis Assumption.all)
+        |> List.iter (fun (name, (raisesAbort, raisesOutOfMemory, assumes)) ->
+            (name, raisesAbort, assumes) |> shouldEqual (name, false, true)
+
+            if raisesNoOutOfMemory.Contains name then
+                (name, raisesOutOfMemory) |> shouldEqual (name, false)
+        )
 
     /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
     /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
@@ -4969,7 +5113,9 @@ public static class Cases
 
         span.Unknown |> shouldEqual false
         span.Types |> shouldEqual Set.empty
-        span.Assumes |> shouldEqual (Set.singleton Assumption.JitOptimises)
+
+        span.Assumes
+        |> shouldEqual (Set.ofList [ Assumption.JitOptimises ; Assumption.NoThreadAborts ])
 
         // Not assumed to, it calls both.
         let unassuming =
@@ -6873,6 +7019,24 @@ public static unsafe class Probe
         finally
             context.Unload ()
 
+    /// As `analysisOver`, over the test host's own framework rather than the framework under test:
+    /// for an oracle that compiles on the test host's own CoreCLR, in process.
+    let private analysisOverHostImage
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        analysisOf
+            (Assembly.readFile loggerFactory HostImage.coreLibPath)
+            HostImage.runtimeDirs
+            (hostTarget ())
+            HardwareIntrinsicsProfile.ScalarOnly
+            Assumption.all
+            assemblies
+            bind
+
     /// What the escape analysis says compiling each of `methods`, of `typeName` in the client
     /// `image`, raises against `provider`: `Raises "System.TypeLoadException"` where the answer
     /// names it, otherwise `Raises "Unknown"` where the answer is unknown, and otherwise
@@ -6897,12 +7061,7 @@ public static unsafe class Probe
             client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOf
-                (Assembly.readFile loggerFactory HostImage.coreLibPath)
-                HostImage.runtimeDirs
-                (hostTarget ())
-                HardwareIntrinsicsProfile.ScalarOnly
-                Assumption.all
+            analysisOverHostImage
                 [ client ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
@@ -7076,6 +7235,200 @@ public static unsafe class Uco
 
         (outcome, Set.toList sources)
         |> shouldEqual (UcoCompilation.Raises "Unknown", [ "Client.Uco::NullArray entry UnreadableCallingConvention" ])
+
+    /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
+    /// and `Virt` (virtual, which no valid UCO is, but whose delegate the JIT refuses before that
+    /// matters), a static `Plain` without the attribute, and, each returning the delegate it makes
+    /// (an `Action<int>`, or null):
+    /// - `Adjacent`, `AdjacentPlain`, `Virtual`: the target's address instruction right before the
+    ///   `newobj` of the delegate's constructor (`ldftn`, or `dup; ldvirtftn` for `Virtual`);
+    /// - `ViaLocal`: the address stored in a local and loaded back before the `newobj`;
+    /// - `Caught`: `Adjacent` inside a `try` that catches `NotSupportedException`.
+    let private delegateProbes : Lazy<byte[]> =
+        lazy
+            let builder =
+                Emit.PersistedAssemblyBuilder (AssemblyName "Probe", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Probe"
+            let c = modul.DefineType ("C", TypeAttributes.Public)
+
+            c.DefineDefaultConstructor MethodAttributes.Public
+            |> ignore<Emit.ConstructorBuilder>
+
+            let unmanagedCallersOnly =
+                Emit.CustomAttributeBuilder (
+                    typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                    [||]
+                )
+
+            let target (name : string) (attributes : MethodAttributes) (uco : bool) : MethodInfo =
+                let method = c.DefineMethod (name, attributes, typeof<Void>, [| typeof<int> |])
+
+                if uco then
+                    method.SetCustomAttribute unmanagedCallersOnly
+
+                method.GetILGenerator().Emit Emit.OpCodes.Ret
+                method :> MethodInfo
+
+            let uco = target "Uco" (MethodAttributes.Public ||| MethodAttributes.Static) true
+
+            let plain =
+                target "Plain" (MethodAttributes.Public ||| MethodAttributes.Static) false
+
+            let virt = target "Virt" (MethodAttributes.Public ||| MethodAttributes.Virtual) true
+
+            let constructor =
+                typeof<Action<int>>.GetConstructor [| typeof<obj> ; typeof<nativeint> |]
+
+            let define (name : string) (emit : Emit.ILGenerator -> unit) : unit =
+                let method =
+                    c.DefineMethod (
+                        name,
+                        MethodAttributes.Public ||| MethodAttributes.Static,
+                        typeof<obj>,
+                        [| c :> Type |]
+                    )
+
+                let il = method.GetILGenerator ()
+                emit il
+                il.Emit Emit.OpCodes.Ret
+
+            define
+                "Adjacent"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "AdjacentPlain"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, plain)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "Virtual"
+                (fun il ->
+                    il.Emit Emit.OpCodes.Ldarg_0
+                    il.Emit Emit.OpCodes.Dup
+                    il.Emit (Emit.OpCodes.Ldvirtftn, virt)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "ViaLocal"
+                (fun il ->
+                    let address = il.DeclareLocal typeof<nativeint>
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Stloc, address)
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldloc, address)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                )
+
+            define
+                "Caught"
+                (fun il ->
+                    let made = il.DeclareLocal typeof<obj>
+                    il.BeginExceptionBlock () |> ignore<Emit.Label>
+                    il.Emit Emit.OpCodes.Ldnull
+                    il.Emit (Emit.OpCodes.Ldftn, uco)
+                    il.Emit (Emit.OpCodes.Newobj, constructor)
+                    il.Emit (Emit.OpCodes.Stloc, made)
+                    il.BeginCatchBlock typeof<NotSupportedException>
+                    il.Emit Emit.OpCodes.Pop
+                    il.EndExceptionBlock ()
+                    il.Emit (Emit.OpCodes.Ldloc, made)
+                )
+
+            c.CreateType () |> ignore<Type>
+            use image = new MemoryStream ()
+            builder.Save image
+            image.ToArray ()
+
+    /// .NET 10's CoreCLR refuses to make a delegate over an `[UnmanagedCallersOnly]` method
+    /// (`COMDelegate::GetDelegateCtor`, `NotSupported_UnmanagedCallersOnlyTarget`), which it asks
+    /// where the JIT compiles the `newobj` of the delegate's constructor and sees the method the
+    /// target's address instruction names (`fgOptimizeDelegateConstructor`), before it walks any
+    /// signature for a thunk. That fails the compilation of the method making the delegate, past
+    /// every handler of it, on both tiers. Where the address reaches the `newobj` any other way, the
+    /// JIT does not ask, and the runtime's construction of the delegate (`Delegate_Construct`) does
+    /// not refuse it. The host compiles each probe, at tier 0 and fully optimised, against which the
+    /// analysis reads the host's own image (.NET 11 refuses no such delegate,
+    /// `UnmanagedCallersOnly.refusesDelegateTarget`).
+    [<Test>]
+    let ``making a delegate over an UnmanagedCallersOnly method fails the compilation where the JIT names the target``
+        ()
+        : unit
+        =
+        let expected =
+            [
+                "Adjacent", true
+                "AdjacentPlain", false
+                "Virtual", true
+                "ViaLocal", false
+                "Caught", true
+            ]
+
+        let failures =
+            [
+                for collectible in [ false ; true ] do
+                    let context =
+                        Runtime.Loader.AssemblyLoadContext ("DelegateOverUco", isCollectible = collectible)
+
+                    try
+                        let c =
+                            (context.LoadFromStream (new MemoryStream (delegateProbes.Value))).GetType "C"
+
+                        for name, refused in expected do
+                            let raised =
+                                try
+                                    Runtime.CompilerServices.RuntimeHelpers.PrepareMethod
+                                        (c.GetMethod name).MethodHandle
+
+                                    None
+                                with e ->
+                                    Some (e.GetType().FullName)
+
+                            let wanted =
+                                if refused then
+                                    Some "System.NotSupportedException"
+                                else
+                                    None
+
+                            if raised <> wanted then
+                                yield
+                                    $"%s{name} (collectible %b{collectible}): the host's JIT raises %A{raised}, not %A{wanted}"
+                    finally
+                        if collectible then
+                            context.Unload ()
+            ]
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Probe.dll") (new MemoryStream (delegateProbes.Value))
+
+        let mutable analysis = analysisOverHostImage [ assembly ] id
+
+        let failures =
+            [
+                yield! failures
+
+                for name, refused in expected do
+                    let next, escapes = EscapeAnalysis.escapes analysis (methodNamed assembly "C" name)
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.NotSupportedException" <> refused then
+                        yield $"%s{name}: the analysis says %A{Set.toList shown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
 
     /// .NET 11's `UnmanagedCallersOnlyAttribute` declares an `AssociatedSourceType` named argument,
     /// which .NET 10's does not, and each runtime's VM parses the attribute's blob against its own

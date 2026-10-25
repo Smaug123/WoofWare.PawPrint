@@ -908,9 +908,15 @@ anything it inherits declares a field.
 
 **PawPrint**: raises the same exception, with the same message, when the instruction *executes*, or
 for a `DynamicMethod`'s `catch` clause when the method is first invoked, as CoreCLR does. A `catch`
-clause in metadata naming either is not refused: it matches no exception, where CoreCLR refuses the
-method (measured). `cpobj`, `mkrefany` and
-`refanyval` are not implemented at all.
+clause in metadata naming either is another matter. CoreCLR resolves its type when it compiles the
+clause's handler, which it does once it compiles a block of the protected region: refused where that
+block is reachable, even behind a branch on a local, and compiled where nothing reaches it or a
+folded branch on a literal skips it (measured). PawPrint resolves the type only during exception
+dispatch, and has no compile step to raise the refusal from, so it stops the run when it enters such
+a method instead, where CoreCLR surely compiles the protected block and, not modelling the JIT's
+folding, also where it only may. A clause naming `System.Void` through an assembly not yet loaded is
+not noticed, since telling would mean loading it. `cpobj`, `mkrefany` and `refanyval` are not implemented
+at all.
 
 **Spec status**: ECMA-335 forbids some of these uses outright: a managed pointer as an array's
 element type or boxed (§I.8.2.1.1), a box of `System.Void` (§I.8.2.4), and any location or value of
@@ -923,14 +929,18 @@ rules, or when, and says nothing of `isinst` or `sizeof` of either. No compiler 
 `UnaryMetadataIlOpContext.refuseTypeOperand`, by `DynamicMethodExecution.concretize` for a `catch`
 clause, and by `UnaryMetadataObjectOps.executeBox` of an instruction after a byref-like box; and
 `TypeOperand.ofTypeToken`, asked of a MemberRef's parent by `IlMachineMemberResolution.resolveMember`,
-which answers `MemberReferenceResolution.RefusedParent` for each instruction to raise. The escape
-analysis asks `TypeOperand.ofTypeToken` of each token that binds (`EscapeAnalysis.resolutionRefusal`),
-`catch` clauses' included, and reports the refusal where the method is called.
+which answers `MemberReferenceResolution.RefusedParent` for each instruction to raise; and
+`CatchClauseRefusal.check`, which `MethodState.Empty` asks of each frame it makes, for a metadata
+`catch` clause. The escape analysis asks `TypeOperand.ofTypeToken` of each token that binds
+(`EscapeAnalysis.resolutionRefusal`), `catch` clauses' included, whether or not the JIT compiles the
+clause's protected block, and reports the refusal where the method is called.
 `TestFabricatedTypeOperandRefusal` pins each instruction over metadata,
 `DynamicMethodTypeToken.cs` over a `DynamicScope`, and `TestFabricatedVoidParentMemberReference`
 each method instruction over a parent of `System.Void`, each with the instruction reached on every
-run and no handler of its own, where the two runtimes agree. `TestEscapeAnalysis` holds the
-analysis to the real runtime over each of those, and over `catch` clauses.
+run and no handler of its own, where the two runtimes agree. `TestFabricatedCatchClauseRefusal`
+pins where PawPrint stops over a metadata `catch` clause against where the real runtime refuses.
+`TestEscapeAnalysis` holds the analysis to the real runtime over each of those, and over `catch`
+clauses.
 
 ## A field reference that binds nothing throws when it is reached
 

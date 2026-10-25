@@ -31,6 +31,10 @@ The real-runtime oracle runs on a framework installed on the host, so it cannot 
 
 `RealRuntime.fs` runs a guest on real .NET **as its own process**, on the framework under test through a generated runtimeconfig, and classifies how it terminated. It must stay out of process. In-process, the guest shares every process-global with the test host — including CoreCLR's single latched exit code, which is what a `void` entry point's exit code *is*, so concurrent guests read each other's exit codes — and `Environment.Exit` or `FailFast` in a guest kills the test runner outright. `WoofWare.PawPrint.Performance` keeps a deliberately in-process copy for benchmarking; it is not an oracle and must not become one.
 
+## Reading the repository
+
+A test that reads a file from the repository at run time must name it in a `FootprintInput` item in `WoofWare.PawPrint.Test.fsproj`, so that it is in the test footprint (`scripts/footprint.py`). CI runs the suite in a checkout holding only that footprint, so an undeclared read fails there. Fail on a missing file rather than skipping it: a read that tolerates absence, such as listing a directory and checking each file in it, passes vacuously in that checkout instead.
+
 ## Memory
 
 The test host runs with its GC heap capped at 8 GiB (`System.GC.HeapHardLimit` in both test `.fsproj`s, asserted by each project's `TestGcHeapHardLimit.fs`). Unbounded, the suite's peak RSS exceeds what a 16 GB CI runner has, and the OOM killer reaps the test host mid-run, which reports only "Test host process crashed" with no stderr. The cap is absolute rather than a fraction of the machine so that several concurrent test runs on one machine stay bounded too.
