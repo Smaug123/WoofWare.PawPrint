@@ -71,14 +71,14 @@ module TestSharedTypeGraphResolution =
 
     /// Resolve, and report the answer in the same language as the input, so that inputs and
     /// outputs can be compared directly.
-    let private resolveToTypeDefn
+    let private tryResolveToTypeDefn
         (fixture : Fixture)
         (ty : TypeDefn)
         (typeGenericArgs : TypeDefn list)
         (methodGenericArgs : TypeDefn list)
-        : TypeDefn
+        : Result<TypeDefn, TypeBindingFailure>
         =
-        let assemblies, (_, resolved) =
+        match
             TypeResolution.resolveTypeFromDefn
                 fixture.LoggerFactory
                 [ runtimeDir ]
@@ -88,9 +88,29 @@ module TestSharedTypeGraphResolution =
                 (ImmutableArray.CreateRange methodGenericArgs)
                 fixture.Corelib
                 fixture.Loaded
-            |> BindingResult.bound
+        with
+        | assemblies, Ok (_, resolved) -> Ok (LoadedTypeInfo.typeInfoToTypeDefn fixture.BaseTypes assemblies resolved)
+        | _, Error failure -> Error failure
 
-        LoadedTypeInfo.typeInfoToTypeDefn fixture.BaseTypes assemblies resolved
+    /// <c>tryResolveToTypeDefn</c>, failing the test where the resolution binds nothing.
+    let private resolveToTypeDefn
+        (fixture : Fixture)
+        (ty : TypeDefn)
+        (typeGenericArgs : TypeDefn list)
+        (methodGenericArgs : TypeDefn list)
+        : TypeDefn
+        =
+        tryResolveToTypeDefn fixture ty typeGenericArgs methodGenericArgs
+        |> BindingResult.value
+
+    /// The diagnostic of a resolution's refusal to bind, failing the test where it bound.
+    let private unmodelledDiagnostic (result : Result<TypeDefn, TypeBindingFailure>) : string =
+        match result with
+        | Error (TypeBindingFailure.Unmodelled unmodelled) -> unmodelled.Diagnostic
+        | other -> failwith $"expected the resolution to be unmodelled, got %A{other}"
+
+    /// What the resolver says of a generic definition named bare as an instantiation's argument.
+    let private bareArgumentMarker = "names the generic definition"
 
     /// The number of distinct nodes in <paramref name="ty"/> counted <i>by reference</i>, i.e. its
     /// size as a DAG. A traversal that counted structurally would itself be the exponential this
@@ -260,90 +280,89 @@ module TestSharedTypeGraphResolution =
         check nestDepth resolved
 
     // ------------------------------------------------------------------
-    // What substitution owes its callers: a closed answer.
+    // What a bare spelling of a generic definition names.
     // ------------------------------------------------------------------
 
+    /// Environments to read a bare spelling in: empty, shorter than the definition's arity, as
+    /// long, and well-founded but not closed (<c>!0 := !1</c>, <c>!1 := int</c>).
+    let private environments : TypeDefn list list =
+        [
+            []
+            [ TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+            [
+                TypeDefn.PrimitiveType PrimitiveType.Int32
+                TypeDefn.PrimitiveType PrimitiveType.String
+            ]
+            [ TypeDefn.GenericTypeParameter 1 ; TypeDefn.PrimitiveType PrimitiveType.Int32 ]
+        ]
+
+    /// A bare <c>FromDefinition</c> of a generic type names the definition itself, open at its own
+    /// parameters, which is what a caller that only wants the definition's identity asks for. The
+    /// environment belongs to whatever the spelling sits inside and says nothing about it.
+    [<Test>]
+    let ``a bare generic definition is open whatever the environment`` () : unit =
+        let fixture = setUp ()
+        let dictionary = topLevel fixture "System.Collections.Generic" "Dictionary`2"
+
+        let expected =
+            genericInstantiation dictionary [ TypeDefn.GenericTypeParameter 0 ; TypeDefn.GenericTypeParameter 1 ]
+
+        for environment in environments do
+            resolveToTypeDefn fixture dictionary environment [] |> shouldEqual expected
+
     /// <summary>
-    /// A bare generic definition reached under an environment that is legal but not closed still
-    /// resolves to a closed type.
+    /// A generic definition named bare as an instantiation's argument is refused, whatever the
+    /// environment.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// A bare <c>FromDefinition</c> of a generic type is not a type, and CoreCLR refuses a signature
-    /// that spells one; the resolver's convention is that it names that definition instantiated at the ambient
-    /// environment. Resolution reads those arguments straight out of the environment, so unless
-    /// substitution is applied to them afterwards they arrive in the answer exactly as the caller
-    /// wrote them — <i>including</i> any generic parameters they mention.
-    /// </para>
-    /// <para>
-    /// The environment here is <c>!0 := !1</c>, <c>!1 := int</c>: well-founded, which is all
-    /// <c>resolveTypeFromDefn</c> requires, but not closed. The one-step indirection is the whole
-    /// point — a resolver that leaks the raw entry answers <c>List&lt;List&lt;List&lt;!1&gt;&gt;&gt;</c>,
-    /// an open type which then cannot be resolved again on its own.
-    /// </para>
+    /// CoreCLR's <c>SigPointer::GetTypeHandleThrowing</c> loads such an argument with
+    /// <c>FailIfUninstDefOrRef</c>, and so throws <c>TypeLoadException</c>: an open definition is
+    /// not a type an instantiation can be at, and nothing in the environment makes it one.
     /// </remarks>
     [<Test>]
-    let ``a bare generic definition is instantiated at the substituted environment`` () : unit =
+    let ``a bare generic definition as an instantiation's argument is refused whatever the environment`` () : unit =
         let fixture = setUp ()
         let list = topLevel fixture "System.Collections.Generic" "List`1"
-
-        // !0 := !1, !1 := int. Nothing here is cyclic; !0 just takes one hop to reach int.
-        let environment =
-            [ TypeDefn.GenericTypeParameter 1 ; TypeDefn.PrimitiveType PrimitiveType.Int32 ]
 
         // List<List<List`1>>, where the innermost List`1 is the bare definition.
         let subject = genericInstantiation list [ genericInstantiation list [ list ] ]
 
-        let resolved = resolveToTypeDefn fixture subject environment []
+        for environment in environments do
+            tryResolveToTypeDefn fixture subject environment []
+            |> unmodelledDiagnostic
+            |> shouldContainText bareArgumentMarker
 
-        let expected =
-            resolveToTypeDefn
-                fixture
-                (genericInstantiation
-                    list
-                    [
-                        genericInstantiation
-                            list
-                            [ genericInstantiation list [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] ]
-                    ])
-                environment
-                []
-
-        resolved |> shouldEqual expected
-
-        // Being closed is the substantive claim, and it is what the equality above rests on: a
-        // closed answer is one that needs no environment to resolve a second time.
-        resolveToTypeDefn fixture resolved [] [] |> shouldEqual resolved
-
-    /// The other half of the convention above: an environment with nothing in it leaves the
-    /// definition open, which is what a caller that only wants the definition's identity asks for.
+    /// <summary>
+    /// An instantiation supplies exactly as many arguments as its head declares parameters, and
+    /// its head is a generic definition.
+    /// </summary>
+    /// <remarks>
+    /// CoreCLR's <c>SigPointer::GetTypeHandleThrowing</c> throws <c>TypeLoadException</c> for a
+    /// <c>GENERICINST</c> whose argument count is not its definition's arity.
+    /// </remarks>
     [<Test>]
-    let ``a bare generic definition in an empty environment is open`` () : unit =
+    let ``an instantiation whose arguments do not match its head's parameters is refused`` () : unit =
         let fixture = setUp ()
+        let list = topLevel fixture "System.Collections.Generic" "List`1"
         let dictionary = topLevel fixture "System.Collections.Generic" "Dictionary`2"
+        let object = topLevel fixture "System" "Object"
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
 
-        resolveToTypeDefn fixture dictionary [] []
-        |> shouldEqual (
-            genericInstantiation dictionary [ TypeDefn.GenericTypeParameter 0 ; TypeDefn.GenericTypeParameter 1 ]
-        )
+        for subject in
+            [
+                genericInstantiation list [ int32 ; int32 ]
+                genericInstantiation dictionary [ int32 ]
+                genericInstantiation object [ int32 ]
+            ] do
+            for environment in environments do
+                tryResolveToTypeDefn fixture subject environment []
+                |> unmodelledDiagnostic
+                |> shouldContainText "generic parameter"
 
-    /// An environment that binds some of the definition's parameters but not all of them has no
-    /// answer: a type whose generics mixed the bound ones with unbound variables would be
-    /// indistinguishable from an open type.
-    [<Test>]
-    let ``a bare generic definition in an environment shorter than its arity is refused`` () : unit =
-        let fixture = setUp ()
-        let dictionary = topLevel fixture "System.Collections.Generic" "Dictionary`2"
-
-        let ex =
-            Assert.Throws<Exception> (fun () ->
-                resolveToTypeDefn fixture dictionary [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] []
-                |> ignore<TypeDefn>
-            )
-
-        Assert.That (ex.Message, Does.Contain "Dictionary`2")
-        Assert.That (ex.Message, Does.Contain "1 argument")
-        Assert.That (ex.Message, Does.Contain "2 generic parameter")
+        for environment in environments do
+            tryResolveToTypeDefn fixture (genericInstantiation int32 [ int32 ]) environment []
+            |> unmodelledDiagnostic
+            |> shouldContainText "not a generic type definition"
 
     // ------------------------------------------------------------------
     // The properties.
@@ -376,21 +395,12 @@ module TestSharedTypeGraphResolution =
                     for i in 0 .. methodParamCount - 1 do
                         yield Gen.constant (TypeDefn.GenericMethodParameter i)
 
-                    // A *bare* generic definition, as opposed to an instantiation of one. This is
-                    // not a type, and CoreCLR refuses a signature that spells it; the resolver's
-                    // convention is that it means "this definition, instantiated at the ambient
-                    // environment". It has to be drawn, because it is the only shape that puts an
-                    // environment entry into the answer without substitution having touched it,
-                    // and a generator whose alphabet omits it cannot tell a resolver that
-                    // substitutes those entries from one that does not. It is only in range when
-                    // the environment has a slot for every parameter of the definition — with
-                    // fewer, resolution refuses it as unmodelled wherever it is an argument,
-                    // which is not the question under test.
-                    if paramCount >= 1 then
-                        yield Gen.constant list
-
-                    if paramCount >= 2 then
-                        yield Gen.constant dictionary
+                    // A *bare* generic definition, as opposed to an instantiation of one. On its
+                    // own it names the open definition; as an instantiation's argument, directly
+                    // or by way of a parameter bound to it, it is refused. Drawing it checks that
+                    // sharing changes neither answer.
+                    yield Gen.constant list
+                    yield Gen.constant dictionary
                 ]
 
             if depth <= 0 then
@@ -445,19 +455,13 @@ module TestSharedTypeGraphResolution =
     /// <remarks>
     /// <para>
     /// Only <c>GenericInstantiation</c> substitutes: its arguments are put through
-    /// <c>substituteGenericsInTypeDefn</c> before the head is resolved under them. Every other
-    /// outermost shape reaches the resolver's <c>FromDefinition</c> case directly — either because
-    /// it <i>is</i> a bare definition, or because chasing a parameter arrived at one — and that
-    /// case instantiates the definition by copying environment entries across verbatim. An
-    /// argument therefore comes back exactly as the caller spelled it, <c>PrimitiveType Int32</c>
-    /// rather than the <c>System.Int32</c> definition it would canonicalise to, and still
-    /// mentioning any parameters it mentioned going in.
+    /// <c>substituteGenericsInTypeDefn</c> before its head is instantiated at them. Every other
+    /// outermost shape names a definition directly, or chases a parameter to an environment entry
+    /// and resolves that, so its answer need not be a fixed point: a bare generic definition comes
+    /// back open, and an open answer mentions parameters that the empty environment cannot bind.
     /// </para>
     /// <para>
-    /// Every live caller passes canonical closed arguments, so this is harmless — but it does
-    /// mean such an answer is not a fixed point, so the idempotence property below asks only
-    /// about subjects that actually exercise substitution. A bare definition <i>nested</i> inside
-    /// an instantiation does go through it, and that is the case the property must cover.
+    /// The idempotence property below therefore asks only about subjects that substitute.
     /// </para>
     /// </remarks>
     let private substitutes (ty : TypeDefn) : bool =
@@ -465,10 +469,12 @@ module TestSharedTypeGraphResolution =
         | TypeDefn.GenericInstantiation _ -> true
         | _ -> false
 
-    /// Either the resolved type, or the resolver's refusal to resolve a cyclic environment.
+    /// The resolved type, the resolver's refusal to resolve a cyclic environment, or its refusal of
+    /// a generic definition named bare as an instantiation's argument.
     type private Outcome =
         | Resolved of TypeDefn
         | Cyclic
+        | BareArgument
 
     let private outcome
         (fixture : Fixture)
@@ -478,7 +484,11 @@ module TestSharedTypeGraphResolution =
         : Outcome
         =
         try
-            Outcome.Resolved (resolveToTypeDefn fixture ty typeArgs methodArgs)
+            match tryResolveToTypeDefn fixture ty typeArgs methodArgs with
+            | Ok resolved -> Outcome.Resolved resolved
+            | Error (TypeBindingFailure.Unmodelled unmodelled) when unmodelled.Diagnostic.Contains bareArgumentMarker ->
+                Outcome.BareArgument
+            | Error failure -> failwith $"expected %O{ty} to resolve, but: %s{TypeBindingFailure.describe failure}"
         with e when e.Message.Contains cyclicMarker ->
             Outcome.Cyclic
 
@@ -489,6 +499,7 @@ module TestSharedTypeGraphResolution =
         | ActuallyShared
         | Resolved
         | Cyclic
+        | BareArgument
 
     /// <summary>
     /// Sharing in the input changes what resolution costs, and nothing else.
@@ -521,6 +532,7 @@ module TestSharedTypeGraphResolution =
             match shared with
             | Outcome.Resolved _ -> cover SharingCoverage.Resolved
             | Outcome.Cyclic -> cover SharingCoverage.Cyclic
+            | Outcome.BareArgument -> cover SharingCoverage.BareArgument
 
             shared = unshared
 
@@ -537,6 +549,9 @@ module TestSharedTypeGraphResolution =
 
         if coverage.Count SharingCoverage.Resolved = 0 then
             Assert.Fail "Generator produced no resolvable environment; the property is vacuous."
+
+        if coverage.Count SharingCoverage.BareArgument = 0 then
+            Assert.Fail "Generator produced no bare generic argument; the property never compared a refusal."
 
     /// What the idempotence property must be seen to reach.
     [<RequireQualifiedAccess>]
@@ -570,7 +585,8 @@ module TestSharedTypeGraphResolution =
             : bool
             =
             match outcome fixture subject typeArgs methodArgs with
-            | Outcome.Cyclic -> true
+            | Outcome.Cyclic
+            | Outcome.BareArgument -> true
             | Outcome.Resolved once ->
                 cover IdempotenceCoverage.Checked
 
@@ -578,7 +594,8 @@ module TestSharedTypeGraphResolution =
                 // still mentioned a parameter, this would throw an index-out-of-range rather than
                 // quietly disagree.
                 match outcome fixture once [] [] with
-                | Outcome.Cyclic -> false
+                | Outcome.Cyclic
+                | Outcome.BareArgument -> false
                 | Outcome.Resolved twice -> once = twice
 
         let subjects =
