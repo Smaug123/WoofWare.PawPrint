@@ -1953,9 +1953,110 @@ public static class Probes
                 il.Emit OpCodes.Ret
             )
 
+        // Getters that do not call themselves, as another architecture's queries do not. Each
+        // carries `[Intrinsic]` itself, or else only its class does.
+        let stub (className : string) (getterMarked : bool) (emit : ILGenerator -> unit) =
+            let ty =
+                modul.DefineType (
+                    $"System.Runtime.Intrinsics.Wasm.%s{className}",
+                    TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+                )
+
+            let getter =
+                ty.DefineMethod (
+                    "get_IsSupported",
+                    staticMethod ||| MethodAttributes.SpecialName,
+                    typeof<bool>,
+                    Type.EmptyTypes
+                )
+
+            if getterMarked then
+                getter.SetCustomAttribute intrinsic
+            else
+                ty.SetCustomAttribute intrinsic
+
+            emit (getter.GetILGenerator ())
+            ty.CreateType () |> ignore<Type>
+
+        stub
+            "Stub"
+            true
+            (fun il ->
+                il.Emit OpCodes.Ldc_I4_0
+                il.Emit OpCodes.Ret
+            )
+
+        stub
+            "TrueStub"
+            true
+            (fun il ->
+                il.Emit OpCodes.Ldc_I4_1
+                il.Emit OpCodes.Ret
+            )
+
+        stub
+            "Computed"
+            true
+            (fun il ->
+                il.Emit OpCodes.Ldc_I4_1
+                il.Emit OpCodes.Ldc_I4_1
+                il.Emit OpCodes.Sub
+                il.Emit OpCodes.Ret
+            )
+
+        stub
+            "ClassMarked"
+            false
+            (fun il ->
+                il.Emit OpCodes.Ldc_I4_0
+                il.Emit OpCodes.Ret
+            )
+
         use image = new MemoryStream ()
         builder.Save image
         image.ToArray ()
+
+    [<Test>]
+    let ``a query that does not call itself answers a constant only as a marked stub returning false`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (fabricateQueries ())
+        let image = Assembly.read loggerFactory None stream
+
+        let answers =
+            [
+                for className in [ "Stub" ; "TrueStub" ; "Computed" ; "ClassMarked" ] do
+                    let handle =
+                        find image "System.Runtime.Intrinsics.Wasm" className "get_IsSupported" []
+
+                    let intrinsicClass =
+                        {
+                            Namespace = "System.Runtime.Intrinsics.Wasm"
+                            Path = [ className ]
+                        }
+
+                    IntrinsicBody.classify image handle |> shouldEqual IntrinsicBody.OwnIl
+
+                    let claiming =
+                        { HardwareIntrinsicsProfile.ScalarOnly with
+                            IsSupported = Set.singleton intrinsicClass
+                        }
+
+                    yield
+                        className,
+                        IntrinsicBody.constantResult HardwareIntrinsicsProfile.ScalarOnly image handle,
+                        IntrinsicBody.constantResult claiming image handle
+            ]
+
+        // A stub returns false whatever the profile claims, so it answers only where the profile
+        // agrees.
+        answers
+        |> shouldEqual
+            [
+                "Stub", Some false, None
+                "TrueStub", None, None
+                "Computed", None, None
+                "ClassMarked", None, None
+            ]
 
     [<Test>]
     let ``a capability query that does more than return its call to itself has no constant result`` () : unit =
