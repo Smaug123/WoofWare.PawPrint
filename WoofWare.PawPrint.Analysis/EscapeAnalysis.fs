@@ -2364,11 +2364,14 @@ module EscapeAnalysis =
             | _ -> token
 
         match TypeOperand.ofTypeToken state.BaseTypes state.TypeSystem._LoadedAssemblies assembly typeToken with
-        | None -> []
+        | Ok None -> []
         // `COMPlusThrow(kInvalidProgramException)` makes it as `EEException::CreateThrowable` does.
-        | Some _ ->
+        | Ok (Some _) ->
             let thrown, made = constructedRaise state "System.InvalidProgramException"
             [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+        | Error typeRef ->
+            failwith
+                $"BUG: %O{typeRef} in %s{assembly.DefinitionFullName} bound, loading what it names, but does not resolve against the loaded assemblies"
 
     /// The signature of the method `token` names, as `assembly` spells it at the token, or a
     /// `calli`'s call-site signature; `None` for a token naming anything else.

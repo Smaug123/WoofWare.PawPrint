@@ -4,9 +4,14 @@
     "^refs/heads/main$"
   ],
   "pathFilters": [
-    "./",
-    ":/WoofWare.PawPrint.Domain",
+    ":/.gitignore",
     ":/Directory.Build.props",
+    ":/Directory.Build.targets",
+    ":/README.md",
+    ":/WoofWare.PawPrint.Domain",
+    ":/WoofWare.PawPrint.Semantics",
+    ":/flake.lock",
+    ":/flake.nix",
     ":/logos/light.png"
   ]
 }

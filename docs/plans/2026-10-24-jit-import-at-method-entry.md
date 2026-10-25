@@ -310,7 +310,11 @@ branch and inside the method's own `try`, observed failing first.
 **Dependencies**: Stage 3.
 
 `castclass`, `isinst`, `unbox`, `unbox.any`, `ldelem`, `stelem`, `ldelema` (without `readonly.`),
-`ldobj`, `stobj`, `initobj`, `sizeof`.
+`ldobj`, `stobj`, `initobj`, `sizeof`; and a metadata `catch` clause's type, which the JIT resolves
+when it imports the clause's handler, so once it imports a block of the protected region. That
+retires `CatchClauseRefusal`, which stops the run at entry where CoreCLR refuses the method over a
+clause naming a byref or `System.Void`, or may, and raises the `InvalidProgramException` instead;
+`TestFabricatedCatchClauseRefusal`'s stops become that exception.
 
 **Correctness oracle**: a fabricated reference to a type that does not exist, behind an argument
 branch, under each opcode: `TypeLoadException` at entry on both runtimes. Where PawPrint does not model
