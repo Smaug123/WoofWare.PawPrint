@@ -2352,10 +2352,15 @@ public static class Cases
 """
 
     /// A requested abort (`Assumption.NoThreadAborts`) can arise in any method, and no handler stops
-    /// it, since a catch raises it again at its end; assuming no thread is aborted removes it, and
-    /// every answer says it relies on that.
+    /// it, since a catch raises it again at its end. Where CoreCLR cannot allocate the abort's
+    /// exception, it raises its preallocated `OutOfMemoryException` instead, which can arise where
+    /// no handler of the method protects it. Assuming no thread is aborted removes both, and every
+    /// answer says it relies on that.
     [<Test>]
-    let ``every method can raise ThreadAbortException unless no thread is aborted`` () : unit =
+    let ``every method can raise ThreadAbortException, or OutOfMemoryException in its place, unless no thread is aborted``
+        ()
+        : unit
+        =
         let _, loggerFactory = LoggerFactory.makeTest ()
         let corelib = hostCoreLib ()
 
@@ -2384,28 +2389,40 @@ public static class Cases
             ]
 
         let abort = "=System.Threading.ThreadAbortException"
+        let outOfMemory = "=System.OutOfMemoryException"
 
-        let answers (analysis : EscapeAnalysisState) : (string * (bool * bool)) list =
+        let answers (analysis : EscapeAnalysisState) : (string * (bool * bool * bool)) list =
             let _, answers =
                 ((analysis, []), methods)
                 ||> List.fold (fun (analysis, answers) (name, key) ->
                     let analysis, escapes = EscapeAnalysis.escapes analysis key
+                    let rendered = render analysis escapes
 
                     analysis,
                     (name,
-                     ((render analysis escapes).Contains abort, escapes.Assumes.Contains Assumption.NoThreadAborts))
+                     (rendered.Contains abort,
+                      rendered.Contains outOfMemory,
+                      escapes.Assumes.Contains Assumption.NoThreadAborts))
                     :: answers
                 )
 
             List.rev answers
 
-        // Raising it, and not assuming it away.
+        // Raising both, and not assuming them away.
         answers (analysis (Set.remove Assumption.NoThreadAborts Assumption.all))
-        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (true, false)))
+        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (true, true, false)))
 
-        // Not raising it, and assuming it away.
+        // Not raising the abort, and assuming it away. These raise no `OutOfMemoryException` then,
+        // so the abort's is not added where the assumption is allowed.
+        let raisesNoOutOfMemory = set [ "Constant" ; "CatchesAll" ; "CatchesAbort" ]
+
         answers (analysis Assumption.all)
-        |> shouldEqual (methods |> List.map (fun (name, _) -> name, (false, true)))
+        |> List.iter (fun (name, (raisesAbort, raisesOutOfMemory, assumes)) ->
+            (name, raisesAbort, assumes) |> shouldEqual (name, false, true)
+
+            if raisesNoOutOfMemory.Contains name then
+                (name, raisesOutOfMemory) |> shouldEqual (name, false)
+        )
 
     /// `FromIntPtr` makes a reflection stub over the handle, as the runtime's `ldtoken` of a method
     /// or a field does by `FromPtr`, reading the loader allocator of the member by an FCall.
