@@ -2394,19 +2394,30 @@ module EscapeAnalysis =
             |> Some
         | _ -> None
 
-    /// What an instruction of `assembly` with opcode `op` does with the method it names, whose
-    /// signature, as `assembly` spells it, is `signature`, given what `bindToken` bound its token to;
-    /// `None` for `ldftn` and `ldvirtftn`, and for an instruction that names no method. Which CoreCLR
-    /// implements by a P/Invoke, and by which calling convention, is the target's to say; a `calli`'s
-    /// calling convention is the signature's.
+    /// What an instruction of `assembly` with opcode `op`, at `placement` in its method's body, does
+    /// with the method it names, whose signature, as `assembly` spells it, is `signature`, given what
+    /// `bindToken` bound its token to; `None` for `ldftn` and `ldvirtftn`, and for an instruction that
+    /// names no method. Which CoreCLR implements by a P/Invoke, and by which calling convention, is the
+    /// target's to say; a `calli`'s calling convention is the signature's.
     let private memberOperand
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
+        (placement : UnmanagedCallPlacement)
         (op : UnaryMetadataTokenIlOp)
         (signature : TypeMethodSignature<TypeDefn>)
         (target : CallTarget option)
         : MemberOperand option
         =
+        let unmanaged (convention : UnmanagedConvention) (target : UnmanagedTarget) : MemberOperand option =
+            {
+                Convention = convention
+                Placement = placement
+                CallerDisablesOptimisation = Debuggable.allowsJitOptimisation assembly = Some false
+                Target = target
+            }
+            |> MemberOperand.UnmanagedCall
+            |> Some
+
         match op with
         | UnaryMetadataTokenIlOp.Call
         | UnaryMetadataTokenIlOp.Callvirt
@@ -2417,9 +2428,9 @@ module EscapeAnalysis =
 
                 match calleeMethod.Body with
                 | MethodBody.PInvoke ->
-                    UnmanagedConvention.ofPInvoke calleeAssembly callee.Callee.Method.Get
-                    |> MemberOperand.UnmanagedCall
-                    |> Some
+                    unmanaged
+                        (UnmanagedConvention.ofPInvoke calleeAssembly callee.Callee.Method.Get)
+                        (UnmanagedTarget.ofPInvoke calleeAssembly callee.Callee.Method.Get)
                 | _ -> Some MemberOperand.Call
             | _ -> Some MemberOperand.Call
         | UnaryMetadataTokenIlOp.Jmp -> Some MemberOperand.Jump
@@ -2427,7 +2438,10 @@ module EscapeAnalysis =
             match signature.Header.Get.CallingConvention with
             | SignatureCallingConvention.Default
             | SignatureCallingConvention.VarArgs -> Some MemberOperand.Call
-            | _ -> Some (MemberOperand.UnmanagedCall (UnmanagedConvention.ofCallSite assembly signature))
+            | _ ->
+                unmanaged
+                    (UnmanagedConvention.ofCallSite assembly signature)
+                    (UnmanagedTarget.ofFunctionPointer assembly)
         | UnaryMetadataTokenIlOp.Ldtoken -> Some MemberOperand.Token
         | _ -> None
 
@@ -2482,8 +2496,8 @@ module EscapeAnalysis =
             match positions with
             | MemberPositions.BySignature ->
                 match operand, signature with
-                | MemberOperand.UnmanagedCall convention, MemberSignature.Method signature ->
-                    JitTypeLoads.unmanagedMeetings convention signature
+                | MemberOperand.UnmanagedCall call, MemberSignature.Method signature ->
+                    JitTypeLoads.unmanagedMeetings call signature
                     |> List.choose (fun (position, spelling) -> JitTypeLoads.load position spelling)
                 | _ ->
                     failwith
@@ -4073,7 +4087,13 @@ module EscapeAnalysis =
                                 )
                             | _, _, Some signature ->
                                 state,
-                                memberOperand state assembly tokenOp signature target
+                                memberOperand
+                                    state
+                                    assembly
+                                    (UnmanagedCallPlacement.ofRegions body.ExceptionRegions (snd ops.[index]))
+                                    tokenOp
+                                    signature
+                                    target
                                 |> Option.map (fun operand -> assembly, MemberSignature.Method signature, operand, None)
 
                         match operand with
