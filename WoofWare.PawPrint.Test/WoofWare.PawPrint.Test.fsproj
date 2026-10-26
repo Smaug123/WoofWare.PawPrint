@@ -182,6 +182,7 @@
     <Compile Include="TestDispatchReadsNoBody.fs" />
     <Compile Include="TestGcReferences.fs" />
     <Compile Include="TestFieldBlittability.fs" />
+    <Compile Include="TestStructLayoutFacts.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyAssemblyLoadEvent.fs" />
