@@ -1478,3 +1478,78 @@ public class ConstrainedToIGone<T> where T : Provider.IGone { }
 
         coverage.Count (Outcome.Fails "FileNotFoundException", true)
         |> shouldBeGreaterThan 15
+
+    /// `TypeLoad.fullLoadParts` of a generic class: its base, its interfaces in metadata order, and
+    /// the types of its value-type fields with a `FieldDesc` (instance, then static, then
+    /// `[ThreadStatic]`), over its own type parameter; not a literal, nor a class-typed field.
+    [<Test>]
+    let ``the parts a full load brings with a definition are its base, its interfaces and its value-type fields``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileOptimizedAssembly
+                "Parts"
+                OutputKind.DynamicallyLinkedLibrary
+                [
+                    """
+namespace Parts;
+public interface IFirst { }
+public interface ISecond<T> { }
+public class Base<T> { }
+public struct Pair<T> { public T A; }
+public enum Colour { Red }
+public class Holder<T> : Base<T>, IFirst, ISecond<T>
+{
+    [System.ThreadStatic] public static int Threaded;
+    public static Pair<T> Shared;
+    public const int Literal = 1;
+    public object Reference;
+    public Pair<T> Own;
+    public Colour Tint;
+}
+"""
+                ]
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Parts.dll") (new MemoryStream (image))
+
+        let definition =
+            assembly.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = "Holder`1")
+
+        let describe (spelling : TypeDefn) : string =
+            match spelling with
+            | TypeDefn.FromDefinition (identity, _) -> assembly.TypeDefs.[identity.TypeDefinition.Get].Name
+            | TypeDefn.GenericInstantiation (TypeDefn.FromDefinition (identity, _), arguments) ->
+                let arguments =
+                    arguments
+                    |> Seq.map (fun argument ->
+                        match argument with
+                        | TypeDefn.GenericTypeParameter index -> $"!%d{index}"
+                        | other -> $"%O{other}"
+                    )
+                    |> String.concat ","
+
+                $"%s{assembly.TypeDefs.[identity.TypeDefinition.Get].Name}<%s{arguments}>"
+            | TypeDefn.PrimitiveType primitive -> $"%O{primitive}"
+            | other -> $"%O{other}"
+
+        TypeLoad.fullLoadParts assembly definition
+        |> List.map (fun part ->
+            match part with
+            | TypeLoad.FullLoadPart.Base spelling -> "base " + describe spelling
+            | TypeLoad.FullLoadPart.Interface spelling -> "interface " + describe spelling
+            | TypeLoad.FullLoadPart.ValueTypeField spelling -> "field " + describe spelling
+            | TypeLoad.FullLoadPart.UnmodelledInterface unmodelled -> "unmodelled " + unmodelled.Diagnostic
+        )
+        |> shouldEqual
+            [
+                "base Base`1<!0>"
+                "interface IFirst"
+                "interface ISecond`1<!0>"
+                "field Pair`1<!0>"
+                "field Colour"
+                "field Pair`1<!0>"
+            ]
