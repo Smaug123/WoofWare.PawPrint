@@ -136,6 +136,9 @@ module TestEscapeAnalysisConstraintViolation =
         | SharedLdtoken
         /// `call` of a method specification over a type variable, in such a generic method.
         | SharedMethodSpec
+        /// `ldtoken` of a generic class over a type variable whose base is the instantiation,
+        /// closed, in a generic method the case calls with `string`, whose code is shared.
+        | SharedClosedBase
 
     let private positions : Position list =
         [
@@ -152,12 +155,8 @@ module TestEscapeAnalysisConstraintViolation =
             Position.SharedStaticCall
             Position.SharedLdtoken
             Position.SharedMethodSpec
+            Position.SharedClosedBase
         ]
-
-    /// The positions at which the analysis does not yet report a violation the host raises, which
-    /// it must then not name at all, so that a position leaves this set as the analysis learns to
-    /// report violations there.
-    let private unreported : Set<Position> = Set.ofList positions
 
     /// Whether the generic method a case of this position calls is a definition whose own
     /// instructions CoreCLR's JIT checks with the method's type variables as arguments
@@ -177,7 +176,27 @@ module TestEscapeAnalysisConstraintViolation =
         | Position.ValueField
         | Position.MethodSpecCall
         | Position.MethodSpecLdftn
-        | Position.SharedLdtoken -> false
+        | Position.SharedLdtoken
+        | Position.SharedClosedBase -> false
+
+    /// Whether a case of this position calls a generic method, which the analysis is also asked
+    /// about as a definition by itself.
+    let private callsGeneric (position : Position) : bool =
+        match position with
+        | Position.SharedStaticCall
+        | Position.SharedMethodSpec
+        | Position.SharedLdtoken
+        | Position.SharedClosedBase -> true
+        | Position.StaticCall
+        | Position.Newobj
+        | Position.Ldtoken
+        | Position.Isinst
+        | Position.Newarr
+        | Position.BaseClass
+        | Position.CalleeParameter
+        | Position.ValueField
+        | Position.MethodSpecCall
+        | Position.MethodSpecLdftn -> false
 
     type private Case =
         {
@@ -278,6 +297,12 @@ module TestEscapeAnalysisConstraintViolation =
             | Position.SharedStaticCall -> viaGeneric $"Lib.C%s{set}<T>.Touch();"
             | Position.SharedLdtoken -> viaGeneric $"Keep(typeof(Lib.C%s{set}<T>));"
             | Position.SharedMethodSpec -> viaGeneric $"Lib.Methods.%s{set}<T>();"
+            | Position.SharedClosedBase ->
+                [
+                    $"public class DerivedOfGeneric%s{name}<U> : %s{instantiation} where U : allows ref struct {{ }}"
+                    $"public static int Generic%s{name}<T>() where T : allows ref struct {{ try {{ Keep(typeof(DerivedOfGeneric%s{name}<T>)); return 0; }} catch (System.Exception) {{ return 1; }} }}"
+                    $"public static int %s{name}() => Generic%s{name}<string>();"
+                ]
 
         [
             yield "namespace Client;"
@@ -517,13 +542,10 @@ public static class Driver
                     match hostOutcomes.[case.Name] with
                     | Outcome.Escapes raised when violations.Contains raised ->
                         let agrees =
-                            if unreported.Contains case.Position then
-                                named.IsEmpty
-                            else
-                                named = Set.singleton raised
-                                || (checkedOpen case.Position
-                                    && escapes.Unknown
-                                    && named.IsSubsetOf (Set.singleton raised))
+                            named = Set.singleton raised
+                            || (checkedOpen case.Position
+                                && escapes.Unknown
+                                && named.IsSubsetOf (Set.singleton raised))
 
                         if not agrees then
                             yield describe ()
@@ -532,6 +554,19 @@ public static class Driver
                     | Outcome.Caught ->
                         if not named.IsEmpty then
                             yield describe ()
+
+                    // Asked about by itself, the generic method stands for every instantiation,
+                    // some of which the constrained `Lib` rejects, so its answer must not be known.
+                    if callsGeneric case.Position then
+                        let next, escapes =
+                            EscapeAnalysis.escapes
+                                analysis
+                                (methodNamed clientAssembly "Client.Cases" $"Generic%s{case.Name}")
+
+                        analysis <- next
+
+                        if not escapes.Unknown then
+                            yield $"Generic%s{case.Name}, by itself: known, %A{Set.toList (render analysis escapes)}"
             ]
 
         // Every position must have cases the host rejects and cases it accepts, or the agreement
