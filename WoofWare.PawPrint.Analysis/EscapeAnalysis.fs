@@ -3355,7 +3355,11 @@ module EscapeAnalysis =
             : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
             =
             match shape with
-            | Shape.Named (identity, arguments) when List.exists shapeMentionsVariable arguments ->
+            // An opaque argument, such as a function pointer, may mention a variable too.
+            | Shape.Named (identity, arguments) when
+                arguments
+                |> List.exists (fun argument -> shapeMentionsVariable argument || shapeHasOpaque argument)
+                ->
                 let isTypical =
                     typical = Some identity
                     && arguments
@@ -3524,13 +3528,17 @@ module EscapeAnalysis =
                 state, Some shape
             | None -> state, None
 
+        // An opaque shape, such as a function pointer, may mention a variable too.
+        let mayMentionVariable (shape : Shape) : bool =
+            shapeMentionsVariable shape || shapeHasOpaque shape
+
         let parentMentionsVariable =
             match parentShape with
-            | Some shape -> shapeMentionsVariable shape
+            | Some shape -> mayMentionVariable shape
             | None -> false
 
         let state, ownBreaks =
-            if not (parentMentionsVariable || List.exists shapeMentionsVariable arguments) then
+            if not (parentMentionsVariable || List.exists mayMentionVariable arguments) then
                 state, false
             else
 
@@ -4074,11 +4082,13 @@ module EscapeAnalysis =
             // but for its closed parts, which are the same in every instantiation
             // (`closedPartsFailure`). `calli`'s signature is the call site's, and an array accessor's,
             // which the runtime supplies, is spelled with the array's element type: both are over
-            // the body's own type variables.
+            // the body's own type variables. A field's signature `assembly` spells where the field
+            // is declared, which need not be where the token is; a method's, where the token is.
             let overBodyVariables =
-                match token with
-                | MetadataToken.StandaloneSignature _ -> true
-                | MetadataToken.MemberReference reference ->
+                match signature, token with
+                | MemberSignature.Field _, _ -> false
+                | MemberSignature.Method _, MetadataToken.StandaloneSignature _ -> true
+                | MemberSignature.Method _, MetadataToken.MemberReference reference ->
                     match assembly.Members.[reference].Parent with
                     | MetadataToken.TypeSpecification parent ->
                         match TypeDefn.stripCustomModifiers assembly.TypeSpecs.[parent].Signature with
