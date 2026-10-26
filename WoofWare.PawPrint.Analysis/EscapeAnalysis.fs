@@ -718,6 +718,10 @@ type EscapeAnalysisState =
             /// raise (`instanceConstraintFacts`), by the instance's definition and arguments, as far
             /// as it has been asked: the same whatever its callers pass it.
             InstanceConstraints : Map<MethodKey * Instantiation, Set<OutsideBodyFact>>
+            /// What CoreCLR raises instantiating each generic method with each declaring type's
+            /// arguments and its own (`methodInstantiationFailure`), as far as it has been asked.
+            MethodInstantiations :
+                Map<MethodKey * ConcreteTypeHandle list * ConcreteTypeHandle list, BindFailure option>
             Summaries : Map<MethodInstance, Escapes>
             /// What may escape every method each instance summarised so far is inlined into, past
             /// every handler: what compiling the instance, or a method it calls, raises wherever the
@@ -919,6 +923,7 @@ module EscapeAnalysis =
             ParameterBreaks = Map.empty
             ClosedPartFailures = Map.empty
             InstanceConstraints = Map.empty
+            MethodInstantiations = Map.empty
             Summaries = Map.empty
             InlinedSummaries = Map.empty
             Bases = Map.empty
@@ -2767,41 +2772,53 @@ module EscapeAnalysis =
         (methodArguments : ConcreteTypeHandle list)
         : EscapeAnalysisState * BindFailure option
         =
+        let key = callee, typeArguments, methodArguments
+
+        match state.MethodInstantiations.TryFind key with
+        | Some failure -> state, failure
+        | None ->
+
         let state, canon = canonHandle state
 
-        if typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
-            state, None
-        else
+        let state, failure =
+            if typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
+                state, None
+            else
 
-        let calleeAssembly, calleeMethod = methodOf state callee
+            let calleeAssembly, calleeMethod = methodOf state callee
 
-        if
-            calleeMethod.Generics.Length <> methodArguments.Length
-            || (ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments).IsSome
-        then
-            state, Some BindFailure.MalformedMethodInstantiation
-        else
+            if
+                calleeMethod.Generics.Length <> methodArguments.Length
+                || (ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments).IsSome
+            then
+                state, Some BindFailure.MalformedMethodInstantiation
+            else
 
-        let typeSystem, verdict =
-            ConstraintSatisfaction.satisfiesClosed
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                state.TypeSystem
-                calleeAssembly.DefinitionFullName
-                (ImmutableArray.CreateRange typeArguments)
-                (ImmutableArray.CreateRange methodArguments)
-                calleeMethod.Generics
-                methodArguments
+            let typeSystem, verdict =
+                ConstraintSatisfaction.satisfiesClosed
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    state.TypeSystem
+                    calleeAssembly.DefinitionFullName
+                    (ImmutableArray.CreateRange typeArguments)
+                    (ImmutableArray.CreateRange methodArguments)
+                    calleeMethod.Generics
+                    methodArguments
 
-        let state =
-            { state with
-                TypeSystem = typeSystem
-            }
+            let state =
+                { state with
+                    TypeSystem = typeSystem
+                }
 
-        match verdict with
-        | Ok verdict -> state, verdictFailure true verdict
-        | Error failure -> state, Some (failureOfBinding failure)
+            match verdict with
+            | Ok verdict -> state, verdictFailure true verdict
+            | Error failure -> state, Some (failureOfBinding failure)
+
+        { state with
+            MethodInstantiations = state.MethodInstantiations.Add (key, failure)
+        },
+        failure
 
     /// A type as spellings in different assemblies give it, so that two can be compared: each
     /// reference bound to the definition it names, each primitive to its CoreLib type.
