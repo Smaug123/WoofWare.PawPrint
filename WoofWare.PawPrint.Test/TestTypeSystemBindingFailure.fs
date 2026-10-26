@@ -381,6 +381,143 @@ module TestTypeSystemBindingFailure =
         | other -> failwith $"expected TypeUnbound, got %A{other}"
 
     [<Test>]
+    let ``a generic parameter outside its environment is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let fromSpec (handle : TypeSpecificationHandle) (environment : TypeDefn list) =
+            TypeResolution.resolveTypeFromSpec
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                handle
+                f.Analysed
+                (ImmutableArray.CreateRange environment)
+                (ImmutableArray.CreateRange environment)
+                f.Assemblies
+            |> snd
+
+        for handle, parameter in
+            [
+                f.Shapes.TypeParameter, "!0"
+                f.Shapes.ListOfTypeParameter, "!0"
+                f.Shapes.MethodParameter, "!!0"
+                f.Shapes.ListOfMethodParameter, "!!0"
+            ] do
+            fromSpec handle []
+            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
+
+            match fromSpec handle [ int32 ] with
+            | Ok _ -> ()
+            | Error failure ->
+                failwith $"expected %s{parameter} to bind in [int32], got %s{TypeBindingFailure.describe failure}"
+
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfTypeParameter
+            f.Analysed
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> unmodelledSaying "BadImageFormatException"
+
+        for handle in [ f.Shapes.ListOfTypeParameterClear ; f.Shapes.ListOfMethodParameterClear ] do
+            match bindMember f handle with
+            | Error (MemberBindingFailure.TypeUnbound failure) ->
+                (Error failure : Result<unit, TypeBindingFailure>)
+                |> unmodelledSaying "BadImageFormatException"
+            | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    /// A generated spelling of a generic parameter: which one, and how deep in `List`1` it sits.
+    type private ParameterSpelling =
+        {
+            IsMethod : bool
+            Index : int
+            Depth : int
+        }
+
+    [<RequireQualifiedAccess>]
+    type private InRange =
+        | Binds
+        | OutOfRange
+
+    [<Test>]
+    let ``the Loader binds a generic parameter exactly when its environment holds it`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let list = spelled f f.Shapes.List
+
+        let gen =
+            gen {
+                let! isMethod = Gen.elements [ true ; false ]
+                let! index = Gen.choose (0, 3)
+                let! depth = Gen.choose (0, 2)
+                let! typeArgs = Gen.choose (0, 3)
+                let! methodArgs = Gen.choose (0, 3)
+
+                return
+                    {
+                        IsMethod = isMethod
+                        Index = index
+                        Depth = depth
+                    },
+                    typeArgs,
+                    methodArgs
+            }
+
+        let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
+            let parameter =
+                if spelling.IsMethod then
+                    TypeDefn.GenericMethodParameter spelling.Index
+                else
+                    TypeDefn.GenericTypeParameter spelling.Index
+
+            let ty =
+                Seq.replicate spelling.Depth ()
+                |> Seq.fold
+                    (fun inner () -> TypeDefn.GenericInstantiation (list, ImmutableArray.Create inner))
+                    parameter
+
+            let result =
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ty
+                    (ImmutableArray.CreateRange (List.replicate typeArgs int32))
+                    (ImmutableArray.CreateRange (List.replicate methodArgs int32))
+                    f.Analysed
+                    f.Assemblies
+                |> snd
+
+            let size = if spelling.IsMethod then methodArgs else typeArgs
+
+            match result with
+            | Ok _ when spelling.Index < size -> cover InRange.Binds
+            | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
+                let name =
+                    if spelling.IsMethod then
+                        $"!!%d{spelling.Index}"
+                    else
+                        $"!%d{spelling.Index}"
+
+                unmodelled.Diagnostic
+                |> shouldContainText
+                    $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
+
+                cover InRange.OutOfRange
+            | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
+
+            true
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen gen) property
+
+        coverage.Count InRange.Binds |> shouldBeGreaterThan 100
+        coverage.Count InRange.OutOfRange |> shouldBeGreaterThan 100
+
+    [<Test>]
     let ``a failure to bind a member reference names the row`` () : unit =
         let f = UnmodelledImage.fixture ()
 
