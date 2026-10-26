@@ -714,6 +714,10 @@ type EscapeAnalysisState =
             /// instantiation of each generic definition reaches (`definitionClosedPartsFailure`), as
             /// far as it has been asked.
             ClosedPartFailures : Map<ResolvedTypeIdentity, BindFailure option>
+            /// What the constraint checks of each instance's body that only the instance decides
+            /// raise (`instanceConstraintFacts`), by the instance's definition and arguments, as far
+            /// as it has been asked: the same whatever its callers pass it.
+            InstanceConstraints : Map<MethodKey * Instantiation, Set<OutsideBodyFact>>
             Summaries : Map<MethodInstance, Escapes>
             /// What may escape every method each instance summarised so far is inlined into, past
             /// every handler: what compiling the instance, or a method it calls, raises wherever the
@@ -914,6 +918,7 @@ module EscapeAnalysis =
             ClosureConstraints = Map.empty
             ParameterBreaks = Map.empty
             ClosedPartFailures = Map.empty
+            InstanceConstraints = Map.empty
             Summaries = Map.empty
             InlinedSummaries = Map.empty
             Bases = Map.empty
@@ -8886,7 +8891,18 @@ module EscapeAnalysis =
 
             // What the constraint checks only an instance decides raise, before the body runs.
             let state, constrained =
-                instanceConstraintFacts state instance refined.InstanceChecks
+                let key = instance.Definition, instance.Arguments
+
+                match state.InstanceConstraints.TryFind key with
+                | Some known -> state, known
+                | None ->
+                    let state, constrained =
+                        instanceConstraintFacts state instance refined.InstanceChecks
+
+                    { state with
+                        InstanceConstraints = state.InstanceConstraints.Add (key, constrained)
+                    },
+                    constrained
 
             let refined =
                 if constrained.IsEmpty then
