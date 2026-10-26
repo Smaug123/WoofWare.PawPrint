@@ -459,6 +459,9 @@ module TestStructLayoutFacts =
 
     [<Test>]
     let ``Generated struct trees agree with CoreCLR and ignore field order and duplication`` () : unit =
+        decimalTypes.Length
+        |> shouldEqual (if Environment.Version.Major >= 11 then 3 else 0)
+
         let observed = Dictionary<string, int> ()
 
         let count (key : string) : unit =
@@ -495,7 +498,7 @@ module TestStructLayoutFacts =
             observed.GetValueOrDefault "decimal=true" |> shouldBeGreaterThan 5
 
         TestContext.WriteLine
-            $"%s{RuntimeInformation.FrameworkDescription}: %d{cases} generated shapes, observations %A{observed}"
+            $"%s{RuntimeInformation.FrameworkDescription}: %d{cases} generated shapes, observations %A{Seq.toList observed}"
 
     [<Test>]
     let ``Layout propagation is observed with other refusal reasons absent`` () : unit =

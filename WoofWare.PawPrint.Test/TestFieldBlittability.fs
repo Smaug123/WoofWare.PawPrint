@@ -287,6 +287,8 @@ module TestFieldBlittability =
 
                 let host = hostBlittable (assembly.GetType case.Name) (ucos.GetMethod case.Name)
                 // Exercise the generic payload transformation over every emitted field kind.
+                FieldBlittability.mapValueType id case.Element |> shouldEqual case.Element
+
                 let projected =
                     case.Element
                     |> FieldBlittability.mapValueType (fun value -> if value then 71 else -3)
