@@ -29,6 +29,7 @@ routine	probes.cpp:Holds::Holds	Holds::Holds	void ()	probes.cpp:186
 routine	probes.cpp:Lambda	Lambda	void ()	probes.cpp:157
 routine	probes.cpp:LambdaDefault	LambdaDefault	void ()	probes.cpp:244
 routine	probes.cpp:Leaf::~Leaf	Leaf::~Leaf	void () noexcept	probes.cpp:192
+routine	probes.cpp:LocalDefault	LocalDefault	void (Pod *, const Pod *)	probes.cpp:324
 routine	probes.cpp:Lowered	Lowered	int (Pod *, Pod *, int &)	probes.cpp:262
 routine	probes.cpp:Macros	Macros	void ()	probes.cpp:97
 routine	probes.cpp:MemberPointer	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94
@@ -44,7 +45,7 @@ routine	probes.cpp:Statics	Statics	void ()	probes.cpp:304
 routine	probes.cpp:TakeOwned	TakeOwned	void (Owned)	probes.cpp:182
 routine	probes.cpp:Throws	Throws	void ()	probes.cpp:133
 routine	probes.cpp:Trivial	Trivial	void (Plain *)	probes.cpp:148
-routine	probes.cpp:UncalledLambda	UncalledLambda	void ()	probes.cpp:322
+routine	probes.cpp:UncalledLambda	UncalledLambda	void ()	probes.cpp:332
 routine	probes.cpp:Unevaluated	Unevaluated	void ()	probes.cpp:115
 routine	probes.cpp:Unevaluated2	Unevaluated2	void (int)	probes.cpp:166
 routine	probes.cpp:WithDefault::WithDefault	WithDefault::WithDefault	void ()	probes.cpp:138
@@ -112,6 +113,8 @@ call	LambdaDefault	void ()	probes.cpp:248	-	direct	LambdaDefault()::(anonymous c
 call	LambdaDefault	void ()	probes.cpp:248	-	direct	Seed	int ()	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	Mid::~Mid	void () noexcept	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	VB::~VB	void () noexcept	-
+call	LocalDefault	void (Pod *, const Pod *)	probes.cpp:327	-	direct	Local	void (int)	-
+call	LocalDefault	void (Pod *, const Pod *)	probes.cpp:328	-	direct	memcpy	void *(void *, const void *, unsigned long)	-
 call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:265	-	builtin	__builtin_expect	long (long, long) noexcept	-
 call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:266	-	direct	Helper	void ()	-
 call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:267	-	builtin	std::move<int &>	int &&(int &) noexcept	-
@@ -138,6 +141,6 @@ call	Statics	void ()	probes.cpp:306	-	construct	Guard::Guard	void ()	-
 call	TakeOwned	void (Owned)	probes.cpp:182	-	destruct	Owned::~Owned	void () noexcept	-
 call	Throws	void ()	probes.cpp:133	-	construct	Made::Made	void (int)	-
 call	Throws	void ()	probes.cpp:133	-	throw	Made	-	-
-call	UncalledLambda	void ()	probes.cpp:324	-	direct	Helper	void ()	-
+call	UncalledLambda	void ()	probes.cpp:334	-	direct	Helper	void ()	-
 call	Vla	int (int)	cunit.c:5	-	direct	Effect	int (void)	-
 call	WithDefault::WithDefault	void ()	probes.cpp:138	-	direct	Seed	int ()	-

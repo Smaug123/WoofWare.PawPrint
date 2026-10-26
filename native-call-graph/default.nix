@@ -268,6 +268,11 @@
       to = "(void)Thrown;";
       refusal = "does not find a .*throw, and its IR calls the runtime for it";
     };
+    without-comparisons = {
+      from = ''Out.insert("checked\t" + W.Usr);'';
+      to = "(void)W;";
+      refusal = "no unit's IR was compared with the walk of";
+    };
   };
 
   crossCheck = pkgs.runCommand "native-call-graph-cross-check" {nativeBuildInputs = [pkgs.python3];} (''

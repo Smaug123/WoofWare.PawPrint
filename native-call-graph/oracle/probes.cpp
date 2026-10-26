@@ -318,6 +318,16 @@ void Catches()
     }
 }
 
+// A default argument of a function declared inside a routine, which runs only where a call uses
+// it, and a call of memcpy, which clang may lower to an intrinsic.
+extern "C" void* memcpy(void*, const void*, unsigned long);
+void LocalDefault(Pod* to, const Pod* from)
+{
+    void Local(int = Seed());
+    Local(1);
+    memcpy(to, from, sizeof(Pod));
+}
+
 // A lambda nothing calls, whose body is still the routine's.
 void UncalledLambda()
 {

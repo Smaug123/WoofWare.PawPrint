@@ -25,6 +25,7 @@ probes.cpp:Holds::Holds	probes.cpp	Holds::Holds
 probes.cpp:Lambda	probes.cpp	Lambda
 probes.cpp:LambdaDefault	probes.cpp	LambdaDefault
 probes.cpp:Leaf::~Leaf	probes.cpp	Leaf::~Leaf
+probes.cpp:LocalDefault	probes.cpp	LocalDefault
 probes.cpp:Lowered	probes.cpp	Lowered
 probes.cpp:Macros	probes.cpp	Macros
 probes.cpp:MemberPointer	probes.cpp	MemberPointer

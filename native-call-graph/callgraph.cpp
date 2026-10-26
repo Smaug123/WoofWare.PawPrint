@@ -287,13 +287,11 @@ bool containsLabel(const Stmt *S, bool IgnoreCases = false) {
   return false;
 }
 
-/// Whether a variable's initializer is evaluated as a constant rather than run: a constexpr
-/// variable's; one of static or thread storage whose initialization is constant; or a local whose
-/// value constant expressions could use and whose initializer evaluates, as a const int's does,
+/// Whether a variable's initializer is evaluated as a constant rather than run: one of static or
+/// thread storage whose initialization is constant; or a local whose value constant expressions
+/// could use and whose initializer evaluates, as a constexpr variable's or a const int's does,
 /// which clang stores as a constant.
 bool initializedAsConstant(VarDecl *V, const ASTContext &Context) {
-  if (V->isConstexpr())
-    return true;
   if (!V->hasLocalStorage())
     return V->hasConstantInitialization();
   return V->mightBeUsableInConstantExpressions(Context) && V->evaluateValue();
