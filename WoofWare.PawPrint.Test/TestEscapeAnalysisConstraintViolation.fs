@@ -823,13 +823,16 @@ public static class Cases
             Client : string
             /// The methods of `Client.Cases` to run, each taking nothing and returning an `int`.
             Cases : string list
+            /// Whether the analysis must know each case's answer.
+            Exact : bool
             /// Generic methods of `Client.Cases` to ask the analysis about by themselves, each with
             /// the case that calls it.
             Generics : (string * string) list
         }
 
     /// Where `scenario` disagrees with the host: a case whose answer names a violation the host
-    /// does not raise, or does not name the one it does unless "unknown"; a generic method by
+    /// does not raise, or does not name the one it does unless "unknown" where the scenario
+    /// allows it; a generic method by
     /// itself whose known answer is not its case's; or an analysis that throws.
     let private disagreements (scenario : Scenario) : string list =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -899,7 +902,13 @@ public static class Cases
                 | Ok (escapes, named) ->
                     let raised = raisedBy case
 
-                    if not (named = raised || (escapes.Unknown && named.IsSubsetOf raised)) then
+                    let agrees =
+                        if scenario.Exact then
+                            not escapes.Unknown && named = raised
+                        else
+                            named = raised || (escapes.Unknown && named.IsSubsetOf raised)
+
+                    if not agrees then
                         yield
                             $"%s{scenario.Name}.%s{case}: the host's outcome is %A{hostOutcomes.[case]}; the analysis names %A{Set.toList named}, unknown %b{escapes.Unknown}"
 
@@ -935,6 +944,7 @@ public static unsafe class Cases
 }
 """
                     Cases = [ "CallsApply" ]
+                    Exact = true
                     Generics = [ "Apply", "CallsApply" ]
                 }
                 {
@@ -956,6 +966,9 @@ public static class Cases
 }
 """
                     Cases = [ "CallsGeneric" ]
+                    // Constructing the `TypeLoadException` makes virtual calls the analysis does not
+                    // follow.
+                    Exact = false
                     Generics = [ "Generic", "CallsGeneric" ]
                 }
                 {
@@ -976,6 +989,7 @@ public static unsafe class Cases
 }
 """
                     Cases = [ "AddressOfTake" ]
+                    Exact = true
                     Generics = []
                 }
                 {
@@ -992,6 +1006,8 @@ public static class Cases
 }
 """
                     Cases = [ "PassesHolder" ]
+                    // A type argument carrying a custom modifier, the analysis does not instantiate.
+                    Exact = false
                     Generics = []
                 }
                 {
@@ -1015,6 +1031,7 @@ public static unsafe class Cases
 }
 """
                     Cases = [ "PassesPair" ; "CallsGeneric" ]
+                    Exact = false
                     Generics = [ "Generic", "CallsGeneric" ]
                 }
             ]
