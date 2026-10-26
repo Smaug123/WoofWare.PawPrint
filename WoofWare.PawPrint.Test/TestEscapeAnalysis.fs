@@ -9189,11 +9189,14 @@ public static class Calls
     /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
     /// loads each pointer's target; a class, a byref's target or, by any other convention, a
     /// pointer's target, it does not load at all. Where metadata allows the JIT to make the
-    /// transition there (the next test says where it does not), whether it does turns on block
-    /// weights the analysis does not model, so it takes those loads to be ones the JIT may make
+    /// transition there (``the JIT walks an unmanaged call's signature only where CoreCLR's inline
+    /// decision lets it`` says where it does not), whether it does turns on block weights the
+    /// analysis does not model, so it takes those loads to be ones the JIT may make
     /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
     /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
     /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``a call of unmanaged code loads what marshalling and Swift's convention read of its signature`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -9402,16 +9405,18 @@ public static unsafe class Calls
             |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
         // The runtime makes each exception by running one of its constructors, and what that raises
         // escapes in its place.
         let made : Set<string> =
-            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
             analysis <- next
-            let next, madeFileNotFound = making analysis fileNotFound
+            let next, madeFileNotFound = makingIn (hostImageCoreLib ()) analysis fileNotFound
             analysis <- next
             Set.union (render analysis madeTypeLoad) madeFileNotFound
 
@@ -10684,7 +10689,8 @@ public static class Calls
     /// marshalling disabled, `bool`, `char` and a `MarshalAs` end it no longer. For Swift's
     /// convention, what the walk ends at anywhere in the signature also stops the JIT reading a
     /// pointer's target. Each call is in a branch never taken; the host's CoreCLR says which callers
-    /// fail to compile.
+    /// fail to compile. The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``the JIT walks an unmanaged call's signature only where CoreCLR's inline decision lets it`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -11045,7 +11051,7 @@ public static unsafe class Calls
         let providerAssembly = read "Provider" incompleteProvider
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 (providerAssembly :: (clients |> Map.toList |> List.map snd))
                 (fun loaded ->
                     (loaded, Map.toList clients)
