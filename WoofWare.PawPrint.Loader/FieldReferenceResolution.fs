@@ -23,21 +23,20 @@ type FieldReferenceTarget =
     /// CoreCLR's load of the parent reaches a type reference to an assembly no runtime directory
     /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
     | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+    /// Comparing the reference's signature with a candidate field's binds a type in an assembly no
+    /// runtime directory supplies, so binding the reference throws <c>FileNotFoundException</c>.
+    | SignatureAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
     /// The row, or its parent, is a shape PawPrint does not implement binding.
     | Unmodelled of UnmodelledBinding
 
 [<RequireQualifiedAccess>]
 module FieldReferenceTarget =
     /// A failure to bind a type that a candidate field's signature, or the reference's, names while
-    /// comparing the two. CoreCLR throws `FileNotFoundException` from the comparison for an assembly
-    /// it cannot bind, which PawPrint does not raise to the guest, so that too is unmodelled.
+    /// comparing the two.
     let internal ofFailure (failure : TypeBindingFailure) : FieldReferenceTarget =
         match failure with
-        | TypeBindingFailure.AssemblyUnavailable _ ->
-            FieldReferenceTarget.Unmodelled
-                {
-                    Diagnostic = TypeBindingFailure.describe failure
-                }
+        | TypeBindingFailure.AssemblyUnavailable reference ->
+            FieldReferenceTarget.SignatureAssemblyUnavailable reference
         | TypeBindingFailure.Unmodelled unmodelled -> FieldReferenceTarget.Unmodelled unmodelled
         | TypeBindingFailure.TypeAbsent _
         | TypeBindingFailure.BaseTypeAbsent _ ->

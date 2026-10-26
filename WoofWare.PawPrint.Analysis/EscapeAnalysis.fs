@@ -1689,7 +1689,15 @@ module EscapeAnalysis =
             | MethodReferenceTarget.ParentTypeMissing _ -> state, CallTarget.TypeMissing, false
             | MethodReferenceTarget.ParentAssemblyUnavailable _ -> state, CallTarget.AssemblyMissing, false
             | MethodReferenceTarget.DependsOnInstantiation -> state, CallTarget.DependsOnInstantiation, false
-            | MethodReferenceTarget.Unbound failure -> failwith (TypeBindingFailure.describe failure)
+            // Binding the reference reaches a type in an assembly that is not there, comparing its
+            // signature with a candidate's or laying out a searched type's method table.
+            | MethodReferenceTarget.Unbound (TypeBindingFailure.AssemblyUnavailable _) ->
+                state, CallTarget.AssemblyMissing, false
+            | MethodReferenceTarget.Unbound (TypeBindingFailure.Unmodelled unmodelled) -> failwith unmodelled.Diagnostic
+            | MethodReferenceTarget.Unbound (TypeBindingFailure.TypeAbsent _ as failure)
+            | MethodReferenceTarget.Unbound (TypeBindingFailure.BaseTypeAbsent _ as failure) ->
+                failwith
+                    $"Binding a call's reference in %s{assembly.DefinitionFullName} reached a type that is not declared, laying out a searched type's method table (%O{failure}): CoreCLR raises TypeLoadException loading that type, which the analysis does not model"
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
 
     /// What a call instruction's metadata token names.
@@ -2349,7 +2357,8 @@ module EscapeAnalysis =
                     state, TokenReferent.Other, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
                 | FieldReferenceTarget.ParentTypeMissing _ ->
                     state, TokenReferent.Other, raisesOf (Some BindFailure.TypeAbsent)
-                | FieldReferenceTarget.ParentAssemblyUnavailable _ ->
+                | FieldReferenceTarget.ParentAssemblyUnavailable _
+                | FieldReferenceTarget.SignatureAssemblyUnavailable _ ->
                     state, TokenReferent.Other, raisesOf (Some BindFailure.AssemblyUnavailable)
                 | FieldReferenceTarget.DependsOnInstantiation -> state, TokenReferent.Other, [ dependsOnInstantiation ]
                 | FieldReferenceTarget.Defined (declaring, field) -> state, TokenReferent.Field (declaring, field), []
@@ -4083,7 +4092,8 @@ module EscapeAnalysis =
                 | FieldReferenceTarget.Missing
                 | FieldReferenceTarget.DependsOnInstantiation
                 | FieldReferenceTarget.ParentTypeMissing _
-                | FieldReferenceTarget.ParentAssemblyUnavailable _ -> state, None
+                | FieldReferenceTarget.ParentAssemblyUnavailable _
+                | FieldReferenceTarget.SignatureAssemblyUnavailable _ -> state, None
                 | FieldReferenceTarget.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
             | other -> failwith $"A field instruction in %s{assembly.DefinitionFullName} names %O{other}"
 

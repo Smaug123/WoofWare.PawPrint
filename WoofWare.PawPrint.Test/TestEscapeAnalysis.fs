@@ -12718,6 +12718,385 @@ public static class Members
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// How a run of the client in the test below meets the assembly `Optional`, which the client and
+    /// the assemblies it calls were compiled against.
+    [<RequireQualifiedAccess>]
+    type private OptionalAssembly =
+        /// No assembly is found for it.
+        | Missing
+        /// It is found, and declares none of the types the client and the provider name.
+        | Lacking
+        /// The program's resolve handler throws when asked for it, which CoreCLR raises as
+        /// `FileLoadException`.
+        | HandlerThrows
+
+    /// A client calling, and accessing fields of, a provider whose members name in their signatures
+    /// types of a third assembly, `Optional`, which the client names nowhere but in those member
+    /// references. CoreCLR resolving a member reference compares its signature with each candidate
+    /// of the same name, and comparing two references to one type resolves them; so where
+    /// `Optional` is missing, compiling the caller raises `FileNotFoundException`, past its own
+    /// handlers, and where `Optional` is found but lacks the type, the two compare unequal and the
+    /// reference binds nothing. Laying out the method table of a class that overrides such a member
+    /// compares the two signatures the same way. Before failing to find an assembly, CoreCLR asks the
+    /// program's resolve handlers for it, which run code of their own. The host's CoreCLR, running
+    /// each caller, says which fails, and how.
+    [<Test>]
+    let ``a member reference whose signature names a type in an assembly that is missing raises where it binds``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let optional (complete : bool) : string =
+            if complete then
+                "namespace Optional; public class Thing { } public class Present { }"
+            else
+                "namespace Optional; public class Present { }"
+
+        let provider =
+            """
+namespace Provider;
+
+public interface IFace { void TakesThing(Optional.Thing x); }
+
+public static class Api
+{
+    public static void TakesThing(Optional.Thing x) { }
+    public static Optional.Thing ReturnsThing() => null;
+    public static void TakesInt(int x) { }
+    public static void Generic<T>() { }
+    public static Optional.Thing ThingField;
+}
+
+public class Instance : IFace
+{
+    public Instance() { }
+    public Instance(Optional.Thing x) { }
+    public static Instance Make() => new Instance();
+    public virtual void TakesThing(Optional.Thing x) { }
+    public Optional.Thing ThingInstanceField;
+}
+
+public class Box<T>
+{
+    public static void Static() { }
+    public static void TakesThing(Optional.Thing x) { }
+}
+"""
+
+        let middle =
+            """
+namespace Middle;
+
+public class Overrides : Provider.Instance
+{
+    public override void TakesThing(Optional.Thing x) { }
+    public static void Static() { }
+}
+"""
+
+        let client =
+            """
+namespace Client;
+
+public static unsafe class Calls
+{
+    public static string TakesThing()
+    {
+        try { Provider.Api.TakesThing(null); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReturnsThing()
+    {
+        try { Provider.Api.ReturnsThing(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string TakesInt()
+    {
+        try { Provider.Api.TakesInt(1); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string VirtuallyTakesThing()
+    {
+        try { Provider.Instance.Make().TakesThing(null); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ThroughInterfaceTakesThing()
+    {
+        try { ((Provider.IFace)Provider.Instance.Make()).TakesThing(null); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ConstructsFromThing()
+    {
+        try { new Provider.Instance((Optional.Thing)null); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsThingField()
+    {
+        try { object x = Provider.Api.ThingField; return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string WritesThingField()
+    {
+        try { Provider.Api.ThingField = null; return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string ReadsInstanceThingField()
+    {
+        try { object x = Provider.Instance.Make().ThingInstanceField; return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string AddressOfTakesThing()
+    {
+        try { delegate*<Optional.Thing, void> f = &Provider.Api.TakesThing; return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string GenericOverThing()
+    {
+        try { Provider.Api.Generic<Optional.Thing>(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string StaticOfBoxOfThing()
+    {
+        try { Provider.Box<Optional.Thing>.Static(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string OnGenericTakesThing()
+    {
+        try { Provider.Box<int>.TakesThing(null); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void Use(object o) { }
+    static void Through<T>(T t) where T : Provider.IFace { t.TakesThing(null); }
+    public static string ConstrainedTakesThing()
+    {
+        try { Through(Provider.Instance.Make()); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string DelegateOfTakesThing()
+    {
+        try { Use(new System.Action<Optional.Thing>(Provider.Api.TakesThing)); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+    public static string StaticOfOverride()
+    {
+        try { Middle.Overrides.Static(); return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let completeOptional = compile "Optional" [] (optional true)
+        let lackingOptional = compile "Optional" [] (optional false)
+        let providerImage = compile "Provider" [ completeOptional ] provider
+        let middleImage = compile "Middle" [ completeOptional ; providerImage ] middle
+
+        let clientImage =
+            compile "Client" [ completeOptional ; providerImage ; middleImage ] client
+
+        let fileNotFound = "System.IO.FileNotFoundException"
+        let missingMethod = "System.MissingMethodException"
+        let missingField = "System.MissingFieldException"
+        let typeLoad = "System.TypeLoadException"
+        let handlerThrew = "System.IO.FileLoadException"
+
+        // Each caller, and what running it does with `Optional` missing, and found lacking the type.
+        let methods =
+            [
+                "TakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "ReturnsThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "TakesInt", CallOutcome.Runs, CallOutcome.Runs
+                "VirtuallyTakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "ThroughInterfaceTakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "ConstructsFromThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "ReadsThingField", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingField
+                "WritesThingField", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingField
+                "ReadsInstanceThingField", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingField
+                "AddressOfTakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "GenericOverThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes typeLoad
+                "StaticOfBoxOfThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes typeLoad
+                "OnGenericTakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "ConstrainedTakesThing", CallOutcome.Caught fileNotFound, CallOutcome.Caught missingMethod
+                "DelegateOfTakesThing", CallOutcome.Escapes fileNotFound, CallOutcome.Escapes missingMethod
+                "StaticOfOverride", CallOutcome.Escapes fileNotFound, CallOutcome.Runs
+            ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes (optionalAssembly : OptionalAssembly) : Map<string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnboundSignature", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name, optionalAssembly with
+                    | "Provider", _ -> context.LoadFromStream (new MemoryStream (providerImage))
+                    | "Middle", _ -> context.LoadFromStream (new MemoryStream (middleImage))
+                    | "Optional", OptionalAssembly.Lacking ->
+                        context.LoadFromStream (new MemoryStream (lackingOptional))
+                    | "Optional", OptionalAssembly.HandlerThrows -> raise (InvalidOperationException "resolve handler")
+                    | _ -> null
+                )
+            )
+
+            try
+                let calls =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Calls"
+
+                methods
+                |> List.map (fun (name, _, _) ->
+                    let outcome =
+                        try
+                            match calls.GetMethod(name).Invoke ((null : obj), [||]) with
+                            | null -> CallOutcome.Runs
+                            | caught -> CallOutcome.Caught (unbox<string> caught)
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    name, outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let providerAssembly = read "Provider" providerImage
+        let middleAssembly = read "Middle" middleImage
+        let lackingAssembly = read "Optional" lackingOptional
+
+        let referenceTo (from : DumpedAssembly) (name : string) =
+            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+        // No runtime directory supplies `Optional`, so where it is not bound here it is missing.
+        let analysisWith (optionalAssembly : DumpedAssembly option) : EscapeAnalysisState =
+            let assemblies =
+                [ clientAssembly ; providerAssembly ; middleAssembly ]
+                @ Option.toList optionalAssembly
+
+            analysisOver
+                assemblies
+                (fun loaded ->
+                    let loaded, _ =
+                        loaded.WithBoundReference (referenceTo clientAssembly "Provider") providerAssembly
+
+                    let loaded, _ =
+                        loaded.WithBoundReference (referenceTo clientAssembly "Middle") middleAssembly
+
+                    let loaded, _ =
+                        loaded.WithBoundReference (referenceTo middleAssembly "Provider") providerAssembly
+
+                    match optionalAssembly with
+                    | None -> loaded
+                    | Some optionalAssembly ->
+                        let loaded, _ =
+                            loaded.WithBoundReference (referenceTo clientAssembly "Optional") optionalAssembly
+
+                        let loaded, _ =
+                            loaded.WithBoundReference (referenceTo middleAssembly "Optional") optionalAssembly
+
+                        fst (loaded.WithBoundReference (referenceTo providerAssembly "Optional") optionalAssembly)
+                )
+
+        let bindingExceptions = [ fileNotFound ; missingMethod ; missingField ; typeLoad ]
+
+        // What the analysis lets escape each caller, against `expected` of each, and how it fails to
+        // agree. Where no assembly is found, a resolve handler may have run first, so the answer is
+        // unknown.
+        let disagreements
+            (label : string)
+            (analysis : EscapeAnalysisState)
+            (expected : string -> CallOutcome)
+            : string list
+            =
+            let mutable analysis = analysis
+
+            [
+                for name, _, _ in methods do
+                    match
+                        try
+                            Ok (EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Calls" name))
+                        with e ->
+                            Error e.Message
+                    with
+                    | Error message -> yield $"%s{label} %s{name}: the analysis crashed: %s{message}"
+                    | Ok (next, escapes) ->
+                        analysis <- next
+                        let shown = render analysis escapes
+
+                        let escaping =
+                            bindingExceptions
+                            |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                        match expected name with
+                        | CallOutcome.Escapes exceptionName ->
+                            if not (List.contains exceptionName escaping) then
+                                yield
+                                    $"%s{label} %s{name}: no %s{exceptionName} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                            if exceptionName = fileNotFound && not escapes.Unknown then
+                                yield $"%s{label} %s{name}: known, though a resolve handler may run"
+                        | CallOutcome.Caught _
+                        | CallOutcome.Runs ->
+                            if not escaping.IsEmpty then
+                                yield $"%s{label} %s{name}: %A{escaping} escape, in %A{Set.toList shown}"
+            ]
+
+        let missing = hostOutcomes OptionalAssembly.Missing
+        let lacking = hostOutcomes OptionalAssembly.Lacking
+        let handlerThrows = hostOutcomes OptionalAssembly.HandlerThrows
+
+        let failures =
+            [
+                for name, whenMissing, whenLacking in methods do
+                    if missing.[name] <> whenMissing then
+                        yield
+                            $"%s{name}: the host's outcome with Optional missing is %A{missing.[name]}, not %A{whenMissing}"
+
+                    if lacking.[name] <> whenLacking then
+                        yield
+                            $"%s{name}: the host's outcome with Optional lacking is %A{lacking.[name]}, not %A{whenLacking}"
+
+                    // A handler asked for the assembly runs where the binding would fail to find it, and what it
+                    // throws is raised as a `FileLoadException`.
+                    let whenHandlerThrows =
+                        match whenMissing with
+                        | CallOutcome.Escapes exceptionName when exceptionName = fileNotFound ->
+                            CallOutcome.Escapes handlerThrew
+                        | CallOutcome.Caught exceptionName when exceptionName = fileNotFound ->
+                            CallOutcome.Caught handlerThrew
+                        | other -> other
+
+                    if handlerThrows.[name] <> whenHandlerThrows then
+                        yield
+                            $"%s{name}: the host's outcome with a throwing resolve handler is %A{handlerThrows.[name]}, not %A{whenHandlerThrows}"
+
+                let byName (pick : CallOutcome * CallOutcome -> CallOutcome) (name : string) : CallOutcome =
+                    methods
+                    |> List.pick (fun (n, whenMissing, whenLacking) ->
+                        if n = name then
+                            Some (pick (whenMissing, whenLacking))
+                        else
+                            None
+                    )
+
+                yield! disagreements "missing" (analysisWith None) (byName fst)
+                yield! disagreements "lacking" (analysisWith (Some lackingAssembly)) (byName snd)
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
     /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
     /// any other assembly.
