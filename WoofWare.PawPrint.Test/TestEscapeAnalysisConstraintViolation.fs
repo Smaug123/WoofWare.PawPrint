@@ -915,8 +915,8 @@ public static class Cases
     /// Programs whose constraint checks reach a type the analysis follows less directly than most,
     /// against the host: a `calli` in a generic method, whose signature is over the method's own
     /// type variables; a generic argument whose base is gone; a function pointer to a method whose
-    /// signature names a struct that is gone, which the JIT does not load; and a struct field whose
-    /// type's argument carries a custom modifier.
+    /// signature names a struct that is gone, which the JIT does not load; and a struct field's or
+    /// a parameter's type whose argument carries a custom modifier.
     [<Test>]
     let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
         let scenarios =
@@ -993,6 +993,29 @@ public static class Cases
 """
                     Cases = [ "PassesHolder" ]
                     Generics = []
+                }
+                {
+                    Name = "ModifiedArgument"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct Pair<A, B> { }",
+                            "namespace Lib; public struct Pair<A, B> where B : struct { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static unsafe class Cases
+{
+    static void Takes(Lib.Pair<int, delegate*<out int, void>[]> p) { }
+    static void TakesOver<T>(Lib.Pair<T, delegate*<out int, void>[]> p) { }
+    public static int PassesPair() { try { Takes(default); return 0; } catch (System.Exception) { return 1; } }
+    public static int Generic<T>() { try { TakesOver<T>(default); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<int>();
+}
+"""
+                    Cases = [ "PassesPair" ; "CallsGeneric" ]
+                    Generics = [ "Generic", "CallsGeneric" ]
                 }
             ]
 
