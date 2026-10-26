@@ -3061,6 +3061,8 @@ module EscapeAnalysis =
                     | _ -> false
                 )
 
+            // CoreCLR's check of the variable standing for itself does not ask whether it allows a
+            // byref-like argument, but an instantiation passing one fails the parameter's check.
             let special =
                 (not parameter.RequiresReferenceType
                  || own.RequiresReferenceType

@@ -224,7 +224,9 @@ module TestEscapeAnalysisConstraintViolation =
             | Some within -> $"Within%O{this.Position}_%s{this.Set.Name}_%s{within.Outer.Name}_%s{fst within.Spelled}"
 
     /// A type argument satisfying each set of constraints in C#, which a generic method so
-    /// constrained is called with.
+    /// constrained is called with. Where the set allows a byref-like argument, it is one, which
+    /// CoreCLR rejects where its parameter does not, though the variable standing for it satisfies
+    /// that parameter.
     let private witness (set : ConstraintSet) : string * string =
         match set.Name with
         | "Class"
@@ -235,8 +237,8 @@ module TestEscapeAnalysisConstraintViolation =
         | "IFoo"
         | "Base"
         | "ClassIFoo"
-        | "IFooNew"
-        | "IFooAllowsRef" -> "Foo", "Foo"
+        | "IFooNew" -> "Foo", "Foo"
+        | "IFooAllowsRef" -> "RefFoo", "RefFoo"
         | "EnumerableOfObject"
         | "ListOfObject" -> "ListOfObject", "System.Collections.Generic.List<object>"
         | "StructIFoo" -> "FooStruct", "FooStruct"
