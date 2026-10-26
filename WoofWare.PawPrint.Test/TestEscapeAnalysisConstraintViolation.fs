@@ -1039,3 +1039,156 @@ public static unsafe class Cases
         match scenarios |> List.collect disagreements with
         | [] -> ()
         | problems -> problems |> String.concat "\n" |> failwith
+
+    /// Programs whose violated constraint a generic method's own form, or every instantiation of
+    /// it, meets only through part of what it names, against the host: a closed argument beside
+    /// one over the method's type variable, of a method or of a type; a closed method argument of a
+    /// method of a type over the variable; generic structs whose full loads reach each other, one
+    /// of them reaching a violation; and a callee's return type whose full load reaches one.
+    [<Test>]
+    let ``a violation reached through part of what a generic method names agrees with the host`` () : unit =
+        let scenarios =
+            [
+                {
+                    Name = "PartlyOpenMethod"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public static class M { public static void Two<A, B>() { } }",
+                            "namespace Lib; public static class M { public static void Two<A, B>() where B : class { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int Generic<T>() { try { Lib.M.Two<T, int>(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "PartlyOpenType"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class P<A, B> { public static void Touch() { } }",
+                            "namespace Lib; public class P<A, B> where B : class { public static void Touch() { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int Generic<T>() { try { Lib.P<T, int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "OpenParentClosedMethod"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class Q<A> { public static void M<B>() { } }",
+                            "namespace Lib; public class Q<A> { public static void M<B>() where B : class { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int Generic<T>() { try { Lib.Q<T>.M<int>(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "ClosedPartThroughCycle"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct Bad<T> { }",
+                            "namespace Lib; public struct Bad<T> where T : class { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public struct SA<T> { public static SB<T> F; public static Lib.Bad<int> G; }
+public struct SB<T> { public static SA<T> F; }
+public static class Cases
+{
+    public static void Keep(object o) { }
+    public static int GenericA<T>() { try { Keep(typeof(SA<T>)); return 0; } catch (System.Exception) { return 1; } }
+    public static int GenericB<T>() { try { Keep(typeof(SB<T>)); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsA() => GenericA<int>();
+    public static int CallsB() => GenericB<int>();
+}
+"""
+                    Cases = [ "CallsA" ; "CallsB" ]
+                    Exact = false
+                    Generics = [ "GenericA", "CallsA" ; "GenericB", "CallsB" ]
+                }
+                {
+                    Name = "ParameterThroughCycle"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct W<T> { }",
+                            "namespace Lib; public struct W<T> where T : class { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public struct SX<T> { public static SY<T> F; public static Lib.W<T> G; }
+public struct SY<T> { public static SX<T> F; }
+public static class Cases
+{
+    public static void Keep(object o) { }
+    public static int GenericX<T>() { try { Keep(typeof(SX<T>)); return 0; } catch (System.Exception) { return 1; } }
+    public static int GenericY<T>() { try { Keep(typeof(SY<T>)); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsX() => GenericX<int>();
+    public static int CallsY() => GenericY<int>();
+}
+"""
+                    Cases = [ "CallsX" ; "CallsY" ]
+                    Exact = false
+                    Generics = [ "GenericX", "CallsX" ; "GenericY", "CallsY" ]
+                }
+                {
+                    Name = "ClosedPartOfReturn"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct Bad<T> { }",
+                            "namespace Lib; public struct Bad<T> where T : class { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public struct Holds<T> { public Lib.Bad<int> F; }
+public static class Helper { public static Holds<T> Make<T>() => default; }
+public static class Cases
+{
+    public static int Generic<T>() { try { Helper.Make<T>(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+            ]
+
+        match scenarios |> List.collect disagreements with
+        | [] -> ()
+        | problems -> problems |> String.concat "\n" |> failwith
