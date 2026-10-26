@@ -555,8 +555,10 @@ public static class Driver
                         if not named.IsEmpty then
                             yield describe ()
 
-                    // Asked about by itself, the generic method stands for every instantiation,
-                    // some of which the constrained `Lib` rejects, so its answer must not be known.
+                    // Asked about by itself, the generic method stands for every instantiation. Where
+                    // what it names is closed, the violation is the same in each, so its answer must
+                    // be exactly the instance's; elsewhere some instantiations the constrained `Lib`
+                    // rejects, and its answer must not be known.
                     if callsGeneric case.Position then
                         let next, escapes =
                             EscapeAnalysis.escapes
@@ -564,9 +566,21 @@ public static class Driver
                                 (methodNamed clientAssembly "Client.Cases" $"Generic%s{case.Name}")
 
                         analysis <- next
+                        let shown = render analysis escapes
 
-                        if not escapes.Unknown then
-                            yield $"Generic%s{case.Name}, by itself: known, %A{Set.toList (render analysis escapes)}"
+                        let named =
+                            violations
+                            |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                        let agrees =
+                            match case.Position, hostOutcomes.[case.Name] with
+                            | Position.SharedClosedBase, Outcome.Escapes raised -> named = Set.singleton raised
+                            | Position.SharedClosedBase, _ -> named.IsEmpty
+                            | _ -> escapes.Unknown
+
+                        if not agrees then
+                            yield
+                                $"Generic%s{case.Name}, by itself: %A{Set.toList shown}, unknown %b{escapes.Unknown}; the instance's outcome is %A{hostOutcomes.[case.Name]}"
             ]
 
         // Every position must have cases the host rejects and cases it accepts, or the agreement

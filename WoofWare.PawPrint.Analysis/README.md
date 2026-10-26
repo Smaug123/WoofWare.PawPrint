@@ -403,9 +403,45 @@ That holds for a set of assemblies that agree with each other. When one has chan
 was compiled against it, a missing member or type is reported as above, and says that the set
 needs rebuilding (or, for a package, a different version). A member made inaccessible to a
 caller is "unknown" wherever its visibility does not settle the check, unless the caller allows
-`MembersAccessible`. A generic instantiation the caller spells that a constraint added since now
-rejects is not checked, and is not reported (a constraint naming a type that is not there is
-reported, as above).
+`MembersAccessible`.
+
+A generic instantiation that a constraint added since now rejects is reported where the JIT checks
+it, before the method runs:
+- **Types:** every instantiation the full load of a type the JIT loads in full reaches, where that
+  load meets no missing type, raises `TypeLoadException` if an argument breaks its constraints
+  (`ConstraintSatisfaction`). The parts the load reaches are the base, the interfaces and the
+  value-type fields that `TypeLoad.fullLoadParts` lists, each instantiated, and the generic
+  arguments.
+- **Methods:** a method specification whose arguments break the method's constraints raises
+  `VerificationException`.
+- **Malformed arguments:** a byref, pointer, `TypedReference` or `void` argument raises
+  `TypeLoadException` for a type and `BadImageFormatException` for a method.
+
+What code shared between instantiations names through its type variables, the JIT sees in its
+canonical form (`System.__Canon` for a reference type). CoreCLR does not check an instantiation
+containing `__Canon`, though it checks what the load of one brings that does not contain it.
+
+These checks are exact where the instantiation is closed, but some are left open:
+- **Instantiations over a generic method's own type variables:** CoreCLR also checks an
+  instruction it checks access of, in a generic method or a method of a generic type, with the
+  method's own type variables as the arguments. The analysis does not model that check, and is
+  "unknown" there (`Opacity.ConstraintsOverTypeVariables`) wherever the instruction's token
+  instantiates, over those variables, something whose constraints, or whose full load's, could
+  reject them.
+- **A definition analysed for every instantiation at once:** it is "unknown"
+  (`Opacity.DependsOnInstantiation`) wherever some instantiation of its type variables may break a
+  constraint the JIT checks.
+- **The static-virtual rule:** an abstract argument against an interface constraint that declares
+  abstract static virtual methods (`Opacity.UndecidedConstraint`).
+- **Order within one load:** a load that misses is reported as the miss, which is exact for the
+  instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
+  one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
+  it reaches a later part that misses, it raises that check's `TypeLoadException`, where the
+  analysis reports the miss.
+- **A generic definition spelled bare:** this is its typical instantiation, which CoreCLR checks
+  against its own type parameters; the analysis does not check it.
+- **Run-time lookups:** where shared code looks a type up as it runs, as `ldtoken` does, a violation
+  is raised there, inside the method; the analysis does not report it.
 
 Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of time
 (ReadyToRun: the shared framework's, and a program's published that way) binds what it names as it
