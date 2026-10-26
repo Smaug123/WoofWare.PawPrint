@@ -13,6 +13,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PawPrint.Analysis
 
 /// `LayoutFacts.ofValueType` checked against the host's CoreCLR, over generated value types.
 ///
@@ -28,7 +29,9 @@ open WoofWare.PawPrint
 ///   taking the type, with runtime marshalling on and off: CoreCLR raises
 ///   `InvalidProgramException` exactly when `PInvoke::MarshalingRequired` holds
 ///   (`COMDelegate::ThrowIfInvalidUnmanagedCallersOnlyUsage`). That verdict combines the facts by
-///   the rule `marshalingRequired` mirrors.
+///   the rule `MarshalingRequired.valueTypeRequires` encodes, over what the escape analysis makes
+///   of them (`MarshalingFacts.ofLayoutFacts`).
+/// * The instance size, `RuntimeHelpers.SizeOf`, which the facts bound from above.
 ///
 /// The oracle is the test host's own runtime, in process, over the test host's own CoreLib
 /// (`HostImage`): PawPrint reads the image the host runs. Run the test host on another runtime
@@ -143,6 +146,9 @@ module TestLayoutFacts =
         /// `[InlineArray(length)]` over one field, of sequential layout as C# emits it. CoreCLR refuses
         /// explicit layout on one, and the host refuses some of auto layout as corrupt metadata.
         | InlineArray of Kind * length : int * CharSetChoice
+        /// A struct of explicit layout holding one `int`, at this offset. Not generated: only
+        /// `Size bounds hold for large value types` uses it.
+        | FarField of offset : int
 
     and private Field =
         {
@@ -206,7 +212,8 @@ module TestLayoutFacts =
         | Kind.Struct _
         | Kind.Generic _
         | Kind.FixedBuffer _
-        | Kind.InlineArray _ -> [ UnmanagedType.Struct ; UnmanagedType.I4 ]
+        | Kind.InlineArray _
+        | Kind.FarField _ -> [ UnmanagedType.Struct ; UnmanagedType.I4 ]
 
     /// Per-case weights, themselves generated, so that runs cover sparse and dense regimes.
     type private Bias =
@@ -350,6 +357,7 @@ module TestLayoutFacts =
         | Kind.Generic (_, argument) -> sizeBound argument
         | Kind.FixedBuffer (_, length, _) -> round16 (4 * length)
         | Kind.InlineArray (element, length, _) -> length * sizeBound element
+        | Kind.FarField offset -> round16 (offset + 4)
 
     let private charSetAttributes (charSet : CharSetChoice) : TypeAttributes =
         match charSet with
@@ -481,6 +489,12 @@ module TestLayoutFacts =
                 |> ignore
 
                 tb.CreateType ()
+            | Kind.FarField offset ->
+                let tb =
+                    md.DefineType (fresh "Far", structAttributes Layout.Explicit CharSetChoice.Ansi, typeof<ValueType>)
+
+                (tb.DefineField ("F", typeof<int>, FieldAttributes.Public)).SetOffset offset
+                tb.CreateType ()
             | Kind.InlineArray (element, length, charSet) ->
                 let elementType = typeOf element
 
@@ -527,6 +541,8 @@ module TestLayoutFacts =
             Blittable : bool option
             /// Whether a boxed `top` can be pinned.
             Pinnable : bool
+            /// The instance sizes of `top` and of `Wrap<top>` (`RuntimeHelpers.SizeOf`).
+            Sizes : int * int
         }
 
     /// Whether compiling `method` raises `InvalidProgramException`. Any other failure fails the test:
@@ -594,6 +610,7 @@ module TestLayoutFacts =
             let ucosOn = ucosOf on
             let ucosOff = ucosOf off
             let top = (ucosOn.GetMethod "Direct").GetParameters().[0].ParameterType
+            let wrapped = (ucosOn.GetMethod "Wrapped").GetParameters().[0].ParameterType
             let pinnable = hostPinnable top
 
             {
@@ -601,12 +618,19 @@ module TestLayoutFacts =
                 RequiredOff = verdicts ucosOff
                 Blittable = hostBlittable pinnable top
                 Pinnable = pinnable
+                Sizes = RuntimeHelpers.SizeOf top.TypeHandle, RuntimeHelpers.SizeOf wrapped.TypeHandle
             }
         finally
             context.Unload ()
 
-    /// PawPrint's facts for the types `Direct` and `Wrapped` take, in the assembly `image`.
-    let private pawPrintFacts (name : string) (image : byte[]) : ValueTypeLayoutFacts * ValueTypeLayoutFacts =
+    /// PawPrint's facts for the types `Direct` and `Wrapped` take, in the assembly `image`: its
+    /// layout facts, and what the escape analysis gives the marshalling walk of them
+    /// (`MarshalingFacts.ofLayoutFacts`).
+    let private pawPrintFacts
+        (name : string)
+        (image : byte[])
+        : (ValueTypeLayoutFacts * ValueTypeFacts) * (ValueTypeLayoutFacts * ValueTypeFacts)
+        =
         let dumped =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
 
@@ -618,7 +642,11 @@ module TestLayoutFacts =
             |> Seq.exactlyOne
             |> fun m -> List.exactlyOne m.Signature.ParameterTypes
 
-        let factsOf (state : TypeSystemState) (methodName : string) : TypeSystemState * ValueTypeLayoutFacts =
+        let factsOf
+            (state : TypeSystemState)
+            (methodName : string)
+            : TypeSystemState * (ValueTypeLayoutFacts * ValueTypeFacts)
+            =
             let state, handle =
                 TypeSystemState.concretizeType
                     loggerFactory
@@ -635,63 +663,58 @@ module TestLayoutFacts =
                 LayoutFacts.ofValueType loggerFactory HostImage.runtimeDirs bct state handle
                 |> BindingResult.bound
 
-            match facts with
-            | Some facts -> state, facts
-            | None -> failwith $"LayoutFacts says the parameter of %s{methodName} is not a value type"
+            match facts, TypeSystemState.tryGetConcreteTypeInfo state handle with
+            | Some facts, Some (concrete, typeInfo) ->
+                state, (facts, MarshalingFacts.ofLayoutFacts bct.Corelib concrete typeInfo facts)
+            | None, _ -> failwith $"LayoutFacts says the parameter of %s{methodName} is not a value type"
+            | Some _, None -> failwith $"the parameter of %s{methodName} has no TypeDef row"
 
         let state, direct = factsOf state "Direct"
         let _, wrapped = factsOf state "Wrapped"
         direct, wrapped
 
-    /// `PInvoke::MarshalingRequired` (dllimport.cpp:3322 on .NET 10, 3450 on .NET 11) for one
-    /// parameter of value type, from the facts it reads.
-    ///
-    /// `IsValidForGenericMarshalling` (mlinfo.cpp:582) also refuses an instantiation of `Nullable`,
-    /// `Span`, `ReadOnlySpan` or a vector type; no generated case is one, so `instantiation` says
-    /// only whether the type is generic. On .NET 10 CoreCLR does not read the decimal
-    /// floating-point fact, which is false there because CoreLib has no such type.
-    let private marshalingRequired (runtimeMarshalling : bool) (instantiation : bool) (facts : ValueTypeLayoutFacts) =
-        let validForGenericMarshalling =
-            not instantiation || not runtimeMarshalling || facts.IsBlittable
-
-        not validForGenericMarshalling
-        || facts.IsInt128OrHasInt128Fields
-        || facts.IsDecimalFloatingPointOrHasDecimalFloatingPointFields
-        || (if runtimeMarshalling then
-                not facts.IsBlittable && not facts.IsEnum
-            else
-                not facts.IsEnum
-                && (facts.ContainsGcPointers || facts.IsAutoLayoutOrHasAutoLayoutField))
-
     /// Emit `top` into assemblies named after `name`, and fail unless the host's answers are those
-    /// PawPrint's facts predict; return the host's answers and the facts of `top`.
+    /// PawPrint's facts predict, through the marshalling walk's verdict
+    /// (`MarshalingRequired.valueTypeRequires`), and unless each size is within the facts' bound;
+    /// return the host's answers and the layout facts of `top`.
     let private check (name : string) (top : Kind) : HostAnswer * ValueTypeLayoutFacts =
         let on = emit (name + "On") false top
         let off = emit (name + "Off") true top
         let host = hostAnswer on off
-        let direct, wrapped = pawPrintFacts (name + "On") on
-        let directOff, wrappedOff = pawPrintFacts (name + "Off") off
+        let (direct, directOn), (wrapped, wrappedOn) = pawPrintFacts (name + "On") on
 
-        let topIsGeneric =
-            match top with
-            | Kind.Generic _ -> true
-            | _ -> false
+        let (directLayoutOff, directOff), (wrappedLayoutOff, wrappedOff) =
+            pawPrintFacts (name + "Off") off
 
         let expected =
             {
-                RequiredOn = marshalingRequired true topIsGeneric direct, marshalingRequired true true wrapped
-                RequiredOff = marshalingRequired false topIsGeneric directOff, marshalingRequired false true wrappedOff
+                RequiredOn =
+                    MarshalingRequired.valueTypeRequires true directOn,
+                    MarshalingRequired.valueTypeRequires true wrappedOn
+                RequiredOff =
+                    MarshalingRequired.valueTypeRequires false directOff,
+                    MarshalingRequired.valueTypeRequires false wrappedOff
                 Blittable = host.Blittable |> Option.map (fun _ -> direct.IsBlittable)
                 Pinnable = not direct.ContainsGcPointers
+                Sizes = host.Sizes
             }
 
-        if (direct, wrapped) <> (directOff, wrappedOff) then
+        if (direct, wrapped) <> (directLayoutOff, wrappedLayoutOff) then
             failwith
-                $"the facts depend on DisableRuntimeMarshalling: %A{(direct, wrapped)} against %A{(directOff, wrappedOff)}"
+                $"the facts depend on DisableRuntimeMarshalling: %A{(direct, wrapped)} against %A{(directLayoutOff, wrappedLayoutOff)}"
 
         if host <> expected then
             failwith
-                $"%A{top}\n  host:     %A{host}\n  PawPrint: %A{expected}\n  facts of Direct: %A{direct}\n  facts of Wrapped: %A{wrapped}"
+                $"%A{top}\n  host:     %A{host}\n  PawPrint: %A{expected}\n  facts of Direct: %A{directOn}\n  facts of Wrapped: %A{wrappedOn}"
+
+        let directSize, wrappedSize = host.Sizes
+
+        if
+            int64 directSize > directOn.SizeUpperBound
+            || int64 wrappedSize > wrappedOn.SizeUpperBound
+        then
+            failwith
+                $"%A{top}\n  host sizes %A{host.Sizes} exceed the bounds %d{directOn.SizeUpperBound}, %d{wrappedOn.SizeUpperBound}"
 
         host, direct
 
@@ -805,6 +828,41 @@ module TestLayoutFacts =
 
         blittable.GetValueOrDefault (Some true) |> shouldBeGreaterThan 0
         blittable.GetValueOrDefault (Some false) |> shouldBeGreaterThan 0
+
+    /// Value types far larger than any the generator makes, each large by one of the means the size
+    /// bound reads: an `[InlineArray]`'s length, an explicit field offset, and padding between
+    /// fields. `check` fails where the host's size is beyond the bound. A declared `ClassSize` is
+    /// another means, which `PersistedAssemblyBuilder` drops (it writes no ClassLayout row), so the
+    /// `[UnmanagedCallersOnly]` probes of `TestEscapeAnalysis` cover it with Roslyn-compiled structs.
+    [<Test>]
+    let ``Size bounds hold for large value types`` () : unit =
+        let sized =
+            [
+                Kind.InlineArray (Kind.Named typeof<int64>, 1000, CharSetChoice.Ansi)
+                Kind.FarField 50000
+                // Each `long` after a `byte` is aligned past seven bytes of padding.
+                Kind.Struct
+                    {
+                        Layout = Layout.Sequential
+                        CharSet = CharSetChoice.Ansi
+                        Fields =
+                            [ typeof<byte> ; typeof<int64> ]
+                            |> List.replicate 20
+                            |> List.concat
+                            |> List.map (fun t ->
+                                {
+                                    Kind = Kind.Named t
+                                    MarshalAs = None
+                                }
+                            )
+                    }
+            ]
+            |> List.mapi (fun i top ->
+                let host, facts = check $"LayoutFactsLarge%d{i}" top
+                fst host.Sizes, facts.SizeUpperBound
+            )
+
+        sized |> List.map fst |> shouldEqual [ 8000 ; 50004 ; 320 ]
 
     let private enumNames : string list =
         [
@@ -1198,7 +1256,13 @@ module TestLayoutFacts =
                         facts
                         |> Option.defaultWith (fun () -> failwith $"%s{structName} is not a value type to LayoutFacts")
 
-                    if marshalingRequired (not disabled) false facts <> hostRequired then
+                    let concrete, typeInfo =
+                        TypeSystemState.tryGetConcreteTypeInfo state handle
+                        |> Option.defaultWith (fun () -> failwith $"%s{structName} has no TypeDef row")
+
+                    let projected = MarshalingFacts.ofLayoutFacts bct.Corelib concrete typeInfo facts
+
+                    if MarshalingRequired.valueTypeRequires (not disabled) projected <> hostRequired then
                         failwith
                             $"%s{structName}, runtime marshalling disabled %b{disabled}: host refuses %b{hostRequired}, facts %A{facts}"
 
