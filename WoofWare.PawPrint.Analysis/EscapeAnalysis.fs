@@ -3789,12 +3789,65 @@ module EscapeAnalysis =
 
             // Once the method and its arguments load, CoreCLR instantiates it, which an instance
             // decides, the arguments being spelled in the body.
+            // What the specification spells for the method's type arguments and its own, which an
+            // instance instantiates checking it, where TypeSystem can.
+            let spelled =
+                let parent =
+                    match spec.Method with
+                    | MetadataToken.MemberReference reference ->
+                        match assembly.Members.[reference].Parent with
+                        | MetadataToken.TypeSpecification parent ->
+                            match assembly.TypeSpecs.[parent].Signature with
+                            | TypeDefn.GenericInstantiation (_, arguments) -> List.ofSeq arguments
+                            | _ -> []
+                        | _ -> []
+                    | _ -> []
+
+                parent @ List.ofSeq spec.Signature
+
+            let state, representable =
+                ((state, true), spelled)
+                ||> List.fold (fun (state, representable) spelling ->
+                    if representable then
+                        concretizable state assembly spelling
+                    else
+                        state, false
+                )
+
             // A constraint check the analysis does not decide leaves an argument it may not
-            // instantiate, and the method's instantiation open.
-            let instantiates =
+            // instantiate, and the method's instantiation open. Where TypeSystem cannot instantiate
+            // an argument, the method's instantiation fails no check only where it has as many
+            // arguments as parameters, none CoreCLR admits in no instantiation, and none of its
+            // parameters is constrained.
+            let state, failures, instantiates =
                 match target, failures with
-                | CallTarget.Method _, [] -> [ InstanceCheck.Instantiates (assembly.DefinitionFullName, handle) ]
-                | _ -> []
+                | CallTarget.Method _, [] when representable ->
+                    state, failures, [ InstanceCheck.Instantiates (assembly.DefinitionFullName, handle) ]
+                | CallTarget.Method callee, [] ->
+                    let _, calleeMethod = methodOf state callee.Callee
+
+                    let admitted =
+                        spec.Signature
+                        |> Seq.forall (fun argument ->
+                            match TypeDefn.stripCustomModifiers argument with
+                            | TypeDefn.Byref _
+                            | TypeDefn.Pointer _
+                            | TypeDefn.FunctionPointer _
+                            | TypeDefn.Void
+                            | TypeDefn.PrimitiveType PrimitiveType.TypedReference -> false
+                            | _ -> true
+                        )
+
+                    let unconstrained =
+                        calleeMethod.Generics.Length = spec.Signature.Length
+                        && admitted
+                        && calleeMethod.Generics |> Seq.forall (snd >> constrains >> not)
+
+                    if unconstrained then
+                        state, failures, []
+                    else
+                        state, raisesOf (Some BindFailure.UndecidedConstraint), []
+                | _ -> state, failures, []
 
             state, TokenReferent.Method target, failures, checks @ argumentChecks @ instantiates
         | MetadataToken.MemberReference handle ->
@@ -8971,6 +9024,12 @@ module EscapeAnalysis =
                     match check with
                     | InstanceCheck.LoadsInFull (spelledIn, spelling) ->
                         true,
+                        fun state -> spellingMayBreakConstraint state (assemblyOf state spelledIn) method spelling
+                    // A member definition of the body's own type, whose variables are the body's.
+                    | InstanceCheck.LoadsInMember (spelledIn,
+                                                   spelling,
+                                                   (MetadataToken.MethodDef _ | MetadataToken.FieldDefinition _)) ->
+                        mentionsTypeVariable spelling,
                         fun state -> spellingMayBreakConstraint state (assemblyOf state spelledIn) method spelling
                     | InstanceCheck.LoadsInMember (spelledIn, spelling, token) ->
                         spelledArguments assembly token |> List.exists mentionsTypeVariable,
