@@ -1247,6 +1247,57 @@ public static class Cases
                     Exact = false
                     Generics = [ "Get", "CallsGet" ; "Set", "CallsSet" ]
                 }
+                {
+                    Name = "OpaqueArgument"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class C<U> { public static void Touch() { } }",
+                            "namespace Lib; public class C<U> where U : struct { public static void Touch() { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static unsafe class Cases
+{
+    public static int Generic<T>() { try { Lib.C<delegate*<T, void>[]>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<int>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    // Enough fields that the client's member references outnumber the library's.
+                    Name = "ForeignFields"
+                    Libraries =
+                        let fields =
+                            [ 0..30 ]
+                            |> List.map (fun index -> $"public static System.ValueTuple<int> F%d{index};")
+                            |> String.concat " "
+
+                        let library = "namespace Lib; public static class Fields { " + fields + " }"
+                        [ "Lib", library, library ]
+                    Client =
+                        let reads =
+                            [ 0..30 ]
+                            |> List.map (fun index -> $"Lib.Fields.F%d{index}.Item1")
+                            |> String.concat " + "
+
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int ReadsFields() { try { return ("""
+                        + reads
+                        + """) * 0; } catch (System.Exception) { return 1; } }
+}
+"""
+                    Cases = [ "ReadsFields" ]
+                    Exact = false
+                    Generics = []
+                }
             ]
 
         match scenarios |> List.collect disagreements with
@@ -1256,8 +1307,9 @@ public static class Cases
     /// A method, inlined into its caller, taking the address of a method whose signature an update
     /// has made violate a constraint. CoreCLR prepares the method as a function pointer where the
     /// JIT asks for the address, compiling the caller it inlines the method into, so the caller's
-    /// own handlers do not catch what that raises. The host runs it in a collectible load context,
-    /// whose code CoreCLR compiles fully optimised from the first call.
+    /// own handlers do not catch what that raises. The real runtime under test runs it, as its own
+    /// process, in a collectible load context, whose code CoreCLR compiles fully optimised from the
+    /// first call.
     [<Test>]
     let ``a violation met preparing an address raises where the method taking it is inlined`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -1305,34 +1357,58 @@ public static class Cases
         let unconstrained = compileOptimised "Lib" [] (library false)
         let clientImage = compileOptimised "Client" [ unconstrained ] client
 
-        // What escapes `CallsInlinedAddress` on the host, if anything.
-        let hostEscapes : string option =
-            let context =
-                Runtime.Loader.AssemblyLoadContext ("InlinedAddressConstraint", isCollectible = true)
+        // Loads the client from the directory its first argument names into a collectible load
+        // context, runs `CallsInlinedAddress`, and writes to its second argument's file `Runs`, or
+        // `Escapes:` and the full name of what escaped.
+        let driver =
+            Roslyn.compileAssembly
+                "Driver"
+                OutputKind.ConsoleApplication
+                []
+                [
+                    """
+namespace Driver;
+public static class Program
+{
+    public static void Main(string[] args)
+    {
+        var directory = args[0];
+        var context = new System.Runtime.Loader.AssemblyLoadContext("Probe", isCollectible: true);
+        context.Resolving += (c, name) =>
+            name.Name == "Lib" ? c.LoadFromAssemblyPath(System.IO.Path.Combine(directory, "Lib.dll")) : null;
+        var client = context.LoadFromAssemblyPath(System.IO.Path.Combine(directory, "Client.dll"));
+        string outcome;
+        try { client.GetType("Client.Cases").GetMethod("CallsInlinedAddress").Invoke(null, null); outcome = "Runs"; }
+        catch (System.Reflection.TargetInvocationException e) { outcome = "Escapes:" + e.InnerException.GetType().FullName; }
+        System.IO.File.WriteAllText(args[1], outcome);
+    }
+}
+"""
+                ]
 
-            context.add_Resolving (
-                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
-                    match name.Name with
-                    | "Lib" -> context.LoadFromStream (new MemoryStream (constrained))
-                    | _ -> null
-                )
-            )
+        // What running `CallsInlinedAddress` does on the framework under test's real runtime, as its
+        // own process.
+        let hostOutcome : string =
+            let directory =
+                Path.Combine (Path.GetTempPath (), "pawprint-inlined-address-" + Path.GetRandomFileName ())
+
+            let probe = Path.Combine (directory, "probe")
+            Directory.CreateDirectory probe |> ignore<DirectoryInfo>
 
             try
-                let cases =
-                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Cases"
+                File.WriteAllBytes (Path.Combine (probe, "Lib.dll"), constrained)
+                File.WriteAllBytes (Path.Combine (probe, "Client.dll"), clientImage)
+                let driverPath = Path.Combine (directory, "Driver.dll")
+                File.WriteAllBytes (driverPath, driver)
+                let outcome = Path.Combine (directory, "outcome.txt")
 
-                try
-                    cases.GetMethod("CallsInlinedAddress").Invoke ((null : obj), [||])
-                    |> ignore<obj>
-
-                    None
-                with :? TargetInvocationException as e ->
-                    Some (e.InnerException.GetType().FullName)
+                match RealRuntime.executeAssemblyInPlace [| probe ; outcome |] driverPath with
+                | RealRuntimeResult.NormalExit 0 -> File.ReadAllText outcome
+                | other -> failwith $"the driver ended %A{other}"
             finally
-                context.Unload ()
+                RealRuntime.deleteScratchTree directory
 
-        Assert.That (hostEscapes, Is.EqualTo (Some typeLoad))
+        Assert.That (hostOutcome, Is.EqualTo $"Escapes:%s{typeLoad}")
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
