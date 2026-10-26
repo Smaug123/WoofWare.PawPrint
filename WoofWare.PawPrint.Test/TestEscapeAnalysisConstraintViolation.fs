@@ -811,3 +811,191 @@ public static class Cases
 
         if not failures.IsEmpty then
             failures |> String.concat "\n" |> failwith
+
+    /// A program to run on the host and ask the analysis about.
+    type private Scenario =
+        {
+            Name : string
+            /// Each library's name, its source for the client to compile against, and its source
+            /// to run against, compiled in order, each against those before it.
+            Libraries : (string * string * string) list
+            /// The client's source, which defines `Client.Cases`.
+            Client : string
+            /// The methods of `Client.Cases` to run, each taking nothing and returning an `int`.
+            Cases : string list
+            /// Generic methods of `Client.Cases` to ask the analysis about by themselves, each with
+            /// the case that calls it.
+            Generics : (string * string) list
+        }
+
+    /// Where `scenario` disagrees with the host: a case whose answer names a violation the host
+    /// does not raise, or does not name the one it does unless "unknown"; a generic method by
+    /// itself whose known answer is not its case's; or an analysis that throws.
+    let private disagreements (scenario : Scenario) : string list =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let compileAll (pick : string * string -> string) : (string * byte[]) list =
+            ([], scenario.Libraries)
+            ||> List.fold (fun built (name, against, runs) ->
+                built @ [ name, compile name (List.map snd built) (pick (against, runs)) ]
+            )
+
+        let against = compileAll fst
+        let runs = compileAll snd
+        let clientImage = compileClient (List.map snd against) scenario.Client
+        let hostOutcomes = hostOutcomes runs clientImage scenario.Cases
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraries = runs |> List.map (fun (name, image) -> name, read name image)
+
+        let analysis =
+            analysisOver
+                (clientAssembly :: List.map snd libraries)
+                (fun loaded ->
+                    (loaded, libraries)
+                    ||> List.fold (fun loaded (name, library) ->
+                        match
+                            clientAssembly.AssemblyReferences.Values
+                            |> Seq.tryFind (fun r -> r.Name.Name = name)
+                        with
+                        | Some reference -> fst (loaded.WithBoundReference reference library)
+                        | None -> loaded
+                    )
+                )
+            |> ref
+
+        let violations = Set.ofList [ typeLoad ; verification ]
+
+        let raisedBy (case : string) : Set<string> =
+            match hostOutcomes.[case] with
+            | Outcome.Escapes raised when violations.Contains raised -> Set.singleton raised
+            | Outcome.Escapes _
+            | Outcome.Runs
+            | Outcome.Caught -> Set.empty
+
+        let ask (methodName : string) : Result<Escapes * Set<string>, string> =
+            try
+                let next, escapes =
+                    EscapeAnalysis.escapes analysis.Value (methodNamed clientAssembly "Client.Cases" methodName)
+
+                analysis.Value <- next
+                let shown = render next escapes
+
+                Ok (
+                    escapes,
+                    violations
+                    |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+                )
+            with e ->
+                Error $"%s{scenario.Name}.%s{methodName}: the analysis throws %s{e.Message}"
+
+        [
+            for case in scenario.Cases do
+                match ask case with
+                | Error message -> yield message
+                | Ok (escapes, named) ->
+                    let raised = raisedBy case
+
+                    if not (named = raised || (escapes.Unknown && named.IsSubsetOf raised)) then
+                        yield
+                            $"%s{scenario.Name}.%s{case}: the host's outcome is %A{hostOutcomes.[case]}; the analysis names %A{Set.toList named}, unknown %b{escapes.Unknown}"
+
+            for generic, case in scenario.Generics do
+                match ask generic with
+                | Error message -> yield message
+                | Ok (escapes, named) ->
+                    if not (escapes.Unknown || named = raisedBy case) then
+                        yield
+                            $"%s{scenario.Name}.%s{generic}, by itself: %A{Set.toList named}; %s{case}'s outcome is %A{hostOutcomes.[case]}"
+        ]
+
+    /// Programs whose constraint checks reach a type the analysis follows less directly than most,
+    /// against the host: a `calli` in a generic method, whose signature is over the method's own
+    /// type variables; a generic argument whose base is gone; a function pointer to a method whose
+    /// signature names a struct that is gone, which the JIT does not load; and a struct field whose
+    /// type's argument carries a custom modifier.
+    [<Test>]
+    let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
+        let scenarios =
+            [
+                {
+                    Name = "Calli"
+                    Libraries = []
+                    Client =
+                        """
+namespace Client;
+public static unsafe class Cases
+{
+    static int Id(int x) => x;
+    public static T Apply<T>(delegate*<T, T> f, T x) where T : unmanaged => f(x);
+    public static int CallsApply() { try { return Apply<int>(&Id, 3) == 3 ? 0 : 1; } catch (System.Exception) { return 1; } }
+}
+"""
+                    Cases = [ "CallsApply" ]
+                    Generics = [ "Apply", "CallsApply" ]
+                }
+                {
+                    Name = "BaseGone"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class B { } public class C<T> where T : class { public static void Touch() { } }",
+                            "namespace Lib; public class C<T> where T : class { public static void Touch() { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public class Derived<T> : Lib.B { }
+public static class Cases
+{
+    public static int Generic<T>() { try { Lib.C<Derived<T>>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<int>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "SignatureTypeGone"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct Gone<T> { } public class Stays { }",
+                            "namespace Lib; public class Stays { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Holder<T> { public static void Take(Lib.Gone<T> g) { } }
+public static unsafe class Cases
+{
+    public static int AddressOfTake() { try { delegate*<Lib.Gone<int>, void> p = &Holder<int>.Take; return p == null ? 1 : 0; } catch (System.Exception) { return 1; } }
+}
+"""
+                    Cases = [ "AddressOfTake" ]
+                    Generics = []
+                }
+                {
+                    Name = "ModifiedFieldArgument"
+                    Libraries = []
+                    Client =
+                        """
+namespace Client;
+public unsafe struct HoldsPointers { public System.ValueTuple<delegate*<out int, void>[]> F; }
+public static class Cases
+{
+    static void Takes(HoldsPointers h) { }
+    public static int PassesHolder() { try { Takes(default); return 0; } catch (System.Exception) { return 1; } }
+}
+"""
+                    Cases = [ "PassesHolder" ]
+                    Generics = []
+                }
+            ]
+
+        match scenarios |> List.collect disagreements with
+        | [] -> ()
+        | problems -> problems |> String.concat "\n" |> failwith
