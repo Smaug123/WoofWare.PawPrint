@@ -7750,6 +7750,113 @@ public static unsafe class Uco
         finally
             context.Unload ()
 
+    /// CoreCLR lays out a struct without loading what a pointer field points to or what class a
+    /// reference field names (`GetNestedFieldFlags` reads only their element types), so the walk of
+    /// an `[UnmanagedCallersOnly]` method judges a struct holding a pointer to a missing type, or a
+    /// reference to a missing class, by its layout alone: the pointer is blittable, and the
+    /// reference needs marshalling with runtime marshalling on or off. Each struct is the client's,
+    /// and the provider it runs against lacks the types its fields name.
+    [<Test>]
+    let ``the walk of an UnmanagedCallersOnly method judges a struct without loading what its fields name`` () : unit =
+        let incomplete = ucoProvider false
+        let invalid = UcoCompilation.Raises "System.InvalidProgramException"
+
+        let image (disableMarshalling : bool) : byte[] =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyFieldTargets", isCollectible = true)
+
+            try
+                let provider = context.LoadFromStream (new MemoryStream (ucoProvider true))
+
+                let builder =
+                    Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+                if disableMarshalling then
+                    builder.SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.CompilerServices.DisableRuntimeMarshallingAttribute>.GetConstructor
+                                Type.EmptyTypes,
+                            [||]
+                        )
+                    )
+
+                let modul = builder.DefineDynamicModule "Client"
+
+                let holder (name : string) (fieldType : Type) : Type =
+                    let tb =
+                        modul.DefineType (
+                            name,
+                            TypeAttributes.Public
+                            ||| TypeAttributes.Sealed
+                            ||| TypeAttributes.SequentialLayout,
+                            typeof<ValueType>
+                        )
+
+                    tb.DefineField ("F", fieldType, FieldAttributes.Public)
+                    |> ignore<Emit.FieldBuilder>
+
+                    tb.CreateType ()
+
+                let holders =
+                    [
+                        "TakesGonePointer",
+                        holder "HoldsGonePointer" ((provider.GetType "Provider.GoneStruct").MakePointerType ())
+                        "TakesGoneClass", holder "HoldsGoneClass" (provider.GetType "Provider.GoneClass")
+                    ]
+
+                let v =
+                    modul.DefineType ("V", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+                for name, parameter in holders do
+                    let method =
+                        v.DefineMethod (
+                            name,
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [| parameter |]
+                        )
+
+                    method.SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                            [||]
+                        )
+                    )
+
+                    method.GetILGenerator().Emit Emit.OpCodes.Ret
+
+                v.CreateType () |> ignore<Type>
+                use stream = new MemoryStream ()
+                builder.Save stream
+                stream.ToArray ()
+            finally
+                context.Unload ()
+
+        let failures =
+            [
+                for disableMarshalling, expected in
+                    [
+                        false, [ "TakesGonePointer", UcoCompilation.Compiled ; "TakesGoneClass", invalid ]
+                        true, [ "TakesGonePointer", UcoCompilation.Compiled ; "TakesGoneClass", invalid ]
+                    ] do
+                    let image = image disableMarshalling
+                    let names = List.map fst expected
+                    let host = ucoCompilations image incomplete "V" names
+                    let analysed = ucoAnalysed image incomplete "V" names
+
+                    for name, outcome in expected do
+                        if host.[name] <> outcome then
+                            yield
+                                $"%s{name}, disabled %b{disableMarshalling}: the host's JIT %A{host.[name]}, not %A{outcome}"
+
+                        if fst analysed.[name] <> outcome then
+                            yield
+                                $"%s{name}, disabled %b{disableMarshalling}: the analysis says %A{analysed.[name]}, not %A{outcome}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// Over the runtime under test's own CoreLib, the analysis names the `InvalidProgramException`
     /// CoreCLR refuses an `[UnmanagedCallersOnly]` method taking a `bool` with, as each runtime
     /// makes it (`ExceptionMaking.ResourceMessage`, whose lookup .NET 11 makes differently).
