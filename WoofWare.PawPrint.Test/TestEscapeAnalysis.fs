@@ -7857,6 +7857,82 @@ public static unsafe class Uco
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// A struct nested 65 deep, each holding the one before by value, is past what `LayoutFacts`
+    /// follows. CoreCLR compiles an `[UnmanagedCallersOnly]` method taking it, and the analysis,
+    /// which cannot judge the struct, answers unknown from the method's entry
+    /// (`UnmodelledValueTypeLayout`) rather than failing.
+    [<Test>]
+    let ``the walk of an UnmanagedCallersOnly method leaves a value type it cannot lay out unknown`` () : unit =
+        let incomplete = ucoProvider false
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyDeepNesting", isCollectible = true)
+
+        let image =
+            try
+                let kept =
+                    (context.LoadFromStream (new MemoryStream (ucoProvider true))).GetType "Provider.Kept"
+
+                let builder =
+                    Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+                let modul = builder.DefineDynamicModule "Client"
+
+                let deepest =
+                    (typeof<int>, [ 0..65 ])
+                    ||> List.fold (fun inner depth ->
+                        let tb =
+                            modul.DefineType (
+                                $"S%d{depth}",
+                                TypeAttributes.Public
+                                ||| TypeAttributes.Sealed
+                                ||| TypeAttributes.SequentialLayout,
+                                typeof<ValueType>
+                            )
+
+                        tb.DefineField ("F", inner, FieldAttributes.Public) |> ignore<Emit.FieldBuilder>
+                        tb.CreateType ()
+                    )
+
+                let v =
+                    modul.DefineType ("V", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+                // The second method names a provider type, as `ucoAnalysed` expects the client to.
+                for name, parameter in [ "Deep", deepest ; "KeptPointer", kept.MakePointerType () ] do
+                    let method =
+                        v.DefineMethod (
+                            name,
+                            MethodAttributes.Public ||| MethodAttributes.Static,
+                            typeof<Void>,
+                            [| parameter |]
+                        )
+
+                    method.SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.InteropServices.UnmanagedCallersOnlyAttribute>.GetConstructor Type.EmptyTypes,
+                            [||]
+                        )
+                    )
+
+                    method.GetILGenerator().Emit Emit.OpCodes.Ret
+
+                v.CreateType () |> ignore<Type>
+                use stream = new MemoryStream ()
+                builder.Save stream
+                stream.ToArray ()
+            finally
+                context.Unload ()
+
+        let host = ucoCompilations image incomplete "V" [ "Deep" ]
+        let outcome, sources = (ucoAnalysed image incomplete "V" [ "Deep" ]).["Deep"]
+
+        host.["Deep"] |> shouldEqual UcoCompilation.Compiled
+        outcome |> shouldEqual (UcoCompilation.Raises "Unknown")
+
+        sources
+        |> Set.filter (fun site -> site.StartsWith "V::Deep entry")
+        |> shouldEqual (Set.singleton "V::Deep entry UnmodelledValueTypeLayout")
+
     /// Over the runtime under test's own CoreLib, the analysis names the `InvalidProgramException`
     /// CoreCLR refuses an `[UnmanagedCallersOnly]` method taking a `bool` with, as each runtime
     /// makes it (`ExceptionMaking.ResourceMessage`, whose lookup .NET 11 makes differently).
