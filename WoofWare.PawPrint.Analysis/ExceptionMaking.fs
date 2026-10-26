@@ -102,6 +102,30 @@ module internal ExceptionMaking =
         | SignatureRefusal.VariableArguments ->
             "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
 
+    /// The exception CoreCLR raises refusing the unmanaged calling convention of a call whose
+    /// signature's modifiers name two base conventions (`UnmanagedConventionRead.MultipleBases`),
+    /// and how it makes it: `COMPlusThrowHR` with `COR_E_INVALIDPROGRAM` and one of the runtime's
+    /// own resources (`EEMessageException`), as for `ofSignatureRefusal`.
+    let multipleCallingConventions : string * ExceptionMaking =
+        "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
+
+    /// The exception CoreCLR's JIT raises refusing a call of unmanaged code by Thiscall's
+    /// convention that passes no argument
+    /// (`UnmanagedCallingConvention.refusesThiscallWithoutArguments`), and how it makes it: the JIT
+    /// fails the compilation (`CORJIT_BADCODE`), and the VM raises `InvalidProgramException` by
+    /// `COMPlusThrow` with no resource (`EEException`), which runs the exception's parameterless
+    /// constructor and then sets a message it reads from the runtime's native resources.
+    let thiscallWithoutArguments : string * ExceptionMaking =
+        "System.InvalidProgramException", ExceptionMaking.ParameterlessConstructor
+
+    /// The exception CoreCLR raises refusing a P/Invoke as it describes it for the walk of its
+    /// signature (`JitTypeLoads.unmanagedWalkRefuses`): it is synchronized, or its calling
+    /// conventions conflict. And how it makes it: `COMPlusThrow` with one of the runtime's own
+    /// resources (`EEMessageException`), which runs the exception's parameterless constructor and
+    /// then sets the message it reads from the runtime's native resources.
+    let pInvokeDescriptionRefused : string * ExceptionMaking =
+        "System.TypeLoadException", ExceptionMaking.ParameterlessConstructor
+
     /// The exception CoreCLR raises refusing to make a delegate over an `[UnmanagedCallersOnly]`
     /// method, and how it makes it: `COMDelegate::GetDelegateCtor` throws `NotSupportedException`
     /// by `COMPlusThrow` with the resource name `NotSupported_UnmanagedCallersOnlyTarget`.

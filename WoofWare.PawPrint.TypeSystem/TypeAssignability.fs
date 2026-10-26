@@ -109,6 +109,10 @@ module TypeAssignability =
                     TypeSystemState.resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state current
 
                 match baseType with
+                | Error failure -> state, Error failure
+                | Ok baseType ->
+
+                match baseType with
                 | None ->
                     // Every reference type (including interfaces) is assignable to System.Object.
                     match targetType with
@@ -283,19 +287,17 @@ module TypeAssignability =
         let valueElementNormalisedIdentity
             (state : TypeSystemState)
             (handle : ConcreteTypeHandle)
-            : TypeSystemState * ResolvedTypeIdentity option
+            : TypeSystemState * Result<ResolvedTypeIdentity option, TypeBindingFailure>
             =
-            let state, isEnum =
-                TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state handle
-
-            if isEnum then
+            match TypeSystemState.isEnumValueType loggerFactory dotnetRuntimeDirs baseClassTypes state handle with
+            | state, Error failure -> state, Error failure
+            | state, Ok true ->
                 match
                     TypeSystemState.enumUnderlyingHandle loggerFactory dotnetRuntimeDirs baseClassTypes state handle
                 with
-                | None -> state, None
-                | Some (state, underlying) -> state, normalizedPrimitiveIntegerIdentity underlying
-            else
-                state, normalizedPrimitiveIntegerIdentity handle
+                | None -> state, Ok None
+                | Some (state, underlying) -> state, Ok (normalizedPrimitiveIntegerIdentity underlying)
+            | state, Ok false -> state, Ok (normalizedPrimitiveIntegerIdentity handle)
 
         // ECMA-335 III.4.3 / CoreCLR `TypeDesc::CanCastParam`: element-compatibility
         // for parameterised array slots (whether array-to-array or SZ-array-to-
@@ -331,8 +333,13 @@ module TypeAssignability =
                 elif objIsRef <> targetIsRef then
                     state, Ok false
                 else
-                    let state, objNormalised = valueElementNormalisedIdentity state objElement
-                    let state, targetNormalised = valueElementNormalisedIdentity state targetElement
+                    match valueElementNormalisedIdentity state objElement with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok objNormalised ->
+
+                    match valueElementNormalisedIdentity state targetElement with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok targetNormalised ->
 
                     match objNormalised, targetNormalised with
                     | Some a, Some b when a = b -> state, Ok true

@@ -561,38 +561,70 @@ module TypeResolution =
             | ExpandingParam.Method i -> $"!!%d{i}"
 
     /// <summary>
-    /// The type a bare <c>FromDefinition</c> or <c>FromReference</c> spelling of
-    /// <paramref name="definition" /> names when read in the type environment
-    /// <paramref name="typeGenericArgs" />.
+    /// <paramref name="definition" /> instantiated at <paramref name="args" />, the arguments an
+    /// instantiation names for it.
     /// </summary>
     /// <remarks>
-    /// A non-generic definition is the type itself; the environment belongs to whatever the
-    /// spelling sits inside and says nothing about this type. CoreCLR refuses a signature that
-    /// spells a generic definition bare (an instantiation's head is resolved at the
-    /// instantiation's own arguments, not here), so for one the convention is that it names
-    /// <c>T&lt;!0, ..., !(n-1)&gt;</c> read in the environment: the environment's first <c>n</c>
-    /// entries, copied as they stand. An empty environment leaves the type open, and an
-    /// environment with fewer than <c>n</c> entries is unmodelled rather than leaving some
-    /// parameters unsubstituted.
+    /// There must be exactly as many arguments as the definition declares generic parameters (for
+    /// a nested type, counting those it inherits from its declaring types). Otherwise CoreCLR's
+    /// class loader throws <c>TypeLoadException</c> (<c>IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS</c>),
+    /// which is unmodelled here.
     /// </remarks>
-    let private instantiateBareSpelling
-        (typeGenericArgs : ImmutableArray<TypeDefn>)
+    let private instantiateDefinition
+        (args : ImmutableArray<TypeDefn>)
         (definition : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : Result<WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let arity = definition.Generics.Length
-
-        if arity = 0 || typeGenericArgs.IsEmpty then
-            Ok (TypeInfo.applyGenericArgs ImmutableArray.Empty definition)
-        elif typeGenericArgs.Length < arity then
+        if args.IsEmpty || args.Length <> definition.Generics.Length then
             {
                 Diagnostic =
-                    $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} is spelled bare in a generic environment of %d{typeGenericArgs.Length} argument(s), fewer than its %d{arity} generic parameter(s)"
+                    $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} declares %d{definition.Generics.Length} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled"
             }
             |> TypeBindingFailure.Unmodelled
             |> Error
         else
-            Ok (TypeInfo.applyGenericArgs (ImmutableArray.CreateRange (Seq.truncate arity typeGenericArgs)) definition)
+            Ok (TypeInfo.applyGenericArgs args definition)
+
+    /// <summary>
+    /// The head of an instantiation instantiated at <paramref name="args" />, the instantiation's
+    /// arguments with any parameters already substituted, without the base-chain priming
+    /// <c>resolveTypeFromDefn</c> promises.
+    /// </summary>
+    /// <remarks>
+    /// Metadata can only spell the head as the TypeDef or TypeRef of a generic definition, and any
+    /// other head is unmodelled. <paramref name="assy" /> is the assembly a TypeRef head is a
+    /// reference of.
+    /// </remarks>
+    let private instantiateHead
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (head : TypeDefn)
+        (args : ImmutableArray<TypeDefn>)
+        (assy : DumpedAssembly)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
+        =
+        let instantiateIn (definedIn : DumpedAssembly) (handle : TypeDefinitionHandle) (assemblies : LoadedAssemblies) =
+            match instantiateDefinition args definedIn.TypeDefs.[handle] with
+            | Ok instantiated -> assemblies, Ok (definedIn, instantiated)
+            | Error failure -> assemblies, Error failure
+
+        match head with
+        | TypeDefn.FromDefinition (identity, _typeKind) ->
+            instantiateIn (assemblies.ByDefinitionName identity.AssemblyFullName) identity.TypeDefinition.Get assemblies
+        | TypeDefn.FromReference (ref, _typeKind) ->
+            match resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (resolvedIn, resolved) -> instantiateIn resolvedIn resolved.TypeDefHandle assemblies
+        | head ->
+            assemblies,
+            Error (
+                TypeBindingFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            $"An instantiation's head %O{head} is not a generic type definition named by a TypeDef or TypeRef, which is the only head a signature can spell"
+                    }
+            )
 
     /// A cyclic environment is not something metadata can express: environments are built by the
     /// interpreter, and every live path builds them out of `concreteHandleToTypeDefn`, which emits
@@ -604,6 +636,31 @@ module TypeResolution =
 
         failwith
             $"TypeResolution: generic environment is cyclic. Expanding generic parameter %O{param} requires expanding %O{param} again (already expanding: %s{chain}); its argument is %O{arg}. A generic environment must be well-founded: an argument may not mention, whether directly or through the other arguments, the parameter it is bound to. Callers should be passing closed generic arguments."
+
+    /// The argument the environment binds <paramref name="param" /> to. Guest metadata can name a
+    /// parameter the environment does not hold (`List`1<!0>` read from a non-generic method, say),
+    /// and CoreCLR's `SigPointer::GetTypeVariableThrowing` refuses that with
+    /// <c>BadImageFormatException</c>, which here is unmodelled.
+    let private argumentOf
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (methodGenericArgs : ImmutableArray<TypeDefn>)
+        (param : ExpandingParam)
+        : Result<TypeDefn, TypeBindingFailure>
+        =
+        let environment, index =
+            match param with
+            | ExpandingParam.Type index -> typeGenericArgs, index
+            | ExpandingParam.Method index -> methodGenericArgs, index
+
+        if 0 <= index && index < environment.Length then
+            Ok environment.[index]
+        else
+            {
+                Diagnostic =
+                    $"The generic parameter %O{param} is out of range of an environment of %d{environment.Length} argument(s); CoreCLR refuses that with BadImageFormatException, which is not modelled"
+            }
+            |> TypeBindingFailure.Unmodelled
+            |> Error
 
     /// <summary>
     /// What <c>substituteGenericsInTypeDefn</c> is being asked, within one fixed generic
@@ -667,11 +724,10 @@ module TypeResolution =
     /// <para>
     /// A table is valid only for the environment (<c>typeGenericArgs</c>,
     /// <c>methodGenericArgs</c>) it was created against, which is why the environment is not part
-    /// of <c>SubstitutionKey</c>: a fresh table is made at the one place the environment changes,
-    /// namely the head resolution of a <c>GenericInstantiation</c> in
-    /// <c>resolveTypeFromDefnUnprimed</c>. Everywhere else the environment is threaded unchanged,
-    /// so the table travels with it. Nothing checks that, which is why nothing else about the
-    /// question is left out of the key; see <c>SubstitutionKey</c>.
+    /// of <c>SubstitutionKey</c>: one top-level <c>resolveTypeFromDefn</c> call threads its
+    /// environment unchanged throughout, so the table travels with it. Nothing checks that, which
+    /// is why nothing else about the question is left out of the key; see
+    /// <c>SubstitutionKey</c>.
     /// </para>
     /// <para>
     /// Substitution also has the side effect of loading assemblies, and a memo hit skips it. That
@@ -766,13 +822,8 @@ module TypeResolution =
             | assemblies, Ok resolved -> assemblies, Ok (wrap resolved)
             | assemblies, Error failure -> assemblies, Error failure
 
-        // `ty` resolved in `typeGenericArgs`, read back as the TypeDefn naming the result.
-        let preserved
-            (ty : TypeDefn)
-            (typeGenericArgs : ImmutableArray<TypeDefn>)
-            (memo : SubstitutionMemo)
-            (assemblies : LoadedAssemblies)
-            =
+        // `ty` resolved in the environment, read back as the TypeDefn naming the result.
+        let preserved (ty : TypeDefn) (assemblies : LoadedAssemblies) =
             match
                 resolveTypeFromDefnTracked
                     loggerFactory
@@ -790,21 +841,19 @@ module TypeResolution =
             | assemblies, Ok (_, resolvedInfo) ->
                 assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo)
 
+        // A parameter replaced by its argument, which is substituted in turn.
+        let expand (link : ExpandingParam) =
+            match argumentOf typeGenericArgs methodGenericArgs link with
+            | Error failure -> assemblies, Error failure
+            | Ok arg ->
+                if Set.contains link expanding then
+                    failCyclicEnvironment link arg expanding
+
+                substitute (Set.add link expanding) assemblies arg
+
         match ty with
-        | TypeDefn.GenericTypeParameter idx ->
-            let link = ExpandingParam.Type idx
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link typeGenericArgs.[idx] expanding
-
-            substitute (Set.add link expanding) assemblies typeGenericArgs.[idx]
-        | TypeDefn.GenericMethodParameter idx ->
-            let link = ExpandingParam.Method idx
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link methodGenericArgs.[idx] expanding
-
-            substitute (Set.add link expanding) assemblies methodGenericArgs.[idx]
+        | TypeDefn.GenericTypeParameter idx -> expand (ExpandingParam.Type idx)
+        | TypeDefn.GenericMethodParameter idx -> expand (ExpandingParam.Method idx)
         | TypeDefn.OneDimensionalArrayLowerBoundZero elementType ->
             wrapped TypeDefn.OneDimensionalArrayLowerBoundZero elementType
         | TypeDefn.Array (elementType, rank) -> wrapped (fun resolved -> TypeDefn.Array (resolved, rank)) elementType
@@ -813,22 +862,25 @@ module TypeResolution =
         | TypeDefn.GenericInstantiation (generic, args) ->
             match traverseLoaded (substitute expanding) assemblies args with
             | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok args' -> preserved generic args' (SubstitutionMemo ()) assemblies
+            | assemblies, Ok args' ->
+                match instantiateHead loggerFactory dotnetRuntimeDirs generic args' assy assemblies with
+                | assemblies, Error failure -> assemblies, Error failure
+                | assemblies, Ok (resolvedIn, instantiated) ->
+                    match primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn instantiated with
+                    | assemblies, Error failure -> assemblies, Error failure
+                    | assemblies, Ok (_, primed) ->
+                        assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies primed)
         | TypeDefn.FromReference _
         | TypeDefn.FromDefinition _
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void ->
-            // A bare spelling of a generic definition comes back as its instantiation at the
-            // environment's own parameters (see `instantiateBareSpelling`), which are then
-            // substituted like any other.
-            match preserved ty typeGenericArgs memo assemblies with
-            | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok (TypeDefn.GenericInstantiation (head, _)) when typeGenericArgs.IsEmpty ->
-                // With no environment the definition comes back open, and its parameters have
-                // nothing to be substituted with. A guest can spell this, as an instantiation's
-                // argument naming a generic definition bare; CoreCLR's
+            match preserved ty assemblies with
+            | assemblies, Ok (TypeDefn.GenericInstantiation (head, _)) ->
+                // A generic definition spelled bare names itself, open (see `resolveTypeFromDefn`),
+                // and an open definition is not a type an instantiation can be at. CoreCLR's
                 // `SigPointer::GetTypeHandleThrowing` loads such an argument with
-                // `FailIfUninstDefOrRef`, and so throws `TypeLoadException`.
+                // `FailIfUninstDefOrRef`, and so throws `TypeLoadException`, whatever the
+                // environment.
                 assemblies,
                 Error (
                     TypeBindingFailure.Unmodelled
@@ -837,17 +889,8 @@ module TypeResolution =
                                 $"An instantiation's argument %O{ty} names the generic definition %O{head} without instantiating it; CoreCLR refuses that with TypeLoadException, which is not modelled"
                         }
                 )
-            | assemblies, Ok (TypeDefn.GenericInstantiation (head, injected)) ->
-                match
-                    traverseLoaded
-                        (fun assemblies k -> substitute expanding assemblies (TypeDefn.GenericTypeParameter k))
-                        assemblies
-                        (Seq.init injected.Length id)
-                with
-                | assemblies, Error failure -> assemblies, Error failure
-                | assemblies, Ok substituted -> assemblies, Ok (TypeDefn.GenericInstantiation (head, substituted))
-            | assemblies, Ok preserved -> assemblies, Ok preserved
-        | other -> preserved other typeGenericArgs memo assemblies
+            | resolved -> resolved
+        | other -> preserved other assemblies
 
     /// The body of <c>resolveTypeFromDefn</c>, carrying the chain of parameter expansions
     /// currently in flight. The public entry point starts that chain empty; everything inside
@@ -907,6 +950,27 @@ module TypeResolution =
                     }
             )
 
+        // A parameter resolved as its argument.
+        let resolveParameter (link : ExpandingParam) =
+            match argumentOf typeGenericArgs methodGenericArgs link with
+            | Error failure -> assemblies, Error failure
+            | Ok arg ->
+                if Set.contains link expanding then
+                    failCyclicEnvironment link arg expanding
+
+                // TODO: this assembly is probably wrong?
+                resolveTypeFromDefnTracked
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    arg
+                    typeGenericArgs
+                    methodGenericArgs
+                    (Set.add link expanding)
+                    memo
+                    assy
+                    assemblies
+
         match ty with
         | TypeDefn.GenericInstantiation (generic, args) ->
             let substitute (assemblies : LoadedAssemblies) (arg : TypeDefn) =
@@ -924,46 +988,17 @@ module TypeResolution =
 
             match traverseLoaded substitute assemblies args with
             | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok args' ->
-
-            // `args'` replaces `typeGenericArgs` as the environment `generic` is resolved in, so
-            // in principle the chain's type-parameter links now name parameters of an environment
-            // we have left. We carry them anyway: `generic` is the head of an instantiation, which
-            // metadata can only ever spell as a TypeDef or TypeRef, and resolving either consults
-            // no parameter and so reaches no guard. Clearing the links would only change the
-            // answer for a parameter-headed instantiation — a shape no assembly can contain, and
-            // one whose environment is cyclic in any case.
-            //
-            // The memo, by contrast, must *not* be carried: it is keyed on the type alone, and is
-            // therefore only meaningful for the environment it was built against, which we have
-            // just left.
-            resolveTypeFromDefnTracked
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                generic
-                args'
-                methodGenericArgs
-                expanding
-                (SubstitutionMemo ())
-                assy
-                assemblies
+            | assemblies, Ok args' -> instantiateHead loggerFactory dotnetRuntimeDirs generic args' assy assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
-            let assy = assemblies.ByDefinitionName identity.AssemblyFullName
+            let definedIn = assemblies.ByDefinitionName identity.AssemblyFullName
 
-            match instantiateBareSpelling typeGenericArgs assy.TypeDefs.[identity.TypeDefinition.Get] with
-            | Ok defn -> assemblies, Ok (assy, defn)
-            | Error failure -> assemblies, Error failure
+            assemblies,
+            Ok (
+                definedIn,
+                TypeInfo.applyGenericArgs ImmutableArray.Empty definedIn.TypeDefs.[identity.TypeDefinition.Get]
+            )
         | TypeDefn.FromReference (ref, _typeKind) ->
-            match resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies with
-            | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok (resolvedIn, resolved) ->
-                if resolved.Generics.IsEmpty then
-                    assemblies, Ok (resolvedIn, resolved)
-                else
-                    match instantiateBareSpelling typeGenericArgs resolvedIn.TypeDefs.[resolved.TypeDefHandle] with
-                    | Ok defn -> assemblies, Ok (resolvedIn, defn)
-                    | Error failure -> assemblies, Error failure
+            resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies
         | TypeDefn.PrimitiveType prim ->
             let primitive =
                 match prim with
@@ -1000,44 +1035,8 @@ module TypeResolution =
                 |> TypeInfo.mapGeneric (fun _ -> failwith "System.Void is not generic")
 
             assemblies, Ok (baseClassTypes.Corelib, ty)
-        | TypeDefn.GenericTypeParameter param ->
-            let arg = typeGenericArgs.[param]
-            let link = ExpandingParam.Type param
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link arg expanding
-
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefnTracked
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                arg
-                typeGenericArgs
-                methodGenericArgs
-                (Set.add link expanding)
-                memo
-                assy
-                assemblies
-        | TypeDefn.GenericMethodParameter param ->
-            let arg = methodGenericArgs.[param]
-            let link = ExpandingParam.Method param
-
-            if Set.contains link expanding then
-                failCyclicEnvironment link arg expanding
-
-            // TODO: this assembly is probably wrong?
-            resolveTypeFromDefnTracked
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                arg
-                typeGenericArgs
-                methodGenericArgs
-                (Set.add link expanding)
-                memo
-                assy
-                assemblies
+        | TypeDefn.GenericTypeParameter param -> resolveParameter (ExpandingParam.Type param)
+        | TypeDefn.GenericMethodParameter param -> resolveParameter (ExpandingParam.Method param)
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
         | TypeDefn.Array _ ->
             // This is lossy: we return System.Array's TypeInfo, discarding the element type.
@@ -1064,6 +1063,15 @@ module TypeResolution =
     /// <c>primeBaseChain</c>: every assembly reachable from its base-type chain is loaded in the
     /// returned load context, so the caller may run the pure walks (<c>isValueType</c>,
     /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c>) over it.
+    /// </para>
+    /// <para>
+    /// A bare <c>FromDefinition</c> or <c>FromReference</c> names the definition itself, so a
+    /// generic one comes back open, at its own parameters, whatever the environment. An
+    /// instantiation names exactly as many arguments as its definition declares parameters, none
+    /// of them a generic definition spelled bare; CoreCLR refuses either with
+    /// <c>TypeLoadException</c>, and here either is unmodelled. So is a generic parameter that
+    /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold,
+    /// which CoreCLR refuses with <c>BadImageFormatException</c>.
     /// </para>
     /// <para>
     /// <paramref name="typeGenericArgs" /> and <paramref name="methodGenericArgs" /> must be

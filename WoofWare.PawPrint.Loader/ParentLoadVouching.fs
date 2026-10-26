@@ -236,7 +236,8 @@ module ParentLoadVouching =
                         | Ok Named.Absent -> Ok ()
                         | Ok (Named.Found (identity, definition)) ->
                             let constrains ((_, metadata) : GenericParamFromMetadata) : bool =
-                                metadata.Constraint.IsSome
+                                metadata.RequiresReferenceType
+                                || metadata.RequiresNonNullableValueType
                                 || metadata.RequiresParameterlessConstructor
                                 || not metadata.Constraints.IsEmpty
 

@@ -797,7 +797,10 @@ module IlMachineTypeResolution =
         // If it's a non-generic type, we can use concretizeTypeDefinition directly
         if declaringType.Generics.IsEmpty then
             let handle, currentCtx =
-                TypeConcretization.concretizeTypeDefinition currentCtx declaringType.Identity
+                TypeConcretization.concretizeTypeDefinition
+                    (loader loggerFactory state)
+                    currentCtx
+                    declaringType.Identity
 
             let newState =
                 { state with
@@ -808,7 +811,7 @@ module IlMachineTypeResolution =
                         }
                 }
 
-            handle, newState
+            BindingStop.bound handle, newState
         else
             // For generic types, we need to check if this concrete instantiation already exists
             let genericHandles = genericHandles.ToImmutable ()

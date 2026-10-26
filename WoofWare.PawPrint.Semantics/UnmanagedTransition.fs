@@ -28,6 +28,13 @@ type PInvokeMarshalling =
         ConvertsLocale : bool
         /// Whether it takes a variable argument list.
         TakesVariableArguments : bool
+        /// Whether it is synchronized (`MethodImplAttributes.Synchronized`), which the VM refuses
+        /// as it begins to describe it for the walk, raising `TypeLoadException`
+        /// (`IDS_EE_NOSYNCHRONIZED`, `InitializeSigInfoAndPopulatePInvokeMethodDesc`).
+        Synchronized : bool
+        /// Whether the VM, describing it as the walk begins, refuses the calling conventions it
+        /// names, raising `TypeLoadException` (`UnmanagedCallingConvention.describingRefuses`).
+        RefusesConventions : bool
         /// Whether its assembly leaves runtime marshalling enabled (no `DisableRuntimeMarshalling`).
         RuntimeMarshalling : bool
         /// The positions, 0 its return type and then each parameter from 1, whose marshalling its
@@ -49,8 +56,8 @@ type UnmanagedTarget =
 /// (`JitTypeLoads.unmanagedMeetings`).
 type UnmanagedCall =
     {
-        /// The calling convention, as far as whether it is Swift's.
-        Convention : UnmanagedConvention
+        /// What CoreCLR reads as the call's calling convention.
+        Convention : UnmanagedConventionRead
         /// Where the call is in its method's body.
         Placement : UnmanagedCallPlacement
         /// Whether the calling method's assembly disables optimisation (`DebuggableAttribute`), so
@@ -131,9 +138,9 @@ module UnmanagedTarget =
         let definition = assembly.Methods.[method]
         let metadata = assembly.PeReader.GetMetadataReader ()
 
-        let preservesSignature =
+        let implAttributes =
             match definition with
-            | MethodInfo.Metadata (_, facts) -> facts.ImplAttributes.HasFlag MethodImplAttributes.PreserveSig
+            | MethodInfo.Metadata (_, facts) -> facts.ImplAttributes
             | MethodInfo.Synthesised _ ->
                 failwith $"BUG: %O{method} of %s{assembly.DefinitionFullName} is a P/Invoke without metadata"
 
@@ -164,11 +171,13 @@ module UnmanagedTarget =
 
         UnmanagedTarget.PInvoke
             {
-                PreservesSignature = preservesSignature
+                PreservesSignature = implAttributes.HasFlag MethodImplAttributes.PreserveSig
                 SetsLastError = setsLastError
                 ConvertsLocale = convertsLocale assembly method
                 TakesVariableArguments =
                     definition.Signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+                Synchronized = implAttributes.HasFlag MethodImplAttributes.Synchronized
+                RefusesConventions = UnmanagedCallingConvention.describingRefuses assembly method
                 RuntimeMarshalling = runtimeMarshalling assembly
                 MarshalledPositions = marshalled
             }

@@ -141,6 +141,14 @@ module TestTypeSystemBindingFailure =
         concretize f (TypeDefn.GenericInstantiation (int32, ImmutableArray.Create int32))
         |> unmodelledSaying "Generic instantiation of"
 
+        // A non-generic definition given arguments is the wrong arity too.
+        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Create int32))
+        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 1 argument(s)"
+
+        // No signature can spell an instantiation with no arguments, even of a non-generic definition.
+        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Empty))
+        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 0 argument(s)"
+
     [<Test>]
     let ``comparing signatures fails where a type it must bind does not`` () : unit =
         let f = UnmodelledImage.fixture ()
@@ -193,27 +201,14 @@ module TestTypeSystemBindingFailure =
         |> shouldEqual (Ok false)
 
     [<Test>]
-    let ``priming a type whose base type is absent fails`` () : unit =
+    let ``concretising a type whose base type is absent fails`` () : unit =
         let f = UnmodelledImage.fixture ()
         let derived = f.Analysed.TypeDefs.[f.Shapes.Derived]
 
-        let handle, ctx =
-            TypeConcretization.concretizeTypeDefinition (context f) derived.Identity
-
-        match
-            Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loader f)
-                f.BaseClassTypes
-                (System.Collections.Generic.HashSet ())
-                ctx.LoadedAssemblies
-                ctx.ConcreteTypes
-                handle
-        with
-        | _,
-          _,
-          Some (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
-            ()
-        | _, _, other -> failwith $"expected the base type to be absent, got %A{other}"
+        match TypeConcretization.concretizeTypeDefinition (loader f) (context f) derived.Identity with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))),
+          _ -> ()
+        | other, _ -> failwith $"expected the base type to be absent, got %A{other}"
 
     [<Test>]
     let ``a method reference whose parent's base type is absent names the absent type`` () : unit =
@@ -366,10 +361,161 @@ module TestTypeSystemBindingFailure =
         |> snd
         |> unmodelledSaying fragment
 
+        // An environment has nothing to instantiate the bare argument at, however many arguments
+        // it holds.
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfBareList
+            f.Analysed
+            (ImmutableArray.Create int32)
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> unmodelledSaying fragment
+
         match bindMember f f.Shapes.ListOfBareListClear with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>) |> unmodelledSaying fragment
         | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    [<Test>]
+    let ``a generic parameter outside its environment is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let fromSpec (handle : TypeSpecificationHandle) (environment : TypeDefn list) =
+            TypeResolution.resolveTypeFromSpec
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                handle
+                f.Analysed
+                (ImmutableArray.CreateRange environment)
+                (ImmutableArray.CreateRange environment)
+                f.Assemblies
+            |> snd
+
+        for handle, parameter in
+            [
+                f.Shapes.TypeParameter, "!0"
+                f.Shapes.ListOfTypeParameter, "!0"
+                f.Shapes.MethodParameter, "!!0"
+                f.Shapes.ListOfMethodParameter, "!!0"
+            ] do
+            fromSpec handle []
+            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
+
+            match fromSpec handle [ int32 ] with
+            | Ok _ -> ()
+            | Error failure ->
+                failwith $"expected %s{parameter} to bind in [int32], got %s{TypeBindingFailure.describe failure}"
+
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.ListOfTypeParameter
+            f.Analysed
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> unmodelledSaying "BadImageFormatException"
+
+        for handle in [ f.Shapes.ListOfTypeParameterClear ; f.Shapes.ListOfMethodParameterClear ] do
+            match bindMember f handle with
+            | Error (MemberBindingFailure.TypeUnbound failure) ->
+                (Error failure : Result<unit, TypeBindingFailure>)
+                |> unmodelledSaying "BadImageFormatException"
+            | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    /// A generated spelling of a generic parameter: which one, and how deep in `List`1` it sits.
+    type private ParameterSpelling =
+        {
+            IsMethod : bool
+            Index : int
+            Depth : int
+        }
+
+    [<RequireQualifiedAccess>]
+    type private InRange =
+        | Binds
+        | OutOfRange
+
+    [<Test>]
+    let ``the Loader binds a generic parameter exactly when its environment holds it`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let list = spelled f f.Shapes.List
+
+        let gen =
+            gen {
+                let! isMethod = Gen.elements [ true ; false ]
+                let! index = Gen.choose (0, 3)
+                let! depth = Gen.choose (0, 2)
+                let! typeArgs = Gen.choose (0, 3)
+                let! methodArgs = Gen.choose (0, 3)
+
+                return
+                    {
+                        IsMethod = isMethod
+                        Index = index
+                        Depth = depth
+                    },
+                    typeArgs,
+                    methodArgs
+            }
+
+        let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
+            let parameter =
+                if spelling.IsMethod then
+                    TypeDefn.GenericMethodParameter spelling.Index
+                else
+                    TypeDefn.GenericTypeParameter spelling.Index
+
+            let ty =
+                Seq.replicate spelling.Depth ()
+                |> Seq.fold
+                    (fun inner () -> TypeDefn.GenericInstantiation (list, ImmutableArray.Create inner))
+                    parameter
+
+            let result =
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ty
+                    (ImmutableArray.CreateRange (List.replicate typeArgs int32))
+                    (ImmutableArray.CreateRange (List.replicate methodArgs int32))
+                    f.Analysed
+                    f.Assemblies
+                |> snd
+
+            let size = if spelling.IsMethod then methodArgs else typeArgs
+
+            match result with
+            | Ok _ when spelling.Index < size -> cover InRange.Binds
+            | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
+                let name =
+                    if spelling.IsMethod then
+                        $"!!%d{spelling.Index}"
+                    else
+                        $"!%d{spelling.Index}"
+
+                unmodelled.Diagnostic
+                |> shouldContainText
+                    $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
+
+                cover InRange.OutOfRange
+            | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
+
+            true
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen gen) property
+
+        coverage.Count InRange.Binds |> shouldBeGreaterThan 100
+        coverage.Count InRange.OutOfRange |> shouldBeGreaterThan 100
 
     [<Test>]
     let ``a failure to bind a member reference names the row`` () : unit =
@@ -480,7 +626,8 @@ module TestTypeSystemBindingFailure =
     /// The reference implementation: the first part of the spelling, in the order a runtime type is
     /// built from it, that does not bind. An instantiation is refused outright where an argument
     /// carries a custom modifier, before any argument is bound; otherwise its arguments come first,
-    /// in order, and then the generic definition, which here always binds.
+    /// in order, and then the generic definition, which here always binds but refuses any number of
+    /// arguments other than its one generic parameter.
     let rec private expected (spelling : Spelling) : Expected option =
         let firstOf (parts : Spelling list) : Expected option = parts |> List.tryPick expected
 
@@ -496,11 +643,23 @@ module TestTypeSystemBindingFailure =
             if arguments |> List.exists carriesModifier then
                 Some Expected.Unmodelled
             else
-                firstOf arguments
+                match firstOf arguments with
+                | Some failure -> Some failure
+                | None when arguments.Length <> 1 -> Some Expected.Unmodelled
+                | None -> None
         | Spelling.FunctionPointer (returns, parameters) -> firstOf (Option.toList returns @ parameters)
 
     let private genSpelling : Gen<Spelling> =
         let leaf = Gen.elements leaves |> Gen.map Spelling.Leaf
+
+        // An instantiation at the wrong arity is refused only once every argument binds, which
+        // arbitrary arguments rarely all do.
+        let wrongArity =
+            Gen.elements [ 0 ; 2 ; 3 ]
+            |> Gen.bind (fun n ->
+                Gen.listOfLength n (leaves |> List.filter (fun leaf -> leaf.Fails.IsNone) |> Gen.elements)
+            )
+            |> Gen.map (List.map Spelling.Leaf >> Spelling.ListOf)
 
         let rec go (size : int) : Gen<Spelling> =
             if size <= 0 then
@@ -519,6 +678,7 @@ module TestTypeSystemBindingFailure =
                         1, Gen.map Spelling.Pinned smaller
                         1, Gen.map Spelling.Modified smaller
                         2, Gen.map Spelling.ListOf several
+                        1, wrongArity
                         2,
                         Gen.map2
                             (fun returns parameters -> Spelling.FunctionPointer (returns, parameters))
@@ -535,6 +695,7 @@ module TestTypeSystemBindingFailure =
         | FailsUnavailable
         | FailsUnmodelled
         | RefusedForAModifier
+        | RefusedForArity
 
     [<Test>]
     let ``concretisation fails exactly where the first part that does not bind is`` () : unit =
@@ -552,6 +713,9 @@ module TestTypeSystemBindingFailure =
                 if unmodelled.Diagnostic.Contains "custom modifier" then
                     cover Shown.RefusedForAModifier
 
+                if unmodelled.Diagnostic.Contains "declares 1 generic parameter(s)" then
+                    cover Shown.RefusedForArity
+
                 cover Shown.FailsUnmodelled
             | expected, actual -> failwith $"expected %A{expected}, got %A{actual}"
 
@@ -565,6 +729,7 @@ module TestTypeSystemBindingFailure =
         coverage.Count Shown.FailsUnavailable |> shouldBeGreaterThan 100
         coverage.Count Shown.FailsUnmodelled |> shouldBeGreaterThan 100
         coverage.Count Shown.RefusedForAModifier |> shouldBeGreaterThan 20
+        coverage.Count Shown.RefusedForArity |> shouldBeGreaterThan 20
 
     [<RequireQualifiedAccess>]
     type private Resolved =
@@ -604,3 +769,67 @@ module TestTypeSystemBindingFailure =
         coverage.Count Resolved.Binds |> shouldBeGreaterThan 100
         coverage.Count Resolved.Fails |> shouldBeGreaterThan 100
         coverage.Count Resolved.RefusedForABareArgument |> shouldBeGreaterThan 5
+
+    [<RequireQualifiedAccess>]
+    type private Agreement =
+        | Binds
+        | Fails
+
+    /// The generated spellings mention no generic parameter, so the environment they are read in
+    /// has nothing to bind in them: in particular, it cannot instantiate a generic definition one
+    /// of them names bare.
+    [<Test>]
+    let ``the Loader resolves a spelling with no parameters alike in every environment`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+        let str = TypeDefn.PrimitiveType PrimitiveType.String
+
+        let resolveIn (environment : TypeDefn list) (ty : TypeDefn) : Result<TypeDefn, TypeBindingFailure> =
+            match
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ty
+                    (ImmutableArray.CreateRange environment)
+                    ImmutableArray.Empty
+                    f.Analysed
+                    f.Assemblies
+            with
+            | assemblies, Ok (_, info) -> Ok (LoadedTypeInfo.typeInfoToTypeDefn f.BaseClassTypes assemblies info)
+            | _, Error failure -> Error failure
+
+        let property (cover : Agreement -> unit) (spelling : Spelling) : bool =
+            let ty = toTypeDefn f spelling
+            let inEmpty = resolveIn [] ty
+
+            match inEmpty with
+            | Ok _ -> cover Agreement.Binds
+            | Error _ -> cover Agreement.Fails
+
+            [ [ int32 ] ; [ int32 ; str ] ; [ str ; int32 ; int32 ] ]
+            |> List.forall (fun environment -> resolveIn environment ty = inEmpty)
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+
+        coverage.Count Agreement.Binds |> shouldBeGreaterThan 100
+        coverage.Count Agreement.Fails |> shouldBeGreaterThan 100
+
+    [<Test>]
+    let ``an instantiation of a type reference whose arguments do not match its parameters is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let list = spelled f f.Shapes.List
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+        TypeResolution.resolveTypeFromDefn
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            (TypeDefn.GenericInstantiation (list, ImmutableArray.Create (int32, int32)))
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            f.Analysed
+            f.Assemblies
+        |> snd
+        |> unmodelledSaying "generic parameter"

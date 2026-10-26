@@ -641,7 +641,8 @@ module internal UnsafeAccessorDispatch =
         : Result<unit, UnsafeAccessorRefusal>
         =
         let constrained (metadata : GenericParamMetadata) : bool =
-            metadata.Constraint.IsSome
+            metadata.RequiresReferenceType
+            || metadata.RequiresNonNullableValueType
             || metadata.RequiresParameterlessConstructor
             || not metadata.Constraints.IsEmpty
 

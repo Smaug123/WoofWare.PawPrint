@@ -127,7 +127,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirsFor seed.UnixPlatform
 
         use peImage = new MemoryStream (image)
 

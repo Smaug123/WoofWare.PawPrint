@@ -36,9 +36,11 @@ type Opacity =
     /// runs, which the analysis does not follow. So too such a call on a type variable that allows a
     /// byref-like type, in a definition analysed for every instantiation at once.
     | BoxedByRefLikeReceiver
-    /// An <c>[UnmanagedCallersOnly]</c> method whose attribute CoreCLR cannot read the calling
-    /// conventions of (<c>CallersOnlyConvention</c>), which it reads as the JIT begins to compile the
-    /// method (<c>getUnmanagedCallConv</c>), before any of it runs. Where it cannot parse the blob,
+    /// An <c>[UnmanagedCallersOnly]</c> method, or a method calling a P/Invoke, whose attribute
+    /// (<c>[UnmanagedCallersOnly]</c>, or the P/Invoke's <c>[UnmanagedCallConv]</c>) CoreCLR cannot
+    /// read the calling conventions of (<c>UnmanagedConventionRead</c>), which it reads as the JIT
+    /// begins to compile the method or compiles the call (<c>getUnmanagedCallConv</c>), before any
+    /// of the method runs. Where it cannot parse the blob,
     /// <c>IfFailThrow</c> raises the exception of the failure's <c>HRESULT</c>: a
     /// <c>COMException</c> for most such blobs, an <c>OverflowException</c> where a string runs past
     /// the blob's end; where the blob says
@@ -1243,6 +1245,23 @@ module EscapeAnalysis =
         | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, None
         | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
+    /// Does the base-type chain of the definition `identity` bind? TypeSystem loads it before it
+    /// instantiates the type (`TypeConcretization`), as CoreCLR loads a type's parent first, so where
+    /// it does not, the type has no runtime type. Loads the assemblies the chain needs.
+    let private baseChainBinds
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * bool
+        =
+        let assemblies, failure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (TypeResolution.directoryLoader state.LoggerFactory state.RuntimeDirs)
+                state.TypeSystem._LoadedAssemblies
+                (state.TypeSystem._LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                identity.TypeDefinition.Get
+
+        withAssemblies state assemblies, failure.IsNone
+
     /// The type definition a type spelling names, looking through custom modifiers and
     /// instantiations. `None` for a spelling that names no definition: a type variable, an array, a
     /// pointer.
@@ -2047,11 +2066,11 @@ module EscapeAnalysis =
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void -> false
 
-    /// Does every type reference that instantiating a spelling reads name a type? As
+    /// Does TypeSystem instantiate a spelling? Every type reference it reads must name a type, as
     /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
-    /// TypeSystem instantiates although the JIT binds none of them. False too where a type
-    /// argument carries a custom modifier, which TypeSystem cannot instantiate
-    /// (`TypeConcretization.carriesCustomModifier`).
+    /// TypeSystem instantiates although the JIT binds none of them; and every type it names must have
+    /// a base chain that binds (`baseChainBinds`). False too where a type argument carries a custom
+    /// modifier, which TypeSystem cannot instantiate (`TypeConcretization.carriesCustomModifier`).
     let rec private concretizable
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -2080,14 +2099,15 @@ module EscapeAnalysis =
         | TypeDefn.Byref element
         | TypeDefn.Pinned element -> concretizable state assembly element
         | TypeDefn.Modified modified -> concretizable state assembly modified.Unmodified
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference (typeRef, _) ->
+            match resolveTypeRef state assembly typeRef with
+            | state, Some identity -> baseChainBinds state identity
+            | state, None -> state, false
+        | TypeDefn.FromDefinition (identity, _) -> baseChainBinds state identity
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void ->
-            let state, failure = spellingBindFailure state assembly spelling
-            state, failure.IsNone
+        | TypeDefn.Void -> state, true
 
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
@@ -2433,7 +2453,7 @@ module EscapeAnalysis =
         (target : CallTarget option)
         : MemberOperand option
         =
-        let unmanaged (convention : UnmanagedConvention) (target : UnmanagedTarget) : MemberOperand option =
+        let unmanaged (convention : UnmanagedConventionRead) (target : UnmanagedTarget) : MemberOperand option =
             {
                 Convention = convention
                 Placement = placement
@@ -2454,7 +2474,7 @@ module EscapeAnalysis =
                 match calleeMethod.Body with
                 | MethodBody.PInvoke ->
                     unmanaged
-                        (UnmanagedConvention.ofPInvoke calleeAssembly callee.Callee.Method.Get)
+                        (UnmanagedCallingConvention.ofPInvoke calleeAssembly callee.Callee.Method.Get)
                         (UnmanagedTarget.ofPInvoke calleeAssembly callee.Callee.Method.Get)
                 | _ -> Some MemberOperand.Call
             | _ -> Some MemberOperand.Call
@@ -2465,7 +2485,7 @@ module EscapeAnalysis =
             | SignatureCallingConvention.VarArgs -> Some MemberOperand.Call
             | _ ->
                 unmanaged
-                    (UnmanagedConvention.ofCallSite assembly signature)
+                    (UnmanagedCallingConvention.ofCallSite assembly signature)
                     (UnmanagedTarget.ofFunctionPointer assembly)
         | UnaryMetadataTokenIlOp.Ldtoken -> Some MemberOperand.Token
         | _ -> None
@@ -2522,7 +2542,7 @@ module EscapeAnalysis =
             | MemberPositions.BySignature ->
                 match operand, signature with
                 | MemberOperand.UnmanagedCall call, MemberSignature.Method signature ->
-                    JitTypeLoads.unmanagedMeetings call signature
+                    JitTypeLoads.unmanagedMeetings state.Target call signature
                     |> List.choose (fun (position, spelling) -> JitTypeLoads.load position spelling)
                 | _ ->
                     failwith
@@ -3411,6 +3431,42 @@ module EscapeAnalysis =
         OutsideBodyFact.Raises thrown
         :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
 
+    /// Why CoreCLR fails the compilation of a method at an instruction the JIT compiles, before any
+    /// of the method runs.
+    [<RequireQualifiedAccess>]
+    type private CompilationRefusal =
+        /// It refuses to hand the JIT the signature the instruction names (`SignatureRefusal`).
+        | Signature of SignatureRefusal
+        /// It refuses the unmanaged calling convention of the call, whose signature's modifiers name
+        /// two base conventions (`UnmanagedConventionRead.MultipleBases`).
+        | MultipleCallingConventions
+        /// It cannot read the unmanaged calling convention of the call from the P/Invoke's
+        /// `[UnmanagedCallConv]` (`UnmanagedConventionRead.Unreadable`, `NullArray`), and raises
+        /// what the analysis does not name, or kills the process.
+        | UnreadableCallingConvention
+        /// The JIT refuses the call, which passes no argument by Thiscall's convention
+        /// (`UnmanagedCallingConvention.refusesThiscallWithoutArguments`).
+        | ThiscallWithoutArguments
+
+    /// What the refusal of a compilation raises, and what making the exception runs.
+    let private compilationRefusalFacts
+        (state : EscapeAnalysisState)
+        (refusal : CompilationRefusal)
+        : OutsideBodyFact list
+        =
+        let raising (name : string, making : ExceptionMaking) : OutsideBodyFact list =
+            let thrown, run = runtimeRaises state name making
+
+            OutsideBodyFact.Raises thrown
+            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
+
+        match refusal with
+        | CompilationRefusal.Signature refusal -> signatureRefusalFacts state refusal
+        | CompilationRefusal.MultipleCallingConventions -> raising ExceptionMaking.multipleCallingConventions
+        | CompilationRefusal.ThiscallWithoutArguments -> raising ExceptionMaking.thiscallWithoutArguments
+        | CompilationRefusal.UnreadableCallingConvention ->
+            [ OutsideBodyFact.Opaque Opacity.UnreadableCallingConvention ]
+
     /// What CoreCLR decides of a method before its JIT runs, where the method is
     /// `[UnmanagedCallersOnly]` (`ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`).
     [<RequireQualifiedAccess>]
@@ -4164,13 +4220,13 @@ module EscapeAnalysis =
                 unbound : Set<int>,
                 bindingFailures : Set<OutsideBodyFact>,
                 raisedWhereInlined : Set<OutsideBodyFact>,
-                refusedSignatures : Map<int, SignatureRefusal>
+                refusedCompilations : Map<int, CompilationRefusal>
             )
             (index : int)
             =
             let op, _ = ops.[index]
 
-            let state, methodTarget, unbound, bindingFailures, raisedWhereInlined, refusedSignatures =
+            let state, methodTarget, unbound, bindingFailures, raisedWhereInlined, refusedCompilations =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, referent, failures = bindToken state assembly token.Token
@@ -4279,34 +4335,54 @@ module EscapeAnalysis =
 
                         // CoreCLR converts the signature of the method the instruction names, or of
                         // `calli`'s call site, for the JIT before the JIT loads any type of it,
-                        // refusing some (`SignatureRefusal`).
+                        // refusing some (`SignatureRefusal`); some loads come before that: preparing
+                        // the method as a function pointer, for some addresses. Of a call of
+                        // unmanaged code, the JIT reads the calling convention once it has loaded the
+                        // return type, which CoreCLR may refuse or fail to read; then the JIT meets
+                        // nothing more of the signature (`JitTypeLoads.unmanagedMeetings`).
                         let refusal =
-                            match signature with
-                            | MemberSignature.Method methodSignature when
-                                SignatureRefusal.readsMemberSignature operand && not abstractTarget
-                                ->
-                                SignatureRefusal.ofSignature methodSignature
-                            | MemberSignature.Method _
-                            | MemberSignature.Field _ -> None
+                            let signatureRefusal =
+                                match signature with
+                                | MemberSignature.Method methodSignature when
+                                    SignatureRefusal.readsMemberSignature operand && not abstractTarget
+                                    ->
+                                    SignatureRefusal.ofSignature methodSignature
+                                | MemberSignature.Method _
+                                | MemberSignature.Field _ -> None
+
+                            match signatureRefusal, operand with
+                            | Some refusal, _ ->
+                                Some (
+                                    CompilationRefusal.Signature refusal,
+                                    MemberPositions.Described (SignatureRefusal.positionsBeforeConversion operand)
+                                )
+                            | None, MemberOperand.UnmanagedCall call ->
+                                match call.Convention, signature with
+                                | UnmanagedConventionRead.Reads _, MemberSignature.Method methodSignature when
+                                    UnmanagedCallingConvention.refusesThiscallWithoutArguments
+                                        call.Convention
+                                        methodSignature
+                                    ->
+                                    Some (CompilationRefusal.ThiscallWithoutArguments, MemberPositions.BySignature)
+                                | UnmanagedConventionRead.Reads _, _ -> None
+                                | UnmanagedConventionRead.MultipleBases, _ ->
+                                    Some (CompilationRefusal.MultipleCallingConventions, MemberPositions.BySignature)
+                                | UnmanagedConventionRead.Unreadable _, _
+                                | UnmanagedConventionRead.NullArray, _ ->
+                                    Some (CompilationRefusal.UnreadableCallingConvention, MemberPositions.BySignature)
+                            | None, _ -> None
 
                         match refusal with
-                        | Some refusal ->
-                            // Some loads come before CoreCLR converts the signature: preparing the
-                            // method as a function pointer, for some addresses.
+                        | Some (refusal, positions) ->
                             let state, loads =
-                                memberSignatureLoads
-                                    state
-                                    spellingAssembly
-                                    operand
-                                    (MemberPositions.Described (SignatureRefusal.positionsBeforeConversion operand))
-                                    signature
+                                memberSignatureLoads state spellingAssembly operand positions signature
 
                             let possible = loads.Possible |> List.collect (Some >> raisesOf)
 
                             match loads.Definite with
                             | Some _ -> state, failures @ raisesOf loads.Definite, possible, [], None
                             // What it raises the body accounts for where the JIT compiles the
-                            // instruction (`refusedSignatures`).
+                            // instruction (`refusedCompilations`).
                             | None -> state, failures, possible, [], Some refusal
                         | None ->
 
@@ -4348,8 +4424,26 @@ module EscapeAnalysis =
                                         state, raisesOf failure
                                 | _ -> state, []
 
+                            // Where the JIT may begin the walk of an unmanaged call's signature for
+                            // whether it needs marshalling, the VM may refuse the P/Invoke there
+                            // instead (`JitTypeLoads.unmanagedWalkRefuses`). Where the return type
+                            // fails to load first, this over-approximates.
+                            let walkRefusal =
+                                match operand, signature with
+                                | MemberOperand.UnmanagedCall call, MemberSignature.Method methodSignature when
+                                    JitTypeLoads.unmanagedWalkRefuses call methodSignature
+                                    ->
+                                    let name, making = ExceptionMaking.pInvokeDescriptionRefused
+                                    let thrown, run = runtimeRaises state name making
+
+                                    OutsideBodyFact.Raises thrown
+                                    :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
+                                | _ -> []
+
                             let possible =
-                                (loads.Possible |> List.collect (Some >> raisesOf)) @ delegateFailures
+                                (loads.Possible |> List.collect (Some >> raisesOf))
+                                @ walkRefusal
+                                @ delegateFailures
 
                             let inlined =
                                 match operand with
@@ -4411,16 +4505,16 @@ module EscapeAnalysis =
                     Set.unionMany [ bindingFailures ; Set.ofList failures ; Set.ofList possible ],
                     Set.union raisedWhereInlined (Set.ofList inlined),
                     (match refusedHere with
-                     | Some refusal -> Map.add index refusal refusedSignatures
-                     | None -> refusedSignatures)
-                | _ -> state, None, unbound, bindingFailures, raisedWhereInlined, refusedSignatures
+                     | Some refusal -> Map.add index refusal refusedCompilations
+                     | None -> refusedCompilations)
+                | _ -> state, None, unbound, bindingFailures, raisedWhereInlined, refusedCompilations
 
             let targets =
                 match methodTarget with
                 | Some target -> Map.add index target targets
                 | None -> targets
 
-            state, targets, unbound, bindingFailures, raisedWhereInlined, refusedSignatures
+            state, targets, unbound, bindingFailures, raisedWhereInlined, refusedCompilations
 
         let folder
             (targets : Map<int, CallTarget>)
@@ -4733,14 +4827,15 @@ module EscapeAnalysis =
             | None -> JitTypePosition.OwnParameter, Set.empty
             | Some application ->
                 match UnmanagedCallingConvention.ofCallersOnly state.Runtime application with
-                | CallersOnlyConvention.Unreadable _
-                | CallersOnlyConvention.NullArray ->
+                | UnmanagedConventionRead.Unreadable _
+                | UnmanagedConventionRead.NullArray ->
                     JitTypePosition.OwnParameter,
                     Set.singleton (OutsideBodyFact.Opaque Opacity.UnreadableCallingConvention)
+                | UnmanagedConventionRead.MultipleBases ->
+                    failwith "BUG: UnmanagedCallingConvention.ofCallersOnly answered MultipleBases"
                 | convention when UnmanagedCallingConvention.isSwift state.Target convention ->
                     JitTypePosition.SwiftOwnParameter, Set.empty
-                | CallersOnlyConvention.Named _
-                | CallersOnlyConvention.PlatformDefault -> JitTypePosition.OwnParameter, Set.empty
+                | UnmanagedConventionRead.Reads _ -> JitTypePosition.OwnParameter, Set.empty
 
         let ownTypes =
             [
@@ -4783,7 +4878,7 @@ module EscapeAnalysis =
                 | _ -> state, failures
             )
 
-        let state, targets, unbound, bindingFailures, raisedWhereInlined, refusedSignatures =
+        let state, targets, unbound, bindingFailures, raisedWhereInlined, refusedCompilations =
             ((state, Map.empty, Set.empty, localFailures, Set.empty, Map.empty), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
 
@@ -5315,13 +5410,13 @@ module EscapeAnalysis =
                 |> Set.add (OutsideBodyFact.Raises thrown)
                 |> Set.add (OutsideBodyFact.Runs (made, []))
 
-        // Each instruction the JIT compiles naming a signature CoreCLR refuses to hand it
-        // (`SignatureRefusal`), wherever a run would reach it. None of them runs.
+        // Each instruction the JIT compiles at which CoreCLR refuses the compilation
+        // (`CompilationRefusal`), wherever a run would reach it. None of them runs.
         let outsideBody =
-            ((outsideBody, Set.empty), refusedSignatures)
+            ((outsideBody, Set.empty), refusedCompilations)
             ||> Map.fold (fun (outside, seen) index refusal ->
                 if compiled.Contains (snd ops.[index]) && not (Set.contains refusal seen) then
-                    Set.union outside (Set.ofList (signatureRefusalFacts state refusal)), Set.add refusal seen
+                    Set.union outside (Set.ofList (compilationRefusalFacts state refusal)), Set.add refusal seen
                 else
                     outside, seen
             )
@@ -5441,7 +5536,7 @@ module EscapeAnalysis =
                     && not (folded.Contains index)
                     && not (abstractCallees.Contains index)
                     // CoreCLR refuses the signature it names, and none of it runs.
-                    && not (refusedSignatures.ContainsKey index)
+                    && not (refusedCompilations.ContainsKey index)
                 then
                     folder targets unbound spellings objectsAt integersAt calleeArguments passedAt acc index
                 else
@@ -5462,7 +5557,7 @@ module EscapeAnalysis =
                     not (executed.Contains offset)
                     || folded.Contains index
                     || unbound.Contains index
-                    || refusedSignatures.ContainsKey index
+                    || refusedCompilations.ContainsKey index
                 then
                     state, assumed, opaque
                 else
@@ -6154,8 +6249,9 @@ module EscapeAnalysis =
     /// A type a body spells, as an instance of the body running as `caller` makes it; `spelledIn`
     /// names the assembly whose metadata spells it. `None` where the instance leaves a type
     /// variable of it open; where the type fails to bind, which fails that body before it runs, as
-    /// its facts report; and where TypeSystem does not instantiate it, although CoreCLR may load it
-    /// (`concretizable`).
+    /// its facts report; and where TypeSystem does not instantiate it (`concretizable`): where a type
+    /// it names derives from one that does not bind, which CoreCLR cannot load either, or where
+    /// TypeSystem does not model the shape, although CoreCLR may load it.
     let private concretizeIn
         (state : EscapeAnalysisState)
         (caller : Instantiation)

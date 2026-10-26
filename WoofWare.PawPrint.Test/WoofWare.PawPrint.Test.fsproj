@@ -247,6 +247,7 @@
     <Compile Include="TestMemberReferenceParentLoad.fs" />
     <Compile Include="TestFieldBindingFailure.fs" />
     <Compile Include="TestEscapeAnalysis.fs" />
+    <Compile Include="TestEscapeAnalysisConstraintViolation.fs" />
     <Compile Include="TestConstrainedType.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
@@ -265,6 +266,7 @@
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
+    <Compile Include="TestConstraintSatisfaction.fs" />
     <Compile Include="TestOpenDeclaringConstraintSatisfaction.fs" />
     <Compile Include="TestMakeSZArrayRefusal.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />

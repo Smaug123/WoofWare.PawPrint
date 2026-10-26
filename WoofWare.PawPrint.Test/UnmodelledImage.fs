@@ -77,6 +77,18 @@ module internal UnmodelledImage =
             ListOfBareList : TypeSpecificationHandle
             /// `List`1<List`1>::Clear()`, whose parent is <c>ListOfBareList</c>.
             ListOfBareListClear : MemberReferenceHandle
+            /// `!0`, the first type parameter of whatever environment reads it.
+            TypeParameter : TypeSpecificationHandle
+            /// `!!0`, the first method parameter of whatever environment reads it.
+            MethodParameter : TypeSpecificationHandle
+            /// `System.Collections.Generic.List`1<!0>`.
+            ListOfTypeParameter : TypeSpecificationHandle
+            /// `List`1<!0>::Clear()`, whose parent is <c>ListOfTypeParameter</c>.
+            ListOfTypeParameterClear : MemberReferenceHandle
+            /// `System.Collections.Generic.List`1<!!0>`.
+            ListOfMethodParameter : TypeSpecificationHandle
+            /// `List`1<!!0>::Clear()`, whose parent is <c>ListOfMethodParameter</c>.
+            ListOfMethodParameterClear : MemberReferenceHandle
         }
 
     let emit () : byte[] * Shapes =
@@ -362,6 +374,31 @@ module internal UnmodelledImage =
                 instanceVoidSignature
             )
 
+        let parameterSpec (encode : SignatureTypeEncoder -> unit) : TypeSpecificationHandle =
+            let blob = BlobBuilder ()
+            BlobEncoder(blob).TypeSpecificationSignature () |> encode
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+
+        let listOfSpec (encode : SignatureTypeEncoder -> unit) : TypeSpecificationHandle =
+            parameterSpec (fun spec ->
+                spec.GenericInstantiation(TypeReferenceHandle.op_Implicit list, 1, false).AddArgument ()
+                |> encode
+            )
+
+        let clearOn (parent : TypeSpecificationHandle) : MemberReferenceHandle =
+            metadata.AddMemberReference (
+                TypeSpecificationHandle.op_Implicit parent,
+                metadata.GetOrAddString "Clear",
+                instanceVoidSignature
+            )
+
+        let typeParameter = parameterSpec (fun spec -> spec.GenericTypeParameter 0)
+        let methodParameter = parameterSpec (fun spec -> spec.GenericMethodTypeParameter 0)
+        let listOfTypeParameter = listOfSpec (fun arg -> arg.GenericTypeParameter 0)
+        let listOfTypeParameterClear = clearOn listOfTypeParameter
+        let listOfMethodParameter = listOfSpec (fun arg -> arg.GenericMethodTypeParameter 0)
+        let listOfMethodParameterClear = clearOn listOfMethodParameter
+
         let moduleParent =
             metadata.AddMemberReference (
                 ModuleReferenceHandle.op_Implicit otherModule,
@@ -449,6 +486,12 @@ module internal UnmodelledImage =
             FacadeToString = facadeToString
             ListOfBareList = listOfBareList
             ListOfBareListClear = listOfBareListClear
+            TypeParameter = typeParameter
+            MethodParameter = methodParameter
+            ListOfTypeParameter = listOfTypeParameter
+            ListOfTypeParameterClear = listOfTypeParameterClear
+            ListOfMethodParameter = listOfMethodParameter
+            ListOfMethodParameterClear = listOfMethodParameterClear
         }
 
     /// The emitted image read, CoreLib, and everything needed to resolve against them.
