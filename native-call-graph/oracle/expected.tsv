@@ -7,6 +7,7 @@ undefined	elsewhere.cpp:Diamond
 routine	probes.cpp:AfterGoto	AfterGoto	void ()	probes.cpp:378
 routine	probes.cpp:AfterLoops	AfterLoops	void (int)	probes.cpp:364
 routine	probes.cpp:AfterNoReturn	AfterNoReturn	void ()	probes.cpp:359
+routine	probes.cpp:AfterSwitch	AfterSwitch	void (int)	probes.cpp:412
 routine	probes.cpp:Allocate	Allocate	void ()	probes.cpp:85
 routine	probes.cpp:AllocateCleanup	AllocateCleanup	void ()	probes.cpp:202
 routine	probes.cpp:Box::Get	Box<int>::Get	void ()	probes.cpp:196
@@ -37,6 +38,7 @@ routine	probes.cpp:LocalDefault	LocalDefault	void (Pod *, const Pod *)	probes.cp
 routine	probes.cpp:Lowered	Lowered	int (Pod *, Pod *, int &)	probes.cpp:262
 routine	probes.cpp:Macros	Macros	void ()	probes.cpp:97
 routine	probes.cpp:MemberPointer	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94
+routine	probes.cpp:MultiLineTemporaries	MultiLineTemporaries	void ()	probes.cpp:426
 uninstantiated	probes.cpp:NeverInstantiated
 routine	probes.cpp:NoThrowHolds::NoThrowHolds	NoThrowHolds::NoThrowHolds	void () noexcept	probes.cpp:300
 routine	probes.cpp:NonVirtualDiamond	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:215
@@ -140,6 +142,11 @@ call	Macros	void ()	probes.cpp:100	probes.h:OUTER	direct	Helper	void ()	-
 call	Macros	void ()	probes.cpp:101	-	direct	Helper	void ()	-
 call	Macros	void ()	probes.cpp:102	probes.h:CALL_HELPER	direct	Helper	void ()	-
 call	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94	-	indirect	-	void ()	-
+call	MultiLineTemporaries	void ()	probes.cpp:428	-	direct	TakeTwo	void (const Guard &, const Guard &)	-
+call	MultiLineTemporaries	void ()	probes.cpp:429	-	construct	Guard::Guard	void ()	-
+call	MultiLineTemporaries	void ()	probes.cpp:429	-	destruct	Guard::~Guard	void () noexcept	-
+call	MultiLineTemporaries	void ()	probes.cpp:430	-	construct	Guard::Guard	void ()	-
+call	MultiLineTemporaries	void ()	probes.cpp:430	-	destruct	Guard::~Guard	void () noexcept	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:32	-	direct	A::F	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:33	-	direct	N::A::F	void ()	-
 call	NoThrowHolds::NoThrowHolds	void () noexcept	probes.cpp:300	-	construct	Guard::Guard	void ()	-

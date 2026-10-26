@@ -4,6 +4,7 @@ elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
 probes.cpp:AfterGoto	probes.cpp	AfterGoto
 probes.cpp:AfterLoops	probes.cpp	AfterLoops
 probes.cpp:AfterNoReturn	probes.cpp	AfterNoReturn
+probes.cpp:AfterSwitch	probes.cpp	AfterSwitch
 probes.cpp:Allocate	probes.cpp	Allocate
 probes.cpp:AllocateCleanup	probes.cpp	AllocateCleanup
 probes.cpp:Box::Get	probes.cpp	Box::Get
@@ -33,6 +34,7 @@ probes.cpp:LocalDefault	probes.cpp	LocalDefault
 probes.cpp:Lowered	probes.cpp	Lowered
 probes.cpp:Macros	probes.cpp	Macros
 probes.cpp:MemberPointer	probes.cpp	MemberPointer
+probes.cpp:MultiLineTemporaries	probes.cpp	MultiLineTemporaries
 probes.cpp:NeverInstantiated	probes.cpp	NeverInstantiated
 probes.cpp:NoThrowHolds::NoThrowHolds	probes.cpp	NoThrowHolds::NoThrowHolds
 probes.cpp:NonVirtualDiamond	probes.cpp	NonVirtualDiamond

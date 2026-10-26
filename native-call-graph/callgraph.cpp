@@ -21,17 +21,19 @@
 //                                               unit calls what the walk found, and nothing else
 // where KIND is direct, dispatch (a virtual call, to be resolved by generate.py against the
 // receiver's class), dispatch-delete (a delete-expression's call of a virtual destructor, which
-// runs the deleting destructor), indirect, construct, destruct, new, delete, builtin, throw or
-// asm. It compiles the unit to IR as it walks it, without optimisation, and fails on any routine
-// whose IR calls something the walk does not name, or does not call something it does.
+// runs the deleting destructor), indirect, construct, destruct, new, delete, builtin, tls-init,
+// throw or asm. It compiles the unit to IR as it walks it, without optimisation and with a line
+// table, and fails on any routine whose IR calls, on some line, something the walk does not name
+// there, or does not call something the walk names there.
 //
 // `overriders` reads NEEDS (lines of a receiver class's USR, a virtual method's USR, and call or
 // delete) and writes
 //   overrider        RECEIVER-USR METHOD-USR VARIANT CLASS-USR NAME SIGNATURE USR
 //   overrider-delete RECEIVER-USR METHOD-USR VARIANT CLASS-USR NAME SIGNATURE USR
-// for each class the unit completes that is not abstract and is or derives from the receiver
-// class, naming the function in the vtable slot the call loads through each subobject of the
-// receiver's class, and for a deleting call, the operator delete that function frees by.
+// for each class the unit completes that is or derives from the receiver class, naming the
+// function in the vtable slot the call loads through each subobject of the receiver's class, and
+// for a deleting call, the operator delete that function frees by. An abstract class counts: a
+// call made while it is under construction or destruction reaches its own functions.
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -56,6 +58,7 @@
 #include "clang/Tooling/JSONCompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Demangle/Demangle.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/LLVMContext.h"
@@ -66,6 +69,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -380,28 +384,124 @@ const CXXMethodDecl *devirtualized(const CXXMethodDecl *Method, const Expr *Base
 }
 
 /// What the walk of one routine's definition in one unit found it runs, in the terms clang's IR
-/// for the routine can be compared with.
+/// for the routine can be compared with: each call by the file and line clang's debug information
+/// gives it.
 struct Walked {
   const FunctionDecl *Routine = nullptr;
   std::string Usr;
-  /// Each function it calls directly, constructs or destroys by, or allocates or frees by, by USR,
-  /// with its name.
-  std::map<std::string, std::pair<std::string, const FunctionDecl *>> Callees;
-  /// Each call through a pointer, virtual or not, and each inline assembly statement.
-  std::set<const Stmt *> Indirect;
-  std::set<const Stmt *> Asm;
+  /// Each function it calls directly, constructs or destroys by, or allocates or frees by, and each
+  /// thread-local variable's wrapper it calls (as tls:USR), by line and USR, with a name for each.
+  std::map<std::pair<std::string, std::string>, std::string> Calls;
+  /// The same functions by USR alone, for the builtins clang lowers to an intrinsic.
+  std::map<std::string, const FunctionDecl *> Callees;
+  /// Each call through a pointer, virtual or not, and each inline assembly statement, by line, and
+  /// whether only the complete object's constructor makes it, as a virtual base's initializer's.
+  struct Site {
+    std::string Line;
+    bool CompleteOnly;
+  };
+  std::map<const Stmt *, Site> Indirect;
+  std::map<const Stmt *, Site> Asm;
   bool Throws = false;
   bool Rethrows = false;
   bool Catches = false;
-  /// Whether it initializes a static local at run time, and whether it registers a static local's
-  /// destructor to run at exit.
+  /// Whether it initializes a static local at run time under a __cxa_guard, and whether it
+  /// registers a static local's destructor to run at the process's exit or at its thread's.
   bool GuardsStatic = false;
   bool RegistersExit = false;
+  bool RegistersThreadExit = false;
   /// The functions defined inside it, a lambda's or a local class's, whose code counts as its own.
   std::set<const FunctionDecl *> Nested;
 };
 
-/// Every call one routine's definition makes.
+/// Whether a variable is read through the wrapper Itanium's ABI gives a thread_local whose
+/// initialization may run, as clang decides it: unless it is constant-initialized, wherever it is
+/// defined, and has no destructor.
+bool readThroughWrapper(const VarDecl *V, const ASTContext &Context) {
+  if (V->getTLSKind() != VarDecl::TLS_Dynamic || V->isLocalVarDeclOrParm())
+    return false;
+  V = V->getMostRecentDecl();
+  bool MayNeedDestruction = V->needsDestruction(Context) != QualType::DK_none;
+  if (const Type *T = V->getType()->getBaseElementTypeUnsafe(); T->getAs<RecordType>() && T->isIncompleteType())
+    MayNeedDestruction = true;
+  bool Constant;
+  if (V->hasAttr<ConstInitAttr>())
+    Constant = true;
+  else if (V->isWeak() || V->hasAttr<SelectAnyAttr>())
+    Constant = false;
+  else if (const VarDecl *Init = V->getInitializingDeclaration(); !Init)
+    Constant = false;
+  else if (!Init->hasInit())
+    Constant = true;
+  else {
+    GVALinkage Linkage = const_cast<ASTContext &>(Context).GetGVALinkageForVariable(V);
+    if (Linkage == GVA_Internal || Linkage == GVA_StrongExternal)
+      Constant = !MayNeedDestruction && const_cast<VarDecl *>(Init)->evaluateValue();
+    else
+      Constant = Init->hasConstantInitialization();
+  }
+  return !Constant || MayNeedDestruction;
+}
+
+/// Whether clang's code for an expression statement ends where nothing follows: on a call of a
+/// function that does not return, or a throw, with no branch after it to join. Answers false
+/// where it cannot tell, which only keeps the walk from leaving out what follows.
+bool endsWithoutReturning(const Expr *E, const ASTContext &Context) {
+  while (true) {
+    if (const auto *Full = dyn_cast<FullExpr>(E))
+      E = Full->getSubExpr();
+    else if (const auto *Paren = dyn_cast<ParenExpr>(E))
+      E = Paren->getSubExpr();
+    else if (const auto *Cast = dyn_cast<CastExpr>(E))
+      E = Cast->getSubExpr();
+    else if (const auto *Bind = dyn_cast<CXXBindTemporaryExpr>(E))
+      E = Bind->getSubExpr();
+    else if (const auto *Materialize = dyn_cast<MaterializeTemporaryExpr>(E))
+      E = Materialize->getSubExpr();
+    else
+      break;
+  }
+  auto Branches = [](const Stmt *S) {
+    std::function<bool(const Stmt *)> Any = [&](const Stmt *T) -> bool {
+      if (!T)
+        return false;
+      if (isa<ConditionalOperator, BinaryConditionalOperator, StmtExpr, LambdaExpr>(T))
+        return true;
+      if (const auto *B = dyn_cast<BinaryOperator>(T); B && B->isLogicalOp())
+        return true;
+      for (const Stmt *Child : T->children())
+        if (Any(Child))
+          return true;
+      return false;
+    };
+    return Any(S);
+  };
+  if (const auto *Throw = dyn_cast<CXXThrowExpr>(E))
+    return Context.getLangOpts().CXXExceptions && !Branches(Throw->getSubExpr());
+  if (const auto *Comma = dyn_cast<BinaryOperator>(E); Comma && Comma->getOpcode() == BO_Comma)
+    return endsWithoutReturning(Comma->getRHS(), Context) ||
+           (endsWithoutReturning(Comma->getLHS(), Context) && !Branches(Comma->getRHS()));
+  const auto *Call = dyn_cast<CallExpr>(E);
+  if (!Call)
+    return false;
+  for (const Expr *Arg : Call->arguments())
+    if (Branches(Arg))
+      return false;
+  if (const FunctionDecl *F = Call->getDirectCallee()) {
+    if (unsigned Builtin = F->getBuiltinID(); Builtin && !Context.BuiltinInfo.isPredefinedLibFunction(Builtin))
+      return Builtin == Builtin::BI__builtin_unreachable;
+    return F->isNoReturn();
+  }
+  QualType T = Call->getCallee()->getType();
+  if (const auto *Ptr = T->getAs<PointerType>())
+    T = Ptr->getPointeeType();
+  const auto *Function = T->getAs<FunctionType>();
+  return Function && Function->getNoReturnAttr();
+}
+
+/// Every call one routine's definition makes, of the code clang emits for it: a statement that
+/// follows a return, a break, a continue, a goto, a loop with no way out, or an expression
+/// statement that does not return, and that holds no label, is code clang emits nothing for.
 class CallCollector : public RecursiveASTVisitor<CallCollector> {
 public:
   CallCollector(ASTContext &Context, const Locations &L, Walked &W, std::set<std::string> &Out)
@@ -411,10 +511,16 @@ public:
   bool shouldVisitTemplateInstantiations() const { return true; }
 
   void collect(const FunctionDecl *F) {
+    SourceLocation End = F->getBody()->getEndLoc();
     if (const auto *Ctor = dyn_cast<CXXConstructorDecl>(F)) {
       llvm::SmallVector<const CXXCtorInitializer *, 8> Inits(Ctor->init_begin(), Ctor->init_end());
-      for (const CXXCtorInitializer *Init : Inits)
+      for (const CXXCtorInitializer *Init : Inits) {
+        // A virtual base's initializer runs only in the complete object's constructor.
+        bool Saved = InVirtualBaseInit;
+        InVirtualBaseInit = Init->isBaseInitializer() && Init->isBaseVirtual();
         TraverseStmt(Init->getInit());
+        InVirtualBaseInit = Saved;
+      }
       // If a later initializer or the body throws, what the constructor has constructed is
       // destroyed.
       bool BodyThrows = ThrowFinder::mayThrow(F->getBody(), Context);
@@ -432,25 +538,37 @@ public:
         else if (const FieldDecl *Field = Inits[I]->getAnyMember())
           Constructed = Field->getParent()->isUnion() ? QualType() : Field->getType();
         if (!Constructed.isNull())
-          if (const CXXDestructorDecl *D = nonTrivialDestructor(Constructed, Context))
-            emit(F->getBody()->getEndLoc(), "destruct", D, "-");
+          if (const CXXDestructorDecl *D = nonTrivialDestructor(Constructed, Context)) {
+            bool Saved = InVirtualBaseInit;
+            InVirtualBaseInit = Inits[I]->isBaseInitializer() && Inits[I]->isBaseVirtual();
+            emit(End, End, "destruct", D, "-");
+            InVirtualBaseInit = Saved;
+          }
       }
     }
     for (const ParmVarDecl *Param : F->parameters()) {
       const CXXRecordDecl *RD = Param->getType()->getAsCXXRecordDecl();
       if (RD && RD->isParamDestroyedInCallee())
         if (const CXXDestructorDecl *D = nonTrivialDestructor(Param->getType(), Context))
-          emit(Param->getLocation(), "destruct", D, "-");
+          emit(Param->getLocation(), End, "destruct", D, "-");
     }
-    TraverseStmt(F->getBody());
+    statement(F->getBody());
     if (const auto *Dtor = dyn_cast<CXXDestructorDecl>(F))
-      destroyBasesAndMembers(Dtor->getParent(), F->getBody()->getEndLoc());
+      destroyBasesAndMembers(Dtor->getParent(), End);
   }
 
   // Recursion rather than RecursiveASTVisitor's queue, so that Enclosing brackets every child.
+  // A statement clang reaches no code for is skipped, unless it holds a label; one that holds a
+  // label is reached by it.
   bool TraverseStmt(Stmt *S, DataRecursionQueue * = nullptr) {
     if (!S)
       return true;
+    if (!Reachable && !isa<CompoundStmt, LabelStmt, AttributedStmt, SwitchCase, GotoStmt, BreakStmt, ContinueStmt,
+                           NullStmt>(S)) {
+      if (!containsLabel(S))
+        return true;
+      Reachable = true;
+    }
     bool Located = S->getBeginLoc().isValid();
     if (Located)
       Enclosing.push_back(S->getBeginLoc());
@@ -458,6 +576,133 @@ public:
     if (Located)
       Enclosing.pop_back();
     return Result;
+  }
+
+  bool TraverseCompoundStmt(CompoundStmt *S) {
+    Scopes.push_back(S->getRBracLoc());
+    for (Stmt *Child : S->body())
+      statement(Child);
+    Scopes.pop_back();
+    return true;
+  }
+  bool TraverseLabelStmt(LabelStmt *S) {
+    Reachable = true;
+    return statement(S->getSubStmt());
+  }
+  bool TraverseCaseStmt(CaseStmt *S) {
+    Reachable = true;
+    return statement(S->getSubStmt());
+  }
+  bool TraverseDefaultStmt(DefaultStmt *S) {
+    Reachable = true;
+    return statement(S->getSubStmt());
+  }
+  bool TraverseAttributedStmt(AttributedStmt *S) { return statement(S->getSubStmt()); }
+  bool TraverseReturnStmt(ReturnStmt *S) {
+    bool Result = RecursiveASTVisitor::TraverseReturnStmt(S);
+    Reachable = false;
+    return Result;
+  }
+  bool TraverseGotoStmt(GotoStmt *) {
+    Reachable = false;
+    return true;
+  }
+  bool TraverseIndirectGotoStmt(IndirectGotoStmt *S) {
+    bool Result = RecursiveASTVisitor::TraverseIndirectGotoStmt(S);
+    Reachable = false;
+    return Result;
+  }
+  bool TraverseBreakStmt(BreakStmt *) {
+    if (Reachable && !Broke.empty())
+      Broke.back() = true;
+    Reachable = false;
+    return true;
+  }
+  bool TraverseContinueStmt(ContinueStmt *) {
+    Reachable = false;
+    return true;
+  }
+  bool TraverseWhileStmt(WhileStmt *S) {
+    Scopes.push_back(S->getBeginLoc());
+    TraverseStmt(S->getConditionVariableDeclStmt());
+    TraverseStmt(S->getCond());
+    bool Exits = loop(S->getBody());
+    Scopes.pop_back();
+    // A condition clang folds to true has no edge out of the loop.
+    std::optional<bool> Folded = folded(S->getCond());
+    Reachable = Exits || !(Folded && *Folded);
+    return true;
+  }
+  bool TraverseForStmt(ForStmt *S) {
+    Scopes.push_back(S->getBeginLoc());
+    statement(S->getInit());
+    TraverseStmt(S->getConditionVariableDeclStmt());
+    TraverseStmt(S->getCond());
+    bool Exits = loop(S->getBody());
+    Reachable = true;
+    TraverseStmt(S->getInc());
+    Scopes.pop_back();
+    std::optional<bool> Folded = S->getCond() ? folded(S->getCond()) : std::optional<bool>(true);
+    Reachable = Exits || !(Folded && *Folded);
+    return true;
+  }
+  bool TraverseDoStmt(DoStmt *S) {
+    loop(S->getBody());
+    Reachable = true;
+    TraverseStmt(S->getCond());
+    Reachable = true;
+    return true;
+  }
+  bool TraverseCXXForRangeStmt(CXXForRangeStmt *S) {
+    Scopes.push_back(S->getBeginLoc());
+    statement(S->getInit());
+    statement(S->getRangeStmt());
+    statement(S->getBeginStmt());
+    statement(S->getEndStmt());
+    TraverseStmt(S->getCond());
+    statement(S->getLoopVarStmt());
+    loop(S->getBody());
+    Reachable = true;
+    TraverseStmt(S->getInc());
+    Scopes.pop_back();
+    Reachable = true;
+    return true;
+  }
+  bool TraverseSwitchStmt(SwitchStmt *S) {
+    Scopes.push_back(S->getBeginLoc());
+    statement(S->getInit());
+    TraverseStmt(S->getConditionVariableDeclStmt());
+    TraverseStmt(S->getCond());
+    // The switch's own body is reached only through its labels.
+    Reachable = false;
+    Broke.push_back(false);
+    statement(S->getBody());
+    bool Exits = Broke.back() || Reachable || !hasDefault(S->getBody());
+    Broke.pop_back();
+    Scopes.pop_back();
+    Reachable = Exits;
+    return true;
+  }
+  bool TraverseCXXTryStmt(CXXTryStmt *S) {
+    statement(S->getTryBlock());
+    bool Continues = Reachable;
+    for (unsigned I = 0; I < S->getNumHandlers(); ++I) {
+      Reachable = true;
+      TraverseStmt(S->getHandler(I));
+      Continues = Continues || Reachable;
+    }
+    Reachable = Continues;
+    return true;
+  }
+  bool TraverseCXXCatchStmt(CXXCatchStmt *S) {
+    W.Catches = true;
+    // The caught object's copy is destroyed at the end of the handler's block.
+    const auto *Block = dyn_cast<CompoundStmt>(S->getHandlerBlock());
+    Scopes.push_back(Block ? Block->getRBracLoc() : S->getEndLoc());
+    if (VarDecl *Caught = S->getExceptionDecl())
+      TraverseDecl(Caught);
+    Scopes.pop_back();
+    return statement(S->getHandlerBlock());
   }
 
   // Unevaluated operands and compile-time evaluation run nothing. The operand of sizeof is
@@ -486,6 +731,15 @@ public:
   }
   // A parameter's default argument runs where a call uses it, as a CXXDefaultArgExpr.
   bool TraverseParmVarDecl(ParmVarDecl *) { return true; }
+  // A function defined inside the routine, a local class's, is collected as the routine is.
+  bool TraverseDecl(Decl *D) {
+    if (auto *F = dyn_cast_or_null<FunctionDecl>(D); F && F != W.Routine) {
+      W.Nested.insert(F);
+      nested(F);
+      return true;
+    }
+    return RecursiveASTVisitor::TraverseDecl(D);
+  }
   // A lambda runs its captures' initializers where it is made, and its body, or for a generic
   // lambda each instantiation of its body, where it is called; its pattern runs nothing.
   bool TraverseLambdaExpr(LambdaExpr *E) {
@@ -501,11 +755,11 @@ public:
     }
     if (FunctionTemplateDecl *Template = E->getDependentCallOperator()) {
       for (FunctionDecl *Instance : Template->specializations())
-        if (Instance->doesThisDeclarationHaveABody() && !TraverseStmt(Instance->getBody()))
-          return false;
+        nested(Instance);
       return true;
     }
-    return TraverseStmt(E->getBody());
+    nested(E->getCallOperator());
+    return true;
   }
   bool TraverseCXXNoexceptExpr(CXXNoexceptExpr *) { return true; }
   bool TraverseDecltypeTypeLoc(DecltypeTypeLoc, bool = false) { return true; }
@@ -514,6 +768,14 @@ public:
   bool TraverseConstantExpr(ConstantExpr *) { return true; }
   bool TraverseCXXTypeidExpr(CXXTypeidExpr *E) {
     return E->isPotentiallyEvaluated() ? RecursiveASTVisitor::TraverseCXXTypeidExpr(E) : true;
+  }
+  // A temporary is destroyed at the end of its full-expression, at the line the full-expression
+  // starts on.
+  bool TraverseExprWithCleanups(ExprWithCleanups *E) {
+    FullExpressions.push_back(E->getBeginLoc());
+    bool Result = RecursiveASTVisitor::TraverseExprWithCleanups(E);
+    FullExpressions.pop_back();
+    return Result;
   }
   // clang emits only the branch a condition it folds to a constant takes, unless the other holds a
   // label a goto could reach; the condition itself is then not emitted either.
@@ -537,25 +799,52 @@ public:
     return RecursiveASTVisitor::TraverseBinaryOperator(E);
   }
   bool TraverseIfStmt(IfStmt *S) {
-    if (!S->isConstexpr()) {
-      if (std::optional<bool> Folded = folded(S->getCond())) {
-        Stmt *Taken = *Folded ? S->getThen() : S->getElse();
-        Stmt *Skipped = *Folded ? S->getElse() : S->getThen();
-        if (!containsLabel(Skipped))
-          return TraverseStmt(S->getInit()) && TraverseStmt(S->getConditionVariableDeclStmt()) &&
-                 TraverseStmt(Taken);
-      }
-      return RecursiveASTVisitor::TraverseIfStmt(S);
+    Scopes.push_back(S->getBeginLoc());
+    statement(S->getInit());
+    TraverseStmt(S->getConditionVariableDeclStmt());
+    std::optional<Stmt *> Taken;
+    if (S->isConstexpr()) {
+      Taken = S->getNondiscardedCase(Context);
+      if (!Taken)
+        fail("an if constexpr whose condition is value-dependent at " + L.line(S->getIfLoc()));
+    } else if (std::optional<bool> Folded = folded(S->getCond())) {
+      if (!containsLabel(*Folded ? S->getElse() : S->getThen()))
+        Taken = *Folded ? S->getThen() : S->getElse();
     }
-    std::optional<Stmt *> Taken = S->getNondiscardedCase(Context);
-    if (!Taken)
-      fail("an if constexpr whose condition is value-dependent at " + L.line(S->getIfLoc()));
-    return TraverseStmt(S->getInit()) && TraverseStmt(*Taken);
+    if (Taken) {
+      statement(*Taken);
+    } else {
+      TraverseStmt(S->getCond());
+      statement(S->getThen());
+      bool ThenContinues = Reachable;
+      Reachable = true;
+      statement(S->getElse());
+      Reachable = Reachable || ThenContinues;
+    }
+    Scopes.pop_back();
+    return true;
   }
 
-  // A default argument or member initializer runs where it is used.
-  bool TraverseCXXDefaultArgExpr(CXXDefaultArgExpr *E) { return within(E->getUsedLocation(), E->getExpr()); }
+  // A default argument runs where it is used, and clang gives its calls the line of the call that
+  // uses it; a default member initializer's calls keep their own lines.
+  bool TraverseCXXDefaultArgExpr(CXXDefaultArgExpr *E) {
+    std::optional<SourceLocation> Saved = IrOverride;
+    if (!IrOverride)
+      IrOverride = E->getUsedLocation();
+    bool Result = within(E->getUsedLocation(), E->getExpr());
+    IrOverride = Saved;
+    return Result;
+  }
   bool TraverseCXXDefaultInitExpr(CXXDefaultInitExpr *E) { return within(E->getUsedLocation(), E->getExpr()); }
+
+  bool VisitDeclRefExpr(DeclRefExpr *E) {
+    if (const auto *V = dyn_cast<VarDecl>(E->getDecl()); V && readThroughWrapper(V, Context)) {
+      std::string Usr = usrOf(V);
+      std::string At = row(E->getLocation(), "tls-init", nameOf(V, P), typeOf(V->getType(), P), Usr, "-", "-");
+      W.Calls.emplace(std::make_pair(irLine(E->getExprLoc()), "tls:" + Usr), nameOf(V, P) + " (at " + At + ")");
+    }
+    return true;
+  }
 
   bool VisitCallExpr(CallExpr *E) {
     if (E->isInstantiationDependent())
@@ -570,6 +859,7 @@ public:
       Loc = Op->getOperatorLoc();
     else if (const auto *Ref = dyn_cast<DeclRefExpr>(Callee))
       Loc = Ref->getLocation();
+    SourceLocation IrLoc = E->getExprLoc();
 
     unsigned FirstArg = 0;
     const auto *F = dyn_cast_or_null<FunctionDecl>(E->getCalleeDecl());
@@ -582,14 +872,14 @@ public:
       if (const auto *Bound = dyn_cast<BinaryOperator>(E->getCallee()->IgnoreParens()); Bound && Bound->isPtrMemOp())
         Through = Bound->getRHS()->getType();
       emitIndirect(Loc, Through, enums(E, 0));
-      W.Indirect.insert(E);
+      site(W.Indirect, E, IrLoc);
       return true;
     }
     // A builtin that is not a library function, or that is one of std's, as std::move is, is
     // lowered by clang, and calls nothing.
     if (unsigned Builtin = F->getBuiltinID();
         Builtin && (!Context.BuiltinInfo.isPredefinedLibFunction(Builtin) || Context.BuiltinInfo.isInStdNamespace(Builtin))) {
-      emit(Loc, "builtin", F, enums(E, 0));
+      emit(Loc, IrLoc, "builtin", F, enums(E, 0));
       return true;
     }
     // A trivial function, as a trivial assignment operator is, copies bits, and calls nothing.
@@ -611,17 +901,17 @@ public:
       // clang calls directly what it can tell the receiver's dynamic class runs.
       const Expr *Base = ME ? ME->getBase() : Receiver;
       if (const CXXMethodDecl *Known = devirtualized(Method, Base)) {
-        emit(Loc, "direct", Known, enums(E, FirstArg));
+        emit(Loc, IrLoc, "direct", Known, enums(E, FirstArg));
         return true;
       }
       const CXXRecordDecl *Class = recordOf(receiverOf(Receiver)->getType());
       if (!Class)
         fail("a virtual call whose receiver is not of a class at " + L.line(Loc));
-      emit(Loc, "dispatch", F, enums(E, FirstArg), usrOf(Class->getDefinition()));
-      W.Indirect.insert(E);
+      emit(Loc, IrLoc, "dispatch", F, enums(E, FirstArg), usrOf(Class->getDefinition()));
+      site(W.Indirect, E, IrLoc);
       return true;
     }
-    emit(Loc, "direct", F, enums(E, FirstArg));
+    emit(Loc, IrLoc, "direct", F, enums(E, FirstArg));
     return true;
   }
 
@@ -631,30 +921,31 @@ public:
     if (E->isElidable() && Context.getLangOpts().ElideConstructors)
       return true;
     if (!Ctor->isTrivial())
-      emit(E->getLocation(), "construct", Ctor, enums(E));
+      emit(E->getLocation(), E->getExprLoc(), "construct", Ctor, enums(E));
     return true;
   }
 
   bool VisitCXXInheritedCtorInitExpr(CXXInheritedCtorInitExpr *E) {
-    emit(E->getLocation(), "construct", E->getConstructor(), "-");
+    emit(E->getLocation(), E->getExprLoc(), "construct", E->getConstructor(), "-");
     return true;
   }
 
   bool VisitCXXNewExpr(CXXNewExpr *E) {
     if (!E->getOperatorNew())
       fail("a new expression with no operator new at " + L.line(E->getBeginLoc()));
-    emit(E->getBeginLoc(), "new", E->getOperatorNew(), "-");
+    emit(E->getBeginLoc(), E->getExprLoc(), "new", E->getOperatorNew(), "-");
     // If the initializer throws, the matching deallocation function frees the memory.
     const FunctionDecl *Cleanup = E->getOperatorDelete();
     if (Cleanup && !Cleanup->isReservedGlobalPlacementOperator() &&
         ThrowFinder::mayThrow(E->getInitializer(), Context))
-      emit(E->getBeginLoc(), "delete", Cleanup, "-");
+      emit(E->getBeginLoc(), E->getExprLoc(), "delete", Cleanup, "-");
     return true;
   }
 
   bool VisitCXXDeleteExpr(CXXDeleteExpr *E) {
     if (E->getDestroyedType()->isDependentType())
       fail("a delete of a dependent type at " + L.line(E->getBeginLoc()));
+    SourceLocation IrLoc = E->getExprLoc();
     if (const CXXDestructorDecl *D = nonTrivialDestructor(E->getDestroyedType(), Context)) {
       // The dynamic class's deleting destructor runs its destructor and frees the object by
       // that class's operator delete.
@@ -668,33 +959,36 @@ public:
           Virtual = false;
         }
       if (Virtual && !E->isGlobalDelete()) {
-        emit(E->getBeginLoc(), "dispatch-delete", D, "-", usrOf(D->getParent()->getDefinition()));
-        W.Indirect.insert(E);
+        emit(E->getBeginLoc(), IrLoc, "dispatch-delete", D, "-", usrOf(D->getParent()->getDefinition()));
+        site(W.Indirect, E, IrLoc);
         return true;
       }
       if (Virtual) {
-        emit(E->getBeginLoc(), "dispatch", D, "-", usrOf(D->getParent()->getDefinition()));
-        W.Indirect.insert(E);
+        emit(E->getBeginLoc(), IrLoc, "dispatch", D, "-", usrOf(D->getParent()->getDefinition()));
+        site(W.Indirect, E, IrLoc);
       } else
-        emit(E->getBeginLoc(), "destruct", D, "-");
+        emit(E->getBeginLoc(), IrLoc, "destruct", D, "-");
     }
     if (!E->getOperatorDelete())
       fail("a delete expression with no operator delete at " + L.line(E->getBeginLoc()));
-    emit(E->getBeginLoc(), "delete", E->getOperatorDelete(), "-");
+    emit(E->getBeginLoc(), IrLoc, "delete", E->getOperatorDelete(), "-");
     return true;
   }
 
   bool VisitCXXBindTemporaryExpr(CXXBindTemporaryExpr *E) {
-    emit(E->getBeginLoc(), "destruct", E->getTemporary()->getDestructor(), "-");
+    SourceLocation End = FullExpressions.empty() ? E->getBeginLoc() : FullExpressions.back();
+    emit(E->getBeginLoc(), End, "destruct", E->getTemporary()->getDestructor(), "-");
     return true;
   }
 
   bool VisitVarDecl(VarDecl *V) {
     if (V->isStaticLocal()) {
-      if (V->getInit() && !initializedAsConstant(V, Context))
+      // A static thread_local has a guard of its own in thread-local storage, with no __cxa_guard.
+      bool ThreadLocal = V->getTLSKind() != VarDecl::TLS_None;
+      if (V->getInit() && !initializedAsConstant(V, Context) && !ThreadLocal)
         W.GuardsStatic = true;
       if (nonTrivialDestructor(V->getType(), Context))
-        W.RegistersExit = true;
+        (ThreadLocal ? W.RegistersThreadExit : W.RegistersExit) = true;
       return true;
     }
     if (isa<ParmVarDecl>(V) || !V->hasLocalStorage())
@@ -702,7 +996,7 @@ public:
     if (V->getType()->isReferenceType())
       return true;
     if (const CXXDestructorDecl *D = nonTrivialDestructor(V->getType(), Context))
-      emit(V->getLocation(), "destruct", D, "-");
+      emit(V->getLocation(), Scopes.empty() ? V->getLocation() : Scopes.back(), "destruct", D, "-");
     return true;
   }
 
@@ -716,23 +1010,71 @@ public:
 
   bool VisitAsmStmt(AsmStmt *S) {
     row(S->getAsmLoc(), "asm", "-", "-", "-", "-", "-");
-    W.Asm.insert(S);
-    return true;
-  }
-
-  bool VisitCXXCatchStmt(CXXCatchStmt *) {
-    W.Catches = true;
-    return true;
-  }
-
-  // A local class's methods are the routine's own code.
-  bool VisitFunctionDecl(FunctionDecl *F) {
-    if (F != W.Routine)
-      W.Nested.insert(F);
+    site(W.Asm, S, S->getAsmLoc());
     return true;
   }
 
 private:
+  /// Traverses a statement where a statement stands, and leaves the rest unreached after an
+  /// expression statement that does not return.
+  bool statement(Stmt *S) {
+    bool Result = TraverseStmt(S);
+    if (Reachable)
+      if (const auto *E = dyn_cast_or_null<Expr>(S); E && endsWithoutReturning(E, Context))
+        Reachable = false;
+    return Result;
+  }
+
+  /// Traverses a loop's body, which the loop's head reaches, and answers whether a break the body
+  /// reaches leaves the loop.
+  bool loop(Stmt *Body) {
+    Broke.push_back(false);
+    Reachable = true;
+    statement(Body);
+    bool Exits = Broke.back();
+    Broke.pop_back();
+    return Exits;
+  }
+
+  /// Collects a function defined inside the routine, from its own start.
+  void nested(const FunctionDecl *F) {
+    if (!F->doesThisDeclarationHaveABody() || F->isDependentContext())
+      return;
+    bool SavedReachable = Reachable;
+    std::vector<bool> SavedBroke = std::move(Broke);
+    std::vector<SourceLocation> SavedScopes = std::move(Scopes);
+    std::vector<SourceLocation> SavedFull = std::move(FullExpressions);
+    std::optional<SourceLocation> SavedUse = UseOverride, SavedIr = IrOverride;
+    bool SavedVirtualBase = InVirtualBaseInit;
+    Reachable = true;
+    Broke.clear();
+    Scopes.clear();
+    FullExpressions.clear();
+    UseOverride.reset();
+    IrOverride.reset();
+    InVirtualBaseInit = false;
+    collect(F);
+    Reachable = SavedReachable;
+    Broke = std::move(SavedBroke);
+    Scopes = std::move(SavedScopes);
+    FullExpressions = std::move(SavedFull);
+    UseOverride = SavedUse;
+    IrOverride = SavedIr;
+    InVirtualBaseInit = SavedVirtualBase;
+  }
+
+  /// Whether a switch's body has a default label of its own, not a nested switch's.
+  static bool hasDefault(const Stmt *S) {
+    if (!S || isa<SwitchStmt>(S))
+      return false;
+    if (isa<DefaultStmt>(S))
+      return true;
+    for (const Stmt *Child : S->children())
+      if (hasDefault(Child))
+        return true;
+    return false;
+  }
+
   /// The value of a condition clang folds to a constant, as it does when it evaluates as an
   /// integer without side effects and holds no label.
   std::optional<bool> folded(const Expr *Cond) {
@@ -754,15 +1096,15 @@ private:
   void destroyBasesAndMembers(const CXXRecordDecl *RD, SourceLocation Loc) {
     for (const CXXBaseSpecifier &Base : RD->bases())
       if (const CXXDestructorDecl *D = nonTrivialDestructor(Base.getType(), Context))
-        emit(Loc, "destruct", D, "-");
+        emit(Loc, Loc, "destruct", D, "-");
     for (const CXXBaseSpecifier &Base : RD->vbases())
       if (const CXXDestructorDecl *D = nonTrivialDestructor(Base.getType(), Context))
-        emit(Loc, "destruct", D, "-");
+        emit(Loc, Loc, "destruct", D, "-");
     if (RD->isUnion())
       return;
     for (const FieldDecl *Field : RD->fields())
       if (const CXXDestructorDecl *D = nonTrivialDestructor(Field->getType(), Context))
-        emit(Loc, "destruct", D, "-");
+        emit(Loc, Loc, "destruct", D, "-");
   }
 
   /// The arguments that name an enumerator, as N=Enum::Enumerator, numbering from 1 at First.
@@ -801,14 +1143,32 @@ private:
     return enumsOf(Args);
   }
 
-  void emit(SourceLocation Loc, const char *Kind, const FunctionDecl *F, const std::string &Enums,
-            const std::string &Receiver = "-") {
+  /// The file and line clang's debug information gives a call at Loc.
+  std::string irLine(SourceLocation Loc) {
+    SourceLocation At = IrOverride ? *IrOverride : Loc;
+    if (At.isInvalid() && !Enclosing.empty())
+      At = Enclosing.back();
+    if (At.isInvalid())
+      fail("no location for a call in " + RoutineUsr);
+    return L.line(At);
+  }
+
+  void site(std::map<const Stmt *, Walked::Site> &Sites, const Stmt *S, SourceLocation IrLoc) {
+    Sites.emplace(S, Walked::Site{irLine(IrLoc), InVirtualBaseInit});
+  }
+
+  /// Writes a call's fact at Loc, and records it for the comparison with the IR at IrLoc.
+  void emit(SourceLocation Loc, SourceLocation IrLoc, const char *Kind, const FunctionDecl *F,
+            const std::string &Enums, const std::string &Receiver = "-") {
     std::string Usr = usrOf(F);
     std::string Name = nameOf(F, P);
-    std::string At = row(Loc, Kind, Name, typeOf(F->getType(), P), Usr, Enums, Receiver);
+    row(Loc, Kind, Name, typeOf(F->getType(), P), Usr, Enums, Receiver);
     static const std::set<std::string> Called = {"direct", "construct", "destruct", "new", "delete"};
-    if (Called.count(Kind))
-      W.Callees.emplace(Usr, std::make_pair(Name + " (at " + At + ")", F));
+    if (!Called.count(Kind))
+      return;
+    std::string Line = irLine(IrLoc);
+    W.Calls.emplace(std::make_pair(Line, Usr), Name + " (at " + Line + ")");
+    W.Callees.emplace(Usr, F);
   }
 
   void emitIndirect(SourceLocation Loc, QualType CalleeType, const std::string &Enums) {
@@ -841,8 +1201,19 @@ private:
   Walked &W;
   std::set<std::string> &Out;
   std::optional<SourceLocation> UseOverride;
+  std::optional<SourceLocation> IrOverride;
   // The start of each statement enclosing the one visited that has a location, innermost last.
   std::vector<SourceLocation> Enclosing;
+  // Whether clang emits code for the statement visited next.
+  bool Reachable = true;
+  // For each loop or switch around the statement visited, whether a break it reaches leaves it.
+  std::vector<bool> Broke;
+  // Where the destructor of a local of each scope around the statement visited runs: at the end
+  // of a block, or at the start of the statement whose condition or initializer declares it.
+  std::vector<SourceLocation> Scopes;
+  // Where the full-expressions around the expression visited start.
+  std::vector<SourceLocation> FullExpressions;
+  bool InVirtualBaseInit = false;
 };
 
 struct Request {
@@ -900,9 +1271,9 @@ private:
 };
 
 /// The names of the C++ runtime's functions that clang's IR calls to throw and catch, to
-/// initialize static locals and to end the process on an exception that must not escape, by what
-/// in the source makes a routine call them.
-enum class RuntimeCause { Throw, Rethrow, Catch, StaticInit, ExitRegistration, Terminate };
+/// initialize static locals, to destroy them at the process's or the thread's exit, and to end the
+/// process on an exception that must not escape, by what in the source makes a routine call them.
+enum class RuntimeCause { Throw, Rethrow, Catch, StaticInit, ExitRegistration, ThreadExitRegistration, Terminate };
 
 std::optional<RuntimeCause> runtimeCause(llvm::StringRef Name) {
   static const std::map<std::string, RuntimeCause> Causes = {
@@ -917,6 +1288,7 @@ std::optional<RuntimeCause> runtimeCause(llvm::StringRef Name) {
       {"__cxa_guard_release", RuntimeCause::StaticInit},
       {"__cxa_guard_abort", RuntimeCause::StaticInit},
       {"__cxa_atexit", RuntimeCause::ExitRegistration},
+      {"__cxa_thread_atexit", RuntimeCause::ThreadExitRegistration},
       {"__clang_call_terminate", RuntimeCause::Terminate},
   };
   auto Found = Causes.find(Name.str());
@@ -940,14 +1312,16 @@ std::optional<std::string> loweredTo(const FunctionDecl *F) {
 }
 
 /// Holds what the walk found each requested routine in the unit runs to what clang's IR for the
-/// unit calls from the routine's definition, at no optimisation, and fails on any difference.
+/// unit calls from the routine's definition, at no optimisation, and fails on any difference. Each
+/// call is compared by the file and line clang's line table gives it, and by its callee.
 /// The IR of a routine is every function clang emits for its definition, but the deleting
 /// destructor, which a delete-expression's call reaches, with every function defined inside it.
 /// Writes `checked USR` for each routine whose IR agrees.
 class IrChecker : public ASTConsumer {
 public:
-  IrChecker(CodeGenerator &Gen, const std::map<std::string, Walked> &Records, std::set<std::string> &Out)
-      : Gen(Gen), Records(Records), Out(Out) {}
+  IrChecker(CodeGenerator &Gen, const Trees &T, const std::map<std::string, Walked> &Records,
+            std::set<std::string> &Out)
+      : Gen(Gen), T(T), Records(Records), Out(Out) {}
 
   void HandleTranslationUnit(ASTContext &) override {
     llvm::Module *M = Gen.GetModule();
@@ -963,6 +1337,12 @@ public:
     }
     for (const auto &[Usr, W] : Records)
       check(W, ByUsr);
+    if (!Refusals.empty()) {
+      std::string All;
+      for (const std::string &R : Refusals)
+        All += (All.empty() ? "" : "\nnative-call-graph: ") + R;
+      fail(All);
+    }
   }
 
 private:
@@ -971,20 +1351,45 @@ private:
     return Dtor && Dtor->isVirtual() && Fn.getName() == Gen.GetMangledName(GlobalDecl(Dtor, Dtor_Deleting));
   }
 
-  /// What a set of IR functions calls.
+  /// Whether an IR function is the base-object variant of a constructor, which does not construct
+  /// the virtual bases.
+  bool isBaseVariant(const FunctionDecl *F, const llvm::Function &Fn) {
+    const auto *Ctor = dyn_cast<CXXConstructorDecl>(F);
+    return Ctor && Ctor->getParent()->getNumVBases() && Fn.getName() == Gen.GetMangledName(GlobalDecl(Ctor, Ctor_Base));
+  }
+
+  /// What a set of IR functions calls, each by line.
   struct Tally {
-    std::map<std::string, std::string> Callees; // USR -> name
-    std::set<std::string> Intrinsics;           // each intrinsic's family, as llvm.memcpy
+    std::map<std::pair<std::string, std::string>, std::string> Calls; // (line, USR) -> name
+    std::set<std::pair<std::string, std::string>> Intrinsics;          // (line, family, as llvm.memcpy)
     std::set<RuntimeCause> Runtime;
-    size_t Indirect = 0;
-    size_t Asm = 0;
+    std::map<std::string, size_t> Indirect;
+    std::map<std::string, size_t> Asm;
   };
 
+  static std::map<std::string, size_t> expected(const std::map<const Stmt *, Walked::Site> &Sites, bool Base) {
+    std::map<std::string, size_t> Counts;
+    for (const auto &[S, Site] : Sites)
+      if (!(Base && Site.CompleteOnly))
+        ++Counts[Site.Line];
+    return Counts;
+  }
+
+  static std::string counts(const std::map<std::string, size_t> &Counts) {
+    std::string S;
+    for (const auto &[Line, N] : Counts)
+      S += (S.empty() ? "" : ", ") + std::to_string(N) + " at " + Line;
+    return S.empty() ? "none" : S;
+  }
+
   void check(const Walked &W, const std::map<std::string, std::vector<const llvm::Function *>> &ByUsr) {
+    size_t Before = Refusals.size();
     std::string Routine = W.Routine->getQualifiedNameAsString();
     auto Variants = ByUsr.find(W.Usr);
-    if (Variants == ByUsr.end())
-      fail("clang emitted no IR for the definition of " + Routine);
+    if (Variants == ByUsr.end()) {
+      refuse("clang emitted no IR for the definition of " + Routine);
+      return;
+    }
     std::set<std::string> Own = {W.Usr};
     std::vector<const llvm::Function *> Nested;
     for (const FunctionDecl *F : W.Nested) {
@@ -993,43 +1398,46 @@ private:
       if (auto Found = ByUsr.find(Usr); Found != ByUsr.end())
         Nested.insert(Nested.end(), Found->second.begin(), Found->second.end());
     }
-    std::map<std::string, std::string> Called;
-    std::set<std::string> Intrinsics;
+    std::set<std::pair<std::string, std::string>> Called;
+    std::set<std::pair<std::string, std::string>> Intrinsics;
     std::set<RuntimeCause> Runtime;
     for (const llvm::Function *Variant : Variants->second) {
+      std::string Which = Routine + " (" + Variant->getName().str() + ")";
+      bool Base = isBaseVariant(W.Routine, *Variant);
       std::set<const llvm::Function *> Reached(Nested.begin(), Nested.end());
       Reached.insert(Variant);
-      Tally T = tally(Reached, Own, ByUsr, Routine);
-      if (T.Indirect != W.Indirect.size())
-        fail("the IR of " + Routine + " (" + Variant->getName().str() + ") makes " + std::to_string(T.Indirect) +
-             " calls through a pointer, and the walk " + std::to_string(W.Indirect.size()));
-      if (T.Asm != W.Asm.size())
-        fail("the IR of " + Routine + " has " + std::to_string(T.Asm) + " inline assembly statements, and the walk " +
-             std::to_string(W.Asm.size()));
+      Tally Got = tally(Reached, Own, ByUsr, Routine);
+      if (std::map<std::string, size_t> Want = expected(W.Indirect, Base); Got.Indirect != Want)
+        refuse("the IR of " + Which + " calls through a pointer " + counts(Got.Indirect) + ", and the walk " +
+             counts(Want));
+      if (std::map<std::string, size_t> Want = expected(W.Asm, Base); Got.Asm != Want)
+        refuse("the IR of " + Which + " has inline assembly " + counts(Got.Asm) + ", and the walk " + counts(Want));
       std::vector<std::string> Extra;
-      for (const auto &[Usr, Name] : T.Callees)
-        if (!W.Callees.count(Usr) && !Own.count(Usr))
-          Extra.push_back(Name);
+      for (const auto &[Key, Name] : Got.Calls)
+        if (!W.Calls.count(Key) && !Own.count(Key.second))
+          Extra.push_back(Name + " (at " + Key.first + ")");
       if (!Extra.empty())
-        fail("the IR of " + Routine + " calls what the walk does not name: " + join(Extra));
-      Called.insert(T.Callees.begin(), T.Callees.end());
-      Intrinsics.insert(T.Intrinsics.begin(), T.Intrinsics.end());
-      Runtime.insert(T.Runtime.begin(), T.Runtime.end());
+        refuse("the IR of " + Routine + " calls what the walk does not name: " + join(Extra));
+      for (const auto &[Key, Name] : Got.Calls)
+        Called.insert(Key);
+      Intrinsics.insert(Got.Intrinsics.begin(), Got.Intrinsics.end());
+      Runtime.insert(Got.Runtime.begin(), Got.Runtime.end());
     }
     std::vector<std::string> Missing;
-    for (const auto &[Usr, Callee] : W.Callees) {
-      if (Called.count(Usr))
+    for (const auto &[Key, Name] : W.Calls) {
+      if (Called.count(Key))
         continue;
-      std::optional<std::string> Lowered = loweredTo(Callee.second);
-      if (Lowered && Intrinsics.count(*Lowered))
-        continue;
-      Missing.push_back(Callee.first);
+      if (auto Callee = W.Callees.find(Key.second); Callee != W.Callees.end())
+        if (std::optional<std::string> Lowered = loweredTo(Callee->second);
+            Lowered && Intrinsics.count({Key.first, *Lowered}))
+          continue;
+      Missing.push_back(Name);
     }
     if (!Missing.empty())
-      fail("the walk of " + Routine + " names what its IR does not call: " + join(Missing));
+      refuse("the walk of " + Routine + " names what its IR does not call: " + join(Missing));
     auto Expect = [&](bool Walked, RuntimeCause Cause, const char *What) {
       if (Walked != (Runtime.count(Cause) != 0))
-        fail("the walk of " + Routine + (Walked ? " finds " : " does not find ") + What + ", and its IR " +
+        refuse("the walk of " + Routine + (Walked ? " finds " : " does not find ") + What + ", and its IR " +
              (Walked ? "does not call" : "calls") + " the runtime for it");
     };
     Expect(W.Throws, RuntimeCause::Throw, "a throw");
@@ -1037,12 +1445,31 @@ private:
     Expect(W.Catches, RuntimeCause::Catch, "a catch");
     Expect(W.GuardsStatic, RuntimeCause::StaticInit, "a static local initialized at run time");
     Expect(W.RegistersExit, RuntimeCause::ExitRegistration, "a static local destroyed at exit");
-    Out.insert("checked\t" + W.Usr);
+    Expect(W.RegistersThreadExit, RuntimeCause::ThreadExitRegistration, "a static thread_local destroyed at exit");
+    if (Refusals.size() == Before)
+      Out.insert("checked\t" + W.Usr);
+  }
+
+  /// The file and line clang's line table gives an instruction, as the walk writes one.
+  std::string lineOf(const llvm::Instruction &I) {
+    const llvm::DILocation *Loc = I.getDebugLoc().get();
+    if (!Loc)
+      return "(no line)";
+    llvm::SmallString<256> Path(Loc->getFilename());
+    if (!llvm::sys::path::is_absolute(Path)) {
+      llvm::SmallString<256> Full(Loc->getDirectory());
+      llvm::sys::path::append(Full, Path);
+      Path = Full;
+    }
+    auto Found = Files.find(std::string(Path));
+    if (Found == Files.end())
+      Found = Files.emplace(std::string(Path), T.relative(Path)).first;
+    return Found->second + ":" + std::to_string(Loc->getLine());
   }
 
   Tally tally(std::set<const llvm::Function *> Reached, const std::set<std::string> &Own,
               const std::map<std::string, std::vector<const llvm::Function *>> &ByUsr, const std::string &Routine) {
-    Tally T;
+    Tally Got;
     std::vector<const llvm::Function *> Work(Reached.begin(), Reached.end());
     while (!Work.empty()) {
       const llvm::Function *Fn = Work.back();
@@ -1053,22 +1480,22 @@ private:
           if (!Call)
             continue;
           if (Call->isInlineAsm()) {
-            ++T.Asm;
+            ++Got.Asm[lineOf(I)];
             continue;
           }
           const auto *Target = dyn_cast<llvm::GlobalValue>(Call->getCalledOperand()->stripPointerCasts());
           if (!Target) {
-            ++T.Indirect;
+            ++Got.Indirect[lineOf(I)];
             continue;
           }
+          llvm::StringRef Name = Target->getName();
           if (const auto *Callee = dyn_cast<llvm::Function>(Target); Callee && Callee->isIntrinsic()) {
-            llvm::StringRef Name = Callee->getName();
-            T.Intrinsics.insert(Name.substr(0, Name.find('.', 5)).str());
+            Got.Intrinsics.insert({lineOf(I), Name.substr(0, Name.find('.', 5)).str()});
             continue;
           }
-          if (const auto *F = dyn_cast_or_null<FunctionDecl>(Gen.GetDeclForMangledName(Target->getName()))) {
+          if (const auto *F = dyn_cast_or_null<FunctionDecl>(Gen.GetDeclForMangledName(Name))) {
             std::string Usr = usrOf(F);
-            T.Callees.emplace(Usr, F->getQualifiedNameAsString());
+            Got.Calls.emplace(std::make_pair(lineOf(I), Usr), F->getQualifiedNameAsString());
             // A call into another of the routine's own functions continues the routine.
             if (Own.count(Usr))
               if (auto Found = ByUsr.find(Usr); Found != ByUsr.end())
@@ -1077,15 +1504,35 @@ private:
                     Work.push_back(Next);
             continue;
           }
-          if (std::optional<RuntimeCause> Cause = runtimeCause(Target->getName())) {
-            T.Runtime.insert(*Cause);
+          // Itanium's wrapper of a thread_local variable, _ZTW and the variable's mangled name
+          // without its _Z, initializes the variable on its thread's first use. A variable of the
+          // global namespace is named without mangling, which the wrapper spells as its length
+          // and its name.
+          if (Name.starts_with("_ZTW"))
+            if (const auto *V = dyn_cast_or_null<VarDecl>(Gen.GetDeclForMangledName(wrapped(Name.substr(4))))) {
+              Got.Calls.emplace(std::make_pair(lineOf(I), "tls:" + usrOf(V)), V->getQualifiedNameAsString());
+              continue;
+            }
+          if (std::optional<RuntimeCause> Cause = runtimeCause(Name)) {
+            Got.Runtime.insert(*Cause);
             continue;
           }
-          fail("the IR of " + Routine + " calls " + llvm::demangle(Target->getName().str()) +
+          refuse("the IR of " + Routine + " calls " + llvm::demangle(Name.str()) +
                ", which is neither a declaration of the unit's nor a function of the C++ runtime's this knows");
         }
     }
-    return T;
+    return Got;
+  }
+
+  /// The mangled name of the variable a thread_local wrapper's name ends with.
+  static std::string wrapped(llvm::StringRef Encoding) {
+    size_t Digits = 0;
+    while (Digits < Encoding.size() && llvm::isDigit(Encoding[Digits]))
+      ++Digits;
+    size_t Length = 0;
+    if (Digits && !Encoding.substr(0, Digits).getAsInteger(10, Length) && Digits + Length == Encoding.size())
+      return Encoding.substr(Digits).str();
+    return ("_Z" + Encoding).str();
   }
 
   static std::string join(const std::vector<std::string> &Names) {
@@ -1095,9 +1542,16 @@ private:
     return S;
   }
 
+  /// Records a difference between the walk and the IR; the unit fails on all of them once every
+  /// routine is compared.
+  void refuse(const std::string &Why) { Refusals.push_back(Why); }
+
   CodeGenerator &Gen;
+  const Trees &T;
+  std::vector<std::string> Refusals;
   const std::map<std::string, Walked> &Records;
   std::set<std::string> &Out;
+  std::map<std::string, std::string> Files;
 };
 
 /// A virtual call to resolve: the receiver's static class, the method the call names, and whether
@@ -1111,9 +1565,11 @@ struct Need {
   }
 };
 
-/// Names, for each complete class that is not abstract and is or derives from a needed receiver
-/// class, the function each needed call reaches in an object of that class, read from the slot of
-/// the class's vtable that the call loads: one for each subobject of the receiver's class.
+/// Names, for each complete class that is or derives from a needed receiver class, the function
+/// each needed call reaches in an object of that class, read from the slot of the class's vtable
+/// that the call loads: one for each subobject of the receiver's class. An abstract class is the
+/// dynamic class of an object while it is under construction or destruction, so its functions
+/// count too, but for a pure one, whose call then aborts.
 class OverriderFinder : public RecursiveASTVisitor<OverriderFinder> {
 public:
   OverriderFinder(ASTContext &Context, const std::set<Need> &Needs, std::set<std::string> &Out)
@@ -1124,7 +1580,7 @@ public:
 
   bool VisitCXXRecordDecl(CXXRecordDecl *RD) {
     if (!RD->isThisDeclarationADefinition() || !RD->isCompleteDefinition() || RD->isDependentContext() ||
-        !RD->isPolymorphic() || RD->isAbstract())
+        !RD->isPolymorphic())
       return true;
     std::map<std::string, const CXXRecordDecl *> Classes; // USR -> RD or a base of it
     Classes.emplace(usrOf(RD), RD);
@@ -1139,6 +1595,10 @@ public:
       const CXXMethodDecl *Method = methodOf(Receiver->second, N.Method);
       for (CharUnits Offset : pathOffsets(RD, RD, Receiver->second, CharUnits::Zero())) {
         const CXXMethodDecl *Final = slot(RD, Receiver->second, Offset, Method, N.Deleting);
+        // A pure method's slot is never called: a call of it while its class is under
+        // construction aborts.
+        if (!Final || Final->isPureVirtual())
+          continue;
         std::string Head = "\t" + N.Receiver + "\t" + N.Method + "\t" + (N.Deleting ? "delete" : "call") + "\t" + usrOf(RD);
         Out.insert("overrider" + Head + "\t" + nameOf(Final, P) + "\t" + typeOf(Final->getType(), P) + "\t" +
                    usrOf(Final));
@@ -1212,6 +1672,9 @@ private:
     size_t Index = Layout.getVTableOffset(Point->second.VTableIndex) + Point->second.AddressPointIndex +
                    VTables->getMethodVTableIndex(Called);
     const VTableComponent &Component = Layout.vtable_components()[Index];
+    // A slot clang marks unused is one no call loads.
+    if (Component.getKind() == VTableComponent::CK_UnusedFunctionPointer)
+      return nullptr;
     if (!Component.isUsedFunctionPointerKind())
       fail("the vtable slot of " + Method->getQualifiedNameAsString() + " in " + Complete->getQualifiedNameAsString() +
            " holds no function");
@@ -1286,9 +1749,10 @@ public:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, llvm::StringRef InFile) override {
     if (In.M == Mode::Overriders)
       return std::make_unique<Walker>(CI, In, nullptr, Records, Out);
-    // The IR as clang first emits it, before any optimisation, without debug information.
+    // The IR as clang first emits it, before any optimisation, with a line table, as
+    // -gline-tables-only has it.
     CI.getCodeGenOpts().OptimizationLevel = 0;
-    CI.getCodeGenOpts().setDebugInfo(llvm::codegenoptions::NoDebugInfo);
+    CI.getCodeGenOpts().setDebugInfo(llvm::codegenoptions::DebugLineTablesOnly);
     std::unique_ptr<CodeGenerator> Gen(CreateLLVMCodeGen(CI.getDiagnostics(), InFile, &CI.getVirtualFileSystem(),
                                                          CI.getHeaderSearchOpts(), CI.getPreprocessorOpts(),
                                                          CI.getCodeGenOpts(), LLVM));
@@ -1296,7 +1760,7 @@ public:
     std::vector<std::unique_ptr<ASTConsumer>> Consumers;
     Consumers.push_back(std::make_unique<Walker>(CI, In, Generator, Records, Out));
     Consumers.push_back(std::move(Gen));
-    Consumers.push_back(std::make_unique<IrChecker>(*Generator, Records, Out));
+    Consumers.push_back(std::make_unique<IrChecker>(*Generator, In.T, Records, Out));
     return std::make_unique<MultiplexConsumer>(std::move(Consumers));
   }
 

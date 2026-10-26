@@ -407,3 +407,25 @@ int ThreadLocals()
     (void)g;
     return n + ThreadLocalElsewhere;
 }
+
+// A switch every one of whose labels returns, default among them, which nothing leaves.
+void AfterSwitch(int n)
+{
+    switch (n)
+    {
+    case 1:
+        return;
+    default:
+        return;
+    }
+    Helper();
+}
+
+// A full-expression over several lines, whose temporaries clang destroys at the line it starts on.
+void TakeTwo(const Guard&, const Guard&);
+void MultiLineTemporaries()
+{
+    TakeTwo(
+        Guard(),
+        Guard());
+}

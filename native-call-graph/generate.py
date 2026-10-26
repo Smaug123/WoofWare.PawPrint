@@ -9,7 +9,7 @@ path per line, or every unit of it without --units; a unit of assembly is skippe
 (callgraph.cpp) runs over each unit twice: first for the requested routines' definitions and
 their calls, which it holds to the IR clang emits for them, then, for every virtual call those
 make, for the function the call reaches in every class that is or derives from the receiver's
-class and is not abstract. A virtual call becomes one row per function found in any unit, or,
+class, an abstract one included. A virtual call becomes one row per function found in any unit, or,
 where no unit has one, a single row naming the method the call names. Generation fails unless
 some unit's IR agreed with the walk of every routine.
 
@@ -38,9 +38,11 @@ COLUMNS = """\
 # virtual-unimplemented (no class the program defines implements the method named), indirect
 # (through a pointer; no callee), construct, destruct, new (operator new), delete (the operator
 # delete a delete-expression, a deleting destructor or a throwing new's cleanup calls), builtin
-# (a builtin clang lowers, which calls nothing), throw (CALLEE-NAME is the type thrown, or - to
-# rethrow) or asm (inline assembly). ENUMS lists, separated by |, each argument that names an
-# enumerator, as N=Enum::Enumerator, numbering the arguments from 1, defaults included.
+# (a builtin clang lowers, which calls nothing), tls-init (a read of a thread_local variable
+# through the wrapper that initializes it; CALLEE-NAME is the variable), throw (CALLEE-NAME is
+# the type thrown, or - to rethrow) or asm (inline assembly). ENUMS lists, separated by |, each
+# argument that names an enumerator, as N=Enum::Enumerator, numbering the arguments from 1,
+# defaults included.
 """
 
 

@@ -249,7 +249,7 @@
   # put in its place, and what the refusal must say.
   wrongWalks = {
     without-cleanup-deletes = {
-      from = ''emit(E->getBeginLoc(), "delete", Cleanup, "-");'';
+      from = ''emit(E->getBeginLoc(), E->getExprLoc(), "delete", Cleanup, "-");'';
       to = "(void)Cleanup;";
       refusal = "AllocateCleanup.*calls what the walk does not name.*operator delete";
     };
@@ -259,14 +259,21 @@
       refusal = "Trivial names what its IR does not call: Plain::Plain";
     };
     without-pointer-calls = {
-      from = "W.Indirect.insert(E);";
-      to = "(void)E;";
-      refusal = "calls through a pointer, and the walk 0";
+      from = "site(W.Indirect, ";
+      to = "(void)(&W.Indirect, ";
+      refusal = "calls through a pointer .*, and the walk none";
     };
     without-throws = {
       from = "(Thrown ? W.Throws : W.Rethrows) = true;";
       to = "(void)Thrown;";
       refusal = "does not find a .*throw, and its IR calls the runtime for it";
+    };
+    # Unreachable's Helper is also called on a line clang does emit, so comparing callees by
+    # name alone would accept this walk.
+    with-unreachable-calls = {
+      from = "if (!Reachable && !isa<CompoundStmt";
+      to = "if (false && !isa<CompoundStmt";
+      refusal = "the walk of Unreachable names what its IR does not call: Helper (at probes.cpp:357)";
     };
     without-comparisons = {
       from = ''Out.insert("checked\t" + W.Usr);'';

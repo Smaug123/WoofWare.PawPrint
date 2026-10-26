@@ -37,9 +37,10 @@ The kinds of call:
 * `direct`: to the function named, including a virtual one called with a qualifier (`X::F()`), and one whose
   receiver's dynamic class clang can tell, as a final class's or a local object's, which it calls directly.
 * `virtual`: one row for each function the call's vtable slot holds, in each class the program defines that is, or
-  derives from, the receiver's static class and is not abstract, read from clang's layout of that class's vtable at
-  each subobject of the receiver's class. The program is every unit of `libcoreclr.so` and `libclrgc.so`, so a class
-  that only another binary defines is not seen.
+  derives from, the receiver's static class, read from clang's layout of that class's vtable at each subobject of the
+  receiver's class. An abstract class counts, since it is the dynamic class of an object while the object is under
+  construction or destruction, but not its pure functions, whose call then aborts. The program is every unit of
+  `libcoreclr.so` and `libclrgc.so`, so a class that only another binary defines is not seen.
 * `virtual-unimplemented`: a virtual call no class the program defines can take; the callee is the method named.
 * `indirect`: through a pointer to a function or to a member function. The callee is `-`, and the signature the
   pointer's.
@@ -50,6 +51,8 @@ The kinds of call:
   calls to free its memory when its initializer throws. A `delete` of a class with a virtual destructor is a `virtual`
   call of the destructor, with a `delete` row for the `operator delete` of each class it can reach.
 * `builtin`: a builtin that clang lowers rather than calls, as `__builtin_expect` or `std::move`.
+* `tls-init`: a read of a `thread_local` variable through the wrapper Itanium's ABI gives it, which initializes it on
+  its thread's first use; the callee is the variable.
 * `throw`: a `throw`, whose callee is the type thrown, or `-` for a rethrow.
 * `asm`: inline assembly, whose calls, if any, are not seen.
 
@@ -57,27 +60,39 @@ A call to a trivial function, as a trivial assignment operator, is none. Nothing
 unless of a variable-length array, `decltype`, `noexcept`, a `typeid` of a type that is not polymorphic), a constant
 expression, the initializer of a variable that is initialized as a constant, a `static_assert`, or a branch clang
 leaves out because its condition is a constant (the discarded branch of an `if constexpr`, and that of an `if`, `?:`,
-`&&` or `||` whose condition folds and whose other branch holds no label) is a call. A default argument's or default
-member initializer's calls are made where it is used. A lambda's or a local class's body counts as its enclosing
-routine's; a generic lambda's, as each of its instantiations.
+`&&` or `||` whose condition folds and whose other branch holds no label) is a call. Nor is anything in a statement
+clang reaches no code for, as it decides: a statement after a `return`, a `break`, a `continue`, a `goto`, a loop or
+`switch` nothing leaves, or an expression statement that ends in a call of a function that does not return or in a
+`throw`, unless the statement holds a label. A default argument's or default member initializer's calls are made
+where it is used. A lambda's or a local class's body counts as its enclosing routine's, its constructors and
+destructors with their members'; a generic lambda's, as each of its instantiations.
 
 ## How the graph is checked against clang's IR
 
 As it walks a unit, the tool also has clang emit the unit's LLVM IR, as clang's front end emits it before any
-optimisation, with every requested routine's definition emitted even where the unit does not use it. For each
-routine it compares the IR of its definition (every function clang emits for it but the deleting destructor, with the
-functions defined inside it) with the walk, and fails on any difference, naming the routine and what differs:
+optimisation, with a line table, and with every requested routine's definition emitted even where the unit does not
+use it. For each routine it compares the IR of its definition (every function clang emits for it but the deleting
+destructor, with the functions defined inside it) with the walk, and fails on any difference, naming the routine and
+what differs. Each call compares by its callee and by the file and line clang's line table gives it, which the walk
+works out as clang does: a call's own line (in a macro's body, the macro's invocation's; in a macro's argument, its
+own), a default argument's call's the line of the call that uses it, a default member initializer's its own line, a
+local's destructor the end of its block or the start of the statement that declares it in a condition or initializer,
+a temporary's destructor the start of its full-expression, and a destructor's or a constructor's destruction of its
+bases and members the end of its body.
 
-* the functions the IR calls by name must be the walk's `direct`, `construct`, `destruct`, `new` and `delete` callees,
-  cleanup paths included, but that a call of `memcpy`, `memmove` or `memset` may be lowered to its LLVM intrinsic;
-* the IR's calls through a pointer, and its inline assembly, must be as many as the walk's `virtual`, `indirect` and
-  `asm` sites;
+* the functions the IR calls by name, and where, must be the walk's `direct`, `construct`, `destruct`, `new`,
+  `delete` and `tls-init` callees, cleanup paths included, but that a call of `memcpy`, `memmove` or `memset` may be
+  lowered to its LLVM intrinsic on the same line;
+* the IR's calls through a pointer, and its inline assembly, must be as many on each line as the walk's `virtual`,
+  `indirect` and `asm` sites, for each of a constructor's or destructor's functions: a virtual base's initializer is
+  only the complete object's constructor's;
 * the C++ runtime's functions the IR calls must be accounted for by what the walk found: `__cxa_allocate_exception`,
   `__cxa_throw` and `__cxa_free_exception` by a throw, `__cxa_rethrow` by a rethrow, `__cxa_begin_catch`,
   `__cxa_end_catch` and `__cxa_get_exception_ptr` by a catch, `__cxa_guard_*` by a static local initialized at run
-  time and `__cxa_atexit` by one destroyed at exit; each is required where the walk found its cause, and
-  `__clang_call_terminate` is always allowed. An LLVM intrinsic is not a callee; any other function the IR calls fails
-  generation.
+  time but a `thread_local` one, `__cxa_atexit` by one destroyed at exit and `__cxa_thread_atexit` by a `thread_local`
+  one; each is required where the walk found its cause, and `__clang_call_terminate` is always allowed. These compare
+  by whether the routine calls them, not by line. An LLVM intrinsic is not a callee; any other function the IR calls
+  fails generation.
 
 Generation fails unless some unit's IR was compared with the walk of every routine. The IR cannot tell what a virtual
 call reaches: it shows only a call through a pointer. What `virtual` rows name rests on clang's vtable layout, and on
@@ -99,4 +114,5 @@ the oracle.
 
 `oracle/` is a small program with every case above, and `oracle/expected.tsv` its graph, less its USRs; the flake check
 `native-call-graph-oracle` holds the generator to it. `native-call-graph-cross-check` builds the tool with its walk
-wrong, leaving out a throwing `new`'s cleanup, and requires the comparison with the IR alone to refuse it.
+wrong in each of several ways, among them leaving out a throwing `new`'s cleanup and naming a call no code reaches,
+and requires the comparison with the IR alone to refuse each.

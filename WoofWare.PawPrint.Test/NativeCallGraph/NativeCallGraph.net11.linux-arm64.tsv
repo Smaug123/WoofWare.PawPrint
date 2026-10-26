@@ -14,9 +14,11 @@
 # virtual-unimplemented (no class the program defines implements the method named), indirect
 # (through a pointer; no callee), construct, destruct, new (operator new), delete (the operator
 # delete a delete-expression, a deleting destructor or a throwing new's cleanup calls), builtin
-# (a builtin clang lowers, which calls nothing), throw (CALLEE-NAME is the type thrown, or - to
-# rethrow) or asm (inline assembly). ENUMS lists, separated by |, each argument that names an
-# enumerator, as N=Enum::Enumerator, numbering the arguments from 1, defaults included.
+# (a builtin clang lowers, which calls nothing), tls-init (a read of a thread_local variable
+# through the wrapper that initializes it; CALLEE-NAME is the variable), throw (CALLEE-NAME is
+# the type thrown, or - to rethrow) or asm (inline assembly). ENUMS lists, separated by |, each
+# argument that names an enumerator, as N=Enum::Enumerator, numbering the arguments from 1,
+# defaults included.
 routine	../native/minipal/time.c:minipal_hires_ticks	minipal_hires_ticks	long (void)	c:@F@minipal_hires_ticks	src/native/minipal/time.c:96
 routine	../native/minipal/time.c:minipal_lowres_ticks	minipal_lowres_ticks	long (void)	c:@F@minipal_lowres_ticks	src/native/minipal/time.c:110
 undefined	classlibnative/bcltype/arraynative.inl:InlinedBackwardGCSafeCopyHelper
