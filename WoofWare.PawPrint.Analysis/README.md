@@ -444,7 +444,9 @@ These checks are exact where the instantiation is closed, but some are left open
   abstract static virtual methods (`Opacity.UndecidedConstraint`).
 - **Types TypeSystem cannot instantiate:** a load reaching a type whose argument carries a custom
   modifier, or a function pointer naming a type that is not there, leaves its checks undecided
-  (`Opacity.UndecidedConstraint`).
+  (`Opacity.UndecidedConstraint`), unless no generic definition it names, nor any their loads
+  bring, has a constrained type parameter. Binding goes on past an undecided check as though it
+  passed.
 - **Order within one load:** a load that misses is reported as the miss, which is exact for the
   instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before

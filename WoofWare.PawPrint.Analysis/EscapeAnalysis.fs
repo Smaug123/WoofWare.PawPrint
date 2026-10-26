@@ -377,14 +377,41 @@ type internal InstanceCheck =
     /// must satisfy the method's constraints.
     | Instantiates of spelledIn : string * MethodSpecificationHandle
 
+/// How the JIT comes to make a constraint check that only an instance decides.
+[<RequireQualifiedAccess>]
+type internal CheckReach =
+    /// It makes the check before the body runs. Where the check fails, the instruction at this IL
+    /// offset, which names what is checked, never runs; `None` where no instruction does (the type
+    /// of a local or of a `catch` clause).
+    | Made of instruction : int option
+    /// It may make the check, or not, compiling the instruction that names what is checked.
+    | Possible
+    /// It may make the check wherever it compiles the body's code: in the method itself, and in
+    /// each method it inlines the body into (`LocalFacts.RaisedWhereInlined`).
+    | PossibleWhereInlined
+
+/// What the constraint checks that only an instance decides raise, before its body runs.
+type internal InstanceConstraintFacts =
+    {
+        /// What they raise, which none of the body's handlers catches (`LocalFacts.OutsideBody`).
+        Raised : Set<OutsideBodyFact>
+        /// What they raise wherever the JIT compiles the body's code
+        /// (`LocalFacts.RaisedWhereInlined`).
+        RaisedWhereInlined : Set<OutsideBodyFact>
+        /// The IL offset of each instruction that never runs, as a check it makes fails
+        /// (`CheckReach.Made`).
+        Unreached : Set<int>
+    }
+
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
 /// own exception clauses can be applied to all three alike.
 type internal LocalFacts =
     {
         /// The constraint checks binding what the body names makes, before it runs, that only an
-        /// instance decides (`instanceFacts`); what the rest of binding raises is in `OutsideBody`.
-        InstanceChecks : InstanceCheck list
+        /// instance decides (`instanceFacts`), each with how the JIT comes to make it; what the
+        /// rest of binding raises is in `OutsideBody`.
+        InstanceChecks : (InstanceCheck * CheckReach) list
         Raises : (int * ThrownType) list
         /// Each instruction the body cannot see through, and the method its token names, if any.
         Opaque : (int * Opacity * MethodKey option) list
@@ -717,7 +744,7 @@ type EscapeAnalysisState =
             /// What the constraint checks of each instance's body that only the instance decides
             /// raise (`instanceConstraintFacts`), by the instance's definition and arguments, as far
             /// as it has been asked: the same whatever its callers pass it.
-            InstanceConstraints : Map<MethodKey * Instantiation, Set<OutsideBodyFact>>
+            InstanceConstraints : Map<MethodKey * Instantiation, InstanceConstraintFacts>
             /// What CoreCLR raises instantiating each generic method with each declaring type's
             /// arguments and its own (`methodInstantiationFailure`), as far as it has been asked.
             MethodInstantiations :
@@ -1951,6 +1978,19 @@ module EscapeAnalysis =
             raised "System.Security.VerificationException" ExceptionMaking.ParameterlessConstructor
         | BindFailure.UndecidedConstraint -> [ OutsideBodyFact.Opaque Opacity.UndecidedConstraint ]
 
+    /// Whether what binding a token gives leaves it bound: nothing but the opacity of a constraint
+    /// check the analysis does not decide (`BindFailure.UndecidedConstraint`), past which the JIT
+    /// goes on where the check passes.
+    let private leavesBound (facts : OutsideBodyFact list) : bool =
+        facts
+        |> List.forall (fun fact ->
+            match fact with
+            | OutsideBodyFact.Opaque Opacity.UndecidedConstraint -> true
+            | OutsideBodyFact.Opaque _
+            | OutsideBodyFact.Raises _
+            | OutsideBodyFact.Runs _ -> false
+        )
+
     /// The first type reference in a spelling that fails to bind, and why, which makes binding the
     /// token that spells it throw; `None` if all of them bind. Custom modifiers and function pointer
     /// signatures are not bound.
@@ -2210,6 +2250,120 @@ module EscapeAnalysis =
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void -> state, true
 
+    /// <summary>
+    /// Whether no constraint check a full load of a spelling of <paramref name="assembly" /> makes
+    /// can fail, whatever its type arguments: no generic definition it names, nor any that their
+    /// full loads bring (<c>TypeLoad.fullLoadParts</c>), has a type parameter with a constraint, and
+    /// no generic argument it spells is one CoreCLR admits in no instantiation (a byref, a pointer,
+    /// a function pointer, <c>void</c> or <c>TypedReference</c>). This decides, without
+    /// instantiating it, a spelling TypeSystem does not instantiate (<c>concretizable</c>).
+    /// </summary>
+    let private spellingConstraintFree
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * bool
+        =
+        let constrained (parameter : GenericParamMetadata) : bool =
+            parameter.RequiresReferenceType
+            || parameter.RequiresNonNullableValueType
+            || parameter.RequiresParameterlessConstructor
+            || not parameter.Constraints.IsEmpty
+
+        let admitted (argument : TypeDefn) : bool =
+            match TypeDefn.stripCustomModifiers argument with
+            | TypeDefn.Byref _
+            | TypeDefn.Pointer _
+            | TypeDefn.FunctionPointer _
+            | TypeDefn.Void
+            | TypeDefn.PrimitiveType PrimitiveType.TypedReference -> false
+            | _ -> true
+
+        // The walk threads the definitions it has entered, so that it enters each once.
+        let rec ofSpelling
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (assembly : DumpedAssembly)
+            (spelling : TypeDefn)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
+            =
+            match spelling with
+            | TypeDefn.GenericInstantiation (_, arguments) when not (Seq.forall admitted arguments) ->
+                (state, entered), false
+            | TypeDefn.GenericInstantiation (_, arguments) ->
+                match nominalIdentity state assembly spelling with
+                | state, None -> (state, entered), false
+                | state, Some identity ->
+
+                ((ofDefinition (state, entered) identity), arguments)
+                ||> Seq.fold (fun (walked, free) argument ->
+                    if free then
+                        ofSpelling walked assembly argument
+                    else
+                        walked, false
+                )
+            | TypeDefn.Array (element, _)
+            | TypeDefn.OneDimensionalArrayLowerBoundZero element
+            | TypeDefn.Pointer element
+            | TypeDefn.Byref element
+            | TypeDefn.Pinned element -> ofSpelling (state, entered) assembly element
+            | TypeDefn.Modified modified -> ofSpelling (state, entered) assembly modified.Unmodified
+            | TypeDefn.FromReference _
+            | TypeDefn.FromDefinition _ ->
+                match nominalIdentity state assembly spelling with
+                | state, None -> (state, entered), false
+                | state, Some identity -> ofDefinition (state, entered) identity
+            // `TypeDesc::DoFullyLoad` completes a function pointer without its signature's types.
+            | TypeDefn.FunctionPointer _
+            | TypeDefn.PrimitiveType _
+            | TypeDefn.GenericTypeParameter _
+            | TypeDefn.GenericMethodParameter _
+            | TypeDefn.Void -> (state, entered), true
+
+        and ofDefinition
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (identity : ResolvedTypeIdentity)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
+            =
+            if entered.Contains identity then
+                (state, entered), true
+            else
+
+            let entered = entered.Add identity
+            let definedIn, definition = definitionOf state identity
+
+            if definition.Generics |> Seq.exists (snd >> constrained) then
+                (state, entered), false
+            else
+
+            (((state, entered), true), TypeLoad.fullLoadParts definedIn definition)
+            ||> List.fold (fun (walked, free) part ->
+                if not free then
+                    walked, false
+                else
+
+                match part with
+                | TypeLoad.FullLoadPart.Base spelling
+                | TypeLoad.FullLoadPart.Interface spelling
+                | TypeLoad.FullLoadPart.ValueTypeField spelling -> ofSpelling walked definedIn spelling
+                | TypeLoad.FullLoadPart.UnmodelledInterface _ -> walked, false
+            )
+
+        let (state, _), free = ofSpelling (state, Set.empty) assembly spelling
+        state, free
+
+    /// What the constraint checks of a full load of a spelling of `assembly` that TypeSystem does
+    /// not instantiate (`concretizable`) raise, as far as the analysis decides: nothing where none
+    /// can fail (`spellingConstraintFree`), and otherwise it does not decide.
+    let private uninstantiableConstraints
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * BindFailure option
+        =
+        match spellingConstraintFree state assembly spelling with
+        | state, true -> state, None
+        | state, false -> state, Some BindFailure.UndecidedConstraint
+
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
         (state : EscapeAnalysisState)
@@ -2397,8 +2551,8 @@ module EscapeAnalysis =
     /// An instantiation containing <c>System.__Canon</c> is what shared code sees, which CoreCLR does
     /// not check, though it checks what that instantiation's load brings that does not contain it.
     /// The load is assumed to meet no type reference that names nothing (<c>TypeLoad</c>), which the
-    /// caller decides first. A part TypeSystem does not instantiate (<c>concretizable</c>) leaves the
-    /// checks undecided (<c>UndecidedConstraint</c>).
+    /// caller decides first. A part TypeSystem does not instantiate (<c>concretizable</c>) is decided
+    /// as far as <c>uninstantiableConstraints</c> does.
     /// </remarks>
     let private closureConstraintFailure
         (state : EscapeAnalysisState)
@@ -2460,7 +2614,9 @@ module EscapeAnalysis =
 
             let part (isField : bool) (spelling : TypeDefn) (state : EscapeAnalysisState, visited) =
                 match concretizable state definedIn spelling with
-                | state, false -> (state, visited), Some BindFailure.UndecidedConstraint
+                | state, false ->
+                    let state, failure = uninstantiableConstraints state definedIn spelling
+                    (state, visited), failure
                 | state, true ->
 
                 match instantiate state definedIn.DefinitionFullName concrete.Generics [] spelling with
@@ -2583,8 +2739,9 @@ module EscapeAnalysis =
     /// whatever instantiates the variables: each part of the spelling that mentions no variable,
     /// and, for each generic definition the spelling or such a load instantiates over variables,
     /// each part its full load brings that mentions none of its type parameters
-    /// (<c>closureConstraintFailure</c>). <c>None</c> where every one satisfies its constraints, and
-    /// <c>UndecidedConstraint</c> at one TypeSystem does not instantiate (<c>concretizable</c>).
+    /// (<c>closureConstraintFailure</c>). <c>None</c> where every one satisfies its constraints. One
+    /// TypeSystem does not instantiate (<c>concretizable</c>) is decided as far as
+    /// <c>uninstantiableConstraints</c> does.
     /// </summary>
     let private closedPartsFailure
         (state : EscapeAnalysisState)
@@ -2611,7 +2768,9 @@ module EscapeAnalysis =
 
             if not (mentionsTypeVariable spelling) then
                 match concretizable state assembly spelling with
-                | state, false -> (state, entered), Some BindFailure.UndecidedConstraint
+                | state, false ->
+                    let state, failure = uninstantiableConstraints state assembly spelling
+                    (state, entered), failure
                 | state, true ->
 
                 match namesBareGenericDefinition state assembly spelling with
@@ -2671,7 +2830,9 @@ module EscapeAnalysis =
                             ofSpelling (state, entered) definedIn spelling
                         else
                             match concretizable state definedIn spelling with
-                            | state, false -> (state, entered), Some BindFailure.UndecidedConstraint
+                            | state, false ->
+                                let state, failure = uninstantiableConstraints state definedIn spelling
+                                (state, entered), failure
                             | state, true ->
 
                             match instantiate state definedIn.DefinitionFullName [] [] spelling with
@@ -2718,8 +2879,8 @@ module EscapeAnalysis =
     /// (`closedPartsFailure`), and the rest comes back as the check an instance makes
     /// (`InstanceCheck.LoadsInFull`). A generic definition spelled bare is its typical
     /// instantiation, which CoreCLR checks against its own type parameters, which the analysis does
-    /// not model. A spelling TypeSystem does not instantiate (`concretizable`) leaves the checks
-    /// undecided.
+    /// not model. A spelling TypeSystem does not instantiate (`concretizable`) is decided as far as
+    /// `uninstantiableConstraints` does.
     let private fullLoadConstraints
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -2732,7 +2893,9 @@ module EscapeAnalysis =
         else
 
         match concretizable state assembly spelling with
-        | state, false -> state, Some BindFailure.UndecidedConstraint, []
+        | state, false ->
+            let state, failure = uninstantiableConstraints state assembly spelling
+            state, failure, []
         | state, true ->
 
         match namesBareGenericDefinition state assembly spelling with
@@ -3572,9 +3735,11 @@ module EscapeAnalysis =
                         $"BUG: JitTypeLoads.load answers %O{load} for the owner of %O{token} in %s{assembly.DefinitionFullName}, which loads in full or not at all"
 
         // Where the owner fails to load, the member is not resolved, and only the owner's failure is
-        // raised.
+        // raised. A constraint check of the owner's load that the analysis does not decide leaves
+        // it loaded (`leavesBound`).
         let unlessOwnerFails (failures : OutsideBodyFact list) : OutsideBodyFact list =
             match ownerFailure with
+            | Some BindFailure.UndecidedConstraint -> raisesOf ownerFailure @ failures
             | Some _ -> raisesOf ownerFailure
             | None -> failures
 
@@ -3616,6 +3781,8 @@ module EscapeAnalysis =
 
             // Once the method and its arguments load, CoreCLR instantiates it, which an instance
             // decides, the arguments being spelled in the body.
+            // A constraint check the analysis does not decide leaves an argument it may not
+            // instantiate, and the method's instantiation open.
             let instantiates =
                 match target, failures with
                 | CallTarget.Method _, [] -> [ InstanceCheck.Instantiates (assembly.DefinitionFullName, handle) ]
@@ -3639,7 +3806,7 @@ module EscapeAnalysis =
 
                 let state, failures, checks =
                     match ownerFailure, failures with
-                    | None, [] ->
+                    | (None | Some BindFailure.UndecidedConstraint), [] ->
                         let state, failures, checks = parentConstraints state handle
                         state, failures, ownerChecks @ checks
                     | _ -> state, failures, ownerChecks
@@ -3845,10 +4012,13 @@ module EscapeAnalysis =
             Definite : BindFailure option
             /// Each load before `Definite` that the JIT may make or not, and that fails.
             Possible : BindFailure list
-            /// The constraint checks of the loads before `Definite` that only an instance decides:
-            /// of a member's signature, spelled over the member's own type variables, which the
-            /// instantiation the token gives the member decides; of `calli`'s, over the body's.
+            /// The constraint checks of the loads before `Definite`, that the JIT makes however it
+            /// compiles the instruction, that only an instance decides: of a member's signature,
+            /// spelled over the member's own type variables, which the instantiation the token gives
+            /// the member decides; of `calli`'s and an array accessor's, over the body's.
             Deferred : InstanceCheck list
+            /// As `Deferred`, of the loads before `Definite` that the JIT may make or not.
+            PossiblyDeferred : InstanceCheck list
         }
 
     /// What the JIT's loads of the types of `signature`, the signature of a member which `assembly`
@@ -3902,11 +4072,25 @@ module EscapeAnalysis =
             =
             // A type spelled over the member's own type variables, the token's instantiation decides,
             // but for its closed parts, which are the same in every instantiation
-            // (`closedPartsFailure`). `calli`'s signature is the call site's, over the body's own
-            // type variables.
+            // (`closedPartsFailure`). `calli`'s signature is the call site's, and an array accessor's,
+            // which the runtime supplies, is spelled with the array's element type: both are over
+            // the body's own type variables.
+            let overBodyVariables =
+                match token with
+                | MetadataToken.StandaloneSignature _ -> true
+                | MetadataToken.MemberReference reference ->
+                    match assembly.Members.[reference].Parent with
+                    | MetadataToken.TypeSpecification parent ->
+                        match TypeDefn.stripCustomModifiers assembly.TypeSpecs.[parent].Signature with
+                        | TypeDefn.Array _
+                        | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> true
+                        | _ -> false
+                    | _ -> false
+                | _ -> false
+
             let constraints (state : EscapeAnalysisState) (loaded : TypeDefn) =
                 match token with
-                | MetadataToken.StandaloneSignature _ -> fullLoadConstraints state assembly loaded
+                | _ when overBodyVariables -> fullLoadConstraints state assembly loaded
                 | _ when mentionsTypeVariable loaded ->
                     let state, failure = closedPartsFailure state assembly loaded
                     state, failure, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
@@ -3933,6 +4117,7 @@ module EscapeAnalysis =
                   Definite = None
                   Possible = []
                   Deferred = []
+                  PossiblyDeferred = []
               }),
              loads)
             ||> List.fold (fun (state, failures) load ->
@@ -3944,7 +4129,7 @@ module EscapeAnalysis =
                     state,
                     { failures with
                         Possible = Option.toList failure @ failures.Possible
-                        Deferred = failures.Deferred @ deferred
+                        PossiblyDeferred = failures.PossiblyDeferred @ deferred
                     }
                 | None, load ->
                     let state, failure, deferred = failureOf state load
@@ -4209,8 +4394,8 @@ module EscapeAnalysis =
         | MetadataToken.TypeReference _
         | MetadataToken.TypeSpecification _ ->
             match bindToken state assembly token with
-            | state, _, _ :: _, _ -> state, None
-            | state, _, [], _ ->
+            | state, _, failures, _ when not (leavesBound failures) -> state, None
+            | state, _, _, _ ->
                 match token with
                 | MetadataToken.TypeSpecification handle ->
                     state, Some (assembly.TypeSpecs.[handle].Signature, assembly.DefinitionFullName)
@@ -5576,7 +5761,7 @@ module EscapeAnalysis =
                 bindingFailures : Set<OutsideBodyFact>,
                 raisedWhereInlined : Set<OutsideBodyFact>,
                 refusedCompilations : Map<int, CompilationRefusal>,
-                instanceChecks : InstanceCheck list
+                instanceChecks : (InstanceCheck * CheckReach) list
             )
             (index : int)
             =
@@ -5649,10 +5834,10 @@ module EscapeAnalysis =
 
                     // A token that binds may still be refused for the type it names.
                     let failures =
-                        match tokenOp, failures with
-                        | UnaryMetadataTokenIlOp.Ldtoken, _
-                        | _, _ :: _ -> failures
-                        | _, [] -> resolutionRefusal state assembly token.Token
+                        match tokenOp with
+                        | UnaryMetadataTokenIlOp.Ldtoken -> failures
+                        | _ when leavesBound failures -> failures @ resolutionRefusal state assembly token.Token
+                        | _ -> failures
 
                     let target =
                         match referent with
@@ -5788,6 +5973,20 @@ module EscapeAnalysis =
                                     Some (CompilationRefusal.UnreadableCallingConvention, MemberPositions.BySignature)
                             | None, _ -> None
 
+                        // The deferred checks of the signature's loads, as the JIT comes to make
+                        // them: a possible load's where the JIT compiles the body's code, inlined
+                        // too, where `inlined` says so.
+                        let reached (loads : SignatureLoadFailures) (inlined : bool) =
+                            let possibly =
+                                if inlined then
+                                    CheckReach.PossibleWhereInlined
+                                else
+                                    CheckReach.Possible
+
+                            (loads.Deferred
+                             |> List.map (fun check -> check, CheckReach.Made (Some (snd ops.[index]))))
+                            @ (loads.PossiblyDeferred |> List.map (fun check -> check, possibly))
+
                         match refusal with
                         | Some (refusal, positions) ->
                             let state, loads =
@@ -5796,10 +5995,11 @@ module EscapeAnalysis =
                             let possible = loads.Possible |> List.collect (Some >> raisesOf)
 
                             match loads.Definite with
-                            | Some _ -> state, failures @ raisesOf loads.Definite, possible, [], None, loads.Deferred
+                            | Some _ ->
+                                state, failures @ raisesOf loads.Definite, possible, [], None, reached loads false
                             // What it raises the body accounts for where the JIT compiles the
                             // instruction (`refusedCompilations`).
-                            | None -> state, failures, possible, [], Some refusal, loads.Deferred
+                            | None -> state, failures, possible, [], Some refusal, reached loads false
                         | None ->
 
                             let state, loads =
@@ -5862,17 +6062,24 @@ module EscapeAnalysis =
                                 @ walkRefusal
                                 @ delegateFailures
 
-                            let inlined =
+                            let whereInlined =
                                 match operand with
-                                | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested -> possible
-                                | _ -> []
+                                | MemberOperand.Address FunctionPointerPreparation.IfAddressRequested -> true
+                                | _ -> false
 
-                            state, failures @ raisesOf loads.Definite, possible, inlined, None, loads.Deferred
+                            let inlined = if whereInlined then possible else []
+
+                            state,
+                            failures @ raisesOf loads.Definite,
+                            possible,
+                            inlined,
+                            None,
+                            reached loads whereInlined
 
                     // A token that fails to bind names nothing to instantiate: the JIT throws
                     // before the body runs.
                     let target, unbound =
-                        if failures.IsEmpty then
+                        if leavesBound failures then
                             target, unbound
                         else
                             let target =
@@ -5930,7 +6137,10 @@ module EscapeAnalysis =
                     (match refusedHere with
                      | Some refusal -> Map.add index refusal refusedCompilations
                      | None -> refusedCompilations),
-                    instanceChecks @ tokenChecks @ signatureChecks
+                    instanceChecks
+                    @ (tokenChecks
+                       |> List.map (fun check -> check, CheckReach.Made (Some (snd ops.[index]))))
+                    @ signatureChecks
                 | _ -> state, None, unbound, bindingFailures, raisedWhereInlined, refusedCompilations, instanceChecks
 
             let targets =
@@ -6295,13 +6505,17 @@ module EscapeAnalysis =
                     let state, _, clauseFailures, clauseChecks = bindToken state assembly token
 
                     let clauseFailures =
-                        match clauseFailures with
-                        | [] -> resolutionRefusal state assembly token
-                        | _ :: _ -> clauseFailures
+                        if leavesBound clauseFailures then
+                            clauseFailures @ resolutionRefusal state assembly token
+                        else
+                            clauseFailures
 
                     state, Set.union failures (Set.ofList clauseFailures), checks @ clauseChecks
                 | _ -> state, failures, checks
             )
+
+        // No instruction names a local's or a `catch` clause's type.
+        let ownChecks = ownChecks |> List.map (fun check -> check, CheckReach.Made None)
 
         let state, targets, unbound, bindingFailures, raisedWhereInlined, refusedCompilations, instanceChecks =
             ((state, Map.empty, Set.empty, localFailures, Set.empty, Map.empty, ownChecks), [ 0 .. ops.Length - 1 ])
@@ -8613,7 +8827,8 @@ module EscapeAnalysis =
 
     /// <summary>
     /// What the constraint checks binding the body of <paramref name="instance" /> makes raise, where
-    /// only an instance decides them (<c>LocalFacts.InstanceChecks</c>), before the body runs.
+    /// only an instance decides them (<c>LocalFacts.InstanceChecks</c>), before the body runs, and
+    /// which instructions never run as a check they make fails.
     /// </summary>
     /// <remarks>
     /// The JIT resolves the body's tokens in the context its code runs in: with each type argument
@@ -8626,8 +8841,8 @@ module EscapeAnalysis =
     let private instanceConstraintFacts
         (state : EscapeAnalysisState)
         (instance : MethodInstance)
-        (checks : InstanceCheck list)
-        : EscapeAnalysisState * Set<OutsideBodyFact>
+        (checks : (InstanceCheck * CheckReach) list)
+        : EscapeAnalysisState * InstanceConstraintFacts
         =
         let assembly, method = methodOf state instance.Definition
 
@@ -8635,6 +8850,44 @@ module EscapeAnalysis =
             failure
             |> Option.map (bindFailureFacts state >> Set.ofList)
             |> Option.defaultValue Set.empty
+
+        // Whether a check fails, rather than going undecided.
+        let definite (failure : BindFailure option) : bool =
+            match failure with
+            | Some BindFailure.UndecidedConstraint
+            | None -> false
+            | Some _ -> true
+
+        let none : InstanceConstraintFacts =
+            {
+                Raised = Set.empty
+                RaisedWhereInlined = Set.empty
+                Unreached = Set.empty
+            }
+
+        // What a check that the JIT comes to make as `reach` says adds, raising `facts`: where it
+        // definitely fails at an instruction, that instruction does not run.
+        let add
+            (found : InstanceConstraintFacts)
+            (reach : CheckReach)
+            (facts : Set<OutsideBodyFact>)
+            (fails : bool)
+            : InstanceConstraintFacts
+            =
+            {
+                Raised = Set.union found.Raised facts
+                RaisedWhereInlined =
+                    match reach with
+                    | CheckReach.PossibleWhereInlined -> Set.union found.RaisedWhereInlined facts
+                    | CheckReach.Made _
+                    | CheckReach.Possible -> found.RaisedWhereInlined
+                Unreached =
+                    match reach with
+                    | CheckReach.Made (Some offset) when fails -> found.Unreached.Add offset
+                    | CheckReach.Made _
+                    | CheckReach.Possible
+                    | CheckReach.PossibleWhereInlined -> found.Unreached
+            }
 
         // What a check raises with the body's type variables standing for these arguments.
         let checkIn
@@ -8646,7 +8899,7 @@ module EscapeAnalysis =
             =
             let loadInFull (state : EscapeAnalysisState) spelledIn typeArguments methodArguments spelling =
                 match concretizable state (assemblyOf state spelledIn) spelling with
-                | state, false -> state, Some BindFailure.UndecidedConstraint
+                | state, false -> uninstantiableConstraints state (assemblyOf state spelledIn) spelling
                 | state, true ->
 
                 match instantiate state spelledIn typeArguments methodArguments spelling with
@@ -8696,14 +8949,14 @@ module EscapeAnalysis =
             let state, typeArguments = canonical state typeArguments
             let state, methodArguments = canonical state methodArguments
 
-            ((state, Set.empty), checks)
-            ||> List.fold (fun (state, facts) check ->
+            ((state, none), checks)
+            ||> List.fold (fun (state, found) (check, reach) ->
                 let state, failure = checkIn state typeArguments methodArguments check
-                state, Set.union facts (raisesOf state failure)
+                state, add found reach (raisesOf state failure) (definite failure)
             )
         | Instantiation.Open ->
-            ((state, Set.empty), checks)
-            ||> List.fold (fun (state, facts) check ->
+            ((state, none), checks)
+            ||> List.fold (fun (state, found) (check, reach) ->
                 let overVariables, mayBreak =
                     match check with
                     | InstanceCheck.LoadsInFull (spelledIn, spelling) ->
@@ -8758,8 +9011,29 @@ module EscapeAnalysis =
 
                             let state, shape = shapeOf state (assemblyOf state spelledIn) substitute spelling
 
-                            // A member variable the token does not instantiate decides nothing.
-                            if shapeHasOpaque shape then
+                            let state, unsubstituted =
+                                shapeOf state (assemblyOf state spelledIn) noSubstitution spelling
+
+                            // Whether the token's arguments close an instantiation the signature
+                            // spells over the member's variables, which the signature's closed
+                            // parts (`closedPartsFailure`) did not have.
+                            let rec newlyClosed (original : Shape) (substituted : Shape) : bool =
+                                match original, substituted with
+                                | Shape.Named (_, originalArguments), Shape.Named (_, arguments) when
+                                    originalArguments.Length = arguments.Length
+                                    ->
+                                    (not arguments.IsEmpty
+                                     && shapeMentionsVariable original
+                                     && not (shapeMentionsVariable substituted))
+                                    || List.exists2 newlyClosed originalArguments arguments
+                                | Shape.Array (original, _), Shape.Array (substituted, _)
+                                | Shape.Pointer original, Shape.Pointer substituted
+                                | Shape.Byref original, Shape.Byref substituted -> newlyClosed original substituted
+                                | _ -> false
+
+                            // A member variable the token does not instantiate decides nothing, nor
+                            // does what the token closes, which is not checked here.
+                            if shapeHasOpaque shape || newlyClosed unsubstituted shape then
                                 state, true
                             else
                                 shapeMayBreak
@@ -8774,11 +9048,13 @@ module EscapeAnalysis =
 
                 if overVariables then
                     match mayBreak state with
-                    | state, true -> state, Set.add (OutsideBodyFact.Opaque Opacity.DependsOnInstantiation) facts
-                    | state, false -> state, facts
+                    | state, true ->
+                        state,
+                        add found reach (Set.singleton (OutsideBodyFact.Opaque Opacity.DependsOnInstantiation)) false
+                    | state, false -> state, found
                 else
                     let state, failure = checkIn state [] [] check
-                    state, Set.union facts (raisesOf state failure)
+                    state, add found reach (raisesOf state failure) (definite failure)
             )
 
     /// The facts of `instance`: those of its definition, less what a run of the instance cannot
@@ -9006,13 +9282,18 @@ module EscapeAnalysis =
                     },
                     constrained
 
+            // An instruction whose check fails never runs, so calls nothing.
             let refined =
-                if constrained.IsEmpty then
-                    refined
-                else
-                    { refined with
-                        OutsideBody = Set.union refined.OutsideBody constrained
-                    }
+                { refined with
+                    OutsideBody = Set.union refined.OutsideBody constrained.Raised
+                    RaisedWhereInlined = Set.union refined.RaisedWhereInlined constrained.RaisedWhereInlined
+                    Calls =
+                        if constrained.Unreached.IsEmpty then
+                            refined.Calls
+                        else
+                            refined.Calls
+                            |> List.filter (fun (offset, _, _) -> not (constrained.Unreached.Contains offset))
+                }
 
             { state with
                 InstanceFacts = state.InstanceFacts.Add (instance, refined)
