@@ -707,12 +707,12 @@ type EscapeAnalysisState =
             /// where every one satisfies its constraints.
             ClosureConstraints : Map<ConcreteTypeHandle, BindFailure option>
             /// Whether the full load of an instantiation of each generic definition may break a
-            /// constraint through its type parameters (`loadMayBreakThroughParameters`), as far as
-            /// it has been asked.
+            /// constraint through its type parameters (`shapeMayBreak`), as far as it has been
+            /// asked.
             ParameterBreaks : Map<ResolvedTypeIdentity, bool>
             /// What CoreCLR's checks find of the closed instantiations the full load of an
-            /// instantiation of each generic definition reaches (`definitionClosedPartsFailure`), as
-            /// far as it has been asked.
+            /// instantiation of each generic definition reaches (`closedPartsFailure`), as far as it
+            /// has been asked.
             ClosedPartFailures : Map<ResolvedTypeIdentity, BindFailure option>
             /// What the constraint checks of each instance's body that only the instance decides
             /// raise (`instanceConstraintFacts`), by the instance's definition and arguments, as far
@@ -2586,114 +2586,131 @@ module EscapeAnalysis =
     /// (<c>closureConstraintFailure</c>). <c>None</c> where every one satisfies its constraints, and
     /// <c>UndecidedConstraint</c> at one TypeSystem does not instantiate (<c>concretizable</c>).
     /// </summary>
-    let rec private closedPartsFailure
+    let private closedPartsFailure
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (spelling : TypeDefn)
         : EscapeAnalysisState * BindFailure option
         =
-        let firstOf (state : EscapeAnalysisState) (spellings : TypeDefn list) =
-            ((state, None), spellings)
-            ||> List.fold (fun (state, found) spelling ->
-                match found with
-                | Some _ -> state, found
-                | None -> closedPartsFailure state assembly spelling
-            )
+        // Each walk threads the definitions it has entered, so that it enters each once and a load
+        // that comes back round adds nothing; a definition's result is complete, and kept, only
+        // where its walk entered it first.
+        let rec ofSpelling
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (assembly : DumpedAssembly)
+            (spelling : TypeDefn)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * BindFailure option
+            =
+            let firstOf (walked : EscapeAnalysisState * Set<ResolvedTypeIdentity>) (spellings : TypeDefn list) =
+                ((walked, None), spellings)
+                ||> List.fold (fun (walked, found) spelling ->
+                    match found with
+                    | Some _ -> walked, found
+                    | None -> ofSpelling walked assembly spelling
+                )
 
-        if not (mentionsTypeVariable spelling) then
-            match concretizable state assembly spelling with
-            | state, false -> state, Some BindFailure.UndecidedConstraint
-            | state, true ->
+            if not (mentionsTypeVariable spelling) then
+                match concretizable state assembly spelling with
+                | state, false -> (state, entered), Some BindFailure.UndecidedConstraint
+                | state, true ->
 
-            match namesBareGenericDefinition state assembly spelling with
-            | state, true -> state, None
-            | state, false ->
+                match namesBareGenericDefinition state assembly spelling with
+                | state, true -> (state, entered), None
+                | state, false ->
 
-            match instantiate state assembly.DefinitionFullName [] [] spelling with
-            | state, Error failure -> state, Some (failureOfBinding failure)
-            | state, Ok handle -> closureConstraintFailure state handle
-        else
+                match instantiate state assembly.DefinitionFullName [] [] spelling with
+                | state, Error failure -> (state, entered), Some (failureOfBinding failure)
+                | state, Ok handle ->
+                    let state, failure = closureConstraintFailure state handle
+                    (state, entered), failure
+            else
 
-        match spelling with
-        | TypeDefn.GenericInstantiation (root, arguments) ->
-            match firstOf state (List.ofSeq arguments) with
-            | state, Some failure -> state, Some failure
-            | state, None ->
+            match spelling with
+            | TypeDefn.GenericInstantiation (root, arguments) ->
+                match firstOf (state, entered) (List.ofSeq arguments) with
+                | walked, Some failure -> walked, Some failure
+                | (state, entered), None ->
 
-            match nominalIdentity state assembly root with
-            | state, Some identity -> definitionClosedPartsFailure state identity
-            | state, None -> state, None
-        | TypeDefn.Array (element, _)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.Pinned element -> closedPartsFailure state assembly element
-        | TypeDefn.Modified modified -> closedPartsFailure state assembly modified.Unmodified
-        | _ -> state, None
+                match nominalIdentity state assembly root with
+                | state, Some identity -> ofDefinition (state, entered) identity
+                | state, None -> (state, entered), None
+            | TypeDefn.Array (element, _)
+            | TypeDefn.OneDimensionalArrayLowerBoundZero element
+            | TypeDefn.Pointer element
+            | TypeDefn.Byref element
+            | TypeDefn.Pinned element -> ofSpelling (state, entered) assembly element
+            | TypeDefn.Modified modified -> ofSpelling (state, entered) assembly modified.Unmodified
+            | _ -> (state, entered), None
 
-    /// `closedPartsFailure` of each part the full load of an instantiation of the generic
-    /// definition `identity` brings, spelled over its own type parameters.
-    and private definitionClosedPartsFailure
-        (state : EscapeAnalysisState)
-        (identity : ResolvedTypeIdentity)
-        : EscapeAnalysisState * BindFailure option
-        =
-        match state.ClosedPartFailures.TryFind identity with
-        | Some known -> state, known
-        | None ->
+        // Each part the full load of an instantiation of the generic definition `identity` brings,
+        // spelled over its own type parameters.
+        and ofDefinition
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (identity : ResolvedTypeIdentity)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * BindFailure option
+            =
+            match state.ClosedPartFailures.TryFind identity with
+            | Some known -> (state, entered), known
+            | None when entered.Contains identity -> (state, entered), None
+            | None ->
 
-        // A definition its own load comes back to adds nothing on the way round.
-        let state =
-            { state with
-                ClosedPartFailures = state.ClosedPartFailures.Add (identity, None)
-            }
+            let first = entered.IsEmpty
+            let definedIn, definition = definitionOf state identity
 
-        let definedIn, definition = definitionOf state identity
+            let (state, entered), found =
+                (((state, entered.Add identity), None), TypeLoad.fullLoadParts definedIn definition)
+                ||> List.fold (fun ((state, entered), found) part ->
+                    match found, part with
+                    | Some _, _ -> (state, entered), found
+                    | None, TypeLoad.FullLoadPart.Base spelling
+                    | None, TypeLoad.FullLoadPart.Interface spelling -> ofSpelling (state, entered) definedIn spelling
+                    | None, TypeLoad.FullLoadPart.ValueTypeField spelling ->
+                        // A field of an enum type is not loaded; an enum is not generic, so a spelling
+                        // mentioning a type parameter is not of one.
+                        if mentionsTypeVariable spelling then
+                            ofSpelling (state, entered) definedIn spelling
+                        else
+                            match concretizable state definedIn spelling with
+                            | state, false -> (state, entered), Some BindFailure.UndecidedConstraint
+                            | state, true ->
 
-        let state, found =
-            ((state, None), TypeLoad.fullLoadParts definedIn definition)
-            ||> List.fold (fun (state, found) part ->
-                match found, part with
-                | Some _, _ -> state, found
-                | None, TypeLoad.FullLoadPart.Base spelling
-                | None, TypeLoad.FullLoadPart.Interface spelling -> closedPartsFailure state definedIn spelling
-                | None, TypeLoad.FullLoadPart.ValueTypeField spelling ->
-                    // A field of an enum type is not loaded; an enum is not generic, so a spelling
-                    // mentioning a type parameter is not of one.
-                    if mentionsTypeVariable spelling then
-                        closedPartsFailure state definedIn spelling
-                    else
-                        match concretizable state definedIn spelling with
-                        | state, false -> state, Some BindFailure.UndecidedConstraint
-                        | state, true ->
+                            match instantiate state definedIn.DefinitionFullName [] [] spelling with
+                            | state, Error failure -> (state, entered), Some (failureOfBinding failure)
+                            | state, Ok handle ->
+                                let typeSystem, isEnum =
+                                    TypeSystemState.isEnumValueType
+                                        state.LoggerFactory
+                                        state.RuntimeDirs
+                                        state.BaseTypes
+                                        state.TypeSystem
+                                        handle
 
-                        match instantiate state definedIn.DefinitionFullName [] [] spelling with
-                        | state, Error failure -> state, Some (failureOfBinding failure)
-                        | state, Ok handle ->
-                            let typeSystem, isEnum =
-                                TypeSystemState.isEnumValueType
-                                    state.LoggerFactory
-                                    state.RuntimeDirs
-                                    state.BaseTypes
-                                    state.TypeSystem
-                                    handle
+                                let state =
+                                    { state with
+                                        TypeSystem = typeSystem
+                                    }
 
-                            let state =
-                                { state with
-                                    TypeSystem = typeSystem
-                                }
+                                match isEnum with
+                                | Ok true -> (state, entered), None
+                                | Ok false ->
+                                    let state, failure = closureConstraintFailure state handle
+                                    (state, entered), failure
+                                | Error failure -> (state, entered), Some (failureOfBinding failure)
+                    | None, TypeLoad.FullLoadPart.UnmodelledInterface unmodelled -> failwith unmodelled.Diagnostic
+                )
 
-                            match isEnum with
-                            | Ok true -> state, None
-                            | Ok false -> closureConstraintFailure state handle
-                            | Error failure -> state, Some (failureOfBinding failure)
-                | None, TypeLoad.FullLoadPart.UnmodelledInterface unmodelled -> failwith unmodelled.Diagnostic
-            )
+            let state =
+                if first then
+                    { state with
+                        ClosedPartFailures = state.ClosedPartFailures.Add (identity, found)
+                    }
+                else
+                    state
 
-        { state with
-            ClosedPartFailures = state.ClosedPartFailures.Add (identity, found)
-        },
-        found
+            (state, entered), found
+
+        let (state, _), found = ofSpelling (state, Set.empty) assembly spelling
+        state, found
 
     /// What the constraint checks of CoreCLR's full load of a type `assembly` spells raise, which
     /// loads without a miss (`closureConstraintFailure`). Of a spelling over the body's type
@@ -3118,9 +3135,10 @@ module EscapeAnalysis =
     /// Whether the type parameters <paramref name="generics" /> of
     /// <paramref name="ownerAssembly" />, given <paramref name="arguments" />, shapes over the
     /// type variables of <paramref name="scope" />, may reject them for some instantiation of those
-    /// variables, or as themselves: whether an argument mentioning a variable does not satisfy its
-    /// parameter as <c>argumentSatisfies</c> decides. An argument mentioning no variable is closed,
-    /// and is checked exactly elsewhere.
+    /// variables, or as themselves: whether an argument does not satisfy its parameter as
+    /// <c>argumentSatisfies</c> decides. Each argument is asked about, those mentioning no variable
+    /// too: CoreCLR checks an instantiation containing <c>System.__Canon</c> only in the open form
+    /// (<c>CEEInfo::GetMethodForSecurity</c>), with the variables standing for themselves.
     /// </summary>
     let private instantiationMayBreak
         (state : EscapeAnalysisState)
@@ -3137,7 +3155,7 @@ module EscapeAnalysis =
 
         ((state, false), Seq.zip generics arguments)
         ||> Seq.fold (fun (state, breaks) ((_, parameter), argument) ->
-            if breaks || not (shapeMentionsVariable argument) then
+            if breaks then
                 state, breaks
             else
                 let state, satisfied =
@@ -3151,112 +3169,127 @@ module EscapeAnalysis =
     /// <paramref name="scope" /> gives may break a constraint, for some instantiation of the
     /// variables or for the variables themselves: at an instantiation the shape spells
     /// (<c>instantiationMayBreak</c>), or at one the full load of an instantiated definition brings
-    /// through its type parameters (<c>loadMayBreakThroughParameters</c>). The instantiation
-    /// <paramref name="typical" /> names, whose arguments are its own type parameters, is the scope's
-    /// own declaring type, which is loaded already. What is closed is checked exactly elsewhere.
+    /// through its type parameters (<c>TypeLoad.fullLoadParts</c>, spelled over those parameters).
+    /// The instantiation <paramref name="typical" /> names, whose arguments are its own type
+    /// parameters, is the scope's own declaring type, which is loaded already. A type mentioning no
+    /// variable is closed, and is checked exactly elsewhere (<c>closedPartsFailure</c>).
     /// </summary>
-    let rec private shapeMayBreak
+    let private shapeMayBreak
         (state : EscapeAnalysisState)
         (scope : VariableScope)
         (typical : ResolvedTypeIdentity option)
         (shape : Shape)
         : EscapeAnalysisState * bool
         =
-        match shape with
-        | Shape.Named (identity, arguments) when List.exists shapeMentionsVariable arguments ->
-            let isTypical =
-                typical = Some identity
-                && arguments
-                   |> List.indexed
-                   |> List.forall (fun (index, argument) -> argument = Shape.Variable (false, index))
+        // Each walk threads the definitions whose loads it has entered, so that it enters each once
+        // and a load that comes back round adds nothing; a definition's result is complete, and
+        // kept, only where its walk entered it first.
+        let rec ofShape
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (scope : VariableScope)
+            (typical : ResolvedTypeIdentity option)
+            (shape : Shape)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
+            =
+            match shape with
+            | Shape.Named (identity, arguments) when List.exists shapeMentionsVariable arguments ->
+                let isTypical =
+                    typical = Some identity
+                    && arguments
+                       |> List.indexed
+                       |> List.forall (fun (index, argument) -> argument = Shape.Variable (false, index))
 
-            if isTypical then
-                state, false
-            else
-
-            let ownerAssembly, owner = definitionOf state identity
-            let argumentArray = Array.ofList arguments
-
-            let substitute (ofMethod : bool) (index : int) : Shape option =
-                if not ofMethod && index < argumentArray.Length then
-                    Some argumentArray.[index]
-                else
-                    Some Shape.Opaque
-
-            match instantiationMayBreak state scope ownerAssembly owner.Generics substitute arguments with
-            | state, true -> state, true
-            | state, false ->
-
-            match loadMayBreakThroughParameters state identity with
-            | state, true -> state, true
-            | state, false ->
-
-            ((state, false), arguments)
-            ||> List.fold (fun (state, breaks) argument ->
-                if breaks then
-                    state, true
-                else
-                    shapeMayBreak state scope typical argument
-            )
-        | Shape.Named _
-        | Shape.Variable _
-        | Shape.Opaque -> state, false
-        | Shape.Array (element, _)
-        | Shape.Pointer element
-        | Shape.Byref element -> shapeMayBreak state scope typical element
-
-    /// Whether CoreCLR's full load of an instantiation of the definition `identity` may break a
-    /// constraint through the definition's type parameters: whether what the load brings
-    /// (`TypeLoad.fullLoadParts`), each spelled over those parameters, may, as `shapeMayBreak` says
-    /// with the definition's own type parameters in scope.
-    and private loadMayBreakThroughParameters
-        (state : EscapeAnalysisState)
-        (identity : ResolvedTypeIdentity)
-        : EscapeAnalysisState * bool
-        =
-        match state.ParameterBreaks.TryFind identity with
-        | Some known -> state, known
-        | None ->
-
-        // A definition its own load comes back to adds nothing on the way round.
-        let state =
-            { state with
-                ParameterBreaks = state.ParameterBreaks.Add (identity, false)
-            }
-
-        let definedIn, definition = definitionOf state identity
-
-        let scope =
-            {
-                Assembly = definedIn
-                TypeGenerics = definition.Generics
-                MethodGenerics = ImmutableArray.Empty
-            }
-
-        let state, found =
-            if definition.Generics.IsEmpty then
-                state, false
-            else
-
-            ((state, false), TypeLoad.fullLoadParts definedIn definition)
-            ||> List.fold (fun (state, found) part ->
-                if found then
-                    state, true
+                if isTypical then
+                    (state, entered), false
                 else
 
-                match part with
-                | TypeLoad.FullLoadPart.Base spelling
-                | TypeLoad.FullLoadPart.Interface spelling
-                | TypeLoad.FullLoadPart.ValueTypeField spelling ->
-                    let state, shape = shapeOf state definedIn noSubstitution spelling
-                    shapeMayBreak state scope (Some identity) shape
-                | TypeLoad.FullLoadPart.UnmodelledInterface _ -> state, true
-            )
+                let ownerAssembly, owner = definitionOf state identity
+                let argumentArray = Array.ofList arguments
 
-        { state with
-            ParameterBreaks = state.ParameterBreaks.Add (identity, found)
-        },
-        found
+                let substitute (ofMethod : bool) (index : int) : Shape option =
+                    if not ofMethod && index < argumentArray.Length then
+                        Some argumentArray.[index]
+                    else
+                        Some Shape.Opaque
+
+                match instantiationMayBreak state scope ownerAssembly owner.Generics substitute arguments with
+                | state, true -> (state, entered), true
+                | state, false ->
+
+                match ofDefinition (state, entered) identity with
+                | walked, true -> walked, true
+                | walked, false ->
+
+                ((walked, false), arguments)
+                ||> List.fold (fun (walked, breaks) argument ->
+                    if breaks then
+                        walked, true
+                    else
+                        ofShape walked scope typical argument
+                )
+            | Shape.Named _
+            | Shape.Variable _
+            | Shape.Opaque -> (state, entered), false
+            | Shape.Array (element, _)
+            | Shape.Pointer element
+            | Shape.Byref element -> ofShape (state, entered) scope typical element
+
+        // Whether CoreCLR's full load of an instantiation of the definition `identity` may break a
+        // constraint through the definition's type parameters: whether what the load brings
+        // (`TypeLoad.fullLoadParts`), each spelled over those parameters, may, with the
+        // definition's own type parameters in scope.
+        and ofDefinition
+            (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
+            (identity : ResolvedTypeIdentity)
+            : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
+            =
+            match state.ParameterBreaks.TryFind identity with
+            | Some known -> (state, entered), known
+            | None when entered.Contains identity -> (state, entered), false
+            | None ->
+
+            let first = entered.IsEmpty
+            let definedIn, definition = definitionOf state identity
+
+            let scope =
+                {
+                    Assembly = definedIn
+                    TypeGenerics = definition.Generics
+                    MethodGenerics = ImmutableArray.Empty
+                }
+
+            let (state, entered), found =
+                if definition.Generics.IsEmpty then
+                    (state, entered.Add identity), false
+                else
+
+                (((state, entered.Add identity), false), TypeLoad.fullLoadParts definedIn definition)
+                ||> List.fold (fun ((state, entered), found) part ->
+                    if found then
+                        (state, entered), true
+                    else
+
+                    match part with
+                    | TypeLoad.FullLoadPart.Base spelling
+                    | TypeLoad.FullLoadPart.Interface spelling
+                    | TypeLoad.FullLoadPart.ValueTypeField spelling ->
+                        let state, shape = shapeOf state definedIn noSubstitution spelling
+                        ofShape (state, entered) scope (Some identity) shape
+                    | TypeLoad.FullLoadPart.UnmodelledInterface _ -> (state, entered), true
+                )
+
+            let state =
+                if first then
+                    { state with
+                        ParameterBreaks = state.ParameterBreaks.Add (identity, found)
+                    }
+                else
+                    state
+
+            (state, entered), found
+
+        let (state, _), breaks = ofShape (state, Set.empty) scope typical shape
+        state, breaks
 
     /// The scope of a body of `method` in `assembly`: its declaring type's and its own type
     /// parameters.
@@ -3328,8 +3361,13 @@ module EscapeAnalysis =
                 state, Some shape
             | None -> state, None
 
+        let parentMentionsVariable =
+            match parentShape with
+            | Some shape -> shapeMentionsVariable shape
+            | None -> false
+
         let state, ownBreaks =
-            if not (List.exists shapeMentionsVariable arguments) then
+            if not (parentMentionsVariable || List.exists shapeMentionsVariable arguments) then
                 state, false
             else
 
@@ -3862,13 +3900,16 @@ module EscapeAnalysis =
             (load : JitTypeLoad)
             : EscapeAnalysisState * BindFailure option * InstanceCheck list
             =
-            // A type spelled over the member's own type variables, the token's instantiation decides.
-            // `calli`'s signature is the call site's, over the body's own type variables.
+            // A type spelled over the member's own type variables, the token's instantiation decides,
+            // but for its closed parts, which are the same in every instantiation
+            // (`closedPartsFailure`). `calli`'s signature is the call site's, over the body's own
+            // type variables.
             let constraints (state : EscapeAnalysisState) (loaded : TypeDefn) =
                 match token with
                 | MetadataToken.StandaloneSignature _ -> fullLoadConstraints state assembly loaded
                 | _ when mentionsTypeVariable loaded ->
-                    state, None, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
+                    let state, failure = closedPartsFailure state assembly loaded
+                    state, failure, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
                 | _ -> fullLoadConstraints state assembly loaded
 
             match load with
