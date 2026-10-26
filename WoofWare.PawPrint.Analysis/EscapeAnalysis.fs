@@ -2397,7 +2397,8 @@ module EscapeAnalysis =
     /// An instantiation containing <c>System.__Canon</c> is what shared code sees, which CoreCLR does
     /// not check, though it checks what that instantiation's load brings that does not contain it.
     /// The load is assumed to meet no type reference that names nothing (<c>TypeLoad</c>), which the
-    /// caller decides first.
+    /// caller decides first. A part TypeSystem does not instantiate (<c>concretizable</c>) leaves the
+    /// checks undecided (<c>UndecidedConstraint</c>).
     /// </remarks>
     let private closureConstraintFailure
         (state : EscapeAnalysisState)
@@ -2458,6 +2459,10 @@ module EscapeAnalysis =
             let definedIn = assemblyOf state concrete.Identity.AssemblyFullName
 
             let part (isField : bool) (spelling : TypeDefn) (state : EscapeAnalysisState, visited) =
+                match concretizable state definedIn spelling with
+                | state, false -> (state, visited), Some BindFailure.UndecidedConstraint
+                | state, true ->
+
                 match instantiate state definedIn.DefinitionFullName concrete.Generics [] spelling with
                 | state, Error failure -> (state, visited), Some (failureOfBinding failure)
                 | state, Ok child ->
@@ -2578,7 +2583,8 @@ module EscapeAnalysis =
     /// whatever instantiates the variables: each part of the spelling that mentions no variable,
     /// and, for each generic definition the spelling or such a load instantiates over variables,
     /// each part its full load brings that mentions none of its type parameters
-    /// (<c>closureConstraintFailure</c>). <c>None</c> where every one satisfies its constraints.
+    /// (<c>closureConstraintFailure</c>). <c>None</c> where every one satisfies its constraints, and
+    /// <c>UndecidedConstraint</c> at one TypeSystem does not instantiate (<c>concretizable</c>).
     /// </summary>
     let rec private closedPartsFailure
         (state : EscapeAnalysisState)
@@ -2596,7 +2602,7 @@ module EscapeAnalysis =
 
         if not (mentionsTypeVariable spelling) then
             match concretizable state assembly spelling with
-            | state, false -> state, None
+            | state, false -> state, Some BindFailure.UndecidedConstraint
             | state, true ->
 
             match namesBareGenericDefinition state assembly spelling with
@@ -2657,6 +2663,10 @@ module EscapeAnalysis =
                     if mentionsTypeVariable spelling then
                         closedPartsFailure state definedIn spelling
                     else
+                        match concretizable state definedIn spelling with
+                        | state, false -> state, Some BindFailure.UndecidedConstraint
+                        | state, true ->
+
                         match instantiate state definedIn.DefinitionFullName [] [] spelling with
                         | state, Error failure -> state, Some (failureOfBinding failure)
                         | state, Ok handle ->
@@ -2691,7 +2701,8 @@ module EscapeAnalysis =
     /// (`closedPartsFailure`), and the rest comes back as the check an instance makes
     /// (`InstanceCheck.LoadsInFull`). A generic definition spelled bare is its typical
     /// instantiation, which CoreCLR checks against its own type parameters, which the analysis does
-    /// not model.
+    /// not model. A spelling TypeSystem does not instantiate (`concretizable`) leaves the checks
+    /// undecided.
     let private fullLoadConstraints
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -2704,7 +2715,7 @@ module EscapeAnalysis =
         else
 
         match concretizable state assembly spelling with
-        | state, false -> state, None, []
+        | state, false -> state, Some BindFailure.UndecidedConstraint, []
         | state, true ->
 
         match namesBareGenericDefinition state assembly spelling with
@@ -3750,29 +3761,42 @@ module EscapeAnalysis =
         | UnaryMetadataTokenIlOp.Ldtoken -> Some MemberOperand.Token
         | _ -> None
 
+    /// Whether the JIT makes a load it makes only of a type that is defined
+    /// (`JitTypeLoad.InFullIfDefined`), and what that load fails with.
+    [<RequireQualifiedAccess>]
+    type private ConditionalLoad =
+        /// The type is not defined, so nothing is loaded and nothing fails.
+        | Skipped
+        /// The load is made; it fails with this, or succeeds where `None`.
+        | Made of BindFailure option
+
     /// As `spellingLoadFailure`, except that where the type reference at the head of `spelling`
     /// (an instantiation's generic type) names a type that the assembly it is looked for in lacks,
-    /// nothing is loaded and nothing fails (`JitTypeLoad.InFullIfDefined`). A reference into an
-    /// assembly that is not there still fails.
+    /// nothing is loaded (`JitTypeLoad.InFullIfDefined`). A reference into an assembly that is not
+    /// there still fails.
     let private spellingLoadFailureIfDefined
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (spelling : TypeDefn)
-        : EscapeAnalysisState * BindFailure option
+        : EscapeAnalysisState * ConditionalLoad
         =
         let rec head (spelling : TypeDefn) : TypeDefn =
             match TypeDefn.stripCustomModifiers spelling with
             | TypeDefn.GenericInstantiation (generic, _) -> head generic
             | spelling -> spelling
 
+        let made (state : EscapeAnalysisState) =
+            let state, failure = spellingLoadFailure state assembly spelling
+            state, ConditionalLoad.Made failure
+
         match head spelling with
         | TypeDefn.FromReference (typeRef, _) ->
             match bindTypeRef state assembly typeRef with
-            | state, TypeReferenceIdentity.TypeAbsent _ -> state, None
+            | state, TypeReferenceIdentity.TypeAbsent _ -> state, ConditionalLoad.Skipped
             | state, TypeReferenceIdentity.Resolved _
-            | state, TypeReferenceIdentity.AssemblyUnavailable _ -> spellingLoadFailure state assembly spelling
+            | state, TypeReferenceIdentity.AssemblyUnavailable _ -> made state
             | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
-        | _ -> spellingLoadFailure state assembly spelling
+        | _ -> made state
 
     /// What the loads of the types of a member's signature fail with, where the JIT compiling an
     /// instruction naming the member makes them (`memberSignatureLoads`).
@@ -3783,8 +3807,9 @@ module EscapeAnalysis =
             Definite : BindFailure option
             /// Each load before `Definite` that the JIT may make or not, and that fails.
             Possible : BindFailure list
-            /// The constraint checks of the loads before `Definite`, spelled over the member's own
-            /// type variables, that the instantiation the token gives the member decides.
+            /// The constraint checks of the loads before `Definite` that only an instance decides:
+            /// of a member's signature, spelled over the member's own type variables, which the
+            /// instantiation the token gives the member decides; of `calli`'s, over the body's.
             Deferred : InstanceCheck list
         }
 
@@ -3838,11 +3863,13 @@ module EscapeAnalysis =
             : EscapeAnalysisState * BindFailure option * InstanceCheck list
             =
             // A type spelled over the member's own type variables, the token's instantiation decides.
+            // `calli`'s signature is the call site's, over the body's own type variables.
             let constraints (state : EscapeAnalysisState) (loaded : TypeDefn) =
-                if mentionsTypeVariable loaded then
+                match token with
+                | MetadataToken.StandaloneSignature _ -> fullLoadConstraints state assembly loaded
+                | _ when mentionsTypeVariable loaded ->
                     state, None, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
-                else
-                    fullLoadConstraints state assembly loaded
+                | _ -> fullLoadConstraints state assembly loaded
 
             match load with
             | JitTypeLoad.InFull loaded ->
@@ -3851,8 +3878,9 @@ module EscapeAnalysis =
                 | state, None -> constraints state loaded
             | JitTypeLoad.InFullIfDefined loaded ->
                 match spellingLoadFailureIfDefined state assembly loaded with
-                | state, Some failure -> state, Some failure, []
-                | state, None -> constraints state loaded
+                | state, ConditionalLoad.Skipped -> state, None, []
+                | state, ConditionalLoad.Made (Some failure) -> state, Some failure, []
+                | state, ConditionalLoad.Made None -> constraints state loaded
             | JitTypeLoad.Approximately loaded ->
                 let state, failure = approximateLoadFailure state assembly loaded
                 state, failure, []
@@ -5520,7 +5548,17 @@ module EscapeAnalysis =
 
                     // CoreCLR checks the constraints of what an instruction it checks access of
                     // names in the method's open form, its type variables standing for themselves
-                    // (`CEEInfo::GetMethodForSecurity`), which the analysis does not decide.
+                    // (`CEEInfo::GetMethodForSecurity`), which the analysis does not decide. It
+                    // checks access only of a token that binds.
+                    let binds =
+                        failures
+                        |> List.forall (fun fact ->
+                            match fact with
+                            | OutsideBodyFact.Raises _ -> false
+                            | OutsideBodyFact.Runs _
+                            | OutsideBodyFact.Opaque _ -> true
+                        )
+
                     let state, overTypeVariables =
                         let checksAccess =
                             match OpcodeFaults.ofIlOp op with
@@ -5541,7 +5579,7 @@ module EscapeAnalysis =
                         let generic =
                             not method.Generics.IsEmpty || not method.DeclaringTypeGenerics.IsEmpty
 
-                        if not (checksAccess && generic) then
+                        if not (binds && checksAccess && generic) then
                             state, []
                         else
 
@@ -8566,6 +8604,10 @@ module EscapeAnalysis =
             : EscapeAnalysisState * BindFailure option
             =
             let loadInFull (state : EscapeAnalysisState) spelledIn typeArguments methodArguments spelling =
+                match concretizable state (assemblyOf state spelledIn) spelling with
+                | state, false -> state, Some BindFailure.UndecidedConstraint
+                | state, true ->
+
                 match instantiate state spelledIn typeArguments methodArguments spelling with
                 | state, Error failure -> state, Some (failureOfBinding failure)
                 | state, Ok handle -> closureConstraintFailure state handle
