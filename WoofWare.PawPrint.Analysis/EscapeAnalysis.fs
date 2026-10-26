@@ -2901,87 +2901,167 @@ module EscapeAnalysis =
         || metadata.RequiresParameterlessConstructor
         || not metadata.Constraints.IsEmpty
 
+    /// How many steps from a type its base classes and interfaces are followed, by
+    /// `ancestorShapes`. Past that, an ancestor is not known, which can only leave a constraint
+    /// undecided.
+    let private ancestorDepthLimit : int = 8
+
+    /// The shapes of `shapes`, and of every base class and interface each named type's definition
+    /// declares, instantiated as the shape is, transitively: what a type of each such shape can be
+    /// cast to without variance or the array rules. `System.Object` is among them.
+    let private ancestorShapes (state : EscapeAnalysisState) (shapes : Shape list) : EscapeAnalysisState * Shape list =
+        let rec walk (state : EscapeAnalysisState) (found : Shape list) (pending : (Shape * int) list) =
+            match pending with
+            | [] -> state, found
+            | (shape, _) :: rest when List.contains shape found -> walk state found rest
+            | (shape, depth) :: rest ->
+                let found = shape :: found
+
+                match shape with
+                | Shape.Named (identity, arguments) when depth < ancestorDepthLimit ->
+                    let definedIn, definition = definitionOf state identity
+                    let argumentArray = Array.ofList arguments
+
+                    let substitute (ofMethod : bool) (index : int) : Shape option =
+                        if not ofMethod && index < argumentArray.Length then
+                            Some argumentArray.[index]
+                        else
+                            Some Shape.Opaque
+
+                    let state, parents =
+                        ((state, []), TypeLoad.fullLoadParts definedIn definition)
+                        ||> List.fold (fun (state, parents) part ->
+                            match part with
+                            | TypeLoad.FullLoadPart.Base spelling
+                            | TypeLoad.FullLoadPart.Interface spelling ->
+                                let state, parent = shapeOf state definedIn substitute spelling
+                                state, (parent, depth + 1) :: parents
+                            | TypeLoad.FullLoadPart.ValueTypeField _
+                            | TypeLoad.FullLoadPart.UnmodelledInterface _ -> state, parents
+                        )
+
+                    walk state found (List.rev parents @ rest)
+                | _ -> walk state found rest
+
+        let state, found = walk state [] (shapes |> List.map (fun shape -> shape, 0))
+        state, Shape.Named (state.BaseTypes.Object.Identity, []) :: found
+
     /// <summary>
-    /// Whether the type variable of <paramref name="scope" /> that <c>ofMethod</c> and <c>index</c> name, given as
-    /// the argument of a type parameter <paramref name="parameter" /> of
-    /// <paramref name="parameterAssembly" /> whose owner's type variables
-    /// <paramref name="substitute" /> gives, satisfies that parameter's constraints for every
-    /// instantiation of the variable, and as itself: because the variable's own constraints already
-    /// demand at least as much.
+    /// Whether <paramref name="argument" />, a shape over the type variables of
+    /// <paramref name="scope" />, given as the argument of a type parameter
+    /// <paramref name="parameter" /> of <paramref name="parameterAssembly" /> whose owner's type
+    /// variables <paramref name="substitute" /> gives, satisfies that parameter's constraints for
+    /// every instantiation of the variables, and with the variables standing for themselves.
     /// </summary>
     /// <remarks>
-    /// <c>class</c> needs <c>class</c>, <c>struct</c> needs <c>struct</c>, <c>new()</c> needs
-    /// <c>new()</c> or <c>struct</c>; a variable that allows a byref-like argument needs a parameter
-    /// that does too; and each general constraint, instantiated, must be one of the variable's own,
-    /// <c>System.Object</c>, or <c>System.ValueType</c> for a <c>struct</c> variable. A constraint
-    /// mentioning a variable <paramref name="substitute" /> does not give decides nothing.
+    /// <para>
+    /// A type variable satisfies the parameter where its own constraints already demand at least as
+    /// much: <c>class</c> needs <c>class</c>, <c>struct</c> needs <c>struct</c>, <c>new()</c> needs
+    /// <c>new()</c> or <c>struct</c>, a variable that allows a byref-like argument needs a parameter
+    /// that does too, and each general constraint, instantiated, must be among the ancestors of the
+    /// variable's own constraints (<c>ancestorShapes</c>), or <c>System.ValueType</c> for a
+    /// <c>struct</c> variable.
+    /// </para>
+    /// <para>
+    /// Another argument mentioning a variable satisfies it by what its definition is: a value type
+    /// other than <c>Nullable</c> for <c>struct</c>, not one for <c>class</c>, a value type for
+    /// <c>new()</c>, not byref-like unless the parameter allows it, and each general constraint,
+    /// instantiated, among its own ancestors. A constraint mentioning a variable
+    /// <paramref name="substitute" /> does not give decides nothing.
+    /// </para>
     /// </remarks>
-    let private variableSatisfies
+    let private argumentSatisfies
         (state : EscapeAnalysisState)
         (scope : VariableScope)
-        (ofMethod : bool, index : int)
+        (argument : Shape)
         (parameterAssembly : DumpedAssembly)
         (parameter : GenericParamMetadata)
         (substitute : bool -> int -> Shape option)
         : EscapeAnalysisState * bool
         =
-        let generics =
-            if ofMethod then
-                scope.MethodGenerics
-            else
-                scope.TypeGenerics
-
-        if index >= generics.Length then
-            state, false
-        else
-
-        let own = snd generics.[index]
-
-        let special =
-            (not parameter.RequiresReferenceType || own.RequiresReferenceType)
-            && (not parameter.RequiresNonNullableValueType || own.RequiresNonNullableValueType)
-            && (not parameter.RequiresParameterlessConstructor
-                || own.RequiresParameterlessConstructor
-                || own.RequiresNonNullableValueType)
-            && (parameter.AllowsByRefLike || not own.AllowsByRefLike)
-
-        if not special then
-            state, false
-        else
-
-        let state, owned =
-            ((state, []), own.Constraints)
-            ||> Seq.fold (fun (state, shapes) constraint' ->
-                let state, shape = shapeOf state scope.Assembly noSubstitution constraint'
-                state, shape :: shapes
-            )
-
-        let objectShape = Shape.Named (state.BaseTypes.Object.Identity, [])
         let valueTypeShape = Shape.Named (state.BaseTypes.ValueType.Identity, [])
 
-        ((state, true), parameter.Constraints)
-        ||> Seq.fold (fun (state, satisfied) constraint' ->
-            if not satisfied then
+        // Whether every general constraint, instantiated, is among `ancestors`.
+        let general (state : EscapeAnalysisState) (ancestors : Shape list) (isValueType : bool) =
+            ((state, true), parameter.Constraints)
+            ||> Seq.fold (fun (state, satisfied) constraint' ->
+                if not satisfied then
+                    state, false
+                else
+
+                let state, required = shapeOf state parameterAssembly substitute constraint'
+
+                state,
+                not (shapeHasOpaque required)
+                && ((required = valueTypeShape && isValueType) || List.contains required ancestors)
+            )
+
+        match argument with
+        | Shape.Variable (ofMethod, index) ->
+            let generics =
+                if ofMethod then
+                    scope.MethodGenerics
+                else
+                    scope.TypeGenerics
+
+            if index >= generics.Length then
                 state, false
             else
 
-            let state, required = shapeOf state parameterAssembly substitute constraint'
+            let own = snd generics.[index]
 
-            state,
-            not (shapeHasOpaque required)
-            && (required = objectShape
-                || (required = valueTypeShape && own.RequiresNonNullableValueType)
-                || List.contains required owned)
-        )
+            let special =
+                (not parameter.RequiresReferenceType || own.RequiresReferenceType)
+                && (not parameter.RequiresNonNullableValueType || own.RequiresNonNullableValueType)
+                && (not parameter.RequiresParameterlessConstructor
+                    || own.RequiresParameterlessConstructor
+                    || own.RequiresNonNullableValueType)
+                && (parameter.AllowsByRefLike || not own.AllowsByRefLike)
+
+            if not special then
+                state, false
+            else
+
+            let state, owned =
+                ((state, []), own.Constraints)
+                ||> Seq.fold (fun (state, shapes) constraint' ->
+                    let state, shape = shapeOf state scope.Assembly noSubstitution constraint'
+                    state, shape :: shapes
+                )
+
+            let state, ancestors = ancestorShapes state owned
+            general state ancestors own.RequiresNonNullableValueType
+        | Shape.Named (identity, _) ->
+            let _, definition = definitionOf state identity
+            let loaded = state.TypeSystem._LoadedAssemblies
+            let isValueType = LoadedTypeInfo.isValueType state.BaseTypes loaded definition
+            let isNullable = identity = state.BaseTypes.Nullable.Identity
+
+            let special =
+                (not parameter.RequiresNonNullableValueType || (isValueType && not isNullable))
+                && (not parameter.RequiresReferenceType || not isValueType)
+                && (not parameter.RequiresParameterlessConstructor || isValueType)
+                && (parameter.AllowsByRefLike
+                    || not (LoadedTypeInfo.isByRefLike state.BaseTypes loaded definition))
+
+            if not special then
+                state, false
+            else
+
+            let state, ancestors = ancestorShapes state [ argument ]
+            general state ancestors isValueType
+        | Shape.Array _
+        | Shape.Pointer _
+        | Shape.Byref _
+        | Shape.Opaque -> state, not (constrains parameter)
 
     /// <summary>
     /// Whether the type parameters <paramref name="generics" /> of
     /// <paramref name="ownerAssembly" />, given <paramref name="arguments" />, shapes over the
     /// type variables of <paramref name="scope" />, may reject them for some instantiation of those
-    /// variables, or as themselves: an argument that is a variable must satisfy its parameter as
-    /// <c>variableSatisfies</c> says, and one mentioning a variable otherwise must meet a parameter
-    /// with no special or general constraint, and that allows a byref-like argument if it may be
-    /// one. An argument mentioning no variable is closed, and is checked exactly elsewhere.
+    /// variables, or as themselves: whether an argument mentioning a variable does not satisfy its
+    /// parameter as <c>argumentSatisfies</c> decides. An argument mentioning no variable is closed,
+    /// and is checked exactly elsewhere.
     /// </summary>
     let private instantiationMayBreak
         (state : EscapeAnalysisState)
@@ -3001,23 +3081,10 @@ module EscapeAnalysis =
             if breaks || not (shapeMentionsVariable argument) then
                 state, breaks
             else
-
-            match argument with
-            | Shape.Variable (ofMethod, index) ->
                 let state, satisfied =
-                    variableSatisfies state scope (ofMethod, index) ownerAssembly parameter substitute
+                    argumentSatisfies state scope argument ownerAssembly parameter substitute
 
                 state, not satisfied
-            | Shape.Named (identity, _) when not (constrains parameter) ->
-                if parameter.AllowsByRefLike then
-                    state, false
-                else
-                    let _, definition = definitionOf state identity
-                    state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies definition
-            | Shape.Array _
-            | Shape.Pointer _
-            | Shape.Byref _ when not (constrains parameter) -> state, false
-            | _ -> state, true
         )
 
     /// <summary>
