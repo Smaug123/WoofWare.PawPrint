@@ -198,16 +198,72 @@ module TestEscapeAnalysisConstraintViolation =
         | Position.MethodSpecCall
         | Position.MethodSpecLdftn -> false
 
+    /// The constraints of the generic method a case of a shared position calls, and what that
+    /// method's body spells over its type variable in place of the bare variable.
+    type private Within =
+        {
+            Outer : ConstraintSet
+            /// The spelling's name and its C#, over the method's type variable `T`.
+            Spelled : string * string
+        }
+
     type private Case =
         {
             Position : Position
             Set : ConstraintSet
             /// The argument's name and its C# spelling.
             Argument : string * string
+            /// `None` for a generic method constrained only to allow a byref-like argument, whose
+            /// body spells the bare variable.
+            Within : Within option
         }
 
         member this.Name : string =
-            $"%O{this.Position}_%s{this.Set.Name}_%s{fst this.Argument}"
+            match this.Within with
+            | None -> $"%O{this.Position}_%s{this.Set.Name}_%s{fst this.Argument}"
+            | Some within -> $"Within%O{this.Position}_%s{this.Set.Name}_%s{within.Outer.Name}_%s{fst within.Spelled}"
+
+    /// A type argument satisfying each set of constraints in C#, which a generic method so
+    /// constrained is called with.
+    let private witness (set : ConstraintSet) : string * string =
+        match set.Name with
+        | "Class"
+        | "IComparable"
+        | "IEquatableOfSelf" -> "String", "string"
+        | "Struct" -> "Int", "int"
+        | "New"
+        | "IFoo"
+        | "Base"
+        | "ClassIFoo"
+        | "IFooNew"
+        | "IFooAllowsRef" -> "Foo", "Foo"
+        | "EnumerableOfObject"
+        | "ListOfObject" -> "ListOfObject", "System.Collections.Generic.List<object>"
+        | "StructIFoo" -> "FooStruct", "FooStruct"
+        | "Enum" -> "DayOfWeek", "System.DayOfWeek"
+        | other -> failwith $"no witness is chosen for the constraint set %s{other}"
+
+    /// What the body of a generic method of a `Within` case spells over its type variable. A
+    /// variable allowing a byref-like argument cannot be the argument of a CoreLib generic, so its
+    /// method spells only the bare variable.
+    let private spellingsWithin (outer : ConstraintSet) : (string * string) list =
+        [
+            yield "T", "T"
+
+            if outer.Name <> "IFooAllowsRef" then
+                yield "ListOfT", "System.Collections.Generic.List<T>"
+                yield "PairOfT", "System.Collections.Generic.KeyValuePair<T, int>"
+        ]
+
+    /// The positions whose generic method is also called constrained, with each set of constraints:
+    /// where the method's own constraints imply its body's, CoreCLR's checks pass whatever
+    /// instantiates it, and the analysis may know so.
+    let private positionsWithin : Position list =
+        [
+            Position.SharedStaticCall
+            Position.SharedLdtoken
+            Position.SharedMethodSpec
+        ]
 
     let private cases : Case list =
         [
@@ -219,7 +275,25 @@ module TestEscapeAnalysisConstraintViolation =
                                 Position = position
                                 Set = set
                                 Argument = argument
+                                Within = None
                             }
+
+            for position in positionsWithin do
+                for set in constraintSets do
+                    for outer in constraintSets do
+                        for spelled in spellingsWithin outer do
+                            yield
+                                {
+                                    Position = position
+                                    Set = set
+                                    Argument = witness outer
+                                    Within =
+                                        Some
+                                            {
+                                                Outer = outer
+                                                Spelled = spelled
+                                            }
+                                }
         ]
 
     /// `Lib`, with its constraints or without. Without, each type parameter allows a byref-like
@@ -264,10 +338,21 @@ module TestEscapeAnalysisConstraintViolation =
 
             // A generic method running `statement` so, and the case calling it with the argument.
             let viaGeneric (statement : string) : string list =
+                let clause =
+                    match case.Within with
+                    | None -> "allows ref struct"
+                    | Some within -> within.Outer.Clause
+
                 [
-                    $"public static int Generic%s{name}<T>() where T : allows ref struct {{ try {{ %s{statement} return 0; }} catch (System.Exception) {{ return 1; }} }}"
+                    $"public static int Generic%s{name}<T>() where T : %s{clause} {{ try {{ %s{statement} return 0; }} catch (System.Exception) {{ return 1; }} }}"
                     $"public static int %s{name}() => Generic%s{name}<%s{argument}>();"
                 ]
+
+            // What the generic method's body spells over its type variable.
+            let spelled =
+                match case.Within with
+                | None -> "T"
+                | Some within -> snd within.Spelled
 
             let instantiation = $"Lib.C%s{set}<%s{argument}>"
 
@@ -294,9 +379,9 @@ module TestEscapeAnalysisConstraintViolation =
                 ]
             | Position.MethodSpecCall -> [ caseMethod $"Lib.Methods.%s{set}<%s{argument}>();" ]
             | Position.MethodSpecLdftn -> [ caseMethod $"Keep(new System.Action(Lib.Methods.%s{set}<%s{argument}>));" ]
-            | Position.SharedStaticCall -> viaGeneric $"Lib.C%s{set}<T>.Touch();"
-            | Position.SharedLdtoken -> viaGeneric $"Keep(typeof(Lib.C%s{set}<T>));"
-            | Position.SharedMethodSpec -> viaGeneric $"Lib.Methods.%s{set}<T>();"
+            | Position.SharedStaticCall -> viaGeneric $"Lib.C%s{set}<%s{spelled}>.Touch();"
+            | Position.SharedLdtoken -> viaGeneric $"Keep(typeof(Lib.C%s{set}<%s{spelled}>));"
+            | Position.SharedMethodSpec -> viaGeneric $"Lib.Methods.%s{set}<%s{spelled}>();"
             | Position.SharedClosedBase ->
                 [
                     $"public class DerivedOfGeneric%s{name}<U> : %s{instantiation} where U : allows ref struct {{ }}"
@@ -305,6 +390,8 @@ module TestEscapeAnalysisConstraintViolation =
                 ]
 
         [
+            // A constraint set's clause names `Lib`'s types bare.
+            yield "using Lib;"
             yield "namespace Client;"
             yield "public class Foo : Lib.Base, Lib.IFoo { public Foo() { } }"
             yield "public class NoCtor : Lib.IFoo { private NoCtor() { } }"
@@ -523,6 +610,10 @@ public static class Driver
 
         let violations = Set.ofList [ typeLoad ; verification ]
 
+        // The positions where the analysis knows what some constrained generic method raises,
+        // asked about by itself.
+        let mutable knownWithin : Set<Position> = Set.empty
+
         let failures =
             [
                 for case in cases do
@@ -557,8 +648,9 @@ public static class Driver
 
                     // Asked about by itself, the generic method stands for every instantiation. Where
                     // what it names is closed, the violation is the same in each, so its answer must
-                    // be exactly the instance's; elsewhere some instantiations the constrained `Lib`
-                    // rejects, and its answer must not be known.
+                    // be exactly the instance's. Unconstrained, some instantiations the constrained
+                    // `Lib` rejects, and its answer must not be known. Constrained, its answer, if
+                    // known, holds of every instantiation, so of the one the case makes too.
                     if callsGeneric case.Position then
                         let next, escapes =
                             EscapeAnalysis.escapes
@@ -572,11 +664,22 @@ public static class Driver
                             violations
                             |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
 
+                        let raised =
+                            match hostOutcomes.[case.Name] with
+                            | Outcome.Escapes raised when violations.Contains raised -> Set.singleton raised
+                            | Outcome.Escapes _
+                            | Outcome.Runs
+                            | Outcome.Caught -> Set.empty
+
                         let agrees =
-                            match case.Position, hostOutcomes.[case.Name] with
-                            | Position.SharedClosedBase, Outcome.Escapes raised -> named = Set.singleton raised
-                            | Position.SharedClosedBase, _ -> named.IsEmpty
-                            | _ -> escapes.Unknown
+                            match case.Position, case.Within with
+                            | Position.SharedClosedBase, _ -> named = raised
+                            | _, None -> escapes.Unknown
+                            | _, Some _ ->
+                                if not escapes.Unknown then
+                                    knownWithin <- Set.add case.Position knownWithin
+
+                                escapes.Unknown || named = raised
 
                         if not agrees then
                             yield
@@ -607,6 +710,12 @@ public static class Driver
                         yield $"%O{position}: the host rejects no case"
                     elif escaping = outcomes.Length && not (checkedOpen position) then
                         yield $"%O{position}: the host rejects every case"
+
+                // Nor does the agreement of a generic method's answer by itself say anything where
+                // that answer is never known.
+                for position in positionsWithin do
+                    if not (knownWithin.Contains position) then
+                        yield $"%O{position}: the analysis knows no constrained generic method's answer by itself"
             ]
 
         match vacuous @ failures with
