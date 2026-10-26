@@ -334,3 +334,76 @@ void UncalledLambda()
     auto f = [] { Helper(); };
     (void)f;
 }
+
+// A class under construction, or destruction, is the dynamic class of a call through it: an
+// abstract class's own overrider runs then, though no object of it is ever complete.
+struct UnderConstruction { UnderConstruction(); virtual void F(); virtual void P() = 0; };
+struct Constructed : UnderConstruction { void F() override; void P() override; };
+UnderConstruction::UnderConstruction() { F(); }
+void ThroughAbstract(UnderConstruction* u)
+{
+    u->F();
+    u->P();
+}
+
+// Statements clang emits nothing for, because nothing reaches them.
+void Unreachable(int n)
+{
+    Helper();
+    if (n)
+        return;
+    else
+        return;
+    Helper();
+}
+void AfterNoReturn()
+{
+    Fail();
+    Helper();
+}
+void AfterLoops(int n)
+{
+    switch (n)
+    {
+    case 1:
+        Helper();
+        break;
+    default:
+        return;
+    }
+    for (;;)
+        Value();
+    Helper();
+}
+void AfterGoto()
+{
+    goto reached;
+    Helper();
+reached:
+    Value();
+}
+
+// A local class's destructor, which destroys its members.
+struct Member { ~Member(); };
+void LocalClass()
+{
+    struct Local { Member m; ~Local() { } };
+    Local l;
+}
+
+// A virtual base's initializer, which only the complete object's constructor runs.
+struct VirtualBase { VirtualBase(int); };
+struct WithVirtualBase : virtual VirtualBase { WithVirtualBase(int (*f)()); };
+WithVirtualBase::WithVirtualBase(int (*f)()) : VirtualBase(f()) { }
+
+// Thread-local variables: a static one, which has a guard of its own and no __cxa_guard, and is
+// destroyed at its thread's exit; and one defined elsewhere, read through its wrapper, which
+// initializes it.
+extern thread_local int ThreadLocalElsewhere;
+int ThreadLocals()
+{
+    static thread_local Guard g;
+    static thread_local int n = Value();
+    (void)g;
+    return n + ThreadLocalElsewhere;
+}

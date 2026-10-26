@@ -1,6 +1,9 @@
 cunit.c:NotVla	cunit.c	NotVla
 cunit.c:Vla	cunit.c	Vla
 elsewhere.cpp:Diamond	elsewhere.cpp	Diamond
+probes.cpp:AfterGoto	probes.cpp	AfterGoto
+probes.cpp:AfterLoops	probes.cpp	AfterLoops
+probes.cpp:AfterNoReturn	probes.cpp	AfterNoReturn
 probes.cpp:Allocate	probes.cpp	Allocate
 probes.cpp:AllocateCleanup	probes.cpp	AllocateCleanup
 probes.cpp:Box::Get	probes.cpp	Box::Get
@@ -25,6 +28,7 @@ probes.cpp:Holds::Holds	probes.cpp	Holds::Holds
 probes.cpp:Lambda	probes.cpp	Lambda
 probes.cpp:LambdaDefault	probes.cpp	LambdaDefault
 probes.cpp:Leaf::~Leaf	probes.cpp	Leaf::~Leaf
+probes.cpp:LocalClass	probes.cpp	LocalClass
 probes.cpp:LocalDefault	probes.cpp	LocalDefault
 probes.cpp:Lowered	probes.cpp	Lowered
 probes.cpp:Macros	probes.cpp	Macros
@@ -39,11 +43,16 @@ probes.cpp:Qualified	probes.cpp	Qualified
 probes.cpp:Shadowing	probes.cpp	Shadowing
 probes.cpp:Statics	probes.cpp	Statics
 probes.cpp:TakeOwned	probes.cpp	TakeOwned
+probes.cpp:ThreadLocals	probes.cpp	ThreadLocals
+probes.cpp:ThroughAbstract	probes.cpp	ThroughAbstract
 probes.cpp:Throws	probes.cpp	Throws
 probes.cpp:Trivial	probes.cpp	Trivial
 probes.cpp:UncalledLambda	probes.cpp	UncalledLambda
+probes.cpp:UnderConstruction::UnderConstruction	probes.cpp	UnderConstruction::UnderConstruction
 probes.cpp:Unevaluated	probes.cpp	Unevaluated
 probes.cpp:Unevaluated2	probes.cpp	Unevaluated2
+probes.cpp:Unreachable	probes.cpp	Unreachable
 probes.cpp:WithDefault::WithDefault	probes.cpp	WithDefault::WithDefault
+probes.cpp:WithVirtualBase::WithVirtualBase	probes.cpp	WithVirtualBase::WithVirtualBase
 probes.cpp:rived::Use	probes.cpp	rived::Use
 probes11.cpp:Elide	probes11.cpp	Elide
