@@ -2956,7 +2956,9 @@ module EscapeAnalysis =
     /// <remarks>
     /// <para>
     /// A type variable satisfies the parameter where its own constraints already demand at least as
-    /// much: <c>class</c> needs <c>class</c>, <c>struct</c> needs <c>struct</c>, <c>new()</c> needs
+    /// much: <c>class</c> needs <c>class</c> or a constraint to a class other than
+    /// <c>System.Object</c>, <c>System.ValueType</c> and <c>System.Enum</c>, <c>struct</c> needs
+    /// <c>struct</c>, <c>new()</c> needs
     /// <c>new()</c> or <c>struct</c>, a variable that allows a byref-like argument needs a parameter
     /// that does too, and each general constraint, instantiated, must be among the ancestors of the
     /// variable's own constraints (<c>ancestorShapes</c>), or <c>System.ValueType</c> for a
@@ -3010,8 +3012,37 @@ module EscapeAnalysis =
 
             let own = snd generics.[index]
 
+            let state, owned =
+                ((state, []), own.Constraints)
+                ||> Seq.fold (fun (state, shapes) constraint' ->
+                    let state, shape = shapeOf state scope.Assembly noSubstitution constraint'
+                    state, shape :: shapes
+                )
+
+            // A variable constrained to a class other than `Object`, `ValueType` and `Enum` is a
+            // reference type, as CoreCLR's `SatisfiesSpecialConstraintRecursive` takes it.
+            let constrainedToClass =
+                owned
+                |> List.exists (fun shape ->
+                    match shape with
+                    | Shape.Named (identity, _) when
+                        identity <> state.BaseTypes.Object.Identity
+                        && identity <> state.BaseTypes.ValueType.Identity
+                        && identity <> state.BaseTypes.Enum.Identity
+                        ->
+                        let _, definition = definitionOf state identity
+
+                        not definition.IsInterface
+                        && not (
+                            LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies definition
+                        )
+                    | _ -> false
+                )
+
             let special =
-                (not parameter.RequiresReferenceType || own.RequiresReferenceType)
+                (not parameter.RequiresReferenceType
+                 || own.RequiresReferenceType
+                 || constrainedToClass)
                 && (not parameter.RequiresNonNullableValueType || own.RequiresNonNullableValueType)
                 && (not parameter.RequiresParameterlessConstructor
                     || own.RequiresParameterlessConstructor
@@ -3021,13 +3052,6 @@ module EscapeAnalysis =
             if not special then
                 state, false
             else
-
-            let state, owned =
-                ((state, []), own.Constraints)
-                ||> Seq.fold (fun (state, shapes) constraint' ->
-                    let state, shape = shapeOf state scope.Assembly noSubstitution constraint'
-                    state, shape :: shapes
-                )
 
             let state, ancestors = ancestorShapes state owned
             general state ancestors own.RequiresNonNullableValueType
