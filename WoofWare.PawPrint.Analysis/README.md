@@ -195,7 +195,9 @@ method) may add more:
   the parameters, loading in full each value type and instantiation it meets, so that one
   missing raises `TypeLoadException` there. Whether a value type that loads needs marshalling it
   decides by its layout, which the analysis does not model
-  (`Opacity.ValueTypeMarshallingVerdict`). A return type of a pointer, byref or function pointer
+  (`Opacity.ValueTypeMarshallingVerdict`). Where none needs marshalling, it still refuses the
+  method if its parameters take more than 65535 bytes of stack; the analysis bounds their size
+  from above, and says where the bound reaches that (`Opacity.UnmanagedStackSize`). A return type of a pointer, byref or function pointer
   type it loads with what it points to. Of a call of unmanaged
   code (a P/Invoke, or `calli` by an unmanaged calling convention) the JIT loads what it loads of
   any call; where it makes the transition to unmanaged code in the caller's own code, it also

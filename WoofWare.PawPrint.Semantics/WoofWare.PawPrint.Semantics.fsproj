@@ -39,6 +39,7 @@
         <Compile Include="StringConstructor.fs" />
         <Compile Include="HardwareInstruction.fs" />
         <Compile Include="UnmanagedCallingConvention.fs" />
+        <Compile Include="MarshalingRequired.fs" />
         <Compile Include="UnmanagedTransition.fs" />
         <Compile Include="JitTypeLoads.fs" />
         <Compile Include="SignatureRefusal.fs" />

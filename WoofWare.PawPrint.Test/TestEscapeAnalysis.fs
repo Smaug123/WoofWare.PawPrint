@@ -7751,17 +7751,15 @@ public static class Uco
             "System.Runtime.CompilerServices", "IsCopyConstructedNot"
             "", "IsCopyConstructed"
         ]
-        |> List.map (fun (ns, name) ->
-            UnmanagedCallersOnly.signatureTypeMarshalling assembly true (pointerModifiedBy ns name)
-        )
+        |> List.map (fun (ns, name) -> MarshalingRequired.ofSpelling assembly true (pointerModifiedBy ns name))
         |> shouldEqual
             [
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.Required
-                SignatureTypeMarshalling.NotRequired
-                SignatureTypeMarshalling.NotRequired
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.Required
+                MarshalingStep.NotRequired
+                MarshalingStep.NotRequired
             ]
 
     /// An assembly `Probe` whose class `C` declares `[UnmanagedCallersOnly]` methods `Uco` (static)
@@ -9434,6 +9432,342 @@ public static unsafe class Calls
 
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
+
+    /// A provider whose `Gone` the client of `walkClient` is compiled against, and a version of it
+    /// without that type, which the client runs against.
+    let private walkProvider (complete : bool) : byte[] =
+        Roslyn.compileOptimizedAssembly
+            "Provider"
+            OutputKind.DynamicallyLinkedLibrary
+            [
+                "namespace Provider; public struct Kept { } public struct WithBool { public bool B; } public class KeptGeneric<T> { }"
+                + (if complete then " public class Gone { }" else "")
+            ]
+
+    /// A parameter type of a P/Invoke of `walkClient`.
+    [<RequireQualifiedAccess>]
+    type private WalkParameter =
+        | Int
+        /// `Provider.Kept*`.
+        | KeptPointer
+        | Kept
+        /// `Provider.WithBool`, a struct holding a `bool`.
+        | WithBool
+        /// `Provider.KeptGeneric<Provider.Gone>`, a class.
+        | GenericOfGone
+
+    /// One P/Invoke of `walkClient`: its name, its parameter types, whether its first parameter is a
+    /// pointer whose pointee carries a required modifier named
+    /// `System.Runtime.CompilerServices.IsCopyConstructed`, and its first parameter's `[MarshalAs]`.
+    type private WalkNative =
+        {
+            Name : string
+            Parameters : WalkParameter list
+            CopyConstructedPointee : bool
+            MarshalAs : Runtime.InteropServices.UnmanagedType option
+        }
+
+    /// An assembly `Client`, emitted over `provider`'s types, with runtime marshalling enabled,
+    /// whose class `Calls` declares, for each of `natives`, a P/Invoke `Native<name>` returning
+    /// void and a method `<name>` that calls it in a branch never taken, passing each parameter's
+    /// default value. At most one of `natives` marks its pointee.
+    let private walkClient (provider : Assembly) (natives : WalkNative list) : byte[] =
+        let typeOf (parameter : WalkParameter) : Type =
+            match parameter with
+            | WalkParameter.Int -> typeof<int>
+            | WalkParameter.KeptPointer -> (provider.GetType "Provider.Kept").MakePointerType ()
+            | WalkParameter.Kept -> provider.GetType "Provider.Kept"
+            | WalkParameter.WithBool -> provider.GetType "Provider.WithBool"
+            | WalkParameter.GenericOfGone ->
+                (provider.GetType "Provider.KeptGeneric`1").MakeGenericType (provider.GetType "Provider.Gone")
+
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Client", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Client"
+
+        // `PersistedAssemblyBuilder` puts a parameter's required modifiers before the whole
+        // parameter type; this one is moved onto the pointee once the image is saved.
+        let copyConstructed =
+            (modul.DefineType (
+                "System.Runtime.CompilerServices.IsCopyConstructed",
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
+            ))
+                .CreateType ()
+
+        let calls =
+            modul.DefineType ("Calls", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        let never =
+            calls.DefineField ("never", typeof<bool>, FieldAttributes.Private ||| FieldAttributes.Static)
+
+        for native in natives do
+            let parameters = native.Parameters |> List.map typeOf
+
+            let requiredModifiers =
+                parameters
+                |> List.mapi (fun i _ ->
+                    if i = 0 && native.CopyConstructedPointee then
+                        [| copyConstructed |]
+                    else
+                        [||]
+                )
+
+            let pinvoke =
+                calls.DefinePInvokeMethod (
+                    "Native" + native.Name,
+                    "nowhere",
+                    "Native" + native.Name,
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Static
+                    ||| MethodAttributes.PinvokeImpl
+                    ||| MethodAttributes.HideBySig,
+                    CallingConventions.Standard,
+                    typeof<Void>,
+                    null,
+                    null,
+                    Array.ofList parameters,
+                    Array.ofList requiredModifiers,
+                    null,
+                    Runtime.InteropServices.CallingConvention.Winapi,
+                    Runtime.InteropServices.CharSet.Ansi
+                )
+
+            pinvoke.SetImplementationFlags (
+                pinvoke.GetMethodImplementationFlags () ||| MethodImplAttributes.PreserveSig
+            )
+
+            match native.MarshalAs with
+            | None -> ()
+            | Some unmanagedType ->
+                (pinvoke.DefineParameter (1, ParameterAttributes.HasFieldMarshal, "x"))
+                    .SetCustomAttribute (
+                        Emit.CustomAttributeBuilder (
+                            typeof<Runtime.InteropServices.MarshalAsAttribute>.GetConstructor
+                                [| typeof<Runtime.InteropServices.UnmanagedType> |],
+                            [| box unmanagedType |]
+                        )
+                    )
+
+            let caller =
+                calls.DefineMethod (
+                    native.Name,
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<Void>,
+                    [||]
+                )
+
+            let il = caller.GetILGenerator ()
+            let skip = il.DefineLabel ()
+            il.Emit (Emit.OpCodes.Ldsfld, never)
+            il.Emit (Emit.OpCodes.Brfalse, skip)
+
+            for parameter in parameters do
+                if parameter.IsPointer then
+                    il.Emit Emit.OpCodes.Ldc_I4_0
+                    il.Emit Emit.OpCodes.Conv_U
+                elif parameter.IsValueType then
+                    il.Emit (Emit.OpCodes.Ldloc, il.DeclareLocal parameter)
+                else
+                    il.Emit Emit.OpCodes.Ldnull
+
+            il.Emit (Emit.OpCodes.Call, pinvoke)
+            il.MarkLabel skip
+            il.Emit Emit.OpCodes.Ret
+
+        calls.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        let image = stream.ToArray ()
+
+        // A static method returning void whose first of two parameters is a pointer to a value
+        // type, the pointer marked: `DEFAULT 2 VOID CMOD_REQD t PTR VALUETYPE` becomes
+        // `DEFAULT 2 VOID PTR CMOD_REQD t VALUETYPE`.
+        if natives |> List.exists _.CopyConstructedPointee then
+            let at =
+                [ 0 .. image.Length - 7 ]
+                |> List.filter (fun i ->
+                    image.[i] = 0x00uy
+                    && image.[i + 1] = 0x02uy
+                    && image.[i + 2] = 0x01uy
+                    && image.[i + 3] = 0x1Fuy
+                    && image.[i + 5] = 0x0Fuy
+                    && image.[i + 6] = 0x11uy
+                )
+                |> List.exactlyOne
+
+            let modifier = image.[at + 4]
+            image.[at + 3] <- 0x0Fuy
+            image.[at + 4] <- 0x1Fuy
+            image.[at + 5] <- modifier
+
+        image
+
+    /// Whether compiling each caller in `methods` of `walkClient`'s image raises
+    /// `TypeLoadException` on the host's CoreCLR, against the provider lacking `Gone`, and in the
+    /// escape analysis over the host's own image; failing where the host's answer is not the
+    /// expected one, or the analysis's is not the host's.
+    let private checkWalkCallers (natives : WalkNative list) (expected : (string * bool) list) : unit =
+        let complete = walkProvider true
+        let incomplete = walkProvider false
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("MarshallingWalkCallers", isCollectible = true)
+
+        context.add_Resolving (
+            Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                match name.Name with
+                | "Provider" -> context.LoadFromStream (new MemoryStream (incomplete))
+                | _ -> null
+            )
+        )
+
+        // The client is emitted over the complete provider, loaded where it can be unloaded.
+        let emitting =
+            Runtime.Loader.AssemblyLoadContext ("MarshallingWalkEmitting", isCollectible = true)
+
+        let image =
+            try
+                walkClient (emitting.LoadFromStream (new MemoryStream (complete))) natives
+            finally
+                emitting.Unload ()
+
+        let hostRaises : Map<string, bool> =
+            try
+                let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Calls"
+
+                expected
+                |> List.map (fun (name, _) ->
+                    let raises =
+                        try
+                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+                            false
+                        with :? TargetInvocationException as e when (e.InnerException :? TypeLoadException) ->
+                            true
+
+                    name, raises
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let client = read "Client" image
+        let providerAssembly = read "Provider" incomplete
+
+        let reference =
+            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+        let mutable analysis =
+            analysisOverHostImage
+                [ client ; providerAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
+
+        let failures =
+            [
+                for name, raises in expected do
+                    if hostRaises.[name] <> raises then
+                        yield $"%s{name}: the host raises TypeLoadException %b{hostRaises.[name]}, not %b{raises}"
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed client "Calls" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    if shown.Contains "=System.TypeLoadException" <> raises then
+                        yield $"%s{name}: the analysis says %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// Where the JIT makes the transition to unmanaged code in the caller's own code, CoreCLR's walk
+    /// for whether a P/Invoke call needs marshalling loads each instantiation it reaches
+    /// (`PInvoke::MarshalingRequired`), up to the first position that needs marshalling: with
+    /// runtime marshalling enabled, a pointer whose pointee carries the copy-constructor modifier,
+    /// or a parameter with `[MarshalAs]`. So a missing instantiation after one of those is never
+    /// loaded as the JIT compiles the caller, and after a plain pointer it is.
+    [<Test>]
+    let ``the marshalling walk of a P/Invoke call ends at a copy-constructed pointer and at MarshalAs`` () : unit =
+        let native
+            (name : string)
+            (parameters : WalkParameter list)
+            (copyConstructed : bool)
+            (marshalAs : Runtime.InteropServices.UnmanagedType option)
+            : WalkNative
+            =
+            {
+                Name = name
+                Parameters = parameters
+                CopyConstructedPointee = copyConstructed
+                MarshalAs = marshalAs
+            }
+
+        checkWalkCallers
+            [
+                native
+                    "CopyConstructedThenGenericOfGone"
+                    [ WalkParameter.KeptPointer ; WalkParameter.GenericOfGone ]
+                    true
+                    None
+                native "PointerThenGenericOfGone" [ WalkParameter.KeptPointer ; WalkParameter.GenericOfGone ] false None
+                native
+                    "MarshalAsThenGenericOfGone"
+                    [ WalkParameter.Int ; WalkParameter.GenericOfGone ]
+                    false
+                    (Some Runtime.InteropServices.UnmanagedType.I4)
+            ]
+            [
+                "CopyConstructedThenGenericOfGone", false
+                "PointerThenGenericOfGone", true
+                "MarshalAsThenGenericOfGone", false
+            ]
+
+    /// CoreCLR sums the stack size of an `[UnmanagedCallersOnly]` method's parameters as it walks
+    /// them, and refuses the method (`InvalidProgramException`) where the sum does not fit in 16
+    /// bits (`PInvoke::MarshalingRequired`'s `FitsInU2`). 8192 `long` parameters take 65536 bytes
+    /// on every target. The analysis bounds the sum from above, and where the bound reaches that,
+    /// its answer is unknown from the method's entry (`UnmanagedStackSize`).
+    [<Test>]
+    let ``CoreCLR refuses an UnmanagedCallersOnly method whose parameters take too much stack`` () : unit =
+        let incomplete = ucoProvider false
+        let v = typeof<Void>
+
+        let context =
+            Runtime.Loader.AssemblyLoadContext ("UnmanagedCallersOnlyStackSize", isCollectible = true)
+
+        // The client names a provider type, as `ucoAnalysed` expects it to.
+        let image =
+            try
+                let kept =
+                    (context.LoadFromStream (new MemoryStream (ucoProvider true))).GetType "Provider.Kept"
+
+                validityProbes
+                    false
+                    [
+                        "Wide", v, List.replicate 8192 typeof<int64>, None, true, UcoProbeMark.Unmarked
+                        "KeptPointer", v, [ kept.MakePointerType () ], None, true, UcoProbeMark.Unmarked
+                    ]
+            finally
+                context.Unload ()
+
+        let host = ucoCompilations image incomplete "V" [ "Wide" ]
+        let outcome, sources = (ucoAnalysed image incomplete "V" [ "Wide" ]).["Wide"]
+
+        host.["Wide"]
+        |> shouldEqual (UcoCompilation.Raises "System.InvalidProgramException")
+
+        outcome |> shouldEqual (UcoCompilation.Raises "Unknown")
+
+        sources
+        |> Set.filter (fun site -> site.StartsWith "V::Wide entry")
+        |> shouldEqual (Set.singleton "V::Wide entry UnmanagedStackSize")
 
     /// A client compiled against one version of a provider, run against another lacking two types,
     /// each of whose callers calls unmanaged code whose calling convention CoreCLR reads from a
