@@ -184,6 +184,7 @@
     <Compile Include="TestGcReferences.fs" />
     <Compile Include="TestFieldBlittability.fs" />
     <Compile Include="TestStructLayoutFacts.fs" />
+    <Compile Include="TestEnumBackingType.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyAssemblyLoadEvent.fs" />
