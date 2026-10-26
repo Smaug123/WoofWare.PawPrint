@@ -40,7 +40,7 @@ module TestFieldBlittability =
     type private Case =
         {
             Name : string
-            Element : FieldBlittability.Element
+            Element : FieldBlittability.Element<bool>
             Ansi : bool
             Blob : byte[] option
             Field : FieldBuilder
@@ -86,7 +86,7 @@ module TestFieldBlittability =
 
         // Classifications are fixture inputs, not a type resolver. In particular, Decimal is
         // itself blittable but cannot be blitted as a field because its native alignment differs.
-        let fields : (Type * FieldBlittability.Element) list =
+        let fields : (Type * FieldBlittability.Element<bool>) list =
             [
                 typeof<bool>, FieldBlittability.Element.Boolean
                 typeof<char>, FieldBlittability.Element.Char
@@ -286,6 +286,15 @@ module TestFieldBlittability =
                     case.Blob |> Option.bind (fun _ -> FieldMarshalDescriptor.ofBlob actualBlob)
 
                 let host = hostBlittable (assembly.GetType case.Name) (ucos.GetMethod case.Name)
+                // Exercise the generic payload transformation over every emitted field kind.
+                FieldBlittability.mapValueType id case.Element |> shouldEqual case.Element
+
+                let projected =
+                    case.Element
+                    |> FieldBlittability.mapValueType (fun value -> if value then 71 else -3)
+                    |> FieldBlittability.mapValueType ((=) 71)
+
+                projected |> shouldEqual case.Element
                 let actual = FieldBlittability.isBlittable case.Ansi descriptor case.Element
 
                 if host then

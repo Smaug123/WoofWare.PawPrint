@@ -5,11 +5,11 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module internal FieldBlittability =
 
-    /// The field's internal element type, with only the facts `IsFieldBlittable` reads for a
+    /// The field's internal element type, carrying the caller's facts for a
     /// non-primitive value type. Enum fields use their validated underlying primitive; this
     /// classification does not establish that a type is a valid enum backing field.
     [<RequireQualifiedAccess>]
-    type Element =
+    type Element<'nestedFacts> =
         | Boolean
         | Char
         | OneByte
@@ -26,8 +26,28 @@ module internal FieldBlittability =
         | Byref
         /// An object reference: a class, an interface, an array, `string` or `object`.
         | Reference
-        /// Whether the type is CoreLib's `System.Decimal`, and its `MethodTable::IsBlittable`.
-        | ValueType of isDecimal : bool * isBlittable : bool
+        /// Whether the type is CoreLib's `System.Decimal`, and the caller's nested-type facts.
+        | ValueType of isDecimal : bool * facts : 'nestedFacts
+
+    /// Transform the facts of a non-primitive value type, preserving the field's classification.
+    let mapValueType (map : 'a -> 'b) (element : Element<'a>) : Element<'b> =
+        match element with
+        | Element.Boolean -> Element.Boolean
+        | Element.Char -> Element.Char
+        | Element.OneByte -> Element.OneByte
+        | Element.TwoBytes -> Element.TwoBytes
+        | Element.FourBytes -> Element.FourBytes
+        | Element.EightBytes -> Element.EightBytes
+        | Element.Single -> Element.Single
+        | Element.Double -> Element.Double
+        | Element.NativeInteger -> Element.NativeInteger
+        | Element.Void -> Element.Void
+        | Element.TypedReference -> Element.TypedReference
+        | Element.Pointer -> Element.Pointer
+        | Element.FunctionPointer -> Element.FunctionPointer
+        | Element.Byref -> Element.Byref
+        | Element.Reference -> Element.Reference
+        | Element.ValueType (isDecimal, facts) -> Element.ValueType (isDecimal, map facts)
 
     // `NATIVE_TYPE_*` (corhdr.h): the leading byte of a field's marshalling blob.
     [<Literal>]
@@ -89,7 +109,8 @@ module internal FieldBlittability =
     /// CoreCLR's `IsFieldBlittable` (fieldmarshaler.cpp) for an already classified field. `ansi`
     /// is the declaring type's charset: true for ANSI and, on Unix, Auto; false for Unicode.
     /// Only the leading byte of `descriptor` matters; an empty blob means no descriptor.
-    let isBlittable (ansi : bool) (descriptor : FieldMarshalDescriptor option) (element : Element) : bool =
+    /// A non-primitive value type carries its `MethodTable::IsBlittable` as the payload.
+    let isBlittable (ansi : bool) (descriptor : FieldMarshalDescriptor option) (element : Element<bool>) : bool =
         let nativeType = leadingNativeType descriptor
         let isDefault = nativeType = NativeTypeParamInfo.NativeTypeDefault
 
