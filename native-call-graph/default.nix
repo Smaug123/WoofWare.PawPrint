@@ -155,8 +155,11 @@
       name = "native-call-graph-${runtimeName}-${targetName}";
       src = runtimeSource pin;
       patches = [./coreclr-configure.patch];
+      # The build runs scripts of the source tree, as nativeresources/processrc.sh, whose
+      # `#!/usr/bin/env bash` names an interpreter Linux's build sandbox lacks.
+      postPatch = "patchShebangs --build eng src/coreclr";
       # CoreCLR's configure looks for the LLVM tools it uses by name.
-      nativeBuildInputs = [pkgs.cmake pkgs.ninja pkgs.python3 llvm.clang-unwrapped llvm.llvm llvm.lld];
+      nativeBuildInputs = [pkgs.bash pkgs.cmake pkgs.ninja pkgs.python3 llvm.clang-unwrapped llvm.llvm llvm.lld];
       dontUpdateAutotoolsGnuConfigScripts = true;
       dontConfigure = true;
       dontFixup = true;

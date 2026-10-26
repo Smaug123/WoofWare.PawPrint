@@ -38,7 +38,11 @@ def main(argv):
     objects = sorted(i for i in inputs if rules.get(i, "").startswith(COMPILE_RULE_PREFIXES))
     if not objects:
         sys.exit(f"program.py: {targets} link no objects")
-    subprocess.run(["ninja", "-C", build, *generated], check=True, stdout=subprocess.DEVNULL)
+    generating = subprocess.run(["ninja", "-C", build, *generated], capture_output=True, text=True)
+    if generating.returncode != 0:
+        # Ninja writes a failing command's output, and its own error, to stdout.
+        sys.stderr.write(generating.stdout + generating.stderr)
+        sys.exit(f"program.py: ninja exited {generating.returncode} generating the build's sources")
     with open(units_path, "w", encoding="utf-8") as f:
         for o in objects:
             f.write(os.path.normpath(os.path.join(os.path.abspath(build), o)) + "\n")
