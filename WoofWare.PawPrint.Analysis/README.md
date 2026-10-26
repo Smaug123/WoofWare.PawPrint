@@ -195,7 +195,9 @@ method) may add more:
   the parameters, loading in full each value type and instantiation it meets, so that one
   missing raises `TypeLoadException` there. Whether a value type that loads needs marshalling it
   decides by what the type loader records of its layout, which TypeSystem computes
-  (`LayoutFacts`) and Semantics judges (`MarshalingRequired.valueTypeRequires`). Where none needs
+  (`LayoutFacts`) and Semantics judges (`MarshalingRequired.valueTypeRequires`); where the type
+  system cannot lay a value type out, such as one nested too deep, the analysis says so
+  (`Opacity.UnmodelledValueTypeLayout`). Where none needs
   marshalling, it still refuses the method if its parameters take more than 65535 bytes of
   stack; the analysis bounds their size from above, and says where the bound reaches that
   (`Opacity.UnmanagedStackSize`). A return type of a pointer, byref or function pointer type it

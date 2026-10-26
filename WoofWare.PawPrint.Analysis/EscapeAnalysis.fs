@@ -53,6 +53,12 @@ type Opacity =
     /// of it runs (<c>PInvoke::MarshalingRequired</c>'s <c>FitsInU2</c>). The analysis bounds the
     /// sum from above, and the bound reaches that.
     | UnmanagedStackSize
+    /// A value type in the signature of an <c>[UnmanagedCallersOnly]</c> method that loads, but
+    /// whose layout facts the type system cannot compute (<c>LayoutFacts</c>), such as one nested
+    /// deeper than it follows. CoreCLR judges from those facts whether the type needs marshalling,
+    /// and where it does, refuses to compile the method (<c>InvalidProgramException</c>) before any
+    /// of it runs.
+    | UnmodelledValueTypeLayout
     /// A <c>constrained.</c> call on a value type of a class's method that cannot be overridden (it is
     /// final, on a sealed class, or not virtual), where the value type does not declare the method
     /// holding that slot itself and does not derive from the class: CoreCLR boxes the receiver and
@@ -104,7 +110,7 @@ type OpaqueSite =
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
         /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>,
-        /// <c>UnmanagedStackSize</c>).
+        /// <c>UnmanagedStackSize</c>, <c>UnmodelledValueTypeLayout</c>).
         Offset : int option
         Reason : Opacity
         /// The method the instruction's token names, where it names one. For a call, that need not
@@ -3534,8 +3540,8 @@ module EscapeAnalysis =
     /// `[UnmanagedCallersOnly]` (`ThrowIfInvalidUnmanagedCallersOnlyUsage`, from `GetCompileFlags`).
     [<RequireQualifiedAccess>]
     type private CallersOnlyValidation =
-        /// The JIT runs, and these come first: where the parameters' stack size may yet refuse the
-        /// method, the opacity of that size.
+        /// The JIT runs, and these come first: the opacity of what the analysis cannot decide that
+        /// may yet refuse the method, a value type it cannot lay out or the parameters' stack size.
         | Compiles of Set<OutsideBodyFact>
         /// CoreCLR refuses to compile the method, raising this, before any of it runs and before
         /// the JIT loads the types of its parameters and locals.
@@ -3547,8 +3553,9 @@ module EscapeAnalysis =
     /// a generic type, or that needs marshalling (`PInvoke::MarshalingRequired`): one carrying
     /// `[LCIDConversion]`, or whose return type or a parameter does, walked in that order, loading
     /// in full each value type and instantiation it meets, so that one failing to load raises there
-    /// instead and judging each value type by its layout facts (`MarshalingRequired.valueTypeRequires`),
-    /// or whose parameters take too much stack (`Opacity.UnmanagedStackSize`).
+    /// instead, and judging each value type by its layout facts (`MarshalingRequired.valueTypeRequires`;
+    /// `Opacity.UnmodelledValueTypeLayout` where it has none), or whose parameters take too much
+    /// stack (`Opacity.UnmanagedStackSize`).
     let private callersOnlyValidation
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -3615,13 +3622,12 @@ module EscapeAnalysis =
                 .IsEmpty
 
         // An `[UnmanagedCallersOnly]` method is neither generic nor of a generic type, so its
-        // signature names no type variable.
+        // signature names no type variable: a value type it cannot judge, the type system cannot
+        // lay out.
         let verdict (state : EscapeAnalysisState) (spelling : TypeDefn) =
             match marshalingVerdict state assembly spelling with
             | state, Ok input -> state, input
-            | _, Error reason ->
-                failwith
-                    $"The marshalling walk of [UnmanagedCallersOnly] %s{method.Name} loads a value type the analysis cannot judge: %s{reason}"
+            | state, Error _ -> state, ValueTypeVerdictInput.Undecided
 
         let state, walk =
             MarshalingRequired.positions
@@ -3632,6 +3638,15 @@ module EscapeAnalysis =
             |> MarshalingRequired.start runtimeMarshalling
             |> runMarshalingWalk verdict state
 
+        // A value type whose verdict is undecided before the walk's end may refuse the method there
+        // first, so its opacity stays with whatever the walk ends in; it leaves the stack size
+        // undecided too.
+        let undecided =
+            if walk.Undecided.IsEmpty then
+                Set.empty
+            else
+                Set.singleton (OutsideBodyFact.Opaque Opacity.UnmodelledValueTypeLayout)
+
         let state, failure =
             ((state, None), walk.Loads)
             ||> List.fold (fun (state, failure) (_, spelling) ->
@@ -3641,12 +3656,15 @@ module EscapeAnalysis =
             )
 
         match failure, walk.Ending with
-        | Some failures, _ -> state, CallersOnlyValidation.Refused failures
+        | Some failures, _ -> state, CallersOnlyValidation.Refused (Set.union undecided failures)
         | None, MarshalingEnding.LoadFails position ->
             failwith $"BUG: the marshalling walk's load at position %d{position} failed, but loading it again does not"
-        | None, MarshalingEnding.Required _ -> state, CallersOnlyValidation.Refused (refusal state)
+        | None, MarshalingEnding.Required _ ->
+            state, CallersOnlyValidation.Refused (Set.union undecided (refusal state))
         | None, MarshalingEnding.NoneRequired stackMayOverflow ->
-            if stackMayOverflow then
+            if not undecided.IsEmpty then
+                state, CallersOnlyValidation.Compiles undecided
+            elif stackMayOverflow then
                 state,
                 CallersOnlyValidation.Compiles (Set.singleton (OutsideBodyFact.Opaque Opacity.UnmanagedStackSize))
             else
