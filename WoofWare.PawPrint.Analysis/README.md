@@ -431,8 +431,20 @@ These checks are exact where the instantiation is closed, but some are left open
 - **A definition analysed for every instantiation at once:** it is "unknown"
   (`Opacity.DependsOnInstantiation`) wherever some instantiation of its type variables may break a
   constraint the JIT checks.
+
+  In both, the analysis takes an argument over the variables as satisfying a constraint, for
+  every instantiation, only where that follows from its shape. A bare variable satisfies it where
+  the variable's own constraints already demand at least as much: `class`, `struct` and `new()`
+  where its own say as much (`struct` gives `new()`, and a constraint to a class other than
+  `Object`, `ValueType` and `Enum` gives `class`); a byref-like argument only where the variable
+  allows none, or the parameter allows one; and each type constraint where it is among the bases
+  and interfaces of the variable's own constraints. Another argument satisfies it by what its
+  definition is, and by its own bases and interfaces.
 - **The static-virtual rule:** an abstract argument against an interface constraint that declares
   abstract static virtual methods (`Opacity.UndecidedConstraint`).
+- **Types TypeSystem cannot instantiate:** a load reaching a type whose argument carries a custom
+  modifier, or a function pointer naming a type that is not there, leaves its checks undecided
+  (`Opacity.UndecidedConstraint`).
 - **Order within one load:** a load that misses is reported as the miss, which is exact for the
   instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
