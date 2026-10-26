@@ -1252,8 +1252,8 @@ public static class Cases
                     Libraries =
                         [
                             "Lib",
-                            "namespace Lib; public class C<U> { public static void Touch() { } }",
-                            "namespace Lib; public class C<U> where U : struct { public static void Touch() { } }"
+                            "namespace Lib; public class C<U> { public static void Touch() { } } public static class M { public static void Run<U>() { } }",
+                            "namespace Lib; public class C<U> where U : struct { public static void Touch() { } } public static class M { public static void Run<U>() where U : struct { } }"
                         ]
                     Client =
                         """
@@ -1262,11 +1262,13 @@ public static unsafe class Cases
 {
     public static int Generic<T>() { try { Lib.C<delegate*<T, void>[]>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int CallsGeneric() => Generic<int>();
+    public static int GenericMethod<T>() { try { Lib.M.Run<delegate*<T, void>[]>(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGenericMethod() => GenericMethod<int>();
 }
 """
-                    Cases = [ "CallsGeneric" ]
+                    Cases = [ "CallsGeneric" ; "CallsGenericMethod" ]
                     Exact = false
-                    Generics = [ "Generic", "CallsGeneric" ]
+                    Generics = [ "Generic", "CallsGeneric" ; "GenericMethod", "CallsGenericMethod" ]
                 }
                 {
                     // Enough fields that the client's member references outnumber the library's.
