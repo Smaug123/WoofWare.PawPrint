@@ -664,14 +664,10 @@ public static class Program
 
     [<Test>]
     let ``a listener and a connector, as two processes on one machine, both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.stackallocByteOrder
-
         listenerAndConnector (FrameworkUnderTest.runtimeDirs ())
 
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
-        Net11Frontier.park Net11Frontier.stackallocByteOrder
-
         listenerAndConnector (runtimeDirsPreferringLinux (FrameworkUnderTest.requireLinuxFrameworkDirectory ()))
 
     /// Reads its processor from the shim five times, writing each answer.

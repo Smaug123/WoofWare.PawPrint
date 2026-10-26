@@ -421,7 +421,10 @@ module internal UnaryConstIlOp =
         | Bge_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.bgeUn value1 value2
+
+            let isGreaterEq =
+                EvalStackValueComparisons.bgeUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -433,7 +436,10 @@ module internal UnaryConstIlOp =
         | Bgt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.bgtUn value1 value2
+
+            let isGreaterThan =
+                EvalStackValueComparisons.bgtUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -445,7 +451,10 @@ module internal UnaryConstIlOp =
         | Ble_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.bleUn value1 value2
+
+            let isLessEq =
+                EvalStackValueComparisons.bleUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -457,7 +466,10 @@ module internal UnaryConstIlOp =
         | Blt_un_s b ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.bltUn value1 value2
+
+            let isLessThan =
+                EvalStackValueComparisons.bltUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -486,7 +498,10 @@ module internal UnaryConstIlOp =
         | Bge_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterEq = EvalStackValueComparisons.bgeUn value1 value2
+
+            let isGreaterEq =
+                EvalStackValueComparisons.bgeUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -498,7 +513,10 @@ module internal UnaryConstIlOp =
         | Bgt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isGreaterThan = EvalStackValueComparisons.bgtUn value1 value2
+
+            let isGreaterThan =
+                EvalStackValueComparisons.bgtUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -510,7 +528,10 @@ module internal UnaryConstIlOp =
         | Ble_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessEq = EvalStackValueComparisons.bleUn value1 value2
+
+            let isLessEq =
+                EvalStackValueComparisons.bleUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread
@@ -522,7 +543,10 @@ module internal UnaryConstIlOp =
         | Blt_un i ->
             let value2, state = IlMachineState.popEvalStack currentThread state
             let value1, state = IlMachineState.popEvalStack currentThread state
-            let isLessThan = EvalStackValueComparisons.bltUn value1 value2
+
+            let isLessThan =
+                EvalStackValueComparisons.bltUnDeferred value1 value2
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.advanceProgramCounter currentThread

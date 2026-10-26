@@ -820,6 +820,13 @@ mutation-testing skill applies to each table/classifier they introduce.
      pass, two of them since clearing native memory replaces a pointer the range wholly covers:
      each marshals into a buffer that already holds a pointer, which RC1's `NativeMemory.Clear`
      clears;
+   * **(landed)** the unsigned branches over two byrefs into one allocation. `blt.un`, `bge.un`,
+     `bgt.un` and `ble.un` hand a pair their structure cannot order to their byte coordinates
+     (`StorageLocation.resolveOrder`), as `clt.un` and `cgt.un` already did, which is what RC1's
+     `UnicodeEncoding.GetBytes` needs: it loops on `blt.un.s` over two byte views of one
+     stackalloc block. Twenty-one of the twenty-two cases parked on it pass;
+     `KqueueRegistrationDarwin.cs` is parked on its own, since RC1's shim registers a socket on
+     its kqueue without `EV_RECEIPT`;
    * `Delegate_GetMethodDesc`
      (`SystemNative_AlignedAlloc`, which net10 reaches too, lands on net10 ahead of the leg);
    * **(landed)** the managed `WaitSubsystem` that RC1 sleeps, joins and waits through on Unix.
@@ -837,7 +844,7 @@ mutation-testing skill applies to each table/classifier they introduce.
      `StartCallbackShape` classifies CoreLib's signature as `AppContextSeed` does `Setup`'s, and
      the `Thread*` is a pointer to a VM local holding the thread. Past it the net11 leg measured
      the fat lock (`fatLock`), which most threaded guests and every `Task` wait reach, and a
-     `clt.un` between two byte views of one stackalloc block in `UnicodeEncoding.GetBytes`
+     `blt.un.s` between two byte views of one stackalloc block in `UnicodeEncoding.GetBytes`
      (`stackallocByteOrder`), which sockets, pipes and `EventSource` reach. On the Linux CoreLib,
      which a macOS host does not run, `LowLevelLock` and `LowLevelLifoSemaphore` block on a futex
      (`SystemNative_LowLevelFutex_*`, `linuxFutex`), where Darwin's block on `LowLevelMonitor`.

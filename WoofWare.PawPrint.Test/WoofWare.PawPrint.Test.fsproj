@@ -401,6 +401,7 @@
     <Compile Include="TestFabricatedCkfinite.fs" />
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
     <Compile Include="TestFabricatedLdlen.fs" />
+    <Compile Include="TestFabricatedUnsignedBranchOverPointers.fs" />
     <Compile Include="TestFabricatedNullByrefDereference.fs" />
     <Compile Include="TestFabricatedDiscardedRead.fs" />
     <Compile Include="TestFabricatedLongFormArgLocal.fs" />
