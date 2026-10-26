@@ -8,21 +8,22 @@ type GenericVariance =
     | Covariant
     | Contravariant
 
-type GenericConstraint =
-    | Reference
-    | NonNullableValue
-
 type GenericParamMetadata =
     {
         Variance : GenericVariance option
-        Constraint : GenericConstraint option
+        /// The <c>class</c> special constraint (<c>gpReferenceTypeConstraint</c>): the argument
+        /// must not be a value type. Metadata may set it together with
+        /// <see cref="RequiresNonNullableValueType"/>, and then no argument satisfies both.
+        RequiresReferenceType : bool
+        /// The <c>struct</c> special constraint (<c>gpNotNullableValueTypeConstraint</c>): the
+        /// argument must be a value type, and not an instantiation of <c>System.Nullable</c>.
+        RequiresNonNullableValueType : bool
+        /// The <c>new()</c> special constraint (<c>gpDefaultConstructorConstraint</c>).
         RequiresParameterlessConstructor : bool
         /// The <c>allows ref struct</c> anti-constraint (<c>gpAllowByRefLike</c>, corhdr.h:845).
         /// Unlike every other entry here it *widens* what the parameter accepts: without it, a
         /// byref-like type argument is rejected (CoreCLR `TypeVarTypeDesc::SatisfiesConstraints`,
-        /// typedesc.cpp:1606). It is orthogonal to <see cref="Constraint"/> rather than another
-        /// member of that mutually-exclusive pair, so it lives in its own field alongside
-        /// <see cref="RequiresParameterlessConstructor"/>.
+        /// typedesc.cpp:1606).
         AllowsByRefLike : bool
         /// The general (base-type and interface) constraints declared on this parameter,
         /// from the GenericParamConstraint table (ECMA-335 §II.22.21).
@@ -30,9 +31,8 @@ type GenericParamMetadata =
         /// the assembly that owns the parameter.
         ///
         /// Note: this captures only the "must be assignable to" constraints. The
-        /// "struct" / "class" / "new()" flag-style constraints continue to live in
-        /// the <see cref="Constraint"/> and <see cref="RequiresParameterlessConstructor"/>
-        /// fields above.
+        /// "struct" / "class" / "new()" flag-style constraints live in the
+        /// <c>Requires*</c> fields above.
         Constraints : TypeDefn ImmutableArray
     }
 
@@ -140,14 +140,6 @@ module GenericParameter =
             let requiresParamlessCons =
                 param.Attributes.HasFlag GenericParameterAttributes.DefaultConstructorConstraint
 
-            let constr =
-                if param.Attributes.HasFlag GenericParameterAttributes.NotNullableValueTypeConstraint then
-                    Some GenericConstraint.NonNullableValue
-                elif param.Attributes.HasFlag GenericParameterAttributes.ReferenceTypeConstraint then
-                    Some GenericConstraint.Reference
-                else
-                    None
-
             let variance =
                 if param.Attributes.HasFlag GenericParameterAttributes.Contravariant then
                     Some GenericVariance.Contravariant
@@ -173,7 +165,8 @@ module GenericParameter =
             let md =
                 {
                     Variance = variance
-                    Constraint = constr
+                    RequiresReferenceType = param.Attributes.HasFlag GenericParameterAttributes.ReferenceTypeConstraint
+                    RequiresNonNullableValueType = isValueTypeFlagged
                     RequiresParameterlessConstructor = requiresParamlessCons
                     AllowsByRefLike = param.Attributes.HasFlag allowByRefLikeFlag
                     Constraints = constraints

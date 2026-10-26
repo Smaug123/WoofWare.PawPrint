@@ -30,10 +30,8 @@ module TestDispatchBindingFailure =
     type private Image =
         {
             Bytes : byte[]
-            /// Each type the image declares whose base binds, with how it fails.
+            /// Each type the image declares, with how it fails.
             Types : (string * TypeDefinitionHandle * Expected) list
-            /// Each type the image declares whose base does not bind, with how it fails.
-            BaseUnbound : (string * TypeDefinitionHandle * Expected) list
         }
 
     let private emit () : Image =
@@ -93,6 +91,7 @@ module TestDispatchBindingFailure =
         let exceptionType = typeRef corelib "System" "Exception"
         let nowhereException = typeRef nowhere "System" "Exception"
         let equatable = typeRef corelib "System" "IEquatable`1"
+        let list = typeRef corelib "System.Collections.Generic" "List`1"
         let gone = typeRef corelib "System" "Gone"
         let goneGeneric = typeRef corelib "System" "Gone`1"
         let interfaceGone = typeRef corelib "System" "IGone"
@@ -608,6 +607,21 @@ module TestDispatchBindingFailure =
 
             declareType "ExtendsAbsentInstantiation" instantiation 3 ignore
 
+        // Extends `List<class [Nowhere]System.Gone>`: the base's definition binds, its argument does not.
+        let extendsUnboundInstantiation =
+            let instantiation : EntityHandle =
+                let blob = BlobBuilder ()
+
+                let arguments =
+                    BlobEncoder(blob).TypeSpecificationSignature().GenericInstantiation (list, 1, false)
+
+                arguments.AddArgument().Type (nowhereGone, false)
+
+                metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+                |> TypeSpecificationHandle.op_Implicit
+
+            declareType "ExtendsUnboundInstantiation" instantiation 3 ignore
+
         let types =
             [
                 "ImplementsAbsent", implementsAbsent, Expected.Absent "IGone"
@@ -630,12 +644,9 @@ module TestDispatchBindingFailure =
                 "DerivesOverridesUnbound", derivesOverridesUnbound, Expected.Unavailable
                 "DerivesImplementsUnboundBody", derivesImplementsUnboundBody, Expected.Unavailable
                 "ValueDeclaresOnAbsent", valueDeclaresOnAbsent, Expected.Absent "Gone"
-            ]
-
-        let baseUnbound =
-            [
                 "ExtendsAbsent", extendsAbsent, Expected.Absent "Gone"
                 "ExtendsAbsentInstantiation", extendsAbsentInstantiation, Expected.Absent "Gone`1"
+                "ExtendsUnboundInstantiation", extendsUnboundInstantiation, Expected.Unavailable
             ]
 
         // `<type>::Probe()`, a reference to a method no type declares, so that binding it searches each
@@ -657,7 +668,6 @@ module TestDispatchBindingFailure =
         {
             Bytes = image.ToArray ()
             Types = types
-            BaseUnbound = baseUnbound
         }
 
     type private Fixture =
@@ -667,7 +677,6 @@ module TestDispatchBindingFailure =
             Corelib : DumpedAssembly
             Analysed : DumpedAssembly
             Types : (string * TypeDefinitionHandle * Expected) list
-            BaseUnbound : (string * TypeDefinitionHandle * Expected) list
         }
 
     let private fixture () : Fixture =
@@ -687,7 +696,6 @@ module TestDispatchBindingFailure =
             Corelib = corelib
             Analysed = analysed
             Types = image.Types
-            BaseUnbound = image.BaseUnbound
         }
 
     let private typeSystem (f : Fixture) : TypeSystemState =
@@ -697,13 +705,13 @@ module TestDispatchBindingFailure =
 
     let private dirs = HostImage.runtimeDirs
 
-    let private concretize
+    let private tryConcretize
         (f : Fixture)
         (assembly : DumpedAssembly)
         (handle : TypeDefinitionHandle)
         (kind : SignatureTypeKind)
         (state : TypeSystemState)
-        : TypeSystemState * ConcreteTypeHandle
+        : TypeSystemState * Result<ConcreteTypeHandle, TypeBindingFailure>
         =
         TypeSystemState.concretizeType
             f.LoggerFactory
@@ -717,7 +725,16 @@ module TestDispatchBindingFailure =
                 ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName handle,
                 kind
             ))
-        |> BindingResult.bound
+
+    let private concretize
+        (f : Fixture)
+        (assembly : DumpedAssembly)
+        (handle : TypeDefinitionHandle)
+        (kind : SignatureTypeKind)
+        (state : TypeSystemState)
+        : TypeSystemState * ConcreteTypeHandle
+        =
+        tryConcretize f assembly handle kind state |> BindingResult.bound
 
     let private corelibType (f : Fixture) (name : string) : TypeDefinitionHandle =
         f.Corelib.TypeDefs
@@ -777,11 +794,15 @@ module TestDispatchBindingFailure =
 
         state, handle, concretized
 
-    /// Whether `result` is `expected`'s failure.
+    /// Whether `result` is `expected`'s failure. A type absent from a base chain is reported as
+    /// `BaseTypeAbsent` by concretising a type, which loads its base chain, and as `TypeAbsent` by a
+    /// walk that resolves the base reference itself.
     let private isExpected (expected : Expected) (result : Result<'a, TypeBindingFailure>) : bool =
         match expected, result with
         | Expected.Absent name,
-          Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", absent))) ->
+          Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", absent)))
+        | Expected.Absent name,
+          Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", absent))) ->
             absent = name
         | Expected.Unavailable, Error (TypeBindingFailure.AssemblyUnavailable reference) ->
             reference.Name.Name = "Nowhere"
@@ -870,7 +891,8 @@ module TestDispatchBindingFailure =
         ]
 
     /// Every dispatch and method-table question PawPrint asks of a type, from a state in which nothing
-    /// about the type has yet been asked.
+    /// about the type has yet been asked. A question about a receiver fails as concretising the
+    /// receiver does.
     let private questions
         (f : Fixture)
         (handle : TypeDefinitionHandle)
@@ -891,11 +913,11 @@ module TestDispatchBindingFailure =
             ask
                 name
                 (fun () ->
-                    let state, receiver =
-                        concretize f f.Analysed handle SignatureTypeKind.Class (typeSystem f)
-
-                    let state, disposable, dispose = dispose f state
-                    question (state, receiver, disposable, dispose)
+                    match tryConcretize f f.Analysed handle SignatureTypeKind.Class (typeSystem f) with
+                    | _, Error failure -> Error failure
+                    | state, Ok receiver ->
+                        let state, disposable, dispose = dispose f state
+                        question (state, receiver, disposable, dispose)
                 )
 
         // The first instance virtual the type itself declares, which a `constrained.` call can name.
@@ -1120,6 +1142,18 @@ module TestDispatchBindingFailure =
                         |> Result.map ignore
                 )
             onReceiver
+                "ConstrainedType.resolve of Object.GetHashCode on the receiver"
+                (fun (state, receiver, _, _) ->
+                    ConstrainedType.resolve
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        state
+                        receiver
+                        (ConstrainedType.objectGetHashCode f.BaseClassTypes)
+                    |> snd
+                )
+            onReceiver
                 "tryResolveVirtualImplementation of Object.ToString"
                 (fun (state, receiver, _, _) ->
                     let state, toString = corelibMethod f "Object" "ToString" state
@@ -1234,6 +1268,21 @@ module TestDispatchBindingFailure =
             "DerivesImplementsUnboundBody", "dispatchTableOfClosed"
             "ValueDeclaresOnAbsent", "dispatchTableOfClosed"
             "ValueDeclaresOnAbsent", "ConstrainedType.resolveClassMethodOnValueType of Object.ToString"
+            "ExtendsAbsent", "interfaceMapOf"
+            "ExtendsAbsent", "isConcreteTypeAssignableTo"
+            "ExtendsAbsent", "dispatchTableOfClosed"
+            "ExtendsAbsent", "tryResolveVirtualImplementation of Object.ToString"
+            "ExtendsAbsent", "vtableOfDefinition"
+            "ExtendsAbsentInstantiation", "interfaceMapOf"
+            "ExtendsAbsentInstantiation", "isConcreteTypeAssignableTo"
+            "ExtendsAbsentInstantiation", "dispatchTableOfClosed"
+            "ExtendsAbsentInstantiation", "tryResolveVirtualImplementation of Object.ToString"
+            "ExtendsAbsentInstantiation", "vtableOfDefinition"
+            "ExtendsUnboundInstantiation", "interfaceMapOf"
+            "ExtendsUnboundInstantiation", "isConcreteTypeAssignableTo"
+            "ExtendsUnboundInstantiation", "interfaceMapHandles"
+            "ExtendsUnboundInstantiation", "tryResolveVirtualImplementation of Object.ToString"
+            "ExtendsUnboundInstantiation", "ConstrainedType.resolve of Object.GetHashCode on the receiver"
         ]
 
     [<Test>]
@@ -1247,16 +1296,3 @@ module TestDispatchBindingFailure =
 
             if not (isExpected expected outcome) then
                 failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
-
-    /// A definition whose base does not bind has no method table: each walk over it fails with the
-    /// base's failure.
-    [<Test>]
-    let ``laying out a definition whose base does not bind fails with the base's failure`` () : unit =
-        let f = fixture ()
-
-        for name, handle, expected in f.BaseUnbound do
-            for question, ask in definitionQuestions f handle do
-                let outcome = ask ()
-
-                if not (isExpected expected outcome) then
-                    failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"

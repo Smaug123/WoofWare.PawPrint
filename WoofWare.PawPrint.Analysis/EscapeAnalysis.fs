@@ -1245,6 +1245,23 @@ module EscapeAnalysis =
         | state, TypeReferenceIdentity.AssemblyUnavailable _ -> state, None
         | _, TypeReferenceIdentity.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
+    /// Does the base-type chain of the definition `identity` bind? TypeSystem loads it before it
+    /// instantiates the type (`TypeConcretization`), as CoreCLR loads a type's parent first, so where
+    /// it does not, the type has no runtime type. Loads the assemblies the chain needs.
+    let private baseChainBinds
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * bool
+        =
+        let assemblies, failure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                (TypeResolution.directoryLoader state.LoggerFactory state.RuntimeDirs)
+                state.TypeSystem._LoadedAssemblies
+                (state.TypeSystem._LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                identity.TypeDefinition.Get
+
+        withAssemblies state assemblies, failure.IsNone
+
     /// The type definition a type spelling names, looking through custom modifiers and
     /// instantiations. `None` for a spelling that names no definition: a type variable, an array, a
     /// pointer.
@@ -2041,11 +2058,11 @@ module EscapeAnalysis =
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void -> false
 
-    /// Does every type reference that instantiating a spelling reads name a type? As
+    /// Does TypeSystem instantiate a spelling? Every type reference it reads must name a type, as
     /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
-    /// TypeSystem instantiates although the JIT binds none of them. False too where a type
-    /// argument carries a custom modifier, which TypeSystem cannot instantiate
-    /// (`TypeConcretization.carriesCustomModifier`).
+    /// TypeSystem instantiates although the JIT binds none of them; and every type it names must have
+    /// a base chain that binds (`baseChainBinds`). False too where a type argument carries a custom
+    /// modifier, which TypeSystem cannot instantiate (`TypeConcretization.carriesCustomModifier`).
     let rec private concretizable
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
@@ -2074,14 +2091,15 @@ module EscapeAnalysis =
         | TypeDefn.Byref element
         | TypeDefn.Pinned element -> concretizable state assembly element
         | TypeDefn.Modified modified -> concretizable state assembly modified.Unmodified
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference (typeRef, _) ->
+            match resolveTypeRef state assembly typeRef with
+            | state, Some identity -> baseChainBinds state identity
+            | state, None -> state, false
+        | TypeDefn.FromDefinition (identity, _) -> baseChainBinds state identity
         | TypeDefn.PrimitiveType _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void ->
-            let state, failure = spellingBindFailure state assembly spelling
-            state, failure.IsNone
+        | TypeDefn.Void -> state, true
 
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
@@ -6208,8 +6226,9 @@ module EscapeAnalysis =
     /// A type a body spells, as an instance of the body running as `caller` makes it; `spelledIn`
     /// names the assembly whose metadata spells it. `None` where the instance leaves a type
     /// variable of it open; where the type fails to bind, which fails that body before it runs, as
-    /// its facts report; and where TypeSystem does not instantiate it, although CoreCLR may load it
-    /// (`concretizable`).
+    /// its facts report; and where TypeSystem does not instantiate it (`concretizable`): where a type
+    /// it names derives from one that does not bind, which CoreCLR cannot load either, or where
+    /// TypeSystem does not model the shape, although CoreCLR may load it.
     let private concretizeIn
         (state : EscapeAnalysisState)
         (caller : Instantiation)

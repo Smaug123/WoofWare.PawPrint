@@ -369,3 +369,85 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
             Is.True,
             "no corpus pair violates only the *second* parameter, so the index is untested"
         )
+
+    /// A type parameter carrying both the `class` and the `struct` flag, which C# cannot spell but
+    /// metadata can. CoreCLR checks each flag in turn (typedesc.cpp:1587-1604), so no argument
+    /// satisfies both: a value type fails `class`, and anything else fails `struct`.
+    [<Test>]
+    let ``a parameter constrained to be both a class and a struct rejects every argument, as on the host`` () : unit =
+        let image =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (
+                    Reflection.AssemblyName "ClassAndStruct",
+                    typeof<obj>.Assembly
+                )
+
+            let modul = builder.DefineDynamicModule "ClassAndStruct"
+
+            let holder =
+                modul.DefineType (
+                    "ClassAndStruct`1",
+                    Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                )
+
+            let parameters = holder.DefineGenericParameters [| "T" |]
+
+            parameters.[0]
+                .SetGenericParameterAttributes (
+                    Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+                    ||| Reflection.GenericParameterAttributes.NotNullableValueTypeConstraint
+                )
+
+            holder.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let hostHolder =
+            match (Reflection.Assembly.Load image).GetType "ClassAndStruct`1" with
+            | null -> failwith "the fabricated holder is not in the host-loaded image"
+            | ty -> ty
+
+        let fabricated =
+            use stream = new MemoryStream (image)
+            AssemblyApi.read loggerFactory None stream
+
+        let holder =
+            fabricated.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = "ClassAndStruct`1")
+
+        let mutable state = initialState.WithLoadedAssembly fabricated
+
+        let disagreements =
+            [
+                for name, defn, hostArg in argumentPool do
+                    let expected =
+                        try
+                            hostHolder.MakeGenericType [| hostArg |] |> ignore<Type>
+                            None
+                        with :? ArgumentException as e ->
+                            Some e.Message
+
+                    let state', handle =
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            bct
+                            state
+                            guest.DefinitionFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            defn
+
+                    let state', actual =
+                        NativeRuntimeTypeHelpers.validateConstraints loggerFactory bct state' holder [ handle ]
+
+                    state <- state'
+
+                    if expected.IsNone then
+                        yield $"ClassAndStruct<%s{name}>: the host accepts it"
+
+                    if actual.IsNone then
+                        yield $"ClassAndStruct<%s{name}>: PawPrint accepts it"
+            ]
+
+        if not disagreements.IsEmpty then
+            failwith (String.concat "\n" disagreements)

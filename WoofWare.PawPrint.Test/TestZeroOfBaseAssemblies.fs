@@ -50,10 +50,7 @@ module TestZeroOfBaseAssemblies =
     let fsharpCoreNetstandard21Path : string Lazy = Netstandard21FSharpCore.path
 
     [<Test>]
-    let ``ensureBaseAssembliesLoadedForConcreteHandle loads facade assembly reachable via base-type TypeRef``
-        ()
-        : unit
-        =
+    let ``concretising a type loads the facade its base-type TypeRef points at`` () : unit =
         let corelib = readAssembly corelibPath
         let fsharpCore = readAssembly fsharpCoreNetstandard21Path.Value
 
@@ -73,8 +70,7 @@ module TestZeroOfBaseAssemblies =
         assertNetstandardAvailable ()
         let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
-        // Concretize FSharpValueOption<int>. Concretization itself does not walk
-        // base types, so it should not trigger a netstandard load.
+        // Concretize FSharpValueOption<int>, which loads its base chain, netstandard included.
         let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
 
         let concretizeCtx : TypeConcretization.ConcretizationContext<DumpedAssembly> =
@@ -105,53 +101,14 @@ module TestZeroOfBaseAssemblies =
                 ImmutableArray.Empty
                 valueOptionInt
 
-        let handle = BindingResult.value handle
+        BindingResult.value handle |> ignore<ConcreteTypeHandle>
 
-        // Sanity: concretization itself did not need netstandard.
-        let netstandardLoadedAfterConcretize =
-            concretizeCtx.LoadedAssemblies.DefinitionNames
-            |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
-
-        netstandardLoadedAfterConcretize |> shouldEqual false
-
-        // The bug: calling isValueType directly on the metadata now would crash
-        // with "seems pretty unlikely...", because FSharpValueOption's base
-        // TypeRef points at System.ValueType in netstandard (not yet loaded).
-        let isValueTypeBeforeHelper =
-            try
-                LoadedTypeInfo.isValueType baseTypes concretizeCtx.LoadedAssemblies valueOptionTypeDef
-                |> Ok
-            with e ->
-                Error e.Message
-
-        match isValueTypeBeforeHelper with
-        | Ok _ ->
-            Assert.Fail
-                "Expected isValueType to fail before running ensureBaseAssembliesLoadedForConcreteHandle; the test scenario no longer exercises the bug."
-        | Error msg -> msg |> shouldContainText "seems pretty unlikely"
-
-        // The fix: run the helper, then isValueType must succeed against the
-        // returned assemblies dict.
-        let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
-
-        let loadedAfterHelper, _, loadedAfterHelperFailure =
-            Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                loadAssembly
-                baseTypes
-                visited
-                concretizeCtx.LoadedAssemblies
-                concretizeCtx.ConcreteTypes
-                handle
-
-        BindingResult.completed loadedAfterHelperFailure
-
-        // netstandard is now loaded.
-        loadedAfterHelper.DefinitionNames
+        concretizeCtx.LoadedAssemblies.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual true
 
-        // isValueType now succeeds — FSharpValueOption is a struct.
-        LoadedTypeInfo.isValueType baseTypes loadedAfterHelper valueOptionTypeDef
+        // So the pure walk over its base chain succeeds: FSharpValueOption is a struct.
+        LoadedTypeInfo.isValueType baseTypes concretizeCtx.LoadedAssemblies valueOptionTypeDef
         |> shouldEqual true
 
     [<Test>]
@@ -513,10 +470,8 @@ public static class C
 
         let loadAssembly = onDemandAssemblyLoad [ runtimeDir ]
 
-        // Concretize FSharpValueOption<int> into the concreteTypes dictionary
-        // (still with netstandard not yet loaded), so we can pass its handle as
-        // the method's generic argument. Concretization does not walk base
-        // types, so netstandard remains absent at this point.
+        // Concretize FSharpValueOption<int> into the concreteTypes dictionary, so we can pass its
+        // handle as the method's generic argument. Concretization loads its base chain.
         let valueOptionTypeDef = getValueOptionTypeDef fsharpCore
 
         let valueOptionInt : TypeDefn =
@@ -543,10 +498,9 @@ public static class C
 
         let valueOptionHandle = BindingResult.value valueOptionHandle
 
-        // Sanity: concretization alone did not need netstandard.
         concretizeCtx.LoadedAssemblies.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
-        |> shouldEqual false
+        |> shouldEqual true
 
         let _, _, loadedAfter =
             Concretization.concretizeMethod
@@ -558,9 +512,8 @@ public static class C
                 ImmutableArray.Empty
                 (ImmutableArray.CreateRange [ valueOptionHandle ])
 
-        // The sweep must have primed the method's generic argument, which
-        // means walking FSharpValueOption<int>'s base chain, which means
-        // netstandard is now loaded.
+        // Zeroing the method's generic argument walks FSharpValueOption<int>'s base chain, so
+        // netstandard must still be loaded once the method is concretised.
         loadedAfter.DefinitionNames
         |> Seq.exists (fun (n : string) -> n.StartsWith ("netstandard,", StringComparison.OrdinalIgnoreCase))
         |> shouldEqual true

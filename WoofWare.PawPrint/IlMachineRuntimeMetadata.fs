@@ -229,7 +229,7 @@ module IlMachineRuntimeMetadata =
                 state.TypeSystem
                 concreteType
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// True iff `ty` references any `GenericTypeParameter` / `GenericMethodParameter`. The
     /// open-generic source cast walk uses this to decide whether a base/interface edge can be
@@ -1593,7 +1593,7 @@ module IlMachineRuntimeMetadata =
         let typeSystem, result =
             TypeSystemState.isEnumValueType loggerFactory state.DotnetRuntimeDirs baseClassTypes state.TypeSystem handle
 
-        state.WithTypeSystem typeSystem, result
+        state.WithTypeSystem typeSystem, BindingStop.bound result
 
     /// `TypeSystemState.enumUnderlyingHandle` against the machine's type system.
     let enumUnderlyingHandle
@@ -2170,7 +2170,7 @@ module IlMachineRuntimeMetadata =
 
         let state, metadata, _ = typeVariableFacts state variable
 
-        if metadata.Constraint = Some GenericConstraint.Reference then
+        if metadata.RequiresReferenceType then
             state, true
         else
             constrainedAsObjRefByConstraints state variable
@@ -2296,7 +2296,7 @@ module IlMachineRuntimeMetadata =
                     state, true
                 elif isClosedNonGeneric state baseClassTypes.ValueType target then
                     let state, metadata, _ = typeVariableFacts state source
-                    state, metadata.Constraint = Some GenericConstraint.NonNullableValue
+                    state, metadata.RequiresNonNullableValueType
                 else
                     // Revisiting a (variable, target) pair is legal here: `G<T> where T : IIn<IIn<T>>`
                     // against `class C : IIn<IIn<C>>` comes back to it through variance, and that

@@ -676,14 +676,15 @@ module TypeSystemState =
             state, Ok (currentAssembly, signature)
 
     /// Given a ConcreteTypeHandle, resolve and return its base type as a ConcreteTypeHandle.
-    /// Returns None for types without a base type (System.Object).
+    /// Returns None for types without a base type (System.Object). A base type that does not bind is
+    /// the failure, returned with what loaded before it: CoreCLR would have refused to load the type.
     let resolveBaseConcreteType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (concreteType : ConcreteTypeHandle)
-        : TypeSystemState * ConcreteTypeHandle option
+        : TypeSystemState * Result<ConcreteTypeHandle option, TypeBindingFailure>
         =
         match concreteType with
         | ConcreteTypeHandle.OneDimArrayZero _
@@ -700,9 +701,7 @@ module TypeSystemState =
                     ImmutableArray.Empty
                     ImmutableArray.Empty
 
-            match arrayHandle with
-            | Ok arrayHandle -> state, Some arrayHandle
-            | Error failure -> failwith (TypeBindingFailure.describe failure)
+            state, arrayHandle |> Result.map Some
         | ConcreteTypeHandle.FunctionPointer _ ->
             failwith
                 $"TODO: resolveBaseConcreteType: function pointer types (%O{concreteType}) not yet supported; the runtime base type is System.ValueType but the lookup path needs adjusting"
@@ -718,14 +717,13 @@ module TypeSystemState =
                 let typeInfo = assy.TypeDefs.[ct.Identity.TypeDefinition.Get]
 
                 match typeInfo.BaseType with
-                | None -> state, None
+                | None -> state, Ok None
                 | Some baseTypeInfo ->
-                    let state, baseAssy, baseTypeDefn =
-                        match
-                            resolveBaseTypeInfo loggerFactory dotnetRuntimeDirs baseClassTypes state assy baseTypeInfo
-                        with
-                        | state, Ok (baseAssy, baseTypeDefn) -> state, baseAssy, baseTypeDefn
-                        | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+                    match
+                        resolveBaseTypeInfo loggerFactory dotnetRuntimeDirs baseClassTypes state assy baseTypeInfo
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (baseAssy, baseTypeDefn) ->
 
                     let state, baseHandle =
                         concretizeType
@@ -738,9 +736,7 @@ module TypeSystemState =
                             ImmutableArray.Empty
                             baseTypeDefn
 
-                    match baseHandle with
-                    | Ok baseHandle -> state, Some baseHandle
-                    | Error failure -> failwith (TypeBindingFailure.describe failure)
+                    state, baseHandle |> Result.map Some
 
     /// Get the metadata row directly represented by this concrete handle.
     /// Structural arrays, byrefs, and pointers have no direct TypeDef row; callers that are walking
@@ -793,31 +789,29 @@ module TypeSystemState =
             | None -> failwith $"%s{context}: concrete type handle %O{handle} has no TypeDef row"
 
     /// Returns true if `handle` is a CLR enum value type — a nominal type whose immediate runtime
-    /// base is `System.Enum`.
+    /// base is `System.Enum`. A base type that does not bind is the failure.
     let isEnumValueType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (handle : ConcreteTypeHandle)
-        : TypeSystemState * bool
+        : TypeSystemState * Result<bool, TypeBindingFailure>
         =
         match handle with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> state, false
+        | ConcreteTypeHandle.FunctionPointer _ -> state, Ok false
         | ConcreteTypeHandle.Concrete _ ->
-            let state, baseHandle =
-                resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state handle
-
-            match baseHandle with
-            | None -> state, false
-            | Some bh ->
+            match resolveBaseConcreteType loggerFactory dotnetRuntimeDirs baseClassTypes state handle with
+            | state, Error failure -> state, Error failure
+            | state, Ok None -> state, Ok false
+            | state, Ok (Some bh) ->
                 match AllConcreteTypes.lookup bh state.ConcreteTypes with
-                | Some baseTy -> state, baseTy.Identity = baseClassTypes.Enum.Identity
-                | None -> state, false
+                | Some baseTy -> state, Ok (baseTy.Identity = baseClassTypes.Enum.Identity)
+                | None -> state, Ok false
 
     /// For an enum `ConcreteTypeHandle`, return the `ConcreteTypeHandle` of its underlying integer
     /// type by concretising the signature of its sole instance field (`value__`, the CLR-reserved

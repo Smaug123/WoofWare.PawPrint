@@ -6184,6 +6184,16 @@ public static class Uses
     public class DerivedFromGone : Provider.GoneType { }
     public struct HoldsDerivedFromGone { public DerivedFromGone D; }
     public static int BranchOnHoldsDerivedFromGone() => BranchOnReferences<HoldsDerivedFromGone>();
+    public class LocalOfDerivedFromGone
+    {
+        public virtual int M()
+        {
+            DerivedFromGone[] x = null;
+            return x == null ? 0 : 1;
+        }
+    }
+    public class OverridesLocalOfDerivedFromGone : LocalOfDerivedFromGone { public override int M() => 0; }
+    public static int CallPastLocalOfDerivedFromGone() => ((LocalOfDerivedFromGone) new OverridesLocalOfDerivedFromGone()).M();
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
@@ -6276,6 +6286,9 @@ public static class Uses
         against2 "BranchOnHoldsGone" |> ignore
         // So too where a field's type derives from one the provider no longer has.
         against2 "BranchOnHoldsDerivedFromGone" |> ignore
+        // A method that names, in a local, a type deriving from one the provider no longer has, which
+        // the receiver overrides, so it never runs.
+        against2 "CallPastLocalOfDerivedFromGone" |> ignore
 
         for methodName, failure in failures do
             let bound, _ = against1 methodName

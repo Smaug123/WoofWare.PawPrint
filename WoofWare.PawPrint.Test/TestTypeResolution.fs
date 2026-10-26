@@ -893,13 +893,17 @@ public class Outer
 
         let first, ctx =
             TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
                 ctx
                 (ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle)
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         let second, _ =
             TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
                 ctx
                 (ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle)
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         first |> shouldEqual second
 
@@ -938,13 +942,17 @@ public class Y
 
         let xHandle, ctx =
             TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
                 ctx
                 (ResolvedTypeIdentity.ofTypeDefinition defining.Name xInner.TypeDefHandle)
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         let yHandle, _ =
             TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
                 ctx
                 (ResolvedTypeIdentity.ofTypeDefinition defining.Name yInner.TypeDefHandle)
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         xHandle |> shouldNotEqual yHandle
 
@@ -1051,7 +1059,11 @@ public class OpenBox<T> { }
         let baseClassTypes = baseClassTypes ()
 
         let argumentHandle, ctx =
-            TypeConcretization.concretizeTypeDefinition (emptyConcretizationContext [ defining ]) argumentIdentity
+            TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
+                (emptyConcretizationContext [ defining ])
+                argumentIdentity
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         let state =
             let initialState =
@@ -1061,6 +1073,7 @@ public class OpenBox<T> { }
                 TypeSystem =
                     { initialState.TypeSystem with
                         ConcreteTypes = ctx.ConcreteTypes
+                        _LoadedAssemblies = ctx.LoadedAssemblies
                     }
             }
 
@@ -1197,8 +1210,10 @@ public class Outer<T>
 
         let firstArgumentHandle, ctx =
             TypeConcretization.concretizeTypeDefinition
+                (NoAssemblyLoad ())
                 ctx
                 (ResolvedTypeIdentity.ofTypeDefinition defining.Name firstArgument.TypeDefHandle)
+            |> fun (handle, ctx) -> BindingResult.value handle, ctx
 
         let firstHandle, ctx =
             TypeConcretization.concretizeType

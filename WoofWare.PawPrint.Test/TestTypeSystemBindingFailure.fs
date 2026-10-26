@@ -141,6 +141,14 @@ module TestTypeSystemBindingFailure =
         concretize f (TypeDefn.GenericInstantiation (int32, ImmutableArray.Create int32))
         |> unmodelledSaying "Generic instantiation of"
 
+        // A non-generic definition given arguments is the wrong arity too.
+        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Create int32))
+        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 1 argument(s)"
+
+        // No signature can spell an instantiation with no arguments, even of a non-generic definition.
+        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Empty))
+        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 0 argument(s)"
+
     [<Test>]
     let ``comparing signatures fails where a type it must bind does not`` () : unit =
         let f = UnmodelledImage.fixture ()
@@ -193,27 +201,14 @@ module TestTypeSystemBindingFailure =
         |> shouldEqual (Ok false)
 
     [<Test>]
-    let ``priming a type whose base type is absent fails`` () : unit =
+    let ``concretising a type whose base type is absent fails`` () : unit =
         let f = UnmodelledImage.fixture ()
         let derived = f.Analysed.TypeDefs.[f.Shapes.Derived]
 
-        let handle, ctx =
-            TypeConcretization.concretizeTypeDefinition (context f) derived.Identity
-
-        match
-            Concretization.ensureBaseAssembliesLoadedForConcreteHandle
-                (loader f)
-                f.BaseClassTypes
-                (System.Collections.Generic.HashSet ())
-                ctx.LoadedAssemblies
-                ctx.ConcreteTypes
-                handle
-        with
-        | _,
-          _,
-          Some (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
-            ()
-        | _, _, other -> failwith $"expected the base type to be absent, got %A{other}"
+        match TypeConcretization.concretizeTypeDefinition (loader f) (context f) derived.Identity with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))),
+          _ -> ()
+        | other, _ -> failwith $"expected the base type to be absent, got %A{other}"
 
     [<Test>]
     let ``a method reference whose parent's base type is absent names the absent type`` () : unit =
@@ -494,7 +489,8 @@ module TestTypeSystemBindingFailure =
     /// The reference implementation: the first part of the spelling, in the order a runtime type is
     /// built from it, that does not bind. An instantiation is refused outright where an argument
     /// carries a custom modifier, before any argument is bound; otherwise its arguments come first,
-    /// in order, and then the generic definition, which here always binds.
+    /// in order, and then the generic definition, which here always binds but refuses any number of
+    /// arguments other than its one generic parameter.
     let rec private expected (spelling : Spelling) : Expected option =
         let firstOf (parts : Spelling list) : Expected option = parts |> List.tryPick expected
 
@@ -510,11 +506,23 @@ module TestTypeSystemBindingFailure =
             if arguments |> List.exists carriesModifier then
                 Some Expected.Unmodelled
             else
-                firstOf arguments
+                match firstOf arguments with
+                | Some failure -> Some failure
+                | None when arguments.Length <> 1 -> Some Expected.Unmodelled
+                | None -> None
         | Spelling.FunctionPointer (returns, parameters) -> firstOf (Option.toList returns @ parameters)
 
     let private genSpelling : Gen<Spelling> =
         let leaf = Gen.elements leaves |> Gen.map Spelling.Leaf
+
+        // An instantiation at the wrong arity is refused only once every argument binds, which
+        // arbitrary arguments rarely all do.
+        let wrongArity =
+            Gen.elements [ 0 ; 2 ; 3 ]
+            |> Gen.bind (fun n ->
+                Gen.listOfLength n (leaves |> List.filter (fun leaf -> leaf.Fails.IsNone) |> Gen.elements)
+            )
+            |> Gen.map (List.map Spelling.Leaf >> Spelling.ListOf)
 
         let rec go (size : int) : Gen<Spelling> =
             if size <= 0 then
@@ -533,6 +541,7 @@ module TestTypeSystemBindingFailure =
                         1, Gen.map Spelling.Pinned smaller
                         1, Gen.map Spelling.Modified smaller
                         2, Gen.map Spelling.ListOf several
+                        1, wrongArity
                         2,
                         Gen.map2
                             (fun returns parameters -> Spelling.FunctionPointer (returns, parameters))
@@ -549,6 +558,7 @@ module TestTypeSystemBindingFailure =
         | FailsUnavailable
         | FailsUnmodelled
         | RefusedForAModifier
+        | RefusedForArity
 
     [<Test>]
     let ``concretisation fails exactly where the first part that does not bind is`` () : unit =
@@ -566,6 +576,9 @@ module TestTypeSystemBindingFailure =
                 if unmodelled.Diagnostic.Contains "custom modifier" then
                     cover Shown.RefusedForAModifier
 
+                if unmodelled.Diagnostic.Contains "declares 1 generic parameter(s)" then
+                    cover Shown.RefusedForArity
+
                 cover Shown.FailsUnmodelled
             | expected, actual -> failwith $"expected %A{expected}, got %A{actual}"
 
@@ -579,6 +592,7 @@ module TestTypeSystemBindingFailure =
         coverage.Count Shown.FailsUnavailable |> shouldBeGreaterThan 100
         coverage.Count Shown.FailsUnmodelled |> shouldBeGreaterThan 100
         coverage.Count Shown.RefusedForAModifier |> shouldBeGreaterThan 20
+        coverage.Count Shown.RefusedForArity |> shouldBeGreaterThan 20
 
     [<RequireQualifiedAccess>]
     type private Resolved =

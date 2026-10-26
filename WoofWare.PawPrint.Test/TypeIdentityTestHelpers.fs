@@ -65,8 +65,19 @@ module TypeIdentityTestHelpers =
 
     let metadataReferenceFromImage (bytes : byte[]) : MetadataReference = MetadataReference.CreateFromImage bytes
 
+    /// The test host's CoreLib, which the compiled fixtures reference.
+    let private hostCoreLib : Lazy<DumpedAssembly> =
+        lazy (withLoggerFactory (fun loggerFactory -> AssemblyApi.readFile loggerFactory HostImage.coreLibPath))
+
+    /// `assemblies` loaded together with the host's CoreLib, unless one of them is a CoreLib already:
+    /// concretising a type loads its base chain, which for a compiled fixture runs into CoreLib.
     let loadedAssemblies (assemblies : DumpedAssembly list) : LoadedAssemblies =
-        LoadedAssemblies.ofAssemblies assemblies
+        let coreLib = hostCoreLib.Force ()
+
+        if assemblies |> List.exists (fun a -> a.Name.Name = coreLib.Name.Name) then
+            LoadedAssemblies.ofAssemblies assemblies
+        else
+            LoadedAssemblies.ofAssemblies (coreLib :: assemblies)
 
     let emptyConcretizationContext
         (assemblies : DumpedAssembly list)

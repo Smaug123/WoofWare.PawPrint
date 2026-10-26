@@ -86,7 +86,7 @@ public class C<T> { }
 
     [<Test>]
     let ``where T : class still yields an empty Constraints array`` () =
-        // The "class" flag-style constraint is captured in Constraint, not Constraints.
+        // The "class" flag-style constraint is captured in RequiresReferenceType, not Constraints.
         let source =
             """
 public class C<T> where T : class { }
@@ -96,7 +96,8 @@ public class C<T> where T : class { }
         let cType = findType "C`1" assembly
 
         let _, paramMd = cType.Generics.[0]
-        Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.Reference))
+        Assert.That (paramMd.RequiresReferenceType, Is.True)
+        Assert.That (paramMd.RequiresNonNullableValueType, Is.False)
         Assert.That (paramMd.Constraints.Length, Is.EqualTo 0)
 
     [<Test>]
@@ -113,7 +114,8 @@ public class C<T> where T : struct { }
         let cType = findType "C`1" assembly
 
         let _, paramMd = cType.Generics.[0]
-        Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+        Assert.That (paramMd.RequiresNonNullableValueType, Is.True)
+        Assert.That (paramMd.RequiresReferenceType, Is.False)
         Assert.That (paramMd.RequiresParameterlessConstructor, Is.True)
         Assert.That (paramMd.Constraints.Length, Is.EqualTo 0)
 
@@ -129,7 +131,8 @@ public class C<T> where T : struct, IComparable { }
         let cType = findType "C`1" assembly
 
         let _, paramMd = cType.Generics.[0]
-        Assert.That (paramMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+        Assert.That (paramMd.RequiresNonNullableValueType, Is.True)
+        Assert.That (paramMd.RequiresReferenceType, Is.False)
         Assert.That (paramMd.Constraints.Length, Is.EqualTo 1)
 
         match paramMd.Constraints.[0] with
@@ -165,10 +168,11 @@ public class F<T> where T : new() { }
         Assert.That (allowsByRefLike "E`1", Is.True)
         Assert.That (allowsByRefLike "F`1", Is.False)
 
-        // The flag is orthogonal to the mutually-exclusive struct/class pair, so it must not
+        // The flag is independent of the struct and class flags, so it must not
         // disturb what those fields report.
         let _, eMd = (findType "E`1" assembly).Generics.[0]
-        Assert.That (eMd.Constraint, Is.EqualTo (Some GenericConstraint.NonNullableValue))
+        Assert.That (eMd.RequiresNonNullableValueType, Is.True)
+        Assert.That (eMd.RequiresReferenceType, Is.False)
 
     [<Test>]
     let ``where T : System.Enum surfaces the explicit constraint`` () =
@@ -183,7 +187,8 @@ public class C<T> where T : System.Enum { }
         let cType = findType "C`1" assembly
 
         let _, paramMd = cType.Generics.[0]
-        Assert.That (paramMd.Constraint, Is.EqualTo (None : GenericConstraint option))
+        Assert.That (paramMd.RequiresNonNullableValueType, Is.False)
+        Assert.That (paramMd.RequiresReferenceType, Is.False)
         Assert.That (paramMd.Constraints.Length, Is.EqualTo 1)
 
         match paramMd.Constraints.[0] with
@@ -191,3 +196,41 @@ public class C<T> where T : System.Enum { }
             Assert.That (typeRef.Name, Is.EqualTo "Enum")
             Assert.That (typeRef.Namespace, Is.EqualTo "System")
         | other -> Assert.Fail $"expected System.Enum FromReference, got %O{other}"
+
+    [<Test>]
+    let ``a parameter carrying both the class and the struct flag reports both`` () =
+        // C# cannot spell this, so the parameter is emitted directly.
+        let image =
+            let builder =
+                System.Reflection.Emit.PersistedAssemblyBuilder (
+                    System.Reflection.AssemblyName "ClassAndStructFlags",
+                    typeof<obj>.Assembly
+                )
+
+            let modul = builder.DefineDynamicModule "ClassAndStructFlags"
+
+            let holder =
+                modul.DefineType (
+                    "C`1",
+                    System.Reflection.TypeAttributes.Public
+                    ||| System.Reflection.TypeAttributes.Class
+                )
+
+            (holder.DefineGenericParameters [| "T" |])
+                .[0].SetGenericParameterAttributes (
+                    System.Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+                    ||| System.Reflection.GenericParameterAttributes.NotNullableValueTypeConstraint
+                )
+
+            holder.CreateType () |> ignore<System.Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use stream = new MemoryStream (image)
+        let assembly = global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
+
+        let _, paramMd = (findType "C`1" assembly).Generics.[0]
+        Assert.That (paramMd.RequiresReferenceType, Is.True)
+        Assert.That (paramMd.RequiresNonNullableValueType, Is.True)
