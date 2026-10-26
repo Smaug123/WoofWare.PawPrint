@@ -825,8 +825,8 @@ public static class Cases
             Cases : string list
             /// Whether the analysis must know each case's answer.
             Exact : bool
-            /// Generic methods of `Client.Cases` to ask the analysis about by themselves, each with
-            /// the case that calls it.
+            /// Generic methods to ask the analysis about by themselves, each with the case that calls
+            /// it: of `Client.Cases` by name, or of another type of `Client` as `Type::Method`.
             Generics : (string * string) list
         }
 
@@ -879,10 +879,16 @@ public static class Cases
             | Outcome.Runs
             | Outcome.Caught -> Set.empty
 
+        // A method of `Client.Cases` by its name, or of another type of `Client` as `Type::Method`.
         let ask (methodName : string) : Result<Escapes * Set<string>, string> =
+            let typeName, memberName =
+                match methodName.Split "::" with
+                | [| typeName ; memberName |] -> "Client." + typeName, memberName
+                | _ -> "Client.Cases", methodName
+
             try
                 let next, escapes =
-                    EscapeAnalysis.escapes analysis.Value (methodNamed clientAssembly "Client.Cases" methodName)
+                    EscapeAnalysis.escapes analysis.Value (methodNamed clientAssembly typeName memberName)
 
                 analysis.Value <- next
                 let shown = render next escapes
@@ -1300,11 +1306,121 @@ public static class Cases
                     Exact = false
                     Generics = []
                 }
+                {
+                    Name = "ModifiedMethodArgument"
+                    Libraries = []
+                    Client =
+                        """
+namespace Client;
+public static unsafe class Cases
+{
+    static void M<T>() { }
+    public static int TakesAddress()
+    {
+        try { delegate*<void> p = &M<System.Collections.Generic.List<delegate*<out int, void>[]>>; return p == null ? 1 : 0; }
+        catch (System.Exception) { return 1; }
+    }
+}
+"""
+                    Cases = [ "TakesAddress" ]
+                    Exact = false
+                    Generics = []
+                }
             ]
 
         match scenarios |> List.collect disagreements with
         | [] -> ()
         | problems -> problems |> String.concat "\n" |> failwith
+
+    /// A method of a generic type reading the type's own field, of a struct over the type's parameter, through
+    /// the field's definition token rather than a reference to it on the type's instantiation over
+    /// its parameters: IL that C# does not write, but that CoreCLR runs, reading the field of the
+    /// instantiation the method runs in. The library is emitted, the client compiled against it.
+    [<Test>]
+    let ``reading a generic type's own field by its definition token agrees with the host`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let libraryImage =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (Reflection.AssemblyName "Lib", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Lib"
+
+            let holder =
+                modul.DefineType ("Holder`1", Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+            let parameter = (holder.DefineGenericParameters [| "T" |]).[0]
+
+            // `ValueTuple<T>`, a value type, which the JIT loads in full reading the field.
+            let fieldType = typedefof<ValueTuple<int>>.MakeGenericType [| parameter :> Type |]
+
+            holder.DefineField ("F", fieldType, Reflection.FieldAttributes.Public)
+            |> ignore<Reflection.Emit.FieldBuilder>
+
+            holder.DefineDefaultConstructor Reflection.MethodAttributes.Public
+            |> ignore<Reflection.Emit.ConstructorBuilder>
+
+            let read =
+                holder.DefineMethod ("Read", Reflection.MethodAttributes.Public, fieldType, Type.EmptyTypes)
+
+            let il = read.GetILGenerator ()
+            il.Emit Reflection.Emit.OpCodes.Ldarg_0
+            // The field's definition token, the module's first field, spelled out: given the
+            // field's builder, the emitter names its declaring type's instantiation instead.
+            il.Emit (Reflection.Emit.OpCodes.Ldfld, 0x04000001)
+            il.Emit Reflection.Emit.OpCodes.Ret
+
+            holder.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let clientImage =
+            compileClient
+                [ libraryImage ]
+                """
+namespace Client;
+public static class Cases
+{
+    public static int CallsRead() { try { return new Holder<int>().Read().Item1; } catch (System.Exception) { return 1; } }
+}
+"""
+
+        let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage [ "CallsRead" ]
+        Assert.That (hostOutcomes.["CallsRead"], Is.EqualTo Outcome.Runs)
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraryAssembly = read "Lib" libraryImage
+
+        let analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ]
+                (fun loaded ->
+                    let reference =
+                        clientAssembly.AssemblyReferences.Values
+                        |> Seq.find (fun r -> r.Name.Name = "Lib")
+
+                    fst (loaded.WithBoundReference reference libraryAssembly)
+                )
+
+        let violations = Set.ofList [ typeLoad ; verification ]
+
+        let named (analysis : EscapeAnalysisState) (escapes : Escapes) : Set<string> =
+            let shown = render analysis escapes
+            violations |> Set.filter (fun name -> shown.Contains $"=%s{name}")
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Cases" "CallsRead")
+
+        Assert.That (named analysis escapes, Is.Empty)
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed libraryAssembly "Holder`1" "Read")
+
+        Assert.That (named analysis escapes, Is.Empty)
 
     /// A method, inlined into its caller, taking the address of a method whose signature an update
     /// has made violate a constraint. CoreCLR prepares the method as a function pointer where the
