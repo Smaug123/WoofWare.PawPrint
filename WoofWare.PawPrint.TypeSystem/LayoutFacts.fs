@@ -262,6 +262,32 @@ module LayoutFacts =
         | FieldElement.Byref
         | FieldElement.Reference -> false
 
+    /// The element type of a field whose signature spells it without naming a value type: a
+    /// pointer, a function pointer, a byref, or an object reference. CoreCLR lays such a field out
+    /// by its element type alone, loading nothing it names (`GetNestedFieldFlags` reads no type
+    /// handle of it), so neither does the walk. `None` for any other spelling.
+    let rec private spelledElement (spelling : TypeDefn) : FieldElement option =
+        let isClass (kind : System.Reflection.Metadata.SignatureTypeKind) : bool =
+            kind = System.Reflection.Metadata.SignatureTypeKind.Class
+
+        match spelling with
+        | TypeDefn.Modified modified -> spelledElement modified.Unmodified
+        | TypeDefn.Pointer _ -> Some FieldElement.Pointer
+        | TypeDefn.FunctionPointer _ -> Some FieldElement.FunctionPointer
+        | TypeDefn.Byref _ -> Some FieldElement.Byref
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.PrimitiveType PrimitiveType.String
+        | TypeDefn.PrimitiveType PrimitiveType.Object -> Some FieldElement.Reference
+        | TypeDefn.FromReference (_, kind)
+        | TypeDefn.FromDefinition (_, kind) when isClass kind -> Some FieldElement.Reference
+        | TypeDefn.GenericInstantiation (root, _) ->
+            match TypeDefn.stripCustomModifiers root with
+            | TypeDefn.FromReference (_, kind)
+            | TypeDefn.FromDefinition (_, kind) when isClass kind -> Some FieldElement.Reference
+            | _ -> None
+        | _ -> None
+
     /// The strictest alignment CoreCLR gives any field, a `Vector512<T>`'s.
     [<Literal>]
     let private MaxAlignment = 64L
@@ -528,6 +554,10 @@ module LayoutFacts =
                 if field.IsStatic then
                     state, Ok (seen, acc)
                 else
+
+                match spelledElement field.Signature with
+                | Some element -> state, Ok (seen, (field.MarshallingDescriptor, field.Offset, element) :: acc)
+                | None ->
 
                 match
                     TypeSystemState.concretizeType
