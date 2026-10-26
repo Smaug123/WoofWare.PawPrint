@@ -247,3 +247,80 @@ void LambdaDefault()
     f(42);
     f();
 }
+
+// What clang emits no call for: a trivial assignment, and builtins it lowers.
+namespace std
+{
+    template <class T> struct remove_reference { typedef T type; };
+    template <class T> struct remove_reference<T&> { typedef T type; };
+    template <class T> constexpr typename remove_reference<T>::type&& move(T&& t) noexcept
+    {
+        return static_cast<typename remove_reference<T>::type&&>(t);
+    }
+}
+struct Pod { int x; };
+int Lowered(Pod* a, Pod* b, int& n)
+{
+    *a = *b;
+    if (__builtin_expect(n, 0))
+        Helper();
+    return std::move(n);
+}
+
+// Branches clang leaves out, because their conditions are constants, unless they hold a label.
+void Folded()
+{
+    if (0)
+        Helper();
+    if (1)
+        Value();
+    else
+        Helper();
+    (void)(0 && Value());
+    (void)(1 || Value());
+    (void)(0 ? Value() : 1);
+    if (0)
+    {
+    reached:
+        Helper();
+    }
+}
+
+// Virtual calls clang makes directly, because it knows the dynamic class.
+struct Open { virtual void V(); };
+struct Sealed final : Open { void V() override; };
+void Devirtualize(Sealed* s, Open o)
+{
+    s->V();
+    o.V();
+}
+
+// A constructor whose body cannot throw, which destroys nothing it constructs.
+struct NoThrowHolds { Guard g; NoThrowHolds() noexcept; };
+NoThrowHolds::NoThrowHolds() noexcept { }
+
+// What the C++ runtime does for a routine: a static local's initialization and destruction, and
+// a catch and a rethrow.
+void Statics()
+{
+    static Guard g;
+    (void)g;
+}
+void Catches()
+{
+    try
+    {
+        Helper();
+    }
+    catch (...)
+    {
+        throw;
+    }
+}
+
+// A lambda nothing calls, whose body is still the routine's.
+void UncalledLambda()
+{
+    auto f = [] { Helper(); };
+    (void)f;
+}

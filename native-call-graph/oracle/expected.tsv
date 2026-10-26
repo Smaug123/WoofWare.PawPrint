@@ -7,6 +7,7 @@ undefined	elsewhere.cpp:Diamond
 routine	probes.cpp:Allocate	Allocate	void ()	probes.cpp:85
 routine	probes.cpp:AllocateCleanup	AllocateCleanup	void ()	probes.cpp:202
 routine	probes.cpp:Box::Get	Box<int>::Get	void ()	probes.cpp:196
+routine	probes.cpp:Catches	Catches	void ()	probes.cpp:309
 routine	probes.cpp:ConstexprInit	ConstexprInit	void ()	probes.cpp:231
 routine	probes.cpp:Construct	M::Construct	void ()	probes.cpp:46
 routine	probes.cpp:Convert	Convert	int (Converts)	probes.cpp:178
@@ -16,8 +17,10 @@ routine	probes.cpp:DeleteShape	DeleteShape	void (Shape *)	probes.cpp:90
 routine	probes.cpp:Derived::Use	Derived::Use	void (X::A *)	probes.cpp:39
 routine	probes.cpp:Destroy	Destroy	void ()	probes.cpp:71
 routine	probes.cpp:DestroyOnThrow	DestroyOnThrow	void ()	probes.cpp:76
+routine	probes.cpp:Devirtualize	Devirtualize	void (Sealed *, Open)	probes.cpp:292
 routine	probes.cpp:Diamond	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:54
 routine	probes.cpp:Enums	Enums	void ()	probes.cpp:106
+routine	probes.cpp:Folded	Folded	void ()	probes.cpp:271
 routine	probes.cpp:FunctionPointer	FunctionPointer	void (void (*)())	probes.cpp:20
 routine	probes.cpp:Generic	Generic<A>	void (A *)	probes.cpp:124
 routine	probes.cpp:Generic	Generic<B>	void (B *)	probes.cpp:124
@@ -26,22 +29,27 @@ routine	probes.cpp:Holds::Holds	Holds::Holds	void ()	probes.cpp:186
 routine	probes.cpp:Lambda	Lambda	void ()	probes.cpp:157
 routine	probes.cpp:LambdaDefault	LambdaDefault	void ()	probes.cpp:244
 routine	probes.cpp:Leaf::~Leaf	Leaf::~Leaf	void () noexcept	probes.cpp:192
+routine	probes.cpp:Lowered	Lowered	int (Pod *, Pod *, int &)	probes.cpp:262
 routine	probes.cpp:Macros	Macros	void ()	probes.cpp:97
 routine	probes.cpp:MemberPointer	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94
 uninstantiated	probes.cpp:NeverInstantiated
+routine	probes.cpp:NoThrowHolds::NoThrowHolds	NoThrowHolds::NoThrowHolds	void () noexcept	probes.cpp:300
 routine	probes.cpp:NonVirtualDiamond	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:215
 routine	probes.cpp:Owner::~Owner	Owner::~Owner	void () noexcept	probes.cpp:82
 routine	probes.cpp:Pasting	Pasting	void ()	probes.cpp:144
 routine	probes.cpp:Pure	Pure	void (Abstract *, Interface *)	probes.cpp:61
 routine	probes.cpp:Qualified	N::Qualified	void (A *, N::A *)	probes.cpp:30
 routine	probes.cpp:Shadowing	Shadowing	void (A *, B *)	probes.cpp:9
+routine	probes.cpp:Statics	Statics	void ()	probes.cpp:304
 routine	probes.cpp:TakeOwned	TakeOwned	void (Owned)	probes.cpp:182
 routine	probes.cpp:Throws	Throws	void ()	probes.cpp:133
 routine	probes.cpp:Trivial	Trivial	void (Plain *)	probes.cpp:148
+routine	probes.cpp:UncalledLambda	UncalledLambda	void ()	probes.cpp:322
 routine	probes.cpp:Unevaluated	Unevaluated	void ()	probes.cpp:115
 routine	probes.cpp:Unevaluated2	Unevaluated2	void (int)	probes.cpp:166
 routine	probes.cpp:WithDefault::WithDefault	WithDefault::WithDefault	void ()	probes.cpp:138
 undefined	probes.cpp:rived::Use
+routine	probes11.cpp:Elide	Elide	void ()	probes11.cpp:5
 call	Allocate	void ()	probes.cpp:87	-	construct	Made::Made	void (int)	-
 call	Allocate	void ()	probes.cpp:87	-	delete	operator delete	void (void *, unsigned long) noexcept	-
 call	Allocate	void ()	probes.cpp:87	-	new	operator new	void *(unsigned long)	-
@@ -52,6 +60,8 @@ call	AllocateCleanup	void ()	probes.cpp:204	-	new	operator new	void *(unsigned l
 call	AllocateCleanup	void ()	probes.cpp:205	-	construct	NoThrow::NoThrow	void () noexcept	-
 call	AllocateCleanup	void ()	probes.cpp:205	-	new	operator new	void *(unsigned long)	-
 call	Box<int>::Get	void ()	probes.cpp:196	-	direct	Helper	void ()	-
+call	Catches	void ()	probes.cpp:313	-	direct	Helper	void ()	-
+call	Catches	void ()	probes.cpp:317	-	throw	-	-	-
 call	ConstexprInit	void ()	probes.cpp:236	-	direct	Constant	int ()	-
 call	Convert	int (Converts)	probes.cpp:178	-	direct	Converts::operator int	int () const	-
 call	Defaults	void ()	probes.cpp:136	-	direct	Seed	int ()	-
@@ -68,6 +78,8 @@ call	Destroy	void ()	probes.cpp:74	-	direct	Take	void (const Guard &)	-
 call	DestroyOnThrow	void ()	probes.cpp:78	-	construct	Guard::Guard	void ()	-
 call	DestroyOnThrow	void ()	probes.cpp:78	-	destruct	Guard::~Guard	void () noexcept	-
 call	DestroyOnThrow	void ()	probes.cpp:79	-	direct	Fail	void ()	-
+call	Devirtualize	void (Sealed *, Open)	probes.cpp:294	-	direct	Sealed::V	void ()	-
+call	Devirtualize	void (Sealed *, Open)	probes.cpp:295	-	direct	Open::V	void ()	-
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:56	-	virtual	Base::V	void ()	-
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:56	-	virtual	Concrete::V	void ()	-
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:56	-	virtual	Elsewhere::V	void ()	-
@@ -76,9 +88,12 @@ call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:57	-	virtual	Base::V	vo
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:57	-	virtual	Left::V	void ()	-
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:58	-	virtual	Left::V	void ()	-
 call	Diamond	void (Base *, Right *, Bottom *)	probes.cpp:59	-	direct	Base::V	void ()	-
+call	Elide	void ()	probes11.cpp:7	-	direct	MakeCopied	Copied ()	-
 call	Enums	void ()	probes.cpp:108	-	direct	Throw	void (Kind, int, Kind)	1=Kind::kFirst|3=Kind::kSecond
 call	Enums	void ()	probes.cpp:109	probes.h:THROW	direct	Throw	void (Kind, int, Kind)	1=Kind::kSecond|3=Kind::kSecond
 call	Enums	void ()	probes.cpp:110	-	direct	Throw	void (Kind, int, Kind)	1=Kind::kFirst|3=Kind::kFirst
+call	Folded	void ()	probes.cpp:276	-	direct	Value	int ()	-
+call	Folded	void ()	probes.cpp:285	-	direct	Helper	void ()	-
 call	FunctionPointer	void (void (*)())	probes.cpp:22	-	indirect	-	void ()	-
 call	FunctionPointer	void (void (*)())	probes.cpp:23	-	direct	Run	void ()	-
 call	Generic<A>	void (A *)	probes.cpp:124	-	direct	A::F	void ()	-
@@ -97,6 +112,9 @@ call	LambdaDefault	void ()	probes.cpp:248	-	direct	LambdaDefault()::(anonymous c
 call	LambdaDefault	void ()	probes.cpp:248	-	direct	Seed	int ()	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	Mid::~Mid	void () noexcept	-
 call	Leaf::~Leaf	void () noexcept	probes.cpp:192	-	destruct	VB::~VB	void () noexcept	-
+call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:265	-	builtin	__builtin_expect	long (long, long) noexcept	-
+call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:266	-	direct	Helper	void ()	-
+call	Lowered	int (Pod *, Pod *, int &)	probes.cpp:267	-	builtin	std::move<int &>	int &&(int &) noexcept	-
 call	M::Construct	void ()	probes.cpp:48	-	construct	Made::Made	void (int)	-
 call	M::Construct	void ()	probes.cpp:49	-	construct	M::Made::Made	void (int)	-
 call	Macros	void ()	probes.cpp:99	probes.h:CALL_HELPER	direct	Helper	void ()	-
@@ -106,6 +124,7 @@ call	Macros	void ()	probes.cpp:102	probes.h:CALL_HELPER	direct	Helper	void ()	-
 call	MemberPointer	void (Target *, void (Target::*)())	probes.cpp:94	-	indirect	-	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:32	-	direct	A::F	void ()	-
 call	N::Qualified	void (A *, N::A *)	probes.cpp:33	-	direct	N::A::F	void ()	-
+call	NoThrowHolds::NoThrowHolds	void () noexcept	probes.cpp:300	-	construct	Guard::Guard	void ()	-
 call	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:217	-	virtual	NB::V	void ()	-
 call	NonVirtualDiamond	void (NL *, NR *)	probes.cpp:218	-	virtual	NR::V	void ()	-
 call	Owner::~Owner	void () noexcept	probes.cpp:82	-	destruct	Guard::~Guard	void () noexcept	-
@@ -115,8 +134,10 @@ call	Pure	void (Abstract *, Interface *)	probes.cpp:63	-	virtual	Concrete::V	voi
 call	Pure	void (Abstract *, Interface *)	probes.cpp:64	-	virtual-unimplemented	Interface::M	void ()	-
 call	Shadowing	void (A *, B *)	probes.cpp:11	-	direct	A::F	void ()	-
 call	Shadowing	void (A *, B *)	probes.cpp:14	-	direct	B::F	void ()	-
+call	Statics	void ()	probes.cpp:306	-	construct	Guard::Guard	void ()	-
 call	TakeOwned	void (Owned)	probes.cpp:182	-	destruct	Owned::~Owned	void () noexcept	-
 call	Throws	void ()	probes.cpp:133	-	construct	Made::Made	void (int)	-
 call	Throws	void ()	probes.cpp:133	-	throw	Made	-	-
+call	UncalledLambda	void ()	probes.cpp:324	-	direct	Helper	void ()	-
 call	Vla	int (int)	cunit.c:5	-	direct	Effect	int (void)	-
 call	WithDefault::WithDefault	void ()	probes.cpp:138	-	direct	Seed	int ()	-

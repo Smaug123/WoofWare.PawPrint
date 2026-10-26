@@ -7,10 +7,11 @@ Usage: generate.py --tool TOOL --db compile_commands.json [--units UNITS] --requ
 The program is the units of the compilation database whose outputs UNITS lists, one absolute
 path per line, or every unit of it without --units; a unit of assembly is skipped. The tool
 (callgraph.cpp) runs over each unit twice: first for the requested routines' definitions and
-their calls, then, for every virtual call those make, for the final overrider of the method in
-every class that is or derives from the receiver's class and is not abstract. A virtual call
-becomes one row per overrider found in any unit, or, where no unit has one, a single row naming
-the method the call names.
+their calls, which it holds to the IR clang emits for them, then, for every virtual call those
+make, for the function the call reaches in every class that is or derives from the receiver's
+class and is not abstract. A virtual call becomes one row per function found in any unit, or,
+where no unit has one, a single row naming the method the call names. Generation fails unless
+some unit's IR agreed with the walk of every routine.
 
 The graph is tab-separated, its lines sorted within each kind, every path relative to ROOT or to
 a PREFIX. It begins with the --header lines, each after "# ", and a description of its rows.
@@ -33,11 +34,13 @@ COLUMNS = """\
 #   undefined       KEY                                no unit defines a function KEY names
 #   call            ROUTINE-NAME ROUTINE-SIGNATURE ROUTINE-USR PATH:LINE MACRO KIND CALLEE-NAME CALLEE-SIGNATURE CALLEE-USR ENUMS
 # A call's MACRO is PATH:NAME of the outermost macro whose body makes the call, or -. KIND is
-# direct, virtual (one row per final overrider), virtual-unimplemented (no class the program
-# defines implements the method named), indirect (through a pointer; no callee), construct,
-# destruct, new (operator new), delete (operator delete), throw (CALLEE-NAME is the type thrown,
-# or - to rethrow) or asm (inline assembly). ENUMS lists, separated by |, each argument that names
-# an enumerator, as N=Enum::Enumerator, numbering the arguments from 1, defaults included.
+# direct, virtual (one row per function the call's vtable slot holds in a class of the program),
+# virtual-unimplemented (no class the program defines implements the method named), indirect
+# (through a pointer; no callee), construct, destruct, new (operator new), delete (the operator
+# delete a delete-expression, a deleting destructor or a throwing new's cleanup calls), builtin
+# (a builtin clang lowers, which calls nothing), throw (CALLEE-NAME is the type thrown, or - to
+# rethrow) or asm (inline assembly). ENUMS lists, separated by |, each argument that names an
+# enumerator, as N=Enum::Enumerator, numbering the arguments from 1, defaults included.
 """
 
 
@@ -125,6 +128,7 @@ def main(argv):
         keys = {}  # key -> {usr}
         templates = set()
         calls = set()
+        checked = set()
         for fact in run_all(args, units, "routines", args.requests, scratch):
             fields = fact.split("\t")
             if fields[0] == "routine":
@@ -137,8 +141,14 @@ def main(argv):
                 templates.add(fields[1])
             elif fields[0] == "call":
                 calls.add(tuple(fields[1:]))
+            elif fields[0] == "checked":
+                checked.add(fields[1])
             else:
                 sys.exit(f"generate.py: an unknown fact: {fact}")
+
+        unchecked = sorted(routines[usr][0] for usr in set(routines) - checked)
+        if unchecked:
+            sys.exit(f"generate.py: no unit's IR was compared with the walk of {unchecked}")
 
         dispatches = {"dispatch": "call", "dispatch-delete": "delete"}
         needs = sorted({(c[8], c[6], dispatches[c[3]]) for c in calls if c[3] in dispatches})

@@ -220,11 +220,13 @@
     cd oracle
     root=$PWD
     cxx='"--target=x86_64-linux-gnu", "-std=c++17", "-nostdinc", "-nostdinc++", "-c"'
+    cxx11='"--target=x86_64-linux-gnu", "-std=c++11", "-nostdinc", "-nostdinc++", "-c"'
     c='"--target=x86_64-linux-gnu", "-std=c11", "-nostdinc", "-c"'
     cat > compile_commands.json <<EOF
     [
       {"directory": "$root", "file": "$root/probes.cpp", "output": "probes.o", "arguments": ["clang++", $cxx, "probes.cpp", "-o", "probes.o"]},
       {"directory": "$root", "file": "$root/elsewhere.cpp", "output": "elsewhere.o", "arguments": ["clang++", $cxx, "elsewhere.cpp", "-o", "elsewhere.o"]},
+      {"directory": "$root", "file": "$root/probes11.cpp", "output": "probes11.o", "arguments": ["clang++", $cxx11, "probes11.cpp", "-o", "probes11.o"]},
       {"directory": "$root", "file": "$root/cunit.c", "output": "cunit.o", "arguments": ["clang", $c, "cunit.c", "-o", "cunit.o"]}
     ]
     EOF
@@ -242,31 +244,60 @@
     diff -u wanted.tsv actual.tsv
     touch $out
   '';
-  # The tool with its walk wrong: it leaves out the operator delete a throwing new's cleanup
-  # calls. Comparing the walk with clang's IR must refuse it, with the oracle's own expected
-  # graph not consulted.
-  toolWithoutCleanupDeletes = tool.overrideAttrs (old: {
-    pname = "native-call-graph-without-cleanup-deletes";
-    postPatch = ''
-      substituteInPlace callgraph.cpp --replace-fail \
-        'emit(E->getBeginLoc(), "delete", Cleanup, "-");' '(void)Cleanup;'
-    '';
-  });
+  # The tool with its walk wrong in each way the comparison with clang's IR must refuse by itself,
+  # with the oracle's own expected graph not consulted: each a string of callgraph.cpp, what to
+  # put in its place, and what the refusal must say.
+  wrongWalks = {
+    without-cleanup-deletes = {
+      from = ''emit(E->getBeginLoc(), "delete", Cleanup, "-");'';
+      to = "(void)Cleanup;";
+      refusal = "AllocateCleanup.*calls what the walk does not name.*operator delete";
+    };
+    with-trivial-constructions = {
+      from = "if (!Ctor->isTrivial())";
+      to = "if (true)";
+      refusal = "Trivial names what its IR does not call: Plain::Plain";
+    };
+    without-pointer-calls = {
+      from = "W.Indirect.insert(E);";
+      to = "(void)E;";
+      refusal = "calls through a pointer, and the walk 0";
+    };
+    without-throws = {
+      from = "(Thrown ? W.Throws : W.Rethrows) = true;";
+      to = "(void)Thrown;";
+      refusal = "does not find a .*throw, and its IR calls the runtime for it";
+    };
+  };
 
-  crossCheck = pkgs.runCommand "native-call-graph-cross-check" {nativeBuildInputs = [pkgs.python3];} ''
-    ${prepareOracle}
-    if python3 ${./generate.py} --tool ${toolWithoutCleanupDeletes}/bin/native-call-graph \
-      --db compile_commands.json --requests requests.tsv --root "$root" --out graph.tsv 2> refusal.txt; then
-      echo "The IR cross-check accepted a walk that leaves out a throwing new's cleanup." >&2
-      exit 1
-    fi
-    if ! grep -q "AllocateCleanup.*calls what the walk does not name.*operator delete" refusal.txt; then
-      echo "The generator refused the wrong walk, but not for the cleanup it leaves out:" >&2
-      cat refusal.txt >&2
-      exit 1
-    fi
-    touch $out
-  '';
+  crossCheck = pkgs.runCommand "native-call-graph-cross-check" {nativeBuildInputs = [pkgs.python3];} (''
+      ${prepareOracle}
+    ''
+    + lib.concatStrings (lib.mapAttrsToList (name: wrong: let
+        wrongTool = tool.overrideAttrs (old: {
+          pname = "native-call-graph-${name}";
+          postPatch = ''
+            substituteInPlace callgraph.cpp --replace-fail ${lib.escapeShellArg wrong.from} ${lib.escapeShellArg wrong.to}
+          '';
+        });
+      in ''
+        if python3 ${./generate.py} --tool ${wrongTool}/bin/native-call-graph \
+          --db compile_commands.json --requests requests.tsv --root "$root" --out graph.tsv 2> refusal.txt; then
+          echo "The comparison with the IR accepted the walk ${name}." >&2
+          exit 1
+        fi
+        if ! grep -q ${lib.escapeShellArg wrong.refusal} refusal.txt; then
+          echo "The generator refused the walk ${name}, but not for what it gets wrong:" >&2
+          cat refusal.txt >&2
+          exit 1
+        fi
+        echo "${name}:"
+        cat refusal.txt
+      '')
+      wrongWalks)
+    + ''
+      touch $out
+    '');
 in {
   inherit tool;
   graphs = lib.mapAttrs' (name: case: lib.nameValuePair "native-call-graph-${name}" case.built) cases;
