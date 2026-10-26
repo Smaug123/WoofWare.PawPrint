@@ -1187,8 +1187,171 @@ public static class Cases
                     Exact = false
                     Generics = [ "Generic", "CallsGeneric" ]
                 }
+                {
+                    Name = "SubstitutedClosedPart"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct S<T> { }",
+                            "namespace Lib; public struct S<T> where T : class { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Helper<A> { public static Lib.S<A> Make<B>() => default; }
+public static class Cases
+{
+    public static int Generic<T>() { try { Helper<int>.Make<T>(); return 0; } catch (System.Exception) { return 1; } }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "RejectedCallee"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class C<T> { public static void Touch() { } } public static class M { public static void Run<T>() { C<T>.Touch(); } }",
+                            "namespace Lib; public class C<T> where T : class { public static void Touch() { } } public static class M { public static void Run<T>() where T : class { C<T>.Touch(); } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int CallsRun() { Lib.M.Run<int>(); return 0; }
+}
+"""
+                    Cases = [ "CallsRun" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "ArrayAccessor"
+                    Libraries = []
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static T Get<T>(T[,] a) => a[0, 0];
+    public static void Set<T>(T[,] a, T v) { a[0, 0] = v; }
+    public static int CallsGet() { try { return Get<int>(new int[1, 1]); } catch (System.Exception) { return 1; } }
+    public static int CallsSet() { try { Set<int>(new int[1, 1], 0); return 0; } catch (System.Exception) { return 1; } }
+}
+"""
+                    Cases = [ "CallsGet" ; "CallsSet" ]
+                    Exact = false
+                    Generics = [ "Get", "CallsGet" ; "Set", "CallsSet" ]
+                }
             ]
 
         match scenarios |> List.collect disagreements with
         | [] -> ()
         | problems -> problems |> String.concat "\n" |> failwith
+
+    /// A method, inlined into its caller, taking the address of a method whose signature an update
+    /// has made violate a constraint. CoreCLR prepares the method as a function pointer where the
+    /// JIT asks for the address, compiling the caller it inlines the method into, so the caller's
+    /// own handlers do not catch what that raises. The host runs it in a collectible load context,
+    /// whose code CoreCLR compiles fully optimised from the first call.
+    [<Test>]
+    let ``a violation met preparing an address raises where the method taking it is inlined`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let library (constrained : bool) : string =
+            if constrained then
+                "namespace Lib; public struct S<T> where T : class { }"
+            else
+                "namespace Lib; public struct S<T> { }"
+
+        let client =
+            """
+using System.Runtime.CompilerServices;
+namespace Client;
+public static class Target<T> { public static void Take(Lib.S<T> s) { } }
+public static unsafe class Takes
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void Use(void* p) { }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void* InlinedAddress() => (void*)(delegate*<Lib.S<int>, void>)&Target<int>.Take;
+}
+public static class Cases
+{
+    public static string CallsInlinedAddress()
+    {
+        try { unsafe { Takes.Use(Takes.InlinedAddress()); } return null; }
+        catch (System.Exception e) { return e.GetType().FullName; }
+    }
+}
+"""
+
+        // Optimised, so that the JIT inlines: a Debug build disables its optimisation.
+        let compileOptimised (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image ->
+                     MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+                 ))
+                [ text ]
+
+        let constrained = compileOptimised "Lib" [] (library true)
+        let unconstrained = compileOptimised "Lib" [] (library false)
+        let clientImage = compileOptimised "Client" [ unconstrained ] client
+
+        // What escapes `CallsInlinedAddress` on the host, if anything.
+        let hostEscapes : string option =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("InlinedAddressConstraint", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Lib" -> context.LoadFromStream (new MemoryStream (constrained))
+                    | _ -> null
+                )
+            )
+
+            try
+                let cases =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "Client.Cases"
+
+                try
+                    cases.GetMethod("CallsInlinedAddress").Invoke ((null : obj), [||])
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        Assert.That (hostEscapes, Is.EqualTo (Some typeLoad))
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraryAssembly = read "Lib" constrained
+
+        let analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ]
+                (fun loaded ->
+                    let reference =
+                        clientAssembly.AssemblyReferences.Values
+                        |> Seq.find (fun r -> r.Name.Name = "Lib")
+
+                    fst (loaded.WithBoundReference reference libraryAssembly)
+                )
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Cases" "CallsInlinedAddress")
+
+        Assert.That (render analysis escapes, Does.Contain $"=%s{typeLoad}")
