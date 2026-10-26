@@ -212,9 +212,10 @@ module AssemblyBinding =
     /// against an image built for a particular machine (<c>TestCandidateRefMatchesDef</c>), and
     /// either miss poisons the binder's failure cache for every later request of the same name,
     /// version, culture and token, whatever it names -- a cache PawPrint does not model. A
-    /// content type is refused because a WindowsRuntime request misses and poisons the cache in
-    /// the same way, and <c>Retargetable</c> or anything else because what the binder makes of it
-    /// has not been measured.
+    /// content type is refused because on .NET 10 a WindowsRuntime request misses and poisons
+    /// the cache in the same way; .NET 11 ignores it, which is not modelled either.
+    /// <c>Retargetable</c> or anything else is refused because what the binder makes of it has
+    /// not been measured.
     /// </remarks>
     let unsupportedFlags (flags : int) : string option =
         let afPublicKey = 0x1
@@ -233,6 +234,9 @@ module AssemblyBinding =
     /// otherwise), and failing that the runtime directories are probed.
     /// </summary>
     /// <remarks>
+    /// The caller must admit an ASCII simple name, a neutral culture, and flags accepted by
+    /// <see cref="unsupportedFlags"/>, and handle CoreLib and its satellite before calling here.
+    ///
     /// CoreCLR remembers both the requests that bound and those that failed, and consults both
     /// before binding again. Neither is modelled, because neither is observable for the requests
     /// this accepts: the runtime directories do not change during a run and a loaded assembly is
@@ -390,39 +394,31 @@ module AssemblyBinding =
 
         // CoreCLR's map of trusted platform assemblies compares simple names ignoring case by
         // its own folding, where `AssemblyProbe` compares file names ordinally ignoring case, so
-        // a non-ASCII file name may answer the request on CoreCLR and not here. A directory
-        // listed before the first one holding an ordinal match could decide the bind.
-        dotnetRuntimeDirs
-        |> Seq.map AssemblyProbe.runtimeDirPath
-        |> Seq.tryPick (fun dir ->
-            let stems =
-                try
-                    Directory.EnumerateFiles dir
-                    |> Seq.map Path.GetFileName
-                    |> Seq.filter (fun name -> name.EndsWith (".dll", StringComparison.OrdinalIgnoreCase))
-                    |> Seq.map (fun name -> name.Substring (0, name.Length - ".dll".Length))
-                    |> List.ofSeq
-                with :? DirectoryNotFoundException ->
-                    []
+        // a non-ASCII file name may answer the request on CoreCLR and not here. Check each
+        // directory before probing it: an unopenable match, such as a dangling symlink, leaves
+        // later directories able to decide the bind.
+        let probed =
+            dotnetRuntimeDirs
+            |> Seq.map AssemblyProbe.runtimeDirPath
+            |> Seq.tryPick (fun dir ->
+                let stems =
+                    try
+                        Directory.EnumerateFiles dir
+                        |> Seq.map Path.GetFileName
+                        |> Seq.filter (fun name -> name.EndsWith (".dll", StringComparison.OrdinalIgnoreCase))
+                        |> Seq.map (fun name -> name.Substring (0, name.Length - ".dll".Length))
+                        |> List.ofSeq
+                    with :? DirectoryNotFoundException ->
+                        []
 
-            match stems |> List.tryFind (fun stem -> mayFoldToSameName stem request.SimpleName) with
-            | Some stem ->
-                failwith
-                    $"TODO: %s{describe} with %s{dir} holding %s{stem}.dll, whose name is not ASCII and which CoreCLR's case folding may equate with the request; that folding is not modelled"
-            | None ->
-                if
-                    stems
-                    |> List.exists (fun stem ->
-                        String.Equals (stem, request.SimpleName, StringComparison.OrdinalIgnoreCase)
-                    )
-                then
-                    Some ()
-                else
-                    None
-        )
-        |> ignore<unit option>
+                match stems |> List.tryFind (fun stem -> mayFoldToSameName stem request.SimpleName) with
+                | Some stem ->
+                    failwith
+                        $"TODO: %s{describe} with %s{dir} holding %s{stem}.dll, whose name is not ASCII and which CoreCLR's case folding may equate with the request; that folding is not modelled"
+                | None -> AssemblyProbe.tryReadFromRuntimeDirs loggerFactory [ dir ] request.SimpleName
+            )
 
-        match AssemblyProbe.tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs request.SimpleName with
+        match probed with
         | None -> AssemblyBindResult.NotFound
         | Some read ->
             // CoreCLR initialises the image before it compares identities, so an image it
@@ -440,6 +436,12 @@ module AssemblyBinding =
             then
                 AssemblyBindResult.NotFound
             else
+
+            // Definition identity is the load context's key, so it cannot hold both images.
+            // Refuse the collision before canonicalisation could return the dynamic one.
+            if assemblies.IsDynamic read.DefinitionFullName then
+                failwith
+                    $"TODO: %s{describe} found %s{read.DefinitionFullName} on disk, but a dynamic assembly already holds that definition identity; the load context cannot represent both assemblies"
 
             let assemblies = assemblies.WithLoadedAssembly read
             AssemblyBindResult.Bound (assemblies, assemblies.ByDefinitionName read.DefinitionFullName)

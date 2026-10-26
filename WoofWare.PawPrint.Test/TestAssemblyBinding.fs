@@ -313,8 +313,8 @@ module TestAssemblyBinding =
         AssemblyBinding.unsupportedFlags flags |> Option.isNone |> shouldEqual admitted
 
     /// Measured on .NET 10: `/tmp/target`, `../target` and `a/b` are each reported not found.
-    /// The file here exists at exactly the path the rooted name would reach, so a probe that
-    /// followed it would bind.
+    /// Enumerating the runtime directories fails: a miss alone would not establish that
+    /// the path-like request was rejected before probing.
     [<Test>]
     let ``a name with a separator, or a rooted one, is a miss without a probe`` () : unit =
         withRuntimeDir
@@ -322,9 +322,12 @@ module TestAssemblyBinding =
             (fun root ->
                 let _messages, loggerFactory = LoggerFactory.makeTest ()
 
+                let directories : seq<string> =
+                    Seq.delay (fun () -> failwith "a path-like request must not enumerate runtime directories")
+
                 for name in [ Path.Combine (root, "target") ; "../target" ; "a/b" ; "sub\\target" ] do
                     match
-                        AssemblyBinding.tryBind loggerFactory [ root ] (plainRequest name) LoadedAssemblies.empty
+                        AssemblyBinding.tryBind loggerFactory directories (plainRequest name) LoadedAssemblies.empty
                     with
                     | AssemblyBindResult.NotFound -> ()
                     | AssemblyBindResult.Bound (_, bound) -> failwith $"'%s{name}' bound %s{bound.Name.FullName}"
@@ -689,3 +692,80 @@ module TestAssemblyBinding =
                 )
         finally
             Directory.Delete (root, true)
+
+    /// The load context cannot represent a dynamic assembly and a disk image under the same
+    /// definition identity. Canonicalisation must not make the dynamic assembly answer the bind.
+    [<Test>]
+    let ``a disk image with a dynamic assembly's identity is refused`` () : unit =
+        withRuntimeDir
+            (imageSimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                let dynamic =
+                    use stream = File.OpenRead imagePath
+                    AssemblyApi.read loggerFactory None stream
+
+                let assemblies =
+                    match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
+                    | Ok assemblies -> assemblies
+                    | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+
+                expectRefusal
+                    "dynamic assembly"
+                    (fun () ->
+                        AssemblyBinding.tryBind loggerFactory [ root ] (plainRequest imageSimpleName) assemblies
+                    )
+            )
+
+    /// A dangling ASCII entry does not answer the probe, so the binder must check non-ASCII
+    /// names in subsequent directories before deciding whether the request binds or misses.
+    [<Test>]
+    let ``a dangling ASCII match does not hide a later non-ASCII candidate`` () : unit =
+        withRuntimeDir
+            (Path.Combine ("second", "BındProbe.dll"))
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+                let first = Path.Combine (root, "first")
+                let second = Path.Combine (root, "second")
+                Directory.CreateDirectory first |> ignore<DirectoryInfo>
+
+                File.CreateSymbolicLink (Path.Combine (first, "BindProbe.dll"), Path.Combine (root, "absent.dll"))
+                |> ignore<FileSystemInfo>
+
+                expectRefusal
+                    "not ASCII"
+                    (fun () ->
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ first ; second ]
+                            (plainRequest "BindProbe")
+                            LoadedAssemblies.empty
+                    )
+            )
+
+    /// A successful first bind must stop enumerating runtime directories, in both the
+    /// name check and the image probe.
+    [<Test>]
+    let ``a bound image leaves later runtime directories unread`` () : unit =
+        withRuntimeDir
+            (imageSimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                let directories : seq<string> =
+                    seq {
+                        yield root
+                        failwith "a successful bind must not enumerate later runtime directories"
+                    }
+
+                match
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        directories
+                        (plainRequest imageSimpleName)
+                        LoadedAssemblies.empty
+                with
+                | AssemblyBindResult.Bound (_, bound) -> bound.Name.Name |> shouldEqual imageSimpleName
+                | AssemblyBindResult.NotFound -> failwith "expected the first directory's image to bind"
+            )
