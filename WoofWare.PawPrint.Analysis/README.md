@@ -244,10 +244,12 @@ method) may add more:
   signature by the `unmanaged` convention whose modifiers name two base conventions fails the
   compilation of the method holding it with `InvalidProgramException`, and a P/Invoke's
   `[UnmanagedCallConv]` CoreCLR cannot parse, or that says `CallConvs = null`, fails it with what
-  the analysis does not name (`Opacity.UnreadableCallingConvention`). The call is not followed. A
-  P/Invoke whose `[UnmanagedCallConv]` or signature's modifiers name two base conventions, or
-  whose import or attribute names one convention and its signature's modifiers another, the VM
-  refuses with a `TypeLoadException` where the JIT may begin its walk for whether the call needs marshalling;
+  the analysis does not name (`Opacity.UnreadableCallingConvention`); by Thiscall's convention, a
+  call passing no argument fails it with `InvalidProgramException`. The call is not followed. A
+  P/Invoke that is synchronized, or whose `[UnmanagedCallConv]` or signature's modifiers name two
+  base conventions, or whose import or attribute names one convention and its signature's
+  modifiers another, the VM refuses with a `TypeLoadException` where the JIT may begin its walk
+  for whether the call needs marshalling;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),

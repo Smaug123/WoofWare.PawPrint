@@ -9189,11 +9189,14 @@ public static class Calls
     /// the call needs marshalling loads each instantiation the walk reaches, and Swift's convention
     /// loads each pointer's target; a class, a byref's target or, by any other convention, a
     /// pointer's target, it does not load at all. Where metadata allows the JIT to make the
-    /// transition there (the next test says where it does not), whether it does turns on block
-    /// weights the analysis does not model, so it takes those loads to be ones the JIT may make
+    /// transition there (``the JIT walks an unmanaged call's signature only where CoreCLR's inline
+    /// decision lets it`` says where it does not), whether it does turns on block weights the
+    /// analysis does not model, so it takes those loads to be ones the JIT may make
     /// (`JitTypeLoad.Possibly`), which do not stop it making the loads after them. Each call is in
     /// a branch never taken, so nothing runs the stub that CoreCLR otherwise makes for the call,
     /// which loads the rest of the signature. The host's CoreCLR says which callers fail to compile.
+    /// The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``a call of unmanaged code loads what marshalling and Swift's convention read of its signature`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -9402,16 +9405,18 @@ public static unsafe class Calls
             |> Seq.find (fun r -> r.Name.Name = "Provider")
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference reference providerAssembly))
 
         // The runtime makes each exception by running one of its constructors, and what that raises
         // escapes in its place.
         let made : Set<string> =
-            let next, madeTypeLoad = EscapeAnalysis.escapes analysis (typeLoadConstructor ())
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
             analysis <- next
-            let next, madeFileNotFound = making analysis fileNotFound
+            let next, madeFileNotFound = makingIn (hostImageCoreLib ()) analysis fileNotFound
             analysis <- next
             Set.union (render analysis madeTypeLoad) madeFileNotFound
 
@@ -9804,12 +9809,12 @@ public static unsafe class Calls
     /// Every calling convention C# spells for a `calli` with up to three of the calling-convention
     /// types, in each order, and for a P/Invoke by each import's convention with an
     /// `[UnmanagedCallConv]` naming up to two types, in each order, or none: each called with a
-    /// pointer to a value type that fails to load, which only Swift's convention loads, and with an
+    /// pointer to a value type that fails to load, which only Swift's convention loads, with an
     /// instantiation of a type that fails to load, which only the walk for whether the call needs
-    /// marshalling loads. The host's CoreCLR says which callers fail to compile, and with what; the
-    /// analysis must let that escape, and nothing else of those, from each.
-    /// The host compiles in process, so the analysis reads the host's own image
-    /// (`analysisOverHostImage`).
+    /// marshalling loads, and with no argument, which the JIT refuses by Thiscall's convention.
+    /// The host's CoreCLR says which callers fail to compile, and with what; the analysis must let
+    /// that escape, and nothing else of those, from each. The host compiles in process, so the
+    /// analysis reads the host's own image (`analysisOverHostImage`).
     [<Test>]
     let ``the analysis reads every unmanaged calling convention C# spells as the host's JIT does`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -9860,6 +9865,7 @@ public static unsafe class Calls
                             [
                                 "typeof(CallConvCdecl)"
                                 "typeof(CallConvStdcall)"
+                                "typeof(CallConvThiscall)"
                                 "typeof(CallConvFastcall)"
                                 "typeof(CallConvSwift)"
                                 "typeof(CallConvMemberFunction)"
@@ -9868,10 +9874,13 @@ public static unsafe class Calls
                         yield import, Some (String.concat ", " types)
             ]
 
+        // Each argument's name, and its parameter's type; or no argument at all, which the JIT
+        // refuses by Thiscall's convention.
         let arguments =
             [
-                "Pointer", "Provider.GoneStruct*"
-                "Generic", "Provider.KeptGeneric<Provider.Gone>"
+                "Pointer", Some "Provider.GoneStruct*"
+                "Generic", Some "Provider.KeptGeneric<Provider.Gone>"
+                "None", None
             ]
 
         let natives =
@@ -9883,21 +9892,33 @@ public static unsafe class Calls
                         | Some types -> $", UnmanagedCallConv(CallConvs = new[] {{ %s{types} }})"
 
                     for argument, argumentType in arguments do
-                        $"    [DllImport(\"nowhere\", CallingConvention = CallingConvention.%s{import})%s{attribute}] public static extern void %s{argument}Native%d{j}(%s{argumentType} x);"
+                        let parameters =
+                            argumentType |> Option.map (fun t -> $"%s{t} x") |> Option.defaultValue ""
+
+                        $"    [DllImport(\"nowhere\", CallingConvention = CallingConvention.%s{import})%s{attribute}] public static extern void %s{argument}Native%d{j}(%s{parameters});"
             ]
 
         let callers =
             [
                 for j in 0 .. pInvokes.Length - 1 do
-                    for argument, _ in arguments do
+                    for argument, argumentType in arguments do
+                        let passed = if argumentType.IsSome then "null" else ""
+
                         $"PInvoke%s{argument}%d{j}",
-                        $"    public static void PInvoke%s{argument}%d{j}() {{ if (never) Natives.%s{argument}Native%d{j}(null); }}"
+                        $"    public static void PInvoke%s{argument}%d{j}() {{ if (never) Natives.%s{argument}Native%d{j}(%s{passed}); }}"
                 for i, conventions in List.indexed calliConventions do
                     let listed = String.concat ", " conventions
 
                     for argument, argumentType in arguments do
+                        let types =
+                            argumentType
+                            |> Option.map (fun t -> $"%s{t}, void")
+                            |> Option.defaultValue "void"
+
+                        let passed = if argumentType.IsSome then "null" else ""
+
                         $"Calli%s{argument}%d{i}",
-                        $"    public static void Calli%s{argument}%d{i}() {{ if (never) ((delegate* unmanaged[%s{listed}]<%s{argumentType}, void>)pointer)(null); }}"
+                        $"    public static void Calli%s{argument}%d{i}() {{ if (never) ((delegate* unmanaged[%s{listed}]<%s{types}>)pointer)(%s{passed}); }}"
             ]
 
         let client =
@@ -10038,6 +10059,356 @@ public static unsafe class Calls
 
                     if hostOutcomes.[name] = CallOutcome.Escapes invalidProgram && escapes.Unknown then
                         yield $"%s{name}: unknown in the analysis, though CoreCLR refuses the call"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
+    /// A client compiled against one version of a provider, run against another lacking a type and
+    /// without the assembly `Optional`, each of whose callers calls unmanaged code in a branch never
+    /// taken. By Thiscall's convention a call must pass an argument: the JIT refuses one that passes
+    /// none with `InvalidProgramException` (`impCheckForPInvokeCall`), once it has loaded the return
+    /// type and read the convention, wherever the call is and whether or not the assembly disables
+    /// optimisation. A synchronized P/Invoke the VM refuses with a `TypeLoadException` as it
+    /// describes the P/Invoke for the walk of its signature for whether the call needs marshalling
+    /// (`InitializeSigInfoAndPopulatePInvokeMethodDesc`), before the walk loads anything: so only
+    /// where the JIT may begin the walk, and after the check that the P/Invoke preserves its
+    /// signature, but before the check that it sets the last error. So too a P/Invoke whose
+    /// conventions the VM refuses. The host's CoreCLR says which callers fail to compile, and with
+    /// what; `JitTypeLoads.unmanagedWalkRefuses` must say the VM may refuse just those P/Invokes
+    /// whose walk the JIT may begin. The host compiles in process, so the analysis reads the host's
+    /// own image (`analysisOverHostImage`).
+    [<Test>]
+    let ``the JIT refuses a call by Thiscall that passes no argument, and the VM a synchronized P/Invoke`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let provider (complete : bool) : string =
+            "namespace Provider; public class KeptGeneric<T> { }"
+            + (if complete then " public class Gone { }" else "")
+
+        let optional = "namespace Optional; public class Thing { }"
+
+        let natives =
+            """
+public static unsafe class Natives
+{
+    [DllImport("nowhere", CallingConvention = CallingConvention.ThisCall)]
+    public static extern void ThiscallTakesNothing();
+    [DllImport("nowhere", CallingConvention = CallingConvention.ThisCall)]
+    public static extern Provider.Gone ThiscallReturnsGone();
+    [DllImport("nowhere", CallingConvention = CallingConvention.ThisCall)]
+    public static extern void ThiscallTakesInt(int x);
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvThiscall) })]
+    public static extern void AttributeThiscallTakesNothing();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvMemberFunction), typeof(CallConvThiscall) })]
+    public static extern void AttributeMemberThiscallTakesNothing();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvThiscall), typeof(CallConvCdecl) })]
+    public static extern void AttributeThiscallCdeclTakesNothing();
+    [DllImport("nowhere")]
+    public static extern void TakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+    [DllImport("nowhere"), MethodImpl(MethodImplOptions.Synchronized)]
+    public static extern void SynchronizedTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+    [DllImport("nowhere", SetLastError = true), MethodImpl(MethodImplOptions.Synchronized)]
+    public static extern void SynchronizedSetsLastErrorTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+    [DllImport("nowhere", PreserveSig = false), MethodImpl(MethodImplOptions.Synchronized)]
+    public static extern void SynchronizedUnpreservedTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.FastCall), MethodImpl(MethodImplOptions.Synchronized)]
+    public static extern void SynchronizedFastcallTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+    [DllImport("nowhere", CallingConvention = CallingConvention.ThisCall), MethodImpl(MethodImplOptions.Synchronized)]
+    public static extern void SynchronizedThiscallTakesNothing();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSwift), typeof(CallConvCdecl) })]
+    public static extern void AttributeSwiftCdeclTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+}
+"""
+
+        let client =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+"""
+            + natives
+            + """
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    public static void ThiscallNothing() { if (never) Natives.ThiscallTakesNothing(); }
+    public static void ThiscallNothingCaught()
+    {
+        try { if (never) Natives.ThiscallTakesNothing(); } catch (Exception) { }
+    }
+    public static void ThiscallReturnsGone() { if (never) Natives.ThiscallReturnsGone(); }
+    public static void ThiscallInt() { if (never) Natives.ThiscallTakesInt(0); }
+    public static void AttributeThiscallNothing() { if (never) Natives.AttributeThiscallTakesNothing(); }
+    public static void AttributeMemberThiscallNothing() { if (never) Natives.AttributeMemberThiscallTakesNothing(); }
+    public static void AttributeThiscallCdeclNothing() { if (never) Natives.AttributeThiscallCdeclTakesNothing(); }
+    public static void IndirectThiscallNothing() { if (never) ((delegate* unmanaged[Thiscall]<void>)pointer)(); }
+    public static void IndirectThiscallNothingCaught()
+    {
+        try { if (never) ((delegate* unmanaged[Thiscall]<void>)pointer)(); } catch (Exception) { }
+    }
+    public static void IndirectThiscallMemberNothing() { if (never) ((delegate* unmanaged[Thiscall, MemberFunction]<void>)pointer)(); }
+    public static void IndirectThiscallReturnsGone() { if (never) ((delegate* unmanaged[Thiscall]<Provider.Gone>)pointer)(); }
+    public static void IndirectThiscallInt() { if (never) ((delegate* unmanaged[Thiscall]<int, void>)pointer)(0); }
+    public static void GenericOfMissing() { if (never) Natives.TakesGenericOfMissing(null); }
+    public static void SynchronizedGenericOfMissing() { if (never) Natives.SynchronizedTakesGenericOfMissing(null); }
+    public static void SynchronizedCaught()
+    {
+        try { if (never) Natives.SynchronizedTakesGenericOfMissing(null); } catch (Exception) { }
+    }
+    public static void SynchronizedSetsLastError() { if (never) Natives.SynchronizedSetsLastErrorTakesGenericOfMissing(null); }
+    public static void SynchronizedUnpreserved() { if (never) Natives.SynchronizedUnpreservedTakesGenericOfMissing(null); }
+    public static void SynchronizedFastcall() { if (never) Natives.SynchronizedFastcallTakesGenericOfMissing(null); }
+    public static void SynchronizedThiscallNothing() { if (never) Natives.SynchronizedThiscallTakesNothing(); }
+    public static void AttributeSwiftCdeclGenericOfMissing() { if (never) Natives.AttributeSwiftCdeclTakesGenericOfMissing(null); }
+}
+"""
+
+        let debugClient =
+            """
+using System.Runtime.InteropServices;
+
+namespace DebugClient;
+
+public static unsafe class Calls
+{
+    static bool never;
+    static void* pointer;
+
+    [DllImport("nowhere", CallingConvention = CallingConvention.ThisCall)]
+    static extern void ThiscallTakesNothing();
+    [DllImport("nowhere"), System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
+    static extern void SynchronizedTakesGenericOfMissing(Provider.KeptGeneric<Optional.Thing> x);
+
+    public static void ThiscallNothing() { if (never) ThiscallTakesNothing(); }
+    public static void IndirectThiscallNothing() { if (never) ((delegate* unmanaged[Thiscall]<void>)pointer)(); }
+    public static void SynchronizedGenericOfMissing() { if (never) SynchronizedTakesGenericOfMissing(null); }
+}
+"""
+
+        let references (images : byte[] list) : MetadataReference list =
+            images
+            |> List.map (fun image ->
+                MetadataReference.CreateFromImage (ImmutableArray.CreateRange image) :> MetadataReference
+            )
+
+        // Optimised: the JIT never makes the transition in the caller's code where the assembly's
+        // `DebuggableAttribute` disables its optimisation.
+        let compile (name : string) (dependencies : byte[] list) (text : string) : byte[] =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references dependencies)
+                [ text ]
+
+        let completeProvider = compile "Provider" [] (provider true)
+        let incompleteProvider = compile "Provider" [] (provider false)
+        let optionalImage = compile "Optional" [] optional
+        let clientImage = compile "Client" [ completeProvider ; optionalImage ] client
+
+        let debugImage =
+            Roslyn.compileAssembly
+                "DebugClient"
+                OutputKind.DynamicallyLinkedLibrary
+                (references [ completeProvider ; optionalImage ])
+                [ debugClient ]
+
+        let typeLoad = "System.TypeLoadException"
+        let invalidProgram = "System.InvalidProgramException"
+        let fileNotFound = "System.IO.FileNotFoundException"
+
+        // Each caller, by its type's full name and its name; what running it does; and what the
+        // analysis lets escape it.
+        let methods =
+            [
+                "Client.Calls", "ThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                // The refusal comes before the JIT asks where the call is.
+                "Client.Calls", "ThiscallNothingCaught", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                // The JIT loads the return type before it reads the convention.
+                "Client.Calls", "ThiscallReturnsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "Client.Calls", "ThiscallInt", CallOutcome.Runs, []
+                "Client.Calls", "AttributeThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                // Thiscall's member-function variant is Thiscall.
+                "Client.Calls", "AttributeMemberThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                // A second base convention makes the JIT pass over the attribute: the platform's
+                // default. Describing the P/Invoke, the VM refuses the attribute.
+                "Client.Calls", "AttributeThiscallCdeclNothing", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "Client.Calls", "IndirectThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "Client.Calls", "IndirectThiscallNothingCaught", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "Client.Calls", "IndirectThiscallMemberNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "Client.Calls", "IndirectThiscallReturnsGone", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "Client.Calls", "IndirectThiscallInt", CallOutcome.Runs, []
+                // The walk loads the instantiation, which names an assembly that is not there.
+                "Client.Calls", "GenericOfMissing", CallOutcome.Escapes fileNotFound, [ fileNotFound ]
+                // The VM refuses the P/Invoke before the walk loads anything.
+                "Client.Calls", "SynchronizedGenericOfMissing", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "Client.Calls", "SynchronizedCaught", CallOutcome.Runs, []
+                "Client.Calls", "SynchronizedSetsLastError", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "Client.Calls", "SynchronizedUnpreserved", CallOutcome.Runs, []
+                "Client.Calls", "SynchronizedFastcall", CallOutcome.Runs, []
+                "Client.Calls", "SynchronizedThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "Client.Calls", "AttributeSwiftCdeclGenericOfMissing", CallOutcome.Escapes typeLoad, [ typeLoad ]
+                "DebugClient.Calls", "ThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "DebugClient.Calls", "IndirectThiscallNothing", CallOutcome.Escapes invalidProgram, [ invalidProgram ]
+                "DebugClient.Calls", "SynchronizedGenericOfMissing", CallOutcome.Runs, []
+            ]
+
+        let images = [ "Client", clientImage ; "DebugClient", debugImage ]
+
+        // What running each caller does on the host's CoreCLR.
+        let hostOutcomes : Map<string * string, CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("ThiscallAndSynchronized", isCollectible = true)
+
+            context.add_Resolving (
+                Func<_, _, _> (fun (context : Runtime.Loader.AssemblyLoadContext) (name : AssemblyName) ->
+                    match name.Name with
+                    | "Provider" -> context.LoadFromStream (new MemoryStream (incompleteProvider))
+                    | _ -> null
+                )
+            )
+
+            try
+                let loaded =
+                    images
+                    |> List.map (fun (name, image) -> name, context.LoadFromStream (new MemoryStream (image)))
+                    |> Map.ofList
+
+                methods
+                |> List.map (fun (typeName, name, _, _) ->
+                    let assemblyName = typeName.Substring (0, typeName.IndexOf '.')
+
+                    let outcome =
+                        try
+                            loaded.[assemblyName].GetType(typeName).GetMethod(name).Invoke ((null : obj), [||])
+                            |> ignore
+
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    (typeName, name), outcome
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clients =
+            images |> List.map (fun (name, image) -> name, read name image) |> Map.ofList
+
+        let providerAssembly = read "Provider" incompleteProvider
+
+        let mutable analysis =
+            analysisOverHostImage
+                (providerAssembly :: (clients |> Map.toList |> List.map snd))
+                (fun loaded ->
+                    (loaded, Map.toList clients)
+                    ||> List.fold (fun loaded (_, client) ->
+                        let reference =
+                            client.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = "Provider")
+
+                        fst (loaded.WithBoundReference reference providerAssembly)
+                    )
+                )
+
+        // The runtime makes each exception by running one of its constructors, and what that raises
+        // escapes in its place.
+        let made : Set<string> =
+            let next, madeTypeLoad =
+                EscapeAnalysis.escapes analysis (typeLoadConstructorIn (hostImageCoreLib ()))
+
+            analysis <- next
+
+            let made =
+                [ typeLoad ; invalidProgram ; fileNotFound ]
+                |> List.map (fun exceptionName ->
+                    let next, madeHere = makingIn (hostImageCoreLib ()) analysis exceptionName
+                    analysis <- next
+                    madeHere
+                )
+
+            Set.unionMany (render analysis madeTypeLoad :: made)
+
+        let failures =
+            [
+                for typeName, name, expected, expectedEscaping in methods do
+                    if hostOutcomes.[typeName, name] <> expected then
+                        yield
+                            $"%s{typeName}.%s{name}: the host's outcome is %A{hostOutcomes.[typeName, name]}, not %A{expected}"
+
+                    let client = clients.[typeName.Substring (0, typeName.IndexOf '.')]
+                    let key = methodNamed client typeName name
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    let escaping =
+                        [ typeLoad ; invalidProgram ; fileNotFound ]
+                        |> List.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    let unexplained =
+                        (expectedEscaping
+                         |> List.filter (fun expected -> not (List.contains expected escaping))
+                         |> List.map (fun missing -> $"no %s{missing}"))
+                        @ (escaping
+                           |> List.filter (fun escaped ->
+                               not (List.contains escaped expectedEscaping)
+                               && (expectedEscaping.IsEmpty || not (made.Contains $"=%s{escaped}"))
+                           ))
+
+                    if not unexplained.IsEmpty then
+                        yield
+                            $"%s{typeName}.%s{name}: %A{unexplained} in %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                    // Nothing of an instruction CoreCLR refuses runs, so nothing it would call is
+                    // unknown.
+                    if expected = CallOutcome.Escapes invalidProgram && escapes.Unknown then
+                        let next, sources = EscapeAnalysis.unknownSources analysis key
+                        analysis <- next
+
+                        yield
+                            $"%s{typeName}.%s{name}: unknown in the analysis, from %A{sources |> Seq.map (renderSite analysis) |> Set.ofSeq}"
+
+                // Where `JitTypeLoads` says the VM may refuse a P/Invoke as the walk begins, for a call
+                // in optimised code outside any `try`: never where the JIT refuses the call first.
+                let clientAssembly = clients.["Client"]
+
+                let natives =
+                    clientAssembly.TypeDefs.Values
+                    |> Seq.filter (fun ty -> ty.Namespace = "Client" && ty.Name = "Natives")
+                    |> Seq.exactlyOne
+
+                for nativeName, refuses in
+                    [
+                        "SynchronizedTakesGenericOfMissing", true
+                        "SynchronizedSetsLastErrorTakesGenericOfMissing", true
+                        "SynchronizedUnpreservedTakesGenericOfMissing", false
+                        "SynchronizedFastcallTakesGenericOfMissing", false
+                        "SynchronizedThiscallTakesNothing", false
+                        "AttributeThiscallCdeclTakesNothing", true
+                        "AttributeSwiftCdeclTakesGenericOfMissing", true
+                        "TakesGenericOfMissing", false
+                    ] do
+                    let method = natives.Methods |> List.find (fun m -> m.Name = nativeName)
+                    let handle = method.TryMetadata.Value.Handle
+
+                    let call =
+                        {
+                            Convention = UnmanagedCallingConvention.ofPInvoke clientAssembly handle
+                            Placement = UnmanagedCallPlacement.Unprotected
+                            CallerDisablesOptimisation = false
+                            Target = UnmanagedTarget.ofPInvoke clientAssembly handle
+                        }
+
+                    if JitTypeLoads.unmanagedWalkRefuses call method.Signature <> refuses then
+                        yield $"%s{nativeName}: unmanagedWalkRefuses is not %b{refuses}"
             ]
 
         if not failures.IsEmpty then
@@ -10684,7 +11055,8 @@ public static class Calls
     /// marshalling disabled, `bool`, `char` and a `MarshalAs` end it no longer. For Swift's
     /// convention, what the walk ends at anywhere in the signature also stops the JIT reading a
     /// pointer's target. Each call is in a branch never taken; the host's CoreCLR says which callers
-    /// fail to compile.
+    /// fail to compile. The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
     [<Test>]
     let ``the JIT walks an unmanaged call's signature only where CoreCLR's inline decision lets it`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -11045,7 +11417,7 @@ public static unsafe class Calls
         let providerAssembly = read "Provider" incompleteProvider
 
         let mutable analysis =
-            analysisOver
+            analysisOverHostImage
                 (providerAssembly :: (clients |> Map.toList |> List.map snd))
                 (fun loaded ->
                     (loaded, Map.toList clients)

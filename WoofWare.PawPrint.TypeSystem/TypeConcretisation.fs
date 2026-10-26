@@ -986,8 +986,8 @@ module TypeConcretization =
     /// The first part of the type, in the order the runtime type is built from it, that does not
     /// bind is the result's failure, with what was loaded and registered before it in the context:
     /// a type or assembly the metadata names that is not there, or a shape PawPrint does not
-    /// implement (a generic definition named without an instantiation, a generic function pointer, a
-    /// type argument carrying a custom modifier).
+    /// implement (a generic definition named without an instantiation or instantiated at the wrong
+    /// number of arguments, a generic function pointer, a type argument carrying a custom modifier).
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
@@ -1240,16 +1240,26 @@ module TypeConcretization =
                         ctxAfterArgs.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
 
                     let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
-                    Ok (identity, typeDef.Namespace, typeDef.Name), ctxAfterArgs
+                    Ok (identity, typeDef.Namespace, typeDef.Name, typeDef.Generics.Length), ctxAfterArgs
                 | FromReference (typeRef, _) ->
                     loadAssemblyAndResolveTypeRef loadAssembly ctxAfterArgs assemblyFullName typeRef
                     |> andThen (fun ctx (_, identity, typeInfo) ->
-                        Ok (identity, typeInfo.Namespace, typeInfo.Name), ctx
+                        Ok (identity, typeInfo.Namespace, typeInfo.Name, typeInfo.Generics.Length), ctx
                     )
                 | _ -> unmodelled $"Generic instantiation of %A{genericDef} not supported", ctxAfterArgs
 
             baseDefinition
-            |> andThen (fun ctxAfterArgs (baseIdentity, baseNamespace, baseName) ->
+            |> andThen (fun ctxAfterArgs (baseIdentity, baseNamespace, baseName, baseArity) ->
+                // CoreCLR's class loader checks the arity once the arguments are loaded, and throws
+                // TypeLoadException (IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS, `ClassLoader::LoadTypeDefThrowing`)
+                // for any count other than the definition's, including a non-generic definition given
+                // arguments. A signature cannot spell an instantiation with no arguments at all.
+                if args.IsEmpty || args.Length <> baseArity then
+                    unmodelled
+                        $"Type %s{baseNamespace}.%s{baseName} in %s{baseIdentity.AssemblyFullName} declares %d{baseArity} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled",
+                    ctxAfterArgs
+                else
+
                 // Check if this exact generic instantiation already exists
                 match findExistingType ctxAfterArgs.ConcreteTypes baseIdentity argHandles with
                 | Some existingHandle ->

@@ -228,6 +228,71 @@ module TypeLoad =
 
         instance @ statics |> List.map (fun field -> field.Signature)
 
+    /// A part of a type definition that `MethodTable::DoFullyLoad` brings to the level it is
+    /// completing along with the definition, spelled in the definition's own assembly, over the
+    /// definition's own type parameters.
+    [<RequireQualifiedAccess>]
+    type FullLoadPart =
+        /// The base class.
+        | Base of TypeDefn
+        /// An interface the definition implements.
+        | Interface of TypeDefn
+        /// The type of a field whose signature is a value type and that has a `FieldDesc` (a literal
+        /// has none). A field of an enum type has a primitive `FieldDesc`, which `DoFullyLoad` does not
+        /// load; telling that it is an enum is the caller's.
+        | ValueTypeField of TypeDefn
+        /// An interface the definition implements, spelled in a way ECMA-335 does not permit, whose
+        /// load PawPrint does not model.
+        | UnmodelledInterface of UnmodelledBinding
+
+    /// <summary>
+    /// What <c>MethodTable::DoFullyLoad</c> brings along with a type definition, in the order it
+    /// brings them: the base, then each interface in metadata order, then the types of the value-type
+    /// fields, instance then static then <c>[ThreadStatic]</c>, each in metadata order. A load of an
+    /// instantiation of the definition brings these instantiated as it is, and the instantiation's
+    /// own generic arguments too; a load of a constructed type, its elements.
+    /// </summary>
+    /// <remarks>
+    /// The load also brings, for a definition outside CoreLib, the types its type parameters' and its
+    /// generic methods' constraints name, but only to <c>CLASS_DEPENDENCIES_LOADED</c>, short of the
+    /// level at which CoreCLR checks an instantiation's constraints; those are not parts here.
+    /// </remarks>
+    let fullLoadParts
+        (definedIn : DumpedAssembly)
+        (definition : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : FullLoadPart list
+        =
+        let interfaces =
+            interfaceSpellings definedIn definition
+            |> List.map (fun spelling ->
+                match spelling with
+                | Ok spelling -> FullLoadPart.Interface spelling
+                | Error unmodelled -> FullLoadPart.UnmodelledInterface unmodelled
+            )
+
+        (baseSpelling definedIn definition
+         |> Option.map FullLoadPart.Base
+         |> Option.toList)
+        @ interfaces
+        @ (valueTypeFields definition |> List.map FullLoadPart.ValueTypeField)
+
+    /// `onParent` over each base or interface of `parts`, and `onField` over each value-type field's
+    /// type, in order; an interface PawPrint does not model is a step that misses.
+    let private partSteps
+        (onParent : TypeDefn -> LoadWalk -> LoadWalk * LoadMiss option)
+        (onField : TypeDefn -> LoadWalk -> LoadWalk * LoadMiss option)
+        (parts : FullLoadPart list)
+        : (LoadWalk -> LoadWalk * LoadMiss option) list
+        =
+        parts
+        |> List.map (fun part ->
+            match part with
+            | FullLoadPart.Base spelling
+            | FullLoadPart.Interface spelling -> onParent spelling
+            | FullLoadPart.ValueTypeField spelling -> onField spelling
+            | FullLoadPart.UnmodelledInterface unmodelled -> fun walk -> walk, Some (LoadMiss.Unmodelled unmodelled)
+        )
+
     /// The element types a constructed spelling is loaded through: an array's or pointer's element,
     /// or a function pointer's return and parameter types. `None` for any other spelling.
     let private constructedFrom (spelling : TypeDefn) : TypeDefn list option =
@@ -724,10 +789,7 @@ module TypeLoad =
                 loadFresh loggerFactory dotnetRuntimeDirs baseClassTypes LoadLevel.ExactParents definedIn spelling walk
                 |> andThen (load spelling)
 
-        firstMiss
-            (parentSteps load definedIn definition
-             @ List.map loadField (valueTypeFields definition))
-            walk
+        firstMiss (partSteps load loadField (fullLoadParts definedIn definition)) walk
 
     /// `SigPointer::GetTypeHandleThrowing` to the given level, for a type spelled in
     /// `spellingAssembly` that nothing has created yet: an instantiation's generic definition
@@ -958,11 +1020,7 @@ module TypeLoad =
                    |> List.filter (fun method -> not method.Generics.IsEmpty)
                    |> List.collect (fun method -> steps ConstraintOwner.Method method.Generics))
 
-        firstMiss
-            (parentSteps load definedIn definition
-             @ List.map loadField (valueTypeFields definition)
-             @ constraints)
-            walk
+        firstMiss (partSteps load loadField (fullLoadParts definedIn definition) @ constraints) walk
 
     /// The type definitions that loads have brought in full without meeting a miss
     /// (`loadMissFrom`). A load from these passes over them at every level, as CoreCLR passes over a
