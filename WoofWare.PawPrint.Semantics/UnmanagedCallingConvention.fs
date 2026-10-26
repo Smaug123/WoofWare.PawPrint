@@ -262,7 +262,9 @@ module UnmanagedCallingConvention =
 
     /// What CoreCLR reads as the convention of a call of `method`, a P/Invoke of `assembly`
     /// (`getUnmanagedCallConvForMethod`). Where its signature names an unmanaged convention, that
-    /// one (`ofCallSite`). Otherwise the first of these that names one
+    /// one (`ofCallSite`), though CoreCLR's type loader refuses the type declaring such a method
+    /// definition first (`validateTokenSig`, `BFA_BAD_SIGNATURE`), where it validates the module's
+    /// types. Otherwise the first of these that names one
     /// (`PInvoke::GetCallingConvention_IgnoreErrors`): its import's; its first
     /// `[UnmanagedCallConv]`'s, which counts for nothing where it names a second base convention;
     /// its signature's modifiers', up to any naming a second base convention; and otherwise the
@@ -399,8 +401,10 @@ module UnmanagedCallingConvention =
     /// which ECMA-335 gives every method definition (`getUnmanagedCallConvForMethod`). Where the
     /// attribute names no `CallConvs`, or names a second base convention,
     /// `CallConv::TryGetCallingConventionFromUnmanagedCallersOnly` answers false and CoreCLR takes
-    /// the platform's default; this never answers `MultipleBases`. CoreCLR reads another
-    /// convention, which only hand-written IL can give the method, from the signature instead.
+    /// the platform's default; this never answers `MultipleBases`. Hand-written IL can give a
+    /// method definition another calling convention, but CoreCLR's type loader then refuses the
+    /// type declaring it (`validateTokenSig`, `BFA_BAD_SIGNATURE`), where it validates the module's
+    /// types, before it compiles any of the type's methods.
     let ofCallersOnly
         (runtime : EmulatedRuntime)
         (application : UnmanagedCallersOnlyApplication)
@@ -443,6 +447,25 @@ module UnmanagedCallingConvention =
     let isSwift (target : JitTarget) (read : UnmanagedConventionRead) : bool =
         match read with
         | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Swift, _) -> compilesSwiftCalls target
+        | UnmanagedConventionRead.Reads _
+        | UnmanagedConventionRead.MultipleBases
+        | UnmanagedConventionRead.Unreadable _
+        | UnmanagedConventionRead.NullArray -> false
+
+    /// Whether CoreCLR's JIT refuses a call of unmanaged code whose convention CoreCLR reads as
+    /// `read` and whose signature, the method's or the call site's, is `signature`, as it reads the
+    /// convention (`BADCODE("thiscall with 0 arguments")`, `impCheckForPInvokeCall`): by Thiscall's
+    /// convention, or its member-function variant, which is the same, the call must pass an
+    /// argument besides any `this`. The JIT fails the compilation (`CORJIT_BADCODE`), and the VM
+    /// raises `InvalidProgramException`, after the JIT loads the return type and before it meets
+    /// anything else of the signature, wherever the call is.
+    let refusesThiscallWithoutArguments
+        (read : UnmanagedConventionRead)
+        (signature : TypeMethodSignature<TypeDefn>)
+        : bool
+        =
+        match read with
+        | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Thiscall, _) -> signature.ParameterTypes.IsEmpty
         | UnmanagedConventionRead.Reads _
         | UnmanagedConventionRead.MultipleBases
         | UnmanagedConventionRead.Unreadable _

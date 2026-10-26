@@ -3435,6 +3435,9 @@ module EscapeAnalysis =
         /// `[UnmanagedCallConv]` (`UnmanagedConventionRead.Unreadable`, `NullArray`), and raises
         /// what the analysis does not name, or kills the process.
         | UnreadableCallingConvention
+        /// The JIT refuses the call, which passes no argument by Thiscall's convention
+        /// (`UnmanagedCallingConvention.refusesThiscallWithoutArguments`).
+        | ThiscallWithoutArguments
 
     /// What the refusal of a compilation raises, and what making the exception runs.
     let private compilationRefusalFacts
@@ -3442,14 +3445,16 @@ module EscapeAnalysis =
         (refusal : CompilationRefusal)
         : OutsideBodyFact list
         =
-        match refusal with
-        | CompilationRefusal.Signature refusal -> signatureRefusalFacts state refusal
-        | CompilationRefusal.MultipleCallingConventions ->
-            let name, making = ExceptionMaking.multipleCallingConventions
+        let raising (name : string, making : ExceptionMaking) : OutsideBodyFact list =
             let thrown, run = runtimeRaises state name making
 
             OutsideBodyFact.Raises thrown
             :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
+
+        match refusal with
+        | CompilationRefusal.Signature refusal -> signatureRefusalFacts state refusal
+        | CompilationRefusal.MultipleCallingConventions -> raising ExceptionMaking.multipleCallingConventions
+        | CompilationRefusal.ThiscallWithoutArguments -> raising ExceptionMaking.thiscallWithoutArguments
         | CompilationRefusal.UnreadableCallingConvention ->
             [ OutsideBodyFact.Opaque Opacity.UnreadableCallingConvention ]
 
@@ -4342,12 +4347,18 @@ module EscapeAnalysis =
                                     MemberPositions.Described (SignatureRefusal.positionsBeforeConversion operand)
                                 )
                             | None, MemberOperand.UnmanagedCall call ->
-                                match call.Convention with
-                                | UnmanagedConventionRead.Reads _ -> None
-                                | UnmanagedConventionRead.MultipleBases ->
+                                match call.Convention, signature with
+                                | UnmanagedConventionRead.Reads _, MemberSignature.Method methodSignature when
+                                    UnmanagedCallingConvention.refusesThiscallWithoutArguments
+                                        call.Convention
+                                        methodSignature
+                                    ->
+                                    Some (CompilationRefusal.ThiscallWithoutArguments, MemberPositions.BySignature)
+                                | UnmanagedConventionRead.Reads _, _ -> None
+                                | UnmanagedConventionRead.MultipleBases, _ ->
                                     Some (CompilationRefusal.MultipleCallingConventions, MemberPositions.BySignature)
-                                | UnmanagedConventionRead.Unreadable _
-                                | UnmanagedConventionRead.NullArray ->
+                                | UnmanagedConventionRead.Unreadable _, _
+                                | UnmanagedConventionRead.NullArray, _ ->
                                     Some (CompilationRefusal.UnreadableCallingConvention, MemberPositions.BySignature)
                             | None, _ -> None
 
@@ -4404,13 +4415,15 @@ module EscapeAnalysis =
                                 | _ -> state, []
 
                             // Where the JIT may begin the walk of an unmanaged call's signature for
-                            // whether it needs marshalling, the VM may refuse the P/Invoke's
-                            // conventions there instead (`JitTypeLoads.unmanagedWalkRefuses`). Where the
-                            // return type fails to load first, this over-approximates.
+                            // whether it needs marshalling, the VM may refuse the P/Invoke there
+                            // instead (`JitTypeLoads.unmanagedWalkRefuses`). Where the return type
+                            // fails to load first, this over-approximates.
                             let walkRefusal =
-                                match operand with
-                                | MemberOperand.UnmanagedCall call when JitTypeLoads.unmanagedWalkRefuses call ->
-                                    let name, making = ExceptionMaking.pInvokeConventionsRefused
+                                match operand, signature with
+                                | MemberOperand.UnmanagedCall call, MemberSignature.Method methodSignature when
+                                    JitTypeLoads.unmanagedWalkRefuses call methodSignature
+                                    ->
+                                    let name, making = ExceptionMaking.pInvokeDescriptionRefused
                                     let thrown, run = runtimeRaises state name making
 
                                     OutsideBodyFact.Raises thrown
