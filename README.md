@@ -49,7 +49,8 @@ From the repository root, run builds and tests through `nix develop`, for exampl
 nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
 ```
 
-The devshell resolves NuGet packages and SDK packs from the Nix store. Nix may need
+The devshell resolves NuGet packages and SDK packs from the Nix store, including
+self-contained publishing packs for `linux-x64`, `linux-arm64` and `osx-arm64`. Nix may need
 network access to populate the store on first use; once its closure is present,
 restores, builds and tests need no access to nuget.org. NuGet's writable package
 cache is the ignored `packages/` directory in the directory where you enter the
@@ -72,7 +73,8 @@ nix build .#default.fetch-deps && ./result nix/deps.json
 Re-enter `nix develop` to use the new closure. A package missing from the pins fails
 restore instead of falling back to nuget.org. `nix flake check` verifies that the
 whole solution and the local tools restore with empty package, tool and HTTP
-caches, and that both tools start.
+caches, that both tools start, and that `CSharpExample` publishes as a self-contained
+application for each supported RID.
 
 ## Goals
 

@@ -72,12 +72,14 @@
       # The oldest runtime, which the test host, the package and every executable run on.
       dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
       dotnet-runtime = runtimes.net10.runtime;
+      # Self-contained publishing targets, matching the flake's supported platforms.
+      publishRids = ["linux-x64" "linux-arm64" "osx-arm64"];
       # The devshell's one `dotnet`: the oldest runtime's SDK, with every newer runtime's shared
       # frameworks beside it, so the same muxer runs the test host and a guest on any runtime. It
       # resolves the newest `hostfxr` present, so net10 apps start through net11's; `hostfxr` is
       # the version-agnostic half of the host, which only selects a framework directory.
       dotnet-devshell = pkgs.dotnetCorePackages.combinePackages [dotnet-sdk runtimes.net11.runtime runtimes.net11.aspNetCore];
-      # The same pinned packages as the Nix build, plus the SDK's targeting/apphost packs.
+      # The Nix build's pinned packages and SDK packs for every supported publishing target.
       # NuGet can read these directly as a fallback folder without extracting them into
       # a writable cache. The source contains the metadata needed for version resolution.
       offlineNuget = pkgs.symlinkJoin {
@@ -89,7 +91,8 @@
               sourceFile = ./nix/deps.json;
             })
           ]
-          ++ dotnet-sdk.packages;
+          ++ dotnet-sdk.packages
+          ++ pkgs.lib.concatMap (rid: dotnet-sdk.targetPackages.${rid}) publishRids;
       };
       # The SDK's local-tool downloader needs full archives and an explicit NuGet config;
       # it does not use MSBuild's RestoreSources or the fallback folder. Only manifest
@@ -263,7 +266,7 @@
       };
       checks =
         {
-          # Exercise the devshell's project and local-tool restores with empty caches.
+          # Exercise project/tool restores and self-contained publishing with empty caches.
           # The Nix sandbox makes a missing package an error, even on a connected CI runner.
           offline-restore = pkgs.stdenvNoCC.mkDerivation {
             name = "pawprint-offline-restore";
@@ -276,6 +279,9 @@
               export DOTNET_CLI_HOME="$TMPDIR/dotnet-cli"
               export NUGET_HTTP_CACHE_PATH="$TMPDIR/nuget-http"
               dotnet restore WoofWare.PawPrint.slnx --force --no-http-cache
+              for rid in ${pkgs.lib.escapeShellArgs publishRids}; do
+                dotnet publish CSharpExample/CSharpExample.csproj --self-contained --configuration Release --runtime "$rid"
+              done
               dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG" --no-http-cache
               dotnet fantomas --version
               dotnet fsharp-analyzers --help
