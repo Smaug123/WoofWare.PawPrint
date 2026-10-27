@@ -11,6 +11,7 @@
     ":/WoofWare.PawPrint.Domain",
     ":/flake.lock",
     ":/flake.nix",
-    ":/logos/light.png"
+    ":/logos/light.png",
+    ":/nix/deps.json"
   ]
 }
