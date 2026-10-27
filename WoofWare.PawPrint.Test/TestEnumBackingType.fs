@@ -1186,6 +1186,140 @@ module TestEnumBackingType =
         |> Option.isSome
         |> shouldEqual true
 
+    [<TestCase(false)>]
+    [<TestCase(true)>]
+    let ``Shared enum argument graphs are validated within a bounded allocation budget`` (malformed : bool) : unit =
+        let image = emit "SharedEnumArguments" [ genericEnum ]
+        use stream = new MemoryStream (image)
+        let dumped = Assembly.read loggerFactory (Some "SharedEnumArguments.dll") stream
+
+        let tuple =
+            corelib.TryGetTopLevelTypeDef "System" "Tuple`2"
+            |> Option.get
+            |> fun ty -> TypeDefn.FromDefinition (ty.Identity, SignatureTypeKind.Class)
+
+        let instantiate
+            (state : TypeSystemState)
+            (arguments : ImmutableArray<ConcreteTypeHandle>)
+            (signature : TypeDefn)
+            : TypeSystemState * ConcreteTypeHandle
+            =
+            TypeSystemState.concretizeType
+                loggerFactory
+                HostImage.runtimeDirs
+                bct
+                state
+                dumped.DefinitionFullName
+                arguments
+                ImmutableArray.Empty
+                signature
+            |> BindingResult.bound
+
+        let state, leaf =
+            instantiate
+                (baseState.Force().WithLoadedAssembly dumped)
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        let shared =
+            TypeDefn.GenericInstantiation (
+                tuple,
+                ImmutableArray.Create (TypeDefn.GenericTypeParameter 0, TypeDefn.GenericTypeParameter 0)
+            )
+
+        // Twenty nominal handles represent over a million paths to the same leaf.
+        let state, argument =
+            [ 1..20 ]
+            |> List.fold
+                (fun (state, previous) _ -> instantiate state (ImmutableArray.Create previous) shared)
+                (state, leaf)
+
+        let state, argument =
+            if malformed then
+                // Validate the shared subtree before discovering an illegal argument in a sibling.
+                let invalid =
+                    TypeDefn.GenericInstantiation (
+                        tuple,
+                        ImmutableArray.Create (
+                            TypeDefn.PrimitiveType PrimitiveType.Int32,
+                            TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.Int32)
+                        )
+                    )
+
+                instantiate
+                    state
+                    (ImmutableArray.Create argument)
+                    (TypeDefn.GenericInstantiation (
+                        tuple,
+                        ImmutableArray.Create (TypeDefn.GenericTypeParameter 0, invalid)
+                    ))
+            else
+                state, argument
+
+        let state, handle =
+            instantiate
+                state
+                (ImmutableArray.Create argument)
+                (TypeDefn.GenericInstantiation (
+                    TypeDefn.FromDefinition (
+                        dumped.TypeDefs.[MetadataTokens.TypeDefinitionHandle 5].Identity,
+                        SignatureTypeKind.ValueType
+                    ),
+                    ImmutableArray.Create (TypeDefn.GenericTypeParameter 0)
+                ))
+
+        let before = GC.GetAllocatedBytesForCurrentThread ()
+
+        let _, result =
+            EnumBackingType.tryResolve loggerFactory HostImage.runtimeDirs bct state handle
+
+        let allocated = GC.GetAllocatedBytesForCurrentThread () - before
+        TestContext.WriteLine $"Shared enum argument validation allocated %d{allocated} bytes"
+
+        // Allocation detects repeated traversal without depending on machine speed or load.
+        allocated |> shouldBeSmallerThan (4L * 1024L * 1024L)
+
+        match malformed, result with
+        | false, Ok (Some PrimitiveType.Int32) -> ()
+        | true, Error (TypeBindingFailure.Unmodelled failure) ->
+            Assert.That (failure.Diagnostic, Does.Contain "malformed generic instantiation")
+        | _ -> failwith $"Unexpected shared argument validation result: malformed=%b{malformed}, result=%A{result}"
+
+    [<Test>]
+    let ``Shared expanding backing arguments reach the enum traversal limit`` () : unit =
+        let expanding =
+            { spec
+                  [
+                      Signature.Generic (
+                          true,
+                          Target.Enum 0,
+                          [
+                              Signature.Generic (
+                                  false,
+                                  Target.Core "Tuple`2",
+                                  [ Signature.TypeParameter ; Signature.TypeParameter ]
+                              )
+                          ]
+                      )
+                  ] with
+                Nested = true
+                GenericArity = 1
+            }
+
+        let image = emit "SharedExpandingEnum" [ expanding ]
+        use stream = new MemoryStream (image)
+        let dumped = Assembly.read loggerFactory (Some "SharedExpandingEnum.dll") stream
+
+        let state, handle =
+            concretize (baseState.Force().WithLoadedAssembly dumped) dumped 0 PrimitiveType.Int32
+
+        match
+            EnumBackingType.tryResolve loggerFactory HostImage.runtimeDirs bct state handle
+            |> snd
+        with
+        | Error (TypeBindingFailure.Unmodelled failure) -> Assert.That (failure.Diagnostic, Does.Contain "64")
+        | other -> failwith $"Expected the shared expanding chain to reach the enum-depth limit, got %A{other}"
+
     [<Test>]
     let ``Enum backing cycles are reported separately from the traversal limit`` () : unit =
         let image =

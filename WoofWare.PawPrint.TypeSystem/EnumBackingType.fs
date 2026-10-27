@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -69,31 +70,44 @@ module internal EnumBackingType =
         | TypeDefn.FromReference _
         | TypeDefn.Void -> true
 
-    let rec private hasLegalGenericArguments
+    let private hasLegalGenericArguments
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : TypeSystemState)
         (handle : ConcreteTypeHandle)
         : bool
         =
-        let legal = hasLegalGenericArguments baseClassTypes state
+        let validated = HashSet<ConcreteTypeHandle> ()
 
-        match handle with
-        | ConcreteTypeHandle.Concrete _ ->
-            match TypeSystemState.tryGetConcreteTypeInfo state handle with
-            | None -> false
-            | Some (concrete, _) ->
-                ConstraintSatisfaction.malformedArgument baseClassTypes state (List.ofSeq concrete.Generics)
-                |> Option.isNone
-                && Seq.forall legal concrete.Generics
-        | ConcreteTypeHandle.Array (element, _)
-        | ConcreteTypeHandle.OneDimArrayZero element
-        | ConcreteTypeHandle.Pointer element
-        | ConcreteTypeHandle.Byref element -> legal element
-        | ConcreteTypeHandle.FunctionPointer signature ->
-            (match signature.ReturnType with
-             | MethodReturnType.Void -> true
-             | MethodReturnType.Returns ty -> legal ty)
-            && List.forall legal signature.ParameterTypes
+        let rec legal (handle : ConcreteTypeHandle) : bool =
+            if validated.Contains handle then
+                true
+            else
+                let result =
+                    match handle with
+                    | ConcreteTypeHandle.Concrete _ ->
+                        match TypeSystemState.tryGetConcreteTypeInfo state handle with
+                        | None -> false
+                        | Some (concrete, _) ->
+                            ConstraintSatisfaction.malformedArgument baseClassTypes state (List.ofSeq concrete.Generics)
+                            |> Option.isNone
+                            && Seq.forall legal concrete.Generics
+                    | ConcreteTypeHandle.Array (element, _)
+                    | ConcreteTypeHandle.OneDimArrayZero element
+                    | ConcreteTypeHandle.Pointer element
+                    | ConcreteTypeHandle.Byref element -> legal element
+                    | ConcreteTypeHandle.FunctionPointer signature ->
+                        (match signature.ReturnType with
+                         | MethodReturnType.Void -> true
+                         | MethodReturnType.Returns ty -> legal ty)
+                        && List.forall legal signature.ParameterTypes
+
+                // Generic arguments can share entire subgraphs. Cache only completed validation.
+                if result then
+                    validated.Add handle |> ignore
+
+                result
+
+        legal handle
 
     let private hasConsistentNominalKinds
         (loggerFactory : ILoggerFactory)
