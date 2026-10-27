@@ -4,6 +4,7 @@
     "WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj"
   ],
   "paths": [
+    ".config/dotnet-tools.json",
     ".github",
     ".gitignore",
     "CSharpExample/CSharpExample.csproj",

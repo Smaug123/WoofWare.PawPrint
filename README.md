@@ -55,6 +55,14 @@ restores, builds and tests need no access to nuget.org. NuGet's writable package
 cache is the ignored `packages/` directory in the directory where you enter the
 shell. Online vulnerability auditing is disabled in this offline shell.
 
+Local tools use their own NuGet configuration. Bootstrap the manifest's tools from
+the devshell's installable feed, then run the formatter as usual:
+
+```bash
+nix develop -c sh -c 'dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG"'
+nix develop -c dotnet fantomas .
+```
+
 After changing package references, regenerate the pins with network access:
 
 ```bash
@@ -63,7 +71,8 @@ nix build .#default.fetch-deps && ./result nix/deps.json
 
 Re-enter `nix develop` to use the new closure. A package missing from the pins fails
 restore instead of falling back to nuget.org. `nix flake check` verifies that the
-whole solution restores with an empty package cache.
+whole solution and the local tools restore with empty package, tool and HTTP
+caches, and that both tools start.
 
 ## Goals
 

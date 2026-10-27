@@ -91,9 +91,33 @@
           ]
           ++ dotnet-sdk.packages;
       };
+      # The SDK's local-tool downloader needs full archives and an explicit NuGet config;
+      # it does not use MSBuild's RestoreSources or the fallback folder. Only manifest
+      # tools need installable archives; project packages are read directly from the store.
+      offlineToolNuget = pkgs.mkNugetDeps {
+        name = "${pname}-tools";
+        installable = true;
+        nugetDeps = {fetchNuGet}: let
+          localTools = (pkgs.lib.importJSON ./.config/dotnet-tools.json).tools;
+          isLocalTool = dep:
+            builtins.any
+            (name: pkgs.lib.toLower name == pkgs.lib.toLower dep.pname && localTools.${name}.version == dep.version)
+            (builtins.attrNames localTools);
+        in
+          map fetchNuGet (builtins.filter isLocalTool (pkgs.lib.importJSON ./nix/deps.json));
+      };
       offlineNugetEnvironment = {
         RestoreSources = "${offlineNuget}/share/nuget/source";
         NUGET_FALLBACK_PACKAGES = "${offlineNuget}/share/nuget/packages";
+        PAWPRINT_TOOL_NUGET_CONFIG = pkgs.writeText "pawprint-tool-nuget.config" ''
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="offline-tools" value="${offlineToolNuget}/share/nuget/source" />
+            </packageSources>
+          </configuration>
+        '';
         # Auditing uses an online advisory feed independently of package resolution.
         NuGetAudit = "false";
       };
@@ -239,7 +263,7 @@
       };
       checks =
         {
-          # Exercise the devshell's restore settings with no pre-existing package cache.
+          # Exercise the devshell's project and local-tool restores with empty caches.
           # The Nix sandbox makes a missing package an error, even on a connected CI runner.
           offline-restore = pkgs.stdenvNoCC.mkDerivation {
             name = "pawprint-offline-restore";
@@ -249,7 +273,12 @@
             phases = ["unpackPhase" "installPhase"];
             installPhase = ''
               export NUGET_PACKAGES="$TMPDIR/packages"
+              export DOTNET_CLI_HOME="$TMPDIR/dotnet-cli"
+              export NUGET_HTTP_CACHE_PATH="$TMPDIR/nuget-http"
               dotnet restore WoofWare.PawPrint.slnx --force --no-http-cache
+              dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG" --no-http-cache
+              dotnet fantomas --version
+              dotnet fsharp-analyzers --help
               touch "$out"
             '';
           };

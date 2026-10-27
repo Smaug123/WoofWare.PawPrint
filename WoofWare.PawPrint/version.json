@@ -4,6 +4,7 @@
     "^refs/heads/main$"
   ],
   "pathFilters": [
+    ":/.config/dotnet-tools.json",
     ":/.gitignore",
     ":/Directory.Build.props",
     ":/Directory.Build.targets",
