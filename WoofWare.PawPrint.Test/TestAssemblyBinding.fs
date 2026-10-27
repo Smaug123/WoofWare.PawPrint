@@ -246,6 +246,64 @@ module TestAssemblyBinding =
             Version = requested unspecified unspecified unspecified unspecified
         }
 
+    [<TestCase("", true, false)>]
+    [<TestCase("", true, true)>]
+    [<TestCase("fr-FR", false, false)>]
+    [<TestCase("fr-FR", false, true)>]
+    [<TestCase("C", false, false)>]
+    [<TestCase("C", false, true)>]
+    [<TestCase("und", false, false)>]
+    [<TestCase("und", false, true)>]
+    let ``binding checks the raw manifest culture for neutrality``
+        (culture : string)
+        (shouldBind : bool)
+        (alreadyLoaded : bool)
+        : unit
+        =
+        let name = "CultureProbe"
+
+        let image =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [
+                    $"[assembly: System.Reflection.AssemblyCulture(\"%s{culture}\")] public class C {{ }}"
+                ]
+
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+            use stream = new MemoryStream (image)
+            let candidate = AssemblyApi.read loggerFactory None stream
+            candidate.CultureName |> shouldEqual culture
+
+            let assemblies, directories =
+                if alreadyLoaded then
+                    LoadedAssemblies.empty.WithLoadedAssembly candidate, []
+                else
+                    File.WriteAllBytes (Path.Combine (root, name + ".dll"), image)
+                    LoadedAssemblies.empty, [ root ]
+
+            match AssemblyBinding.tryBind loggerFactory directories (plainRequest name) assemblies with
+            | AssemblyBindResult.NotFound -> shouldBind |> shouldEqual false
+            | AssemblyBindResult.Bound (assemblies, bound) ->
+                shouldBind |> shouldEqual true
+                bound.CultureName |> shouldEqual culture
+
+                assemblies.DefinitionNamesInLoadOrder
+                |> Seq.toList
+                |> shouldEqual [ candidate.DefinitionFullName ]
+
+                if alreadyLoaded then
+                    Object.ReferenceEquals (candidate, bound) |> shouldEqual true
+        finally
+            Directory.Delete (root, true)
+
     [<Test>]
     let ``isNeutralCulture is the binder's rule`` () : unit =
         for culture, expected in

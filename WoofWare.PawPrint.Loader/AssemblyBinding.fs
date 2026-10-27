@@ -272,8 +272,9 @@ module AssemblyBinding =
 
         // An admitted request asks for the neutral culture, so a candidate that declares a culture
         // is a satellite and does not answer to it. A manifest may spell the neutral culture out.
+        // Use the raw column: AssemblyName normalises `C` and `und` to empty on ICU hosts.
         let isNeutral (candidate : DumpedAssembly) : bool =
-            isNeutralCulture (Option.ofObj candidate.Name.CultureName)
+            isNeutralCulture (Some candidate.CultureName)
 
         // What CoreCLR would refuse to load, or might bind where the comparisons below cannot tell:
         // an image marked 32-bit-required alone is x86-only, which no platform PawPrint simulates
