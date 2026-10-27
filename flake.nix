@@ -77,6 +77,26 @@
       # resolves the newest `hostfxr` present, so net10 apps start through net11's; `hostfxr` is
       # the version-agnostic half of the host, which only selects a framework directory.
       dotnet-devshell = pkgs.dotnetCorePackages.combinePackages [dotnet-sdk runtimes.net11.runtime runtimes.net11.aspNetCore];
+      # The same pinned packages as the Nix build, plus the SDK's targeting/apphost packs.
+      # NuGet can read these directly as a fallback folder without extracting them into
+      # a writable cache. The source contains the metadata needed for version resolution.
+      offlineNuget = pkgs.symlinkJoin {
+        name = "pawprint-offline-nuget";
+        paths =
+          [
+            (pkgs.mkNugetDeps {
+              name = pname;
+              sourceFile = ./nix/deps.json;
+            })
+          ]
+          ++ dotnet-sdk.packages;
+      };
+      offlineNugetEnvironment = {
+        RestoreSources = "${offlineNuget}/share/nuget/source";
+        NUGET_FALLBACK_PACKAGES = "${offlineNuget}/share/nuget/packages";
+        # Auditing uses an online advisory feed independently of package resolution.
+        NuGetAudit = "false";
+      };
       # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
       # native helpers) from the devshell as $DOTNET_RUNTIME_SRC_<RUNTIME>. Sparse-checked-out to
       # just the trees we actually read, to keep the closure small.
@@ -200,6 +220,7 @@
       packages = let
         deps = builtins.fromJSON (builtins.readFile ./nix/deps.json);
       in {
+        nuget-deps = offlineNuget;
         fantomas = dotnetTool null "fantomas" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fantomas.version (builtins.head (builtins.filter (elem: elem.pname == "fantomas") deps)).hash;
         fsharp-analyzers = dotnetTool "FSharp.Analyzers.Cli" "fsharp-analyzers" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fsharp-analyzers.version (builtins.head (builtins.filter (elem: elem.pname == "fsharp-analyzers") deps)).hash;
         default = pkgs.buildDotnetModule {
@@ -207,7 +228,9 @@
           name = "WoofWare.PawPrint";
           src = ./.;
           projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
-          testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
+          # Restore/build the whole solution so fetch-deps also captures development-only
+          # dependencies (including BenchmarkDotNet) for the offline devshell.
+          testProjectFile = "./WoofWare.PawPrint.slnx";
           nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
           # CI's `build` job runs this suite on every supported runtime, and running it here as
           # well would cost a CI runner another 10-20 minutes.
@@ -216,6 +239,20 @@
       };
       checks =
         {
+          # Exercise the devshell's restore settings with no pre-existing package cache.
+          # The Nix sandbox makes a missing package an error, even on a connected CI runner.
+          offline-restore = pkgs.stdenvNoCC.mkDerivation {
+            name = "pawprint-offline-restore";
+            src = ./.;
+            nativeBuildInputs = [dotnet-sdk];
+            env = offlineNugetEnvironment;
+            phases = ["unpackPhase" "installPhase"];
+            installPhase = ''
+              export NUGET_PACKAGES="$TMPDIR/packages"
+              dotnet restore WoofWare.PawPrint.slnx --force --no-http-cache
+              touch "$out"
+            '';
+          };
           # The docstring-attachment check is the oracle a definition-moving commit is held
           # to, and it is only as good as its own contract: thirty-six shapes in a throwaway
           # repository, eighteen of which must be reported and eighteen of which must not. The
@@ -273,6 +310,12 @@
       devShell = pkgs.mkShell {
         buildInputs = [dotnet-devshell];
         DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+        env = offlineNugetEnvironment;
+        shellHook = ''
+          # Keep NuGet's writable bookkeeping within the sandbox's checkout. Packages
+          # themselves resolve from the read-only store through the fallback folder.
+          export NUGET_PACKAGES="$PWD/packages"
+        '';
         # Each runtime's variables carry its name, and no unsuffixed name exists, so nothing can
         # read one runtime's pins believing them another's. Tests read them only through
         # `FrameworkUnderTest` (TestFrameworkLocatorRatchet enforces it), keyed on the runtime.

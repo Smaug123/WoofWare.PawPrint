@@ -41,6 +41,30 @@ The following are specifically not implemented:
 
 See the [run-a-program.md](./docs/user/run-a-program.md) doc for how to run a program, and [fuzz-over-thread-scheduler.md](./docs/user/fuzz-over-thread-scheduler.md) for how to automatically detect concurrency-related bugs.
 
+## Building and testing offline
+
+From the repository root, run builds and tests through `nix develop`, for example:
+
+```bash
+nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
+```
+
+The devshell resolves NuGet packages and SDK packs from the Nix store. Nix may need
+network access to populate the store on first use; once its closure is present,
+restores, builds and tests need no access to nuget.org. NuGet's writable package
+cache is the ignored `packages/` directory in the directory where you enter the
+shell. Online vulnerability auditing is disabled in this offline shell.
+
+After changing package references, regenerate the pins with network access:
+
+```bash
+nix build .#default.fetch-deps && ./result nix/deps.json
+```
+
+Re-enter `nix develop` to use the new closure. A package missing from the pins fails
+restore instead of falling back to nuget.org. `nix flake check` verifies that the
+whole solution restores with an empty package cache.
+
 ## Goals
 
 * Fully deterministic, ultimately to the point of supporting time-travel debugging and fuzzing over the order of thread execution. All sources of nondeterminism must be controllable by the PawPrint user somehow, such that emulating the same program twice from the same starting state always produces the same execution history.
