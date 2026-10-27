@@ -1,0 +1,31 @@
+Configures CoreCLR for Linux from any host, without the parts of its build that are not libcoreclr or libclrgc.
+
+* eng/native/tryrun.cmake supplies the results of the configure's checks that run a program, which a cross build
+  cannot run. It takes the results for macOS whenever the machine configuring has /System/Library/CoreServices,
+  whatever the target, so on a macOS host it would describe a Linux build by macOS's answers (HAS_POSIX_SEMAPHORES
+  among them). The target here is always Linux.
+* src/coreclr/CMakeLists.txt adds the single-file host and the System.Native family of shims. Configuring them would
+  need trees of src/native/libs that the flake's sparse checkout leaves out, and headers, such as krb5's, that the
+  sysroot does not hold.
+
+One line of context, so that the patch applies to every pinned runtime: the lines around each hunk differ between
+them.
+
+--- a/eng/native/tryrun.cmake
++++ b/eng/native/tryrun.cmake
+@@ -41,4 +41,2 @@
+     set(CLR_CMAKE_TARGET_OS sunos)
+-  elseif(EXISTS /System/Library/CoreServices)
+-    set(DARWIN 1)
+   elseif(EXISTS ${CROSS_ROOTFS}/etc/tizen-release)
+--- a/src/coreclr/CMakeLists.txt
++++ b/src/coreclr/CMakeLists.txt
+@@ -71,4 +71,2 @@
+   set(CLR_SINGLE_FILE_HOST_ONLY 1)
+-  add_subdirectory(${CLR_SRC_NATIVE_DIR}/corehost/apphost/static Corehost.Static)
+-  add_dependencies(runtime singlefilehost)
+ endif()
+@@ -86,3 +84,2 @@
+   set(STATIC_LIBS_ONLY 1)
+-  add_subdirectory(${CLR_SRC_NATIVE_DIR}/libs libs-native)
+ endif()

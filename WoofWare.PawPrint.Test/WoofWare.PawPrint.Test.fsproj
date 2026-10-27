@@ -438,6 +438,7 @@
     <Compile Include="CppSource.fs" />
     <Compile Include="TestCppSource.fs" />
     <Compile Include="TestNativeContractTable.fs" />
+    <Compile Include="TestNativeCallGraph.fs" />
     <Compile Include="TestSharedNativeField.fs" />
     <Compile Include="TestVmBoundField.fs" />
     <Compile Include="TestVmLaidOutClass.fs" />
@@ -525,6 +526,9 @@
          is the `socketSyscall` sweep in WoofWare.PosixKernel's own suite. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
     <EmbeddedResource Include="..\WoofWare.PawPrint.Semantics\NativeContractCallees.tsv" LogicalName="WoofWare.PawPrint.Test.NativeContractCallees.tsv" />
+    <!-- What native-call-graph/ writes of the C++ that NativeContractTable.tsv cites, per runtime and
+         Linux target; the flake checks hold each to it, and TestNativeCallGraph to the repository. -->
+    <EmbeddedResource Include="NativeCallGraph\*.tsv" LogicalName="WoofWare.PawPrint.Test.NativeCallGraph.%(Filename)%(Extension)" />
     <!-- What System.Native's `SystemNative_StrErrorR` answered for every number
          and buffer size its probe sweeps, against glibc and Darwin's libc.
          `TestStrErrorR` regenerates every row from the model. -->

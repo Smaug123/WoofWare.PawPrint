@@ -53,7 +53,7 @@
           runtime = pkgs.dotnetCorePackages.runtime_10_0;
           expectedRuntimeVersion = "10.0.12";
           sourceRev = "4271d88e0aebf3d04f188f1334c2220d80555ef6"; # v10.0.12
-          sourceHash = "sha256-rSa1KZND+LRcz3iVLq0rzZx4KBmxFJ5tkj+Ums3cOOM=";
+          sourceHash = "sha256-4rLWrWBFyuO5kZYaZqA9dAk55q7M9KvJLITSIDElzsk=";
           frameworkPackTfm = "net10.0";
           linuxFrameworkHash = "sha256-iGni+5dLyBD/5AuPuOGLf/sdGgPlKglMgEZoxNeTsa4=";
           osxFrameworkHash = "sha256-Lw5y/feerZHQ4a1JYOo6m966G3ywhGfj6tCkJ9H9Lgg=";
@@ -62,7 +62,7 @@
           runtime = pkgs.dotnetCorePackages.runtime_11_0;
           expectedRuntimeVersion = "11.0.0-rc.1.26425.128";
           sourceRev = "ab19415702aa8139d5369e47c73edb47343c34ad"; # v11.0.0-rc.1.26425.128
-          sourceHash = "sha256-q9OZEYDuXnbTdi81CDsObuL+DyyOioRi7RqHIxYTjoA=";
+          sourceHash = "sha256-86RqpqKjaXwpw8YG9Mz7iBxsn89YqFbIJ0NXhNb87Aw=";
           frameworkPackTfm = "net11.0";
           linuxFrameworkHash = "sha256-+oYmT/VOyfRO84M5ZnmQerKBlPSbXf4DIT8VoqGSJLY=";
           osxFrameworkHash = "sha256-DNGYmohVcVwXZv4oJIhqiRC/jFhJdCORLIvJ1VrCIsM=";
@@ -93,7 +93,18 @@
             # authority on how a JSON value becomes the string a guest sees, and it defers
             # to the vendored rapidjson below for every non-string value.
             "src/native/corehost"
-            "src/native/external/rapidjson"
+            # The vendored libraries, rapidjson among them. native-call-graph/ configures CoreCLR,
+            # which reads the others, and the trees from `src/native/containers` to
+            # `src/native/watchdog` (two of System.Native's siblings among them).
+            "src/native/external"
+            "src/native/containers"
+            "src/native/eventpipe"
+            "src/native/inc"
+            "src/native/libs/System.IO.Compression.Native"
+            "src/native/libs/System.Security.Cryptography.Native"
+            "src/native/managed/cdac/cmake"
+            "src/native/public"
+            "src/native/watchdog"
             # The `SystemNative_*` boundary, which `Native/NativeSystemNative.fs` reimplements.
             # Two halves, and we need both:
             #  - `Common/src/Interop/Unix` is the *managed* side: the `[LibraryImport]` declarations
@@ -168,6 +179,19 @@
           # pure cost, and on macOS the darwin fixup hooks would inspect them pointlessly.
           dontFixup = true;
         };
+      # The call graph of the C++ the native contract table cites, per runtime and Linux target,
+      # its generator, and the checks that the checked-in graphs are what it writes. See
+      # native-call-graph/README.md.
+      nativeCallGraph = import ./native-call-graph {
+        inherit pkgs runtimes runtimeSource;
+        linuxPackages = {
+          linux-x64 = nixpkgs.legacyPackages.x86_64-linux;
+          linux-arm64 = nixpkgs.legacyPackages.aarch64-linux;
+        };
+        contractTable = ./WoofWare.PawPrint.Semantics/NativeContractTable.tsv;
+        contractCallees = ./WoofWare.PawPrint.Semantics/NativeContractCallees.tsv;
+        graphDirectory = ./WoofWare.PawPrint.Test/NativeCallGraph;
+      };
       # `scripts/test_footprint.py` needs hypothesis; the devshell and the `footprint` check share it.
       python = pkgs.python3.withPackages (ps: [ps.hypothesis]);
       dotnetTool = dllOverride: toolName: toolVersion: hash:
@@ -199,21 +223,24 @@
     in {
       packages = let
         deps = builtins.fromJSON (builtins.readFile ./nix/deps.json);
-      in {
-        fantomas = dotnetTool null "fantomas" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fantomas.version (builtins.head (builtins.filter (elem: elem.pname == "fantomas") deps)).hash;
-        fsharp-analyzers = dotnetTool "FSharp.Analyzers.Cli" "fsharp-analyzers" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fsharp-analyzers.version (builtins.head (builtins.filter (elem: elem.pname == "fsharp-analyzers") deps)).hash;
-        default = pkgs.buildDotnetModule {
-          inherit pname version dotnet-sdk dotnet-runtime;
-          name = "WoofWare.PawPrint";
-          src = ./.;
-          projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
-          testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
-          nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
-          # CI's `build` job runs this suite on every supported runtime, and running it here as
-          # well would cost a CI runner another 10-20 minutes.
-          doCheck = false;
-        };
-      };
+      in
+        {
+          fantomas = dotnetTool null "fantomas" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fantomas.version (builtins.head (builtins.filter (elem: elem.pname == "fantomas") deps)).hash;
+          fsharp-analyzers = dotnetTool "FSharp.Analyzers.Cli" "fsharp-analyzers" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fsharp-analyzers.version (builtins.head (builtins.filter (elem: elem.pname == "fsharp-analyzers") deps)).hash;
+          default = pkgs.buildDotnetModule {
+            inherit pname version dotnet-sdk dotnet-runtime;
+            name = "WoofWare.PawPrint";
+            src = ./.;
+            projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
+            testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
+            nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
+            # CI's `build` job runs this suite on every supported runtime, and running it here as
+            # well would cost a CI runner another 10-20 minutes.
+            doCheck = false;
+          };
+          native-call-graph = nativeCallGraph.tool;
+        }
+        // nativeCallGraph.graphs;
       checks =
         {
           # The docstring-attachment check is the oracle a definition-moving commit is held
@@ -247,6 +274,7 @@
               touch $out
             '';
         }
+        // nativeCallGraph.checks
         # One `runtime-version-pin-<name>` per runtime. Each fails the build (and so `nix flake
         # check` in CI) when nixpkgs's version of that runtime drifts away from the version we pin.
         # Forces a deliberate bump of that runtime's `sourceRev` and `sourceHash`,
