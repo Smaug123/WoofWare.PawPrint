@@ -29,7 +29,6 @@
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
         <Compile Include="TypeSystemState.fs" />
-        <Compile Include="EnumBackingType.fs" />
         <Compile Include="CodeSharing.fs" />
         <Compile Include="JitTypeComparison.fs" />
         <Compile Include="GcReferences.fs" />
@@ -39,6 +38,7 @@
         <Compile Include="MethodConcretisation.fs" />
         <Compile Include="TypeAssignability.fs" />
         <Compile Include="ConstraintSatisfaction.fs" />
+        <Compile Include="EnumBackingType.fs" />
         <Compile Include="ConcreteMethodTable.fs" />
         <Compile Include="ConcreteInterfaceDispatch.fs" />
         <Compile Include="DefaultInterfaceImplementation.fs" />

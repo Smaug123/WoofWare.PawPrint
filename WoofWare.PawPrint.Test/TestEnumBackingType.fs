@@ -54,9 +54,13 @@ module TestEnumBackingType =
         | Pointer of Signature
         | Byref of Signature
         | Vector of Signature
+        | Array of Signature
         | Pinned of Signature
         | FunctionPointer
+        | FunctionReturning of Signature
+        | FunctionTaking of Signature
         | TypeParameter
+        | TypeParameterAt of int
         | MethodParameter
 
     type private Field =
@@ -224,11 +228,24 @@ module TestEnumBackingType =
             | Signature.Vector inner ->
                 builder.WriteByte 0x1duy
                 signature builder inner
+            | Signature.Array inner ->
+                builder.WriteByte 0x14uy
+                signature builder inner
+                builder.WriteBytes [| 2uy ; 0uy ; 2uy ; 0uy ; 0uy |]
             | Signature.Pinned inner ->
                 builder.WriteByte 0x45uy
                 signature builder inner
             | Signature.FunctionPointer -> builder.WriteBytes [| 0x1buy ; 0uy ; 0uy ; 1uy |]
+            | Signature.FunctionReturning inner ->
+                builder.WriteBytes [| 0x1buy ; 0uy ; 0uy |]
+                signature builder inner
+            | Signature.FunctionTaking inner ->
+                builder.WriteBytes [| 0x1buy ; 0uy ; 1uy ; 1uy |]
+                signature builder inner
             | Signature.TypeParameter -> builder.WriteBytes [| 0x13uy ; 0uy |]
+            | Signature.TypeParameterAt index ->
+                builder.WriteByte 0x13uy
+                builder.WriteCompressedInteger index
             | Signature.MethodParameter -> builder.WriteBytes [| 0x1euy ; 0uy |]
 
         let mutable nextField = 1
@@ -556,6 +573,205 @@ module TestEnumBackingType =
             ]
 
         check "EnumShapes" cases |> ignore
+
+    let private genericEnum : Spec =
+        { spec [ primitive 8uy ] with
+            Nested = true
+            GenericArity = 1
+        }
+
+    let private genericBacking (argument : Signature) : Spec =
+        spec [ Signature.Generic (true, Target.Enum 0, [ argument ]) ]
+
+    let private illegalArguments : Signature list =
+        [
+            Signature.Pointer (primitive 8uy)
+            Signature.Byref (primitive 8uy)
+            Signature.FunctionPointer
+            primitive 22uy
+            Signature.Nominal (true, Target.Core "TypedReference")
+            Signature.Nominal (true, Target.Core "Void")
+        ]
+
+    [<TestCase(0)>]
+    [<TestCase(1)>]
+    [<TestCase(2)>]
+    [<TestCase(3)>]
+    [<TestCase(4)>]
+    [<TestCase(5)>]
+    let ``Illegal generic backing arguments agree with CoreCLR`` (index : int) : unit =
+        let argument = illegalArguments.[index]
+
+        let answers =
+            check
+                $"IllegalEnumArgument%d{index}"
+                [
+                    genericEnum
+                    genericBacking argument
+                    genericBacking (Signature.Generic (true, Target.Holder, [ argument ]))
+                ]
+
+        answers
+        |> shouldEqual
+            [
+                Some PrimitiveType.Int32
+                Some PrimitiveType.Int32
+                Some PrimitiveType.Int32
+                None
+                None
+            ]
+
+    [<TestCase(false)>]
+    [<TestCase(true)>]
+    let ``Out of scope parameters inside enum backing arguments agree with CoreCLR`` (methodParameter : bool) : unit =
+        let parameter =
+            if methodParameter then
+                Signature.MethodParameter
+            else
+                Signature.TypeParameter
+
+        let arguments =
+            [ parameter ; Signature.Generic (true, Target.Holder, [ parameter ]) ]
+
+        let answers =
+            check $"EnumParameterScope%b{methodParameter}" (genericEnum :: List.map genericBacking arguments)
+
+        answers
+        |> List.take 3
+        |> shouldEqual (List.replicate 3 (Some PrimitiveType.Int32))
+
+        answers |> List.skip 3 |> List.iter (shouldEqual None)
+
+    [<Test>]
+    let ``Unresolvable nested backing signatures return failures with accumulated state`` () : unit =
+        let cases =
+            [
+                genericEnum
+                genericBacking (Signature.Generic (true, Target.ExternalStruct, [ Signature.Pointer (primitive 8uy) ]))
+                for parameter in [ Signature.TypeParameter ; Signature.MethodParameter ] do
+                    for argument in
+                        [
+                            Signature.Vector parameter
+                            Signature.Array parameter
+                            Signature.Pointer parameter
+                            Signature.Byref parameter
+                            Signature.Pinned parameter
+                            Signature.Modified (true, parameter)
+                            Signature.FunctionReturning parameter
+                            Signature.FunctionTaking parameter
+                        ] do
+                        genericBacking argument
+                for argument in illegalArguments do
+                    genericBacking (Signature.Vector (Signature.Generic (true, Target.Holder, [ argument ])))
+                { genericBacking (Signature.TypeParameterAt 1) with
+                    Nested = true
+                    GenericArity = 1
+                }
+            ]
+
+        let image = emit "UnresolvableEnumArguments" cases
+        use stream = new MemoryStream (image)
+
+        let dumped =
+            Assembly.read loggerFactory (Some "UnresolvableEnumArguments.dll") stream
+
+        let mutable state = baseState.Force().WithLoadedAssembly dumped
+
+        state.LoadedAssembly typeof<ImmutableArray<int>>.Assembly.FullName
+        |> Option.isNone
+        |> shouldEqual true
+
+        // The first refusal loads an assembly while resolving its backing signature.
+        // Subsequent preflight refusals must retain it too.
+        for index in 1 .. cases.Length - 1 do
+            let next, handle = concretize state dumped index PrimitiveType.Int32
+
+            let next, result =
+                EnumBackingType.tryResolve loggerFactory HostImage.runtimeDirs bct next handle
+
+            match result with
+            | Error (TypeBindingFailure.Unmodelled failure) ->
+                Assert.That (failure.Diagnostic, Does.Contain "PawPrint cannot normalize")
+            | other -> failwith $"Expected a refusal for %A{cases.[index]}, got %A{other}"
+
+            next.LoadedAssembly dumped.DefinitionFullName
+            |> Option.isSome
+            |> shouldEqual true
+
+            TypeSystemState.tryGetConcreteTypeInfo next handle
+            |> Option.isSome
+            |> shouldEqual true
+
+            next.LoadedAssembly typeof<ImmutableArray<int>>.Assembly.FullName
+            |> Option.isSome
+            |> shouldEqual true
+
+            state <- next
+
+    [<Test>]
+    let ``Valid array arguments in enum backing signatures agree with CoreCLR`` () : unit =
+        let cases =
+            [
+                genericEnum
+                for argument in
+                    [
+                        Signature.Vector (primitive 8uy)
+                        Signature.Array (primitive 8uy)
+                        Signature.Vector (Signature.Pointer (primitive 8uy))
+                        Signature.Vector (Signature.Generic (true, Target.Holder, [ primitive 8uy ]))
+                    ] do
+                    genericBacking argument
+            ]
+
+        check "ValidArrayEnumArguments" cases
+        |> List.iter (shouldEqual (Some PrimitiveType.Int32))
+
+    [<Test>]
+    let ``Generated generic backing signatures agree with CoreCLR`` () : unit =
+        let rec wrap (depth : int) (argument : Signature) : Signature =
+            if depth = 0 then
+                argument
+            else
+                Signature.Generic (true, Target.Holder, [ wrap (depth - 1) argument ])
+
+        let generator =
+            gen {
+                let! argument =
+                    Gen.elements (
+                        primitive 8uy
+                        :: Signature.TypeParameter
+                        :: Signature.MethodParameter
+                        :: illegalArguments
+                    )
+
+                let! depth = Gen.choose (0, 5)
+                let argument = wrap depth argument
+                let! genericOwner = Gen.elements [ false ; true ]
+                return argument, genericOwner
+            }
+
+        let mutable cases = 0
+        let mutable accepted = 0
+        let mutable refused = 0
+
+        let property (argument : Signature, genericOwner : bool) : unit =
+            cases <- cases + 1
+
+            let owner =
+                { genericBacking argument with
+                    Nested = genericOwner
+                    GenericArity = if genericOwner then 1 else 0
+                }
+
+            for answer in check $"GeneratedGenericEnums%d{cases}" [ genericEnum ; owner ] |> List.skip 3 do
+                if answer.IsSome then
+                    accepted <- accepted + 1
+                else
+                    refused <- refused + 1
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen generator) property)
+        accepted |> shouldBeGreaterThan 20
+        refused |> shouldBeGreaterThan 20
 
     let private genSpecs : Gen<Spec list> =
         gen {

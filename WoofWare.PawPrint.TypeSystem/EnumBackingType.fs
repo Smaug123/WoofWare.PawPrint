@@ -46,6 +46,55 @@ module internal EnumBackingType =
         | TypeDefn.GenericInstantiation (generic, _) -> isNominalValueType generic
         | _ -> false
 
+    let rec private parametersInScope (arity : int) (signature : TypeDefn) : bool =
+        let inScope = parametersInScope arity
+
+        match signature with
+        | TypeDefn.GenericTypeParameter index -> index >= 0 && index < arity
+        | TypeDefn.GenericMethodParameter _ -> false
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> inScope element
+        | TypeDefn.Modified modifier -> inScope modifier.Unmodified
+        | TypeDefn.GenericInstantiation (generic, arguments) -> inScope generic && Seq.forall inScope arguments
+        | TypeDefn.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Void -> true
+             | MethodReturnType.Returns ty -> inScope ty)
+            && List.forall inScope signature.ParameterTypes
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.Void -> true
+
+    let rec private hasLegalGenericArguments
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        let legal = hasLegalGenericArguments baseClassTypes state
+
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            match TypeSystemState.tryGetConcreteTypeInfo state handle with
+            | None -> false
+            | Some (concrete, _) ->
+                ConstraintSatisfaction.malformedArgument baseClassTypes state (List.ofSeq concrete.Generics)
+                |> Option.isNone
+                && Seq.forall legal concrete.Generics
+        | ConcreteTypeHandle.Array (element, _)
+        | ConcreteTypeHandle.OneDimArrayZero element
+        | ConcreteTypeHandle.Pointer element
+        | ConcreteTypeHandle.Byref element -> legal element
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Void -> true
+             | MethodReturnType.Returns ty -> legal ty)
+            && List.forall legal signature.ParameterTypes
+
     let rec private resolveEnum
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -98,6 +147,17 @@ module internal EnumBackingType =
 
         match fields with
         | [ field ] ->
+            let unsupported
+                (state : TypeSystemState)
+                (reason : string)
+                : TypeSystemState * Result<PrimitiveType, TypeBindingFailure>
+                =
+                state,
+                Error (
+                    unmodelled
+                        $"PawPrint cannot normalize the enum %O{concrete}: its backing-field signature %O{field.Signature} %s{reason}"
+                )
+
             let refused (state : TypeSystemState) : TypeSystemState * Result<PrimitiveType, TypeBindingFailure> =
                 state,
                 Error (
@@ -122,6 +182,8 @@ module internal EnumBackingType =
                             signature
                     with
                     | state, Error failure -> state, Error failure
+                    | state, Ok underlying when not (hasLegalGenericArguments baseClassTypes state underlying) ->
+                        unsupported state "contains a malformed generic instantiation"
                     | state, Ok underlying ->
                         match
                             TypeSystemState.isEnumValueType
@@ -147,7 +209,10 @@ module internal EnumBackingType =
                 // closed instantiation would substitute a primitive for the parameter.
                 | _ -> refused state
 
-            fieldType field.Signature
+            if parametersInScope concrete.Generics.Length field.Signature then
+                fieldType field.Signature
+            else
+                unsupported state "contains a generic parameter outside the declaring type's scope"
         | fields ->
             state,
             Error (
@@ -157,7 +222,10 @@ module internal EnumBackingType =
 
     /// The exact primitive backing type of a concrete enum, stripping enum-typed backing fields;
     /// `None` for a handle whose immediate base is not CoreLib's System.Enum.
-    /// Checks backing-field shape, enum layout and generic arity, not unrelated type members.
+    /// Checks backing-field shape, parameter scope, generic argument kinds, enum layout and
+    /// generic arity, not unrelated type members or generic parameter constraints.
+    /// Out-of-scope parameters and malformed instantiations inside reference-type arguments are
+    /// unsupported even where CoreCLR can skip resolving them while normalizing the field.
     /// Binding failures and unsupported shapes retain the state reached before the failure.
     /// A cycle is refused; a chain beyond 64 enums reports a PawPrint limit rather than a CLR refusal.
     let tryResolve
