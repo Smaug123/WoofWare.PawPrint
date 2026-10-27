@@ -593,6 +593,200 @@ module TestEnumBackingType =
             Signature.Nominal (true, Target.Core "Void")
         ]
 
+    [<Test>]
+    let ``Nominal kinds inside generic backing arguments agree with CoreCLR`` () : unit =
+        let arguments =
+            [
+                for target in [ Target.Core "String" ; Target.Core "Object" ] do
+                    for isValueType in [ false ; true ] do
+                        let nominal = Signature.Nominal (isValueType, target)
+                        yield nominal
+                        yield Signature.Generic (true, Target.Holder, [ nominal ])
+                yield Signature.Nominal (true, Target.Core "Int32")
+                yield Signature.Nominal (true, Target.Plain)
+                yield Signature.Generic (true, Target.Holder, [ primitive 8uy ])
+                for isValueType in [ false ; true ] do
+                    yield Signature.Generic (isValueType, Target.Core "Tuple`1", [ primitive 8uy ])
+            ]
+
+        let answers =
+            check "NominalEnumArguments" (genericEnum :: List.map genericBacking arguments)
+            |> List.skip 3
+
+        answers |> List.filter Option.isSome |> List.length |> shouldEqual 8
+        answers |> List.filter Option.isNone |> List.length |> shouldEqual 5
+
+    [<Test>]
+    let ``Generated nested nominal kinds agree with CoreCLR`` () : unit =
+        let generator =
+            gen {
+                let! name = Gen.elements [ "String" ; "Object" ; "Type" ]
+                let! isValueType = Gen.elements [ false ; true ]
+                let! depth = Gen.choose (0, 5)
+                return name, isValueType, depth
+            }
+
+        let mutable cases = 0
+        let mutable accepted = 0
+        let mutable refused = 0
+        let depths = HashSet<int> ()
+
+        let property (name : string, isValueType : bool, depth : int) : unit =
+            cases <- cases + 1
+            depths.Add depth |> ignore
+
+            let argument =
+                List.replicate depth ()
+                |> List.fold
+                    (fun argument () -> Signature.Generic (true, Target.Holder, [ argument ]))
+                    (Signature.Nominal (isValueType, Target.Core name))
+
+            let answer =
+                check $"GeneratedNominalEnum%d{cases}" [ genericEnum ; genericBacking argument ]
+                |> List.last
+
+            answer.IsSome |> shouldEqual (not isValueType)
+
+            if answer.IsSome then
+                accepted <- accepted + 1
+            else
+                refused <- refused + 1
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen generator) property)
+        accepted |> shouldBeGreaterThan 50
+        refused |> shouldBeGreaterThan 50
+        depths.Count |> shouldEqual 6
+
+    [<Test>]
+    let ``Unsupported nominal kinds are checked throughout signatures with accumulated state`` () : unit =
+        let arguments =
+            [
+                Signature.Nominal (false, Target.Plain)
+                Signature.Nominal (false, Target.Core "Int32")
+                Signature.Generic (false, Target.Holder, [ primitive 8uy ])
+                Signature.Generic (false, Target.ExternalStruct, [ primitive 8uy ])
+                for wrap in
+                    [
+                        Signature.Vector
+                        Signature.Array
+                        Signature.Pointer >> Signature.Vector
+                        Signature.Byref >> Signature.Vector
+                        Signature.FunctionReturning >> Signature.Vector
+                        Signature.FunctionTaking >> Signature.Vector
+                        Signature.Pinned >> Signature.Vector
+                        (fun argument -> Signature.Modified (true, argument))
+                    ] do
+                    wrap (Signature.Nominal (true, Target.Core "String"))
+            ]
+
+        let image =
+            emit "SkippedNominalEnumArguments" (genericEnum :: List.map genericBacking arguments)
+
+        use stream = new MemoryStream (image)
+
+        let dumped =
+            Assembly.read loggerFactory (Some "SkippedNominalEnumArguments.dll") stream
+
+        for index in 1 .. arguments.Length do
+            let state, handle =
+                concretize (baseState.Force().WithLoadedAssembly dumped) dumped index PrimitiveType.Int32
+
+            let next, actual =
+                EnumBackingType.tryResolve loggerFactory HostImage.runtimeDirs bct state handle
+
+            match actual with
+            | Error (TypeBindingFailure.Unmodelled failure) ->
+                Assert.That (failure.Diagnostic, Does.Contain "nominal kind inconsistent")
+            | other -> failwith $"Expected an unsupported nominal spelling for %A{arguments.[index - 1]}, got %A{other}"
+
+            next.LoadedAssembly dumped.DefinitionFullName
+            |> Option.isSome
+            |> shouldEqual true
+
+            TypeSystemState.tryGetConcreteTypeInfo next handle
+            |> Option.isSome
+            |> shouldEqual true
+
+            if index = 4 then
+                next.LoadedAssembly typeof<ImmutableArray<int>>.Assembly.FullName
+                |> Option.isSome
+                |> shouldEqual true
+
+    [<Test>]
+    let ``Input enum generic argument kinds agree with CoreCLR`` () : unit =
+        let image = emit "InputEnumArguments" [ genericEnum ]
+        use stream = new MemoryStream (image)
+        let dumped = Assembly.read loggerFactory (Some "InputEnumArguments.dll") stream
+        let context = AssemblyLoadContext ("InputEnumArguments", isCollectible = true)
+
+        try
+            use hostStream = new MemoryStream (image)
+            let host = context.LoadFromStream hostStream
+            let definition = host.GetType ("Outer`1+E0", throwOnError = true)
+            let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
+            for argument, hostArgument, legal in
+                [
+                    int32, typeof<int>, true
+                    TypeDefn.PrimitiveType PrimitiveType.String, typeof<string>, true
+                    TypeDefn.OneDimensionalArrayLowerBoundZero int32, typeof<int[]>, true
+                    TypeDefn.Pointer int32, typeof<int>.MakePointerType (), false
+                    TypeDefn.Byref int32, typeof<int>.MakeByRefType (), false
+                    TypeDefn.FromDefinition (bct.Void.Identity, SignatureTypeKind.ValueType), typeof<Void>, false
+                    TypeDefn.PrimitiveType PrimitiveType.TypedReference,
+                    typeof<obj>.Assembly.GetType ("System.TypedReference", throwOnError = true),
+                    false
+                ] do
+                let expected =
+                    try
+                        let closed = definition.MakeGenericType [| hostArgument |]
+                        Enum.GetUnderlyingType closed |> shouldEqual typeof<int>
+                        true
+                    with
+                    | :? ArgumentException
+                    | :? TypeLoadException -> false
+
+                expected |> shouldEqual legal
+
+                let signature =
+                    TypeDefn.GenericInstantiation (
+                        TypeDefn.FromDefinition (
+                            dumped.TypeDefs.[MetadataTokens.TypeDefinitionHandle 5].Identity,
+                            SignatureTypeKind.ValueType
+                        ),
+                        ImmutableArray.Create argument
+                    )
+
+                let state, handle =
+                    TypeSystemState.concretizeType
+                        loggerFactory
+                        HostImage.runtimeDirs
+                        bct
+                        (baseState.Force().WithLoadedAssembly dumped)
+                        dumped.DefinitionFullName
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        signature
+                    |> BindingResult.bound
+
+                let next, actual =
+                    EnumBackingType.tryResolve loggerFactory HostImage.runtimeDirs bct state handle
+
+                match expected, actual with
+                | true, Ok (Some PrimitiveType.Int32)
+                | false, Error (TypeBindingFailure.Unmodelled _) -> ()
+                | _ -> failwith $"Input enum argument %O{argument}: host=%b{expected}, actual=%A{actual}"
+
+                next.LoadedAssembly dumped.DefinitionFullName
+                |> Option.isSome
+                |> shouldEqual true
+
+                TypeSystemState.tryGetConcreteTypeInfo next handle
+                |> Option.isSome
+                |> shouldEqual true
+        finally
+            context.Unload ()
+
     [<TestCase(0)>]
     [<TestCase(1)>]
     [<TestCase(2)>]
