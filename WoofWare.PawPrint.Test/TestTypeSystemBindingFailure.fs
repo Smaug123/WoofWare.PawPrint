@@ -607,8 +607,6 @@ module TestTypeSystemBindingFailure =
             )
             parameter
 
-    /// Classify `result` as binding or out of range, failing unless that is what an environment of
-    /// `typeArgs` and `methodArgs` arguments makes of `spelling`.
     /// Whether `failure` is how the Loader reports `spelling` out of an environment of `size`: as
     /// unmodelled, naming the parameter.
     let private loaderOutOfRange (spelling : ParameterSpelling) (size : int) (failure : TypeBindingFailure) : bool =
@@ -640,6 +638,9 @@ module TestTypeSystemBindingFailure =
 
         failure = TypeBindingFailure.Refused expected
 
+    /// Classify `result` as binding or out of range, failing unless that is what an environment of
+    /// `typeArgs` and `methodArgs` arguments makes of `spelling`; `outOfRange` says how the side
+    /// under test reports a parameter out of range.
     let private checkInRange
         (outOfRange : ParameterSpelling -> int -> TypeBindingFailure -> bool)
         (spelling : ParameterSpelling)
