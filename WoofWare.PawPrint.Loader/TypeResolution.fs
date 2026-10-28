@@ -77,6 +77,17 @@ type TypeReferenceIdentity =
     /// The way reached a shape PawPrint does not implement resolving.
     | Unmodelled of UnmodelledBinding
 
+/// A MethodImpl row whose declaration is a MemberRef that names no method.
+type MethodImplDeclarationMiss =
+    {
+        /// The type the MethodImpl row belongs to, which is the type that fails to load.
+        Type : ResolvedTypeIdentity
+        /// The row's declaration, a MemberRef of the type's own assembly.
+        Declaration : MemberReferenceHandle
+        /// The declaration, described for a run that stops on it.
+        Description : string
+    }
+
 /// <summary>
 /// Why a type that a guest's metadata names could not be bound and loaded.
 /// </summary>
@@ -96,6 +107,11 @@ type TypeBindingFailure =
     /// The type was found, and a type in its base chain is not declared where the metadata says it
     /// is.
     | BaseTypeAbsent of TypeResolutionMiss
+    /// The type was found, and one of its MethodImpls declares an override of a method its MemberRef
+    /// names nowhere, so CoreCLR refuses to load the type: with a <c>MissingMethodException</c> when
+    /// the reference's parent is an ancestor of the type or an interface it implements, and with a
+    /// <c>TypeLoadException</c> when the parent is neither (<c>MethodTableBuilder::ProcessMethodImpls</c>).
+    | MethodImplDeclarationAbsent of MethodImplDeclarationMiss
     /// The way reached a shape PawPrint does not implement binding.
     | Unmodelled of UnmodelledBinding
 
@@ -122,6 +138,8 @@ module TypeBindingFailure =
             $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
         | TypeBindingFailure.TypeAbsent miss -> string<TypeResolutionMiss> miss
         | TypeBindingFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
+        | TypeBindingFailure.MethodImplDeclarationAbsent miss ->
+            $"%s{miss.Description}, the declaration of a MethodImpl, binds to no method, so CoreCLR refuses to load the type the MethodImpl belongs to; that is not modelled"
         | TypeBindingFailure.Unmodelled unmodelled -> unmodelled.Diagnostic
 
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
@@ -434,6 +452,7 @@ module TypeResolution =
                 fromAssembly.DefinitionFullName
                 miss
         | TypeBindingFailure.AssemblyUnavailable _
+        | TypeBindingFailure.MethodImplDeclarationAbsent _
         | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
 
     /// The type `target`, a reference of `referencedInAssembly`, names, its base chain primed.
@@ -482,6 +501,7 @@ module TypeResolution =
                 miss
         | TypeBindingFailure.AssemblyUnavailable _
         | TypeBindingFailure.BaseTypeAbsent _
+        | TypeBindingFailure.MethodImplDeclarationAbsent _
         | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
 
     /// <summary>

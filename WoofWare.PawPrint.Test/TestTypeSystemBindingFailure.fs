@@ -967,6 +967,9 @@ module TestTypeSystemBindingFailure =
             | Error (TypeBindingFailure.AssemblyUnavailable _) -> ArrayAgreement.Unavailable
             | Error (TypeBindingFailure.BaseTypeAbsent _)
             | Error (TypeBindingFailure.Unmodelled _) -> ArrayAgreement.Unmodelled
+            | Error (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
+                failwith
+                    $"Neither concretisation nor the Loader binds a MethodImpl's declaration, but one reported %O{miss}"
 
         let genArray : Gen<Spelling> =
             Gen.oneof
