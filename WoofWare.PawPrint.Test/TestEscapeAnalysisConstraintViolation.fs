@@ -1752,13 +1752,15 @@ public static class Cases
         let failures =
             [
                 // Each instance, through its caller, and each definition for every instantiation:
-                // each names what the host raises, or is unknown, naming nothing else.
-                for case, definitionType, definition in
+                // each names what the host raises, or is unknown, naming nothing else. An instance
+                // whose shared code CoreCLR rejects for an argument's form must name what it raises,
+                // which the check of that form decides whatever the argument.
+                for case, definitionType, definition, mustName in
                     [
-                        "CallsRun", "Holder`1", "Run"
-                        "CallsRunMake", "Holder`1", "RunMake"
-                        "CallsPointing", "Plain", "G"
-                        "CallsPointingType", "Plain", "H"
+                        "CallsRun", "Holder`1", "Run", false
+                        "CallsRunMake", "Holder`1", "RunMake", false
+                        "CallsPointing", "Plain", "G", true
+                        "CallsPointingType", "Plain", "H", true
                     ] do
                     let raised =
                         match hostOutcomes.[case] with
@@ -1766,10 +1768,12 @@ public static class Cases
                         | Outcome.Runs
                         | Outcome.Caught -> Set.empty
 
-                    for name, key in
+                    for name, key, mustName in
                         [
-                            case, methodNamed clientAssembly "Client.Cases" case
-                            $"%s{definitionType}::%s{definition}", methodNamed libraryAssembly definitionType definition
+                            case, methodNamed clientAssembly "Client.Cases" case, mustName
+                            $"%s{definitionType}::%s{definition}",
+                            methodNamed libraryAssembly definitionType definition,
+                            false
                         ] do
                         let named =
                             try
@@ -1785,7 +1789,7 @@ public static class Cases
                                 // `BadImageFormatException`, so where the host raises one only the
                                 // other two say the analysis names a violation the host does not.
                                 let agrees =
-                                    (raised.IsSubsetOf named || escapes.Unknown)
+                                    (raised.IsSubsetOf named || (escapes.Unknown && not mustName))
                                     && (if raised.Contains typeLoad then
                                             (Set.remove badImage named).IsSubsetOf raised
                                         else
