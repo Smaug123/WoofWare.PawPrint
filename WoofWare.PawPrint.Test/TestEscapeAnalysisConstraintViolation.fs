@@ -1498,6 +1498,126 @@ public static class Cases
 
         Assert.That (named analysis escapes, Is.Empty)
 
+    /// A method of a generic type calling the type's own generic method, constrained to the type's
+    /// parameter, through a method specification over the method's definition token rather than a
+    /// reference to it on the type's instantiation: IL that C# does not write. CoreCLR takes the
+    /// definition token to name the method on the type's typical instantiation, whose parameter the
+    /// argument does not satisfy, and rejects the instantiation compiling the caller. The library is
+    /// emitted, the client compiled against it.
+    [<Test>]
+    let ``a generic method instantiated by its definition token agrees with the host`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let libraryImage =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (Reflection.AssemblyName "Lib", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Lib"
+
+            let holder =
+                modul.DefineType ("Holder`1", Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+            let parameter = (holder.DefineGenericParameters [| "T" |]).[0]
+
+            holder.DefineDefaultConstructor Reflection.MethodAttributes.Public
+            |> ignore<Reflection.Emit.ConstructorBuilder>
+
+            let generic =
+                holder.DefineMethod (
+                    "M",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let methodParameter = (generic.DefineGenericParameters [| "U" |]).[0]
+            methodParameter.SetBaseTypeConstraint (parameter :> Type)
+            generic.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+
+            let run =
+                holder.DefineMethod ("Run", Reflection.MethodAttributes.Public, typeof<Void>, Type.EmptyTypes)
+
+            let il = run.GetILGenerator ()
+            il.Emit (Reflection.Emit.OpCodes.Call, generic.MakeGenericMethod [| parameter :> Type |])
+            il.Emit Reflection.Emit.OpCodes.Ret
+
+            holder.CreateType () |> ignore<Type>
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let clientImage =
+            compileClient
+                [ libraryImage ]
+                """
+namespace Client;
+public static class Cases
+{
+    public static int CallsRun() { new Holder<int>().Run(); return 0; }
+}
+"""
+
+        let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage [ "CallsRun" ]
+        Assert.That (hostOutcomes.["CallsRun"], Is.EqualTo (Outcome.Escapes verification))
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraryAssembly = read "Lib" libraryImage
+
+        // The emitter spells the call as the test means it to.
+        let byDefinition =
+            libraryAssembly.MethodSpecs.Values
+            |> Seq.exists (fun spec ->
+                match spec.Method with
+                | MetadataToken.MethodDef _ -> true
+                | _ -> false
+            )
+
+        Assert.That (byDefinition, Is.True)
+
+        let analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ]
+                (fun loaded ->
+                    let reference =
+                        clientAssembly.AssemblyReferences.Values
+                        |> Seq.find (fun r -> r.Name.Name = "Lib")
+
+                    fst (loaded.WithBoundReference reference libraryAssembly)
+                )
+
+        let violations = Set.ofList [ typeLoad ; verification ]
+
+        let named (analysis : EscapeAnalysisState) (escapes : Escapes) : Set<string> =
+            let shown = render analysis escapes
+            violations |> Set.filter (fun name -> shown.Contains $"=%s{name}")
+
+        // The instance, through its caller, and the definition for every instantiation: each names
+        // the host's `VerificationException`, or is unknown, naming nothing else.
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Cases" "CallsRun")
+
+        let shown = named analysis escapes
+
+        Assert.That (
+            shown = Set.singleton verification
+            || (escapes.Unknown && shown.IsSubsetOf (Set.singleton verification)),
+            $"CallsRun: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+        )
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed libraryAssembly "Holder`1" "Run")
+
+        let shown = named analysis escapes
+
+        Assert.That (
+            shown = Set.singleton verification
+            || (escapes.Unknown && shown.IsSubsetOf (Set.singleton verification)),
+            $"Holder`1::Run: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+        )
+
     /// A method, inlined into its caller, taking the address of a method whose signature an update
     /// has made violate a constraint. CoreCLR prepares the method as a function pointer where the
     /// JIT asks for the address, compiling the caller it inlines the method into, so the caller's
