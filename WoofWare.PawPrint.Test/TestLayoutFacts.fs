@@ -815,14 +815,25 @@ module TestLayoutFacts =
             "StructEnum"
             "ImmutableEnum"
             "SequentialEnum"
+            "MethodHandleEnum"
+            "FieldHandleEnum"
         ]
+
+    /// A CoreLib type by name, for one F# cannot name in `typeof`: byref-like or internal.
+    let private coreLibType (name : string) : Type =
+        typeof<obj>.Assembly.GetType name
+        |> Option.ofObj
+        |> Option.defaultWith (fun () -> failwith $"CoreLib has no %s{name}")
 
     /// Value types CoreCLR may refuse to load, each with a struct holding it.
     ///
     /// Enums whose one instance field is not of a primitive type: `SelfEnum`'s field is of
     /// `SelfEnum` itself, `CycleA`'s and `CycleB`'s are of each other, `EnumOfEnum`'s is of an
     /// ordinary enum, `StructEnum`'s is of a struct, and `ImmutableEnum`'s is of a struct in another
-    /// assembly. `SequentialEnum` is over `int` but declares sequential layout.
+    /// assembly. `SequentialEnum` is over `int` but declares sequential layout. `MethodHandleEnum`'s
+    /// field is of CoreLib's `RuntimeMethodHandleInternal`, and `FieldHandleEnum`'s of
+    /// `RuntimeFieldHandleInternal`: a field of either is judged as a native integer, but an enum's
+    /// field is checked by its signature, in which each is a struct.
     ///
     /// Generic structs that hold an instantiation of themselves by value: `SelfNest<T>` holds a
     /// `SelfNest<SelfNest<T>>`, and `WrapNest<T>` a `WrapNest<Wrap<T>>`; `HoldsSelfNest` and
@@ -947,6 +958,8 @@ module TestLayoutFacts =
                 "StructEnum", plain
                 "ImmutableEnum", typeof<ImmutableArray<int>>
                 "SequentialEnum", typeof<int>
+                "MethodHandleEnum", coreLibType "System.RuntimeMethodHandleInternal"
+                "FieldHandleEnum", coreLibType "System.RuntimeFieldHandleInternal"
             ] do
             enums.[name]
                 .DefineField (
@@ -1068,6 +1081,10 @@ module TestLayoutFacts =
                     "HoldsImmutableEnum", false
                     "SequentialEnum", false
                     "HoldsSequentialEnum", false
+                    "MethodHandleEnum", false
+                    "HoldsMethodHandleEnum", false
+                    "FieldHandleEnum", false
+                    "HoldsFieldHandleEnum", false
                     "HoldsSelfNest", false
                     "HoldsWrapNest", false
                     "UsesHolder", true
@@ -1099,12 +1116,6 @@ module TestLayoutFacts =
                 tb.DefineField (fieldName, fieldType, FieldAttributes.Public) |> ignore
 
             tb.CreateType ()
-
-        // F# cannot name a byref-like type in `typeof`.
-        let coreLibType (name : string) : Type =
-            typeof<obj>.Assembly.GetType name
-            |> Option.ofObj
-            |> Option.defaultWith (fun () -> failwith $"CoreLib has no %s{name}")
 
         let refInt = refStruct "RefInt" [ "X", typeof<int>.MakeByRefType () ]
 
