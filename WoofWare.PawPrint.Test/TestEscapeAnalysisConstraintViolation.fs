@@ -4,6 +4,9 @@ open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -1596,7 +1599,9 @@ public static class Cases
     /// an argument constrained to it does not satisfy, and whose own parameter a signature names.
     /// And a generic method instantiates another, or a generic type, with a pointer to its type
     /// variable, which CoreCLR admits in no instantiation, rejecting it compiling the caller even in
-    /// code shared between instantiations. The library is emitted, the client compiled against it.
+    /// code shared between instantiations; or with `TypedReference`, which no instantiation admits
+    /// either, though its parameter allows a byref-like argument. The library is emitted, the client
+    /// compiled against it.
     [<Test>]
     let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -1738,6 +1743,39 @@ public static class Cases
             )
 
             pointingTypeIl.Emit Reflection.Emit.OpCodes.Ret
+
+            // `static void Q<A, B>() where A : allows ref struct`.
+            let allowing =
+                plain.DefineMethod (
+                    "Q",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            (allowing.DefineGenericParameters [| "A" ; "B" |]).[0].SetGenericParameterAttributes
+                Reflection.GenericParameterAttributes.AllowByRefLike
+
+            allowing.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+
+            // `static void G2<T>() { Q<TypedReference, T>(); }`.
+            let passing =
+                plain.DefineMethod (
+                    "G2",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let passed = (passing.DefineGenericParameters [| "T" |]).[0]
+            let passingIl = passing.GetILGenerator ()
+
+            passingIl.Emit (
+                Reflection.Emit.OpCodes.Call,
+                allowing.MakeGenericMethod [| typeof<obj>.Assembly.GetType "System.TypedReference" ; passed :> Type |]
+            )
+
+            passingIl.Emit Reflection.Emit.OpCodes.Ret
             plain.CreateType () |> ignore<Type>
 
             use stream = new MemoryStream ()
@@ -1755,10 +1793,19 @@ public static class Cases
     public static int CallsRunMake() { new Holder<int>().RunMake(); return 0; }
     public static int CallsPointing() { Plain.G<string>(); return 0; }
     public static int CallsPointingType() { Plain.H<string>(); return 0; }
+    public static int CallsTypedReference() { Plain.G2<string>(); return 0; }
 }
 """
 
-        let names = [ "CallsRun" ; "CallsRunMake" ; "CallsPointing" ; "CallsPointingType" ]
+        let names =
+            [
+                "CallsRun"
+                "CallsRunMake"
+                "CallsPointing"
+                "CallsPointingType"
+                "CallsTypedReference"
+            ]
+
         let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
         Assert.That (hostOutcomes.["CallsRun"], Is.EqualTo (Outcome.Escapes verification))
         Assert.That (hostOutcomes.["CallsPointing"], Is.EqualTo (Outcome.Escapes badImage))
@@ -1779,7 +1826,7 @@ public static class Cases
             )
             |> Seq.length
 
-        Assert.That (byDefinition, Is.EqualTo 3)
+        Assert.That (byDefinition, Is.EqualTo 4)
 
         let mutable analysis =
             analysisOver
@@ -1804,6 +1851,7 @@ public static class Cases
                         "CallsRunMake", "Holder`1", "RunMake", false
                         "CallsPointing", "Plain", "G", true
                         "CallsPointingType", "Plain", "H", true
+                        "CallsTypedReference", "Plain", "G2", true
                     ] do
                     let raised =
                         match hostOutcomes.[case] with
@@ -1848,6 +1896,272 @@ public static class Cases
                         match named with
                         | Some failure -> yield $"%s{failure}; %s{case}'s outcome is %A{hostOutcomes.[case]}"
                         | None -> ()
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat "\n" |> failwith
+
+    /// A generic method calling a method that a generic type inherits from its generic base, by a
+    /// member reference whose parent is the derived type over the method's type variable, which IL
+    /// may spell though C# names the declaring type. The inherited method's constraint names the
+    /// base's parameter, which the derived type's second parameter instantiates, and an update has
+    /// added it. CoreCLR checks the method's argument against the constraint as the base is
+    /// instantiated, and rejects it compiling the caller. The middle assembly is written directly.
+    [<Test>]
+    let ``a method inherited from a generic base agrees with the host`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let library (constrained : bool) : string =
+            let clause = if constrained then " where U : I<X>" else ""
+
+            $"namespace Lib; public interface I<S> {{ }} public class Box<S> : I<S> {{ }} public class Base<X> {{ public static void M<U>()%s{clause} {{ }} }} public class Derived<A, B> : Base<B> {{ }}"
+
+        let constrained = compile "Lib" [] (library true)
+        let unconstrained = compile "Lib" [] (library false)
+
+        // `Mid.Calls`: `static void Generic<T>() { Lib.Derived<string, T>.M<Lib.Box<string>>(); }`,
+        // the member reference's parent being `Derived<string, T>`, and
+        // `static void CallsGeneric() { Generic<object>(); }`.
+        let middle =
+            let metadata = MetadataBuilder ()
+            let ilStream = BlobBuilder ()
+            let bodies = MethodBodyStreamEncoder ilStream
+
+            metadata.AddModule (
+                0,
+                metadata.GetOrAddString "Mid.dll",
+                metadata.GetOrAddGuid (Guid "6f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b"),
+                Unchecked.defaultof<GuidHandle>,
+                Unchecked.defaultof<GuidHandle>
+            )
+            |> ignore<ModuleDefinitionHandle>
+
+            metadata.AddAssembly (
+                metadata.GetOrAddString "Mid",
+                Version (0, 0, 0, 0),
+                Unchecked.defaultof<StringHandle>,
+                Unchecked.defaultof<BlobHandle>,
+                Unchecked.defaultof<AssemblyFlags>,
+                AssemblyHashAlgorithm.None
+            )
+            |> ignore<AssemblyDefinitionHandle>
+
+            let corelibName = typeof<obj>.Assembly.GetName ()
+
+            let corelibRef =
+                metadata.AddAssemblyReference (
+                    metadata.GetOrAddString corelibName.Name,
+                    corelibName.Version,
+                    Unchecked.defaultof<StringHandle>,
+                    metadata.GetOrAddBlob (corelibName.GetPublicKeyToken ()),
+                    Unchecked.defaultof<AssemblyFlags>,
+                    Unchecked.defaultof<BlobHandle>
+                )
+
+            let libRef =
+                metadata.AddAssemblyReference (
+                    metadata.GetOrAddString "Lib",
+                    Version (0, 0, 0, 0),
+                    Unchecked.defaultof<StringHandle>,
+                    Unchecked.defaultof<BlobHandle>,
+                    Unchecked.defaultof<AssemblyFlags>,
+                    Unchecked.defaultof<BlobHandle>
+                )
+
+            let typeRef (scope : AssemblyReferenceHandle) (ns : string) (name : string) : EntityHandle =
+                metadata.AddTypeReference (
+                    (AssemblyReferenceHandle.op_Implicit scope : EntityHandle),
+                    metadata.GetOrAddString ns,
+                    metadata.GetOrAddString name
+                )
+                |> TypeReferenceHandle.op_Implicit
+
+            let objectRef = typeRef corelibRef "System" "Object"
+            let derivedRef = typeRef libRef "Lib" "Derived`2"
+            let boxRef = typeRef libRef "Lib" "Box`1"
+
+            let derivedOverVariable =
+                let blob = BlobBuilder ()
+
+                let arguments =
+                    BlobEncoder(blob).TypeSpecificationSignature().GenericInstantiation (derivedRef, 2, false)
+
+                arguments.AddArgument().String ()
+                arguments.AddArgument().GenericMethodTypeParameter 0
+                metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+
+            let genericVoid (arity : int) =
+                let blob = BlobBuilder ()
+
+                BlobEncoder(blob)
+                    .MethodSignature(genericParameterCount = arity)
+                    .Parameters (0, (fun returnType -> returnType.Void ()), ignore<ParametersEncoder>)
+
+                metadata.GetOrAddBlob blob
+
+            let inherited =
+                metadata.AddMemberReference (
+                    (TypeSpecificationHandle.op_Implicit derivedOverVariable : EntityHandle),
+                    metadata.GetOrAddString "M",
+                    genericVoid 1
+                )
+
+            let inheritedOfBox =
+                let blob = BlobBuilder ()
+                let arguments = BlobEncoder(blob).MethodSpecificationSignature 1
+                let box = arguments.AddArgument().GenericInstantiation (boxRef, 1, false)
+                box.AddArgument().String ()
+
+                metadata.AddMethodSpecification (
+                    (MemberReferenceHandle.op_Implicit inherited : EntityHandle),
+                    metadata.GetOrAddBlob blob
+                )
+
+            let callsThenReturns (callee : EntityHandle) : int =
+                let code = InstructionEncoder (BlobBuilder ())
+                code.Call callee
+                code.OpCode ILOpCode.Ret
+                bodies.AddMethodBody code
+
+            let generic =
+                metadata.AddMethodDefinition (
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    MethodImplAttributes.IL,
+                    metadata.GetOrAddString "Generic",
+                    genericVoid 1,
+                    callsThenReturns (MethodSpecificationHandle.op_Implicit inheritedOfBox),
+                    MetadataTokens.ParameterHandle 1
+                )
+
+            let genericOfObject =
+                let blob = BlobBuilder ()
+                let arguments = BlobEncoder(blob).MethodSpecificationSignature 1
+                arguments.AddArgument().Object ()
+
+                metadata.AddMethodSpecification (
+                    (MethodDefinitionHandle.op_Implicit generic : EntityHandle),
+                    metadata.GetOrAddBlob blob
+                )
+
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "CallsGeneric",
+                genericVoid 0,
+                callsThenReturns (MethodSpecificationHandle.op_Implicit genericOfObject),
+                MetadataTokens.ParameterHandle 1
+            )
+            |> ignore<MethodDefinitionHandle>
+
+            metadata.AddGenericParameter (
+                (MethodDefinitionHandle.op_Implicit generic : EntityHandle),
+                GenericParameterAttributes.None,
+                metadata.GetOrAddString "T",
+                0
+            )
+            |> ignore<GenericParameterHandle>
+
+            metadata.AddTypeDefinition (
+                TypeAttributes.Class,
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddString "<Module>",
+                Unchecked.defaultof<EntityHandle>,
+                MetadataTokens.FieldDefinitionHandle 1,
+                generic
+            )
+            |> ignore<TypeDefinitionHandle>
+
+            metadata.AddTypeDefinition (
+                TypeAttributes.Public
+                ||| TypeAttributes.Class
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed,
+                metadata.GetOrAddString "Mid",
+                metadata.GetOrAddString "Calls",
+                objectRef,
+                MetadataTokens.FieldDefinitionHandle 1,
+                generic
+            )
+            |> ignore<TypeDefinitionHandle>
+
+            let peBuilder =
+                ManagedPEBuilder (
+                    PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+                    MetadataRootBuilder metadata,
+                    ilStream
+                )
+
+            let image = BlobBuilder ()
+            peBuilder.Serialize image |> ignore<BlobContentId>
+            image.ToArray ()
+
+        let clientImage =
+            compileClient
+                [ unconstrained ; middle ]
+                """
+namespace Client;
+public static class Cases
+{
+    public static int CallsGeneric() { Mid.Calls.CallsGeneric(); return 0; }
+}
+"""
+
+        let hostOutcomes =
+            hostOutcomes [ "Lib", constrained ; "Mid", middle ] clientImage [ "CallsGeneric" ]
+
+        Assert.That (hostOutcomes.["CallsGeneric"], Is.EqualTo (Outcome.Escapes verification))
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraryAssembly = read "Lib" constrained
+        let middleAssembly = read "Mid" middle
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ; middleAssembly ]
+                (fun loaded ->
+                    let bind
+                        (from : DumpedAssembly)
+                        (name : string)
+                        (target : DumpedAssembly)
+                        (loaded : LoadedAssemblies)
+                        : LoadedAssemblies
+                        =
+                        let reference =
+                            from.AssemblyReferences.Values |> Seq.find (fun r -> r.Name.Name = name)
+
+                        fst (loaded.WithBoundReference reference target)
+
+                    // The client names only `Mid`.
+                    loaded
+                    |> bind clientAssembly "Mid" middleAssembly
+                    |> bind middleAssembly "Lib" libraryAssembly
+                )
+
+        let failures =
+            [
+                for name, key in
+                    [
+                        "CallsGeneric", methodNamed clientAssembly "Client.Cases" "CallsGeneric"
+                        "Mid.Calls::Generic", methodNamed middleAssembly "Mid.Calls" "Generic"
+                    ] do
+                    let next, escapes = EscapeAnalysis.escapes analysis key
+                    analysis <- next
+                    let shown = render next escapes
+
+                    let named =
+                        Set.ofList [ typeLoad ; verification ]
+                        |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
+
+                    if
+                        not (
+                            named = Set.singleton verification
+                            || (escapes.Unknown && named.IsSubsetOf (Set.singleton verification))
+                        )
+                    then
+                        yield $"%s{name}: %A{Set.toList named}, unknown %b{escapes.Unknown}"
             ]
 
         if not failures.IsEmpty then
