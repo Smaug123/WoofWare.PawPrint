@@ -43,6 +43,9 @@ module FieldReferenceTarget =
         | TypeBindingFailure.MethodImplDeclarationAbsent _ ->
             failwith
                 $"BUG: comparing field signatures reported %O{failure}, but it answers a reference that names nothing as unequal rather than failing"
+        | TypeBindingFailure.Refused _ ->
+            failwith
+                $"BUG: comparing field signatures reported %O{failure}, but it compares what the signatures spell and loads no type they name"
 
 /// <summary>
 /// Which field a MemberRef names, answered at the level of generic definitions.

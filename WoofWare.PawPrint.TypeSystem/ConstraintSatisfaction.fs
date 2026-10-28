@@ -43,16 +43,6 @@ type ConstraintVerdict =
     /// later arguments are checked in turn.
     | Undecided of parameter : int * required : ConcreteTypeHandle
 
-/// An argument CoreCLR does not admit in any instantiation (`Generics::CheckInstantiation`,
-/// generics.cpp).
-[<RequireQualifiedAccess>]
-type MalformedArgument =
-    | Byref
-    | TypedReference
-    | Void
-    | Pointer
-    | FunctionPointer
-
 /// Whether a closed instantiation of a generic type or method is one CoreCLR admits: well formed
 /// (`malformedArgument`), and satisfying its type parameters' constraints (`satisfiesClosed`).
 ///
