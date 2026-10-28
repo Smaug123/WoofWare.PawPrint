@@ -1142,6 +1142,11 @@ module TestTypeSystemBindingFailure =
 
     let private genSpelling : Gen<Spelling> = genSpellingOver leaves
 
+    /// Spellings every part of which binds as a type on its own, though not necessarily in the
+    /// position it is spelled in.
+    let private genBindingParts : Gen<Spelling> =
+        genSpellingOver (leaves |> List.filter (fun leaf -> leaf.Fails.IsNone))
+
     /// `genSpelling`, now and then an instantiation at an argument no instantiation may have, which
     /// is refused only once everything else binds, and which arbitrary spellings rarely reach.
     let private genSpellingWithMalformedArguments : Gen<Spelling> =
@@ -1337,8 +1342,18 @@ module TestTypeSystemBindingFailure =
 
             true
 
+        // An instantiation over a function pointer binds only where every part of it does, which
+        // arbitrary spellings rarely all do.
+        let gen =
+            Gen.frequency
+                [
+                    2, genSpelling
+                    1, Gen.map (fun argument -> Spelling.ListOf [ argument ]) genSpelling
+                    1, Gen.map (fun element -> Spelling.ListOf [ Spelling.Vector element ]) genBindingParts
+                ]
+
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen gen) property
 
         coverage.Count Resolved.Binds |> shouldBeGreaterThan 100
 
@@ -1457,13 +1472,11 @@ module TestTypeSystemBindingFailure =
 
             true
 
-        let binding = leaves |> List.filter (fun leaf -> leaf.Fails.IsNone)
+        let gen =
+            Gen.frequency [ 2, genBindingParts ; 1, Gen.map Spelling.Vector genBindingParts ]
 
         let coverage =
-            CoverageSample.check
-                (Config.QuickThrowOnFailure.WithMaxTest 1000)
-                (Arb.fromGen (genSpellingOver binding))
-                property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
 
         coverage.Count ArgumentVerdict.Admitted |> shouldBeGreaterThan 100
 

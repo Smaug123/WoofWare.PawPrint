@@ -586,29 +586,85 @@ module TypeResolution =
             | ExpandingParam.Method i -> $"!!%d{i}"
 
     /// <summary>
+    /// What <paramref name="argument" />, an instantiation's argument once substituted, is that
+    /// CoreCLR admits in no instantiation, if it is one: a byref, a pointer, a function pointer,
+    /// <c>TypedReference</c> or <c>void</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is CoreCLR's <c>Generics::CheckInstantiation</c> (generics.cpp), which reads the
+    /// argument's element type past its custom modifiers and <c>pinned</c>, and so refuses CoreLib's
+    /// <c>System.Void</c> and <c>System.TypedReference</c> however they are spelled. It also admits
+    /// every argument from the first generic variable on, but a substituted argument is closed.
+    /// </remarks>
+    let rec private malformedArgument
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (argument : TypeDefn)
+        : string option
+        =
+        match argument with
+        | TypeDefn.Modified modified -> malformedArgument baseClassTypes modified.Unmodified
+        | TypeDefn.Pinned element -> malformedArgument baseClassTypes element
+        | TypeDefn.Byref _ -> Some "a byref"
+        | TypeDefn.Pointer _ -> Some "a pointer"
+        | TypeDefn.FunctionPointer _ -> Some "a function pointer"
+        | TypeDefn.FromDefinition (identity, _) when identity = baseClassTypes.TypedReference.Identity ->
+            Some "System.TypedReference"
+        | TypeDefn.FromDefinition (identity, _) when identity = baseClassTypes.Void.Identity -> Some "System.Void"
+        | TypeDefn.FromDefinition _
+        | TypeDefn.GenericInstantiation _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ -> None
+        // Substitution names every leaf by its definition and replaces every parameter.
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void
+        | TypeDefn.FromReference _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ ->
+            failwith
+                $"TypeResolution: an instantiation's argument %O{argument} was not substituted; substitution names every type by its definition and replaces every generic parameter, so this is a bug in the caller"
+
+    /// <summary>
     /// <paramref name="definition" /> instantiated at <paramref name="args" />, the arguments an
-    /// instantiation names for it.
+    /// instantiation names for it, substituted.
     /// </summary>
     /// <remarks>
     /// There must be exactly as many arguments as the definition declares generic parameters (for
-    /// a nested type, counting those it inherits from its declaring types). Otherwise CoreCLR's
-    /// class loader throws <c>TypeLoadException</c> (<c>IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS</c>),
-    /// which is unmodelled here.
+    /// a nested type, counting those it inherits from its declaring types), and none of them may be
+    /// a byref, a pointer, a function pointer, <c>TypedReference</c> or <c>void</c>. Otherwise
+    /// CoreCLR's class loader throws <c>TypeLoadException</c>
+    /// (<c>IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS</c>, or <c>IDS_CLASSLOAD_INVALIDINSTANTIATION</c>
+    /// from <c>Generics::CheckInstantiation</c>), which is unmodelled here.
     /// </remarks>
     let private instantiateDefinition
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (args : ImmutableArray<TypeDefn>)
         (definition : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : Result<WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        if args.IsEmpty || args.Length <> definition.Generics.Length then
+        let unmodelled (diagnostic : string) =
             {
-                Diagnostic =
-                    $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} declares %d{definition.Generics.Length} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled"
+                Diagnostic = diagnostic
             }
             |> TypeBindingFailure.Unmodelled
             |> Error
+
+        if args.IsEmpty || args.Length <> definition.Generics.Length then
+            unmodelled
+                $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} declares %d{definition.Generics.Length} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled"
         else
-            Ok (TypeInfo.applyGenericArgs args definition)
+
+        match
+            args
+            |> Seq.indexed
+            |> Seq.tryPick (fun (index, arg) ->
+                malformedArgument baseClassTypes arg
+                |> Option.map (fun what -> index, arg, what)
+            )
+        with
+        | Some (index, arg, what) ->
+            unmodelled
+                $"An instantiation of %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} has %s{what}, %O{arg}, as its argument %d{index}; CoreCLR refuses that with TypeLoadException (IDS_CLASSLOAD_INVALIDINSTANTIATION), which is not modelled"
+        | None -> Ok (TypeInfo.applyGenericArgs args definition)
 
     /// <summary>
     /// The head of an instantiation instantiated at <paramref name="args" />, the instantiation's
@@ -623,6 +679,7 @@ module TypeResolution =
     let private instantiateHead
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (head : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
@@ -630,7 +687,7 @@ module TypeResolution =
         : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
         let instantiateIn (definedIn : DumpedAssembly) (handle : TypeDefinitionHandle) (assemblies : LoadedAssemblies) =
-            match instantiateDefinition args definedIn.TypeDefs.[handle] with
+            match instantiateDefinition baseClassTypes args definedIn.TypeDefs.[handle] with
             | Ok instantiated -> assemblies, Ok (definedIn, instantiated)
             | Error failure -> assemblies, Error failure
 
@@ -650,6 +707,15 @@ module TypeResolution =
                             $"An instantiation's head %O{head} is not a generic type definition named by a TypeDef or TypeRef, which is the only head a signature can spell"
                     }
             )
+
+    /// CoreCLR's `SigPointer::GetTypeHandleThrowing` refuses a function pointer type whose signature
+    /// carries the GENERIC calling convention (`BFA_FNPTR_CANNOT_BE_GENERIC`).
+    let private refuseGenericFunctionPointer (functionPointer : TypeDefn) : TypeBindingFailure =
+        TypeBindingFailure.Unmodelled
+            {
+                Diagnostic =
+                    $"The function pointer type %O{functionPointer} carries the GENERIC calling convention; CoreCLR refuses that with BadImageFormatException, which is not modelled"
+            }
 
     /// A cyclic environment is not something metadata can express: environments are built by the
     /// interpreter, and every live path builds them out of `concreteHandleToTypeDefn`, which emits
@@ -765,9 +831,16 @@ module TypeResolution =
     type private SubstitutionMemo = System.Collections.Generic.Dictionary<SubstitutionKey, TypeDefn>
 
     /// Substitute generic parameters in a TypeDefn while preserving the structure of
-    /// constructed types (arrays, pointers, byrefs): e.g. OneDimensionalArrayLowerBoundZero
-    /// is preserved rather than being collapsed to System.Array. "Leaf" types
-    /// (FromReference, FromDefinition, PrimitiveType) round-trip losslessly.
+    /// constructed types (arrays, pointers, byrefs, function pointers, custom modifiers and
+    /// `pinned`): e.g. OneDimensionalArrayLowerBoundZero is preserved rather than being collapsed
+    /// to System.Array. "Leaf" types (FromReference, FromDefinition, PrimitiveType, and a custom
+    /// modifier) come back naming their definitions. A function pointer's return column keeps a
+    /// `void` as `TypeDefn.Void`, because there it says the pointer returns nothing.
+    ///
+    /// The parts are loaded in the order CoreCLR's `SigPointer::GetTypeHandleThrowing` loads them,
+    /// so the first that does not bind is the failure: a function pointer's return type, then its
+    /// parameters; a modified type, then its modifier. CoreCLR skips a custom modifier without
+    /// loading it, so a modifier that does not bind is unmodelled rather than absent.
     ///
     /// <c>expanding</c> is the chain of parameter expansions currently in flight; see
     /// <c>ExpandingParam</c>. <c>memo</c> must have been created for this environment; see
@@ -866,6 +939,49 @@ module TypeResolution =
             | assemblies, Ok (_, resolvedInfo) ->
                 assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolvedInfo)
 
+        // A modified type substituted by `unmodified`, then its modifier named by its definition, so
+        // that the modifier means the same wherever the substituted type is read.
+        let remodified
+            (unmodified : LoadedAssemblies -> TypeDefn -> LoadedAssemblies * Result<TypeDefn, TypeBindingFailure>)
+            (modified : ModifiedTypeDefn)
+            =
+            match unmodified assemblies modified.Unmodified with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok substituted ->
+                match preserved modified.Modifier assemblies with
+                | assemblies, Ok (TypeDefn.FromDefinition _ as modifier) ->
+                    assemblies,
+                    Ok (
+                        TypeDefn.Modified
+                            { modified with
+                                Unmodified = substituted
+                                Modifier = modifier
+                            }
+                    )
+                | assemblies, outcome ->
+                    let why =
+                        match outcome with
+                        | Ok named -> $"names %O{named}, not a type definition"
+                        | Error failure -> $"does not bind (%s{TypeBindingFailure.describe failure})"
+
+                    assemblies,
+                    Error (
+                        TypeBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"The custom modifier %O{modified.Modifier} %s{why}. CoreCLR does not load a custom modifier, so it would not fail here, but PawPrint names a modifier by its definition to carry it into an instantiation"
+                            }
+                    )
+
+        // A function pointer's return column, where `void`, under any modifiers, says the pointer
+        // returns nothing; `concretizeReturnColumn` reads it so, and would read the `System.Void`
+        // that substituting it as a type gives as a value returned.
+        let rec returnColumn (assemblies : LoadedAssemblies) (returned : TypeDefn) =
+            match returned with
+            | TypeDefn.Void -> assemblies, Ok TypeDefn.Void
+            | TypeDefn.Modified modified -> remodified returnColumn modified
+            | returned -> substitute expanding assemblies returned
+
         // A parameter replaced by its argument, which is substituted in turn.
         let expand (link : ExpandingParam) =
             match argumentOf typeGenericArgs methodGenericArgs link with
@@ -884,11 +1000,40 @@ module TypeResolution =
         | TypeDefn.Array (elementType, rank) -> wrapped (fun resolved -> TypeDefn.Array (resolved, rank)) elementType
         | TypeDefn.Pointer elementType -> wrapped TypeDefn.Pointer elementType
         | TypeDefn.Byref elementType -> wrapped TypeDefn.Byref elementType
+        | TypeDefn.Pinned elementType -> wrapped TypeDefn.Pinned elementType
+        | TypeDefn.Modified modified -> remodified (substitute expanding) modified
+        | TypeDefn.FunctionPointer signature ->
+            if signature.Header.Get.IsGeneric then
+                assemblies, Error (refuseGenericFunctionPointer ty)
+            else
+
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> assemblies, Ok MethodReturnType.Void
+                | MethodReturnType.Returns returned ->
+                    match returnColumn assemblies returned with
+                    | assemblies, Error failure -> assemblies, Error failure
+                    | assemblies, Ok returned -> assemblies, Ok (MethodReturnType.Returns returned)
+
+            match returned with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok returnType ->
+                match traverseLoaded (substitute expanding) assemblies signature.ParameterTypes with
+                | assemblies, Error failure -> assemblies, Error failure
+                | assemblies, Ok parameters ->
+                    assemblies,
+                    Ok (
+                        TypeDefn.FunctionPointer
+                            { signature with
+                                ReturnType = returnType
+                                ParameterTypes = List.ofSeq parameters
+                            }
+                    )
         | TypeDefn.GenericInstantiation (generic, args) ->
             match traverseLoaded (substitute expanding) assemblies args with
             | assemblies, Error failure -> assemblies, Error failure
             | assemblies, Ok args' ->
-                match instantiateHead loggerFactory dotnetRuntimeDirs generic args' assy assemblies with
+                match instantiateHead loggerFactory dotnetRuntimeDirs baseClassTypes generic args' assy assemblies with
                 | assemblies, Error failure -> assemblies, Error failure
                 | assemblies, Ok (resolvedIn, instantiated) ->
                     match primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn instantiated with
@@ -915,7 +1060,6 @@ module TypeResolution =
                         }
                 )
             | resolved -> resolved
-        | other -> preserved other assemblies
 
     /// The body of <c>resolveTypeFromDefn</c>, carrying the chain of parameter expansions
     /// currently in flight. The public entry point starts that chain empty; everything inside
@@ -1013,7 +1157,8 @@ module TypeResolution =
 
             match traverseLoaded substitute assemblies args with
             | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok args' -> instantiateHead loggerFactory dotnetRuntimeDirs generic args' assy assemblies
+            | assemblies, Ok args' ->
+                instantiateHead loggerFactory dotnetRuntimeDirs baseClassTypes generic args' assy assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
             let definedIn = assemblies.ByDefinitionName identity.AssemblyFullName
 
@@ -1027,31 +1172,29 @@ module TypeResolution =
         | TypeDefn.PrimitiveType prim ->
             let primitive =
                 match prim with
-                | PrimitiveType.Boolean -> Some baseClassTypes.Boolean
-                | PrimitiveType.Char -> Some baseClassTypes.Char
-                | PrimitiveType.SByte -> Some baseClassTypes.SByte
-                | PrimitiveType.Byte -> Some baseClassTypes.Byte
-                | PrimitiveType.Int16 -> Some baseClassTypes.Int16
-                | PrimitiveType.UInt16 -> Some baseClassTypes.UInt16
-                | PrimitiveType.Int32 -> Some baseClassTypes.Int32
-                | PrimitiveType.UInt32 -> Some baseClassTypes.UInt32
-                | PrimitiveType.Int64 -> Some baseClassTypes.Int64
-                | PrimitiveType.UInt64 -> Some baseClassTypes.UInt64
-                | PrimitiveType.Single -> Some baseClassTypes.Single
-                | PrimitiveType.Double -> Some baseClassTypes.Double
-                | PrimitiveType.String -> Some baseClassTypes.String
-                | PrimitiveType.TypedReference -> None
-                | PrimitiveType.IntPtr -> Some baseClassTypes.IntPtr
-                | PrimitiveType.UIntPtr -> Some baseClassTypes.UIntPtr
-                | PrimitiveType.Object -> Some baseClassTypes.Object
+                | PrimitiveType.Boolean -> baseClassTypes.Boolean
+                | PrimitiveType.Char -> baseClassTypes.Char
+                | PrimitiveType.SByte -> baseClassTypes.SByte
+                | PrimitiveType.Byte -> baseClassTypes.Byte
+                | PrimitiveType.Int16 -> baseClassTypes.Int16
+                | PrimitiveType.UInt16 -> baseClassTypes.UInt16
+                | PrimitiveType.Int32 -> baseClassTypes.Int32
+                | PrimitiveType.UInt32 -> baseClassTypes.UInt32
+                | PrimitiveType.Int64 -> baseClassTypes.Int64
+                | PrimitiveType.UInt64 -> baseClassTypes.UInt64
+                | PrimitiveType.Single -> baseClassTypes.Single
+                | PrimitiveType.Double -> baseClassTypes.Double
+                | PrimitiveType.String -> baseClassTypes.String
+                | PrimitiveType.TypedReference -> baseClassTypes.TypedReference
+                | PrimitiveType.IntPtr -> baseClassTypes.IntPtr
+                | PrimitiveType.UIntPtr -> baseClassTypes.UIntPtr
+                | PrimitiveType.Object -> baseClassTypes.Object
 
-            match primitive with
-            | None -> unmodelled "TODO: resolveTypeFromDefn of System.TypedReference is not implemented"
-            | Some ty ->
-                let ty =
-                    ty |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
+            let ty =
+                primitive
+                |> TypeInfo.mapGeneric (fun _ -> failwith "none of these types are generic")
 
-                assemblies, Ok (baseClassTypes.Corelib, ty)
+            assemblies, Ok (baseClassTypes.Corelib, ty)
         // `ELEMENT_TYPE_VOID` in a type position, as a TypeSpec may spell it, names CoreLib's
         // `System.Void` as the primitive element types name theirs.
         | TypeDefn.Void ->
@@ -1096,14 +1239,7 @@ module TypeResolution =
                 | TypeDefn.Modified modified -> elementBinds assemblies modified.Unmodified
                 | TypeDefn.FunctionPointer signature ->
                     if signature.Header.Get.IsGeneric then
-                        assemblies,
-                        Error (
-                            TypeBindingFailure.Unmodelled
-                                {
-                                    Diagnostic =
-                                        $"The function pointer type %O{element} carries the GENERIC calling convention; CoreCLR refuses that with BadImageFormatException, which is not modelled"
-                                }
-                        )
+                        assemblies, Error (refuseGenericFunctionPointer element)
                     else
                         let returned =
                             match signature.ReturnType with
