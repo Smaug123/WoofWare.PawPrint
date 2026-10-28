@@ -772,7 +772,9 @@ public static class Driver
     /// assembly's `FileNotFoundException` comes out, and the violation's `TypeLoadException` never
     /// does; so too for a generic method of a type whose generic methods' constraints name it. So
     /// too where the definition's own load misses, at its base or at the type of a value-type field,
-    /// before its instantiation's constraints, which the argument violates, are checked.
+    /// before its instantiation's constraints, which the argument violates, are checked. And a class
+    /// whose value-type field's type is missing misses before its base, which violates a
+    /// constraint, is checked, though the base comes first among what its full load brings.
     [<Test>]
     let ``a load that misses fails before the constraint it would check`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -791,6 +793,7 @@ public class Both<T> where T : class, Missing.IMissing { public static void Touc
 public class BothMethod<T> where T : class { public static void Touch() { } public static void Gm<U>() where U : Missing.IMissing { } }
 public class Based<T> : Missing.BaseMissing where T : class { public static void Touch() { } }
 public class Fielded<T> where T : class { public Missing.StructMissing F; public static void Touch() { } }
+public class Strict<U> where U : class { }
 """
             else
                 """
@@ -799,6 +802,7 @@ public class Both<T> { public static void Touch() { } }
 public class BothMethod<T> { public static void Touch() { } public static void Gm<U>() { } }
 public class Based<T> { public static void Touch() { } }
 public class Fielded<T> { public static void Touch() { } }
+public class Strict<U> { }
 """
 
         let constrained = compile "Lib" [ missing ] (library true)
@@ -806,9 +810,10 @@ public class Fielded<T> { public static void Touch() { } }
 
         let clientImage =
             compileClient
-                [ unconstrained ]
+                [ unconstrained ; missing ]
                 """
 namespace Client;
+public class Ordered : Lib.Strict<int> { public Missing.StructMissing F; public static void Touch() { } }
 public static class Cases
 {
     public static int BothInt() { try { Lib.Both<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
@@ -816,11 +821,19 @@ public static class Cases
     public static int BothMethodInt() { try { Lib.BothMethod<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int BasedInt() { try { Lib.Based<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int FieldedInt() { try { Lib.Fielded<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int OrderedTouch() { try { Ordered.Touch(); return 0; } catch (System.Exception) { return 1; } }
 }
 """
 
         let names =
-            [ "BothInt" ; "BothString" ; "BothMethodInt" ; "BasedInt" ; "FieldedInt" ]
+            [
+                "BothInt"
+                "BothString"
+                "BothMethodInt"
+                "BasedInt"
+                "FieldedInt"
+                "OrderedTouch"
+            ]
 
         let fileNotFound = "System.IO.FileNotFoundException"
 
