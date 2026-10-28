@@ -72,11 +72,58 @@
       # The oldest runtime, which the test host, the package and every executable run on.
       dotnet-sdk = pkgs.dotnetCorePackages.sdk_10_0;
       dotnet-runtime = runtimes.net10.runtime;
+      # Self-contained publishing targets, matching the flake's supported platforms.
+      publishRids = ["linux-x64" "linux-arm64" "osx-arm64"];
       # The devshell's one `dotnet`: the oldest runtime's SDK, with every newer runtime's shared
       # frameworks beside it, so the same muxer runs the test host and a guest on any runtime. It
       # resolves the newest `hostfxr` present, so net10 apps start through net11's; `hostfxr` is
       # the version-agnostic half of the host, which only selects a framework directory.
       dotnet-devshell = pkgs.dotnetCorePackages.combinePackages [dotnet-sdk runtimes.net11.runtime runtimes.net11.aspNetCore];
+      # The Nix build's pinned packages and SDK packs for every supported publishing target.
+      # NuGet can read these directly as a fallback folder without extracting them into
+      # a writable cache. The source contains the metadata needed for version resolution.
+      offlineNuget = pkgs.symlinkJoin {
+        name = "pawprint-offline-nuget";
+        paths =
+          [
+            (pkgs.mkNugetDeps {
+              name = pname;
+              sourceFile = ./nix/deps.json;
+            })
+          ]
+          ++ dotnet-sdk.packages
+          ++ pkgs.lib.concatMap (rid: dotnet-sdk.targetPackages.${rid}) publishRids;
+      };
+      # The SDK's local-tool downloader needs full archives and an explicit NuGet config;
+      # it does not use MSBuild's RestoreSources or the fallback folder. Only manifest
+      # tools need installable archives; project packages are read directly from the store.
+      offlineToolNuget = pkgs.mkNugetDeps {
+        name = "${pname}-tools";
+        installable = true;
+        nugetDeps = {fetchNuGet}: let
+          localTools = (pkgs.lib.importJSON ./.config/dotnet-tools.json).tools;
+          isLocalTool = dep:
+            builtins.any
+            (name: pkgs.lib.toLower name == pkgs.lib.toLower dep.pname && localTools.${name}.version == dep.version)
+            (builtins.attrNames localTools);
+        in
+          map fetchNuGet (builtins.filter isLocalTool (pkgs.lib.importJSON ./nix/deps.json));
+      };
+      offlineNugetEnvironment = {
+        RestoreSources = "${offlineNuget}/share/nuget/source";
+        NUGET_FALLBACK_PACKAGES = "${offlineNuget}/share/nuget/packages";
+        PAWPRINT_TOOL_NUGET_CONFIG = pkgs.writeText "pawprint-tool-nuget.config" ''
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="offline-tools" value="${offlineToolNuget}/share/nuget/source" />
+            </packageSources>
+          </configuration>
+        '';
+        # Auditing uses an online advisory feed independently of package resolution.
+        NuGetAudit = "false";
+      };
       # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
       # native helpers) from the devshell as $DOTNET_RUNTIME_SRC_<RUNTIME>. Sparse-checked-out to
       # just the trees we actually read, to keep the closure small.
@@ -200,6 +247,7 @@
       packages = let
         deps = builtins.fromJSON (builtins.readFile ./nix/deps.json);
       in {
+        nuget-deps = offlineNuget;
         fantomas = dotnetTool null "fantomas" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fantomas.version (builtins.head (builtins.filter (elem: elem.pname == "fantomas") deps)).hash;
         fsharp-analyzers = dotnetTool "FSharp.Analyzers.Cli" "fsharp-analyzers" (builtins.fromJSON (builtins.readFile ./.config/dotnet-tools.json)).tools.fsharp-analyzers.version (builtins.head (builtins.filter (elem: elem.pname == "fsharp-analyzers") deps)).hash;
         default = pkgs.buildDotnetModule {
@@ -207,7 +255,9 @@
           name = "WoofWare.PawPrint";
           src = ./.;
           projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
-          testProjectFile = "./WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj";
+          # Restore/build the whole solution so fetch-deps also captures development-only
+          # dependencies (including BenchmarkDotNet) for the offline devshell.
+          testProjectFile = "./WoofWare.PawPrint.slnx";
           nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
           # CI's `build` job runs this suite on every supported runtime, and running it here as
           # well would cost a CI runner another 10-20 minutes.
@@ -216,6 +266,28 @@
       };
       checks =
         {
+          # Exercise project/tool restores and self-contained publishing with empty caches.
+          # The Nix sandbox makes a missing package an error, even on a connected CI runner.
+          offline-restore = pkgs.stdenvNoCC.mkDerivation {
+            name = "pawprint-offline-restore";
+            src = ./.;
+            nativeBuildInputs = [dotnet-sdk];
+            env = offlineNugetEnvironment;
+            phases = ["unpackPhase" "installPhase"];
+            installPhase = ''
+              export NUGET_PACKAGES="$TMPDIR/packages"
+              export DOTNET_CLI_HOME="$TMPDIR/dotnet-cli"
+              export NUGET_HTTP_CACHE_PATH="$TMPDIR/nuget-http"
+              dotnet restore WoofWare.PawPrint.slnx --force --no-http-cache
+              for rid in ${pkgs.lib.escapeShellArgs publishRids}; do
+                dotnet publish CSharpExample/CSharpExample.csproj --self-contained --configuration Release --runtime "$rid"
+              done
+              dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG" --no-http-cache
+              dotnet fantomas --version
+              dotnet fsharp-analyzers --help
+              touch "$out"
+            '';
+          };
           # The docstring-attachment check is the oracle a definition-moving commit is held
           # to, and it is only as good as its own contract: thirty-six shapes in a throwaway
           # repository, eighteen of which must be reported and eighteen of which must not. The
@@ -270,47 +342,63 @@
               else "touch $out"
             )))
         runtimes;
-      devShell = pkgs.mkShell {
-        buildInputs = [dotnet-devshell];
-        DOTNET_CLI_TELEMETRY_OPTOUT = "1";
-        # Each runtime's variables carry its name, and no unsuffixed name exists, so nothing can
-        # read one runtime's pins believing them another's. Tests read them only through
-        # `FrameworkUnderTest` (TestFrameworkLocatorRatchet enforces it), keyed on the runtime.
-        #
-        # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
-        # sync-dotnet-runtime skill.
-        DOTNET_RUNTIME_SRC_NET10 = runtimeSource runtimes.net10;
-        DOTNET_RUNTIME_SRC_NET11 = runtimeSource runtimes.net11;
-        # Managed linux-x64 and osx-arm64 framework assemblies, so tests can point the
-        # interpreter at the CoreLib flavour of the kernel it emulates instead of the host's.
-        # See `frameworkPack`. Tests that need one skip when it is unset, so a non-Nix checkout
-        # still works.
-        DOTNET_LINUX_FRAMEWORK_DIR_NET10 = frameworkPack "linux-x64" runtimes.net10.linuxFrameworkHash "net10" runtimes.net10;
-        DOTNET_LINUX_FRAMEWORK_DIR_NET11 = frameworkPack "linux-x64" runtimes.net11.linuxFrameworkHash "net11" runtimes.net11;
-        DOTNET_OSX_FRAMEWORK_DIR_NET10 = frameworkPack "osx-arm64" runtimes.net10.osxFrameworkHash "net10" runtimes.net10;
-        DOTNET_OSX_FRAMEWORK_DIR_NET11 = frameworkPack "osx-arm64" runtimes.net11.osxFrameworkHash "net11" runtimes.net11;
-        # The net11 shared framework inside `dotnet-devshell`, as `dotnet --list-runtimes` names
-        # it. The net10 one needs no variable: the test host runs on it, and finds it from its
-        # own runtimeconfig.
-        DOTNET_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.NETCore.App/${runtimes.net11.expectedRuntimeVersion}";
-        # Likewise its ASP.NET Core shared framework, which net10's comes with the SDK.
-        DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.AspNetCore.App/${runtimes.net11.expectedRuntimeVersion}";
-        # Force polling-based file watcher to avoid hangs in
-        # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
-        # path can deadlock under load when ASP.NET hosts created in tests
-        # initialise their JSON configuration providers).
-        DOTNET_USE_POLLING_FILE_WATCHER = "1";
-        packages = [
-          pkgs.alejandra
-          pkgs.lychee
-          pkgs.shellcheck
-          pkgs.xmlstarlet
-          pkgs.claude-code
-          pkgs.codex
-          # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
-          # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
-          python
-        ];
+      devShells = let
+        # What both shells share. NuGet restores from its usual sources.
+        shell = {
+          buildInputs = [dotnet-devshell];
+          DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+          # Each runtime's variables carry its name, and no unsuffixed name exists, so nothing can
+          # read one runtime's pins believing them another's. Tests read them only through
+          # `FrameworkUnderTest` (TestFrameworkLocatorRatchet enforces it), keyed on the runtime.
+          #
+          # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
+          # sync-dotnet-runtime skill.
+          DOTNET_RUNTIME_SRC_NET10 = runtimeSource runtimes.net10;
+          DOTNET_RUNTIME_SRC_NET11 = runtimeSource runtimes.net11;
+          # Managed linux-x64 and osx-arm64 framework assemblies, so tests can point the
+          # interpreter at the CoreLib flavour of the kernel it emulates instead of the host's.
+          # See `frameworkPack`. Tests that need one skip when it is unset, so a non-Nix checkout
+          # still works.
+          DOTNET_LINUX_FRAMEWORK_DIR_NET10 = frameworkPack "linux-x64" runtimes.net10.linuxFrameworkHash "net10" runtimes.net10;
+          DOTNET_LINUX_FRAMEWORK_DIR_NET11 = frameworkPack "linux-x64" runtimes.net11.linuxFrameworkHash "net11" runtimes.net11;
+          DOTNET_OSX_FRAMEWORK_DIR_NET10 = frameworkPack "osx-arm64" runtimes.net10.osxFrameworkHash "net10" runtimes.net10;
+          DOTNET_OSX_FRAMEWORK_DIR_NET11 = frameworkPack "osx-arm64" runtimes.net11.osxFrameworkHash "net11" runtimes.net11;
+          # The net11 shared framework inside `dotnet-devshell`, as `dotnet --list-runtimes` names
+          # it. The net10 one needs no variable: the test host runs on it, and finds it from its
+          # own runtimeconfig.
+          DOTNET_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.NETCore.App/${runtimes.net11.expectedRuntimeVersion}";
+          # Likewise its ASP.NET Core shared framework, which net10's comes with the SDK.
+          DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.AspNetCore.App/${runtimes.net11.expectedRuntimeVersion}";
+          # Force polling-based file watcher to avoid hangs in
+          # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
+          # path can deadlock under load when ASP.NET hosts created in tests
+          # initialise their JSON configuration providers).
+          DOTNET_USE_POLLING_FILE_WATCHER = "1";
+          packages = [
+            pkgs.alejandra
+            pkgs.lychee
+            pkgs.shellcheck
+            pkgs.xmlstarlet
+            pkgs.claude-code
+            pkgs.codex
+            # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
+            # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
+            python
+          ];
+        };
+      in {
+        default = pkgs.mkShell shell;
+        # For a machine or sandbox with no network: NuGet restores only from the pinned Nix
+        # closure (see README.md, "Building and testing offline").
+        offline = pkgs.mkShell (shell
+          // {
+            env = offlineNugetEnvironment;
+            shellHook = ''
+              # Keep NuGet's writable bookkeeping within the checkout, which a sandbox can write.
+              # Packages themselves resolve from the read-only store through the fallback folder.
+              export NUGET_PACKAGES="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/packages"
+            '';
+          });
       };
     });
 }

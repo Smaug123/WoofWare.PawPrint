@@ -41,6 +41,43 @@ The following are specifically not implemented:
 
 See the [run-a-program.md](./docs/user/run-a-program.md) doc for how to run a program, and [fuzz-over-thread-scheduler.md](./docs/user/fuzz-over-thread-scheduler.md) for how to automatically detect concurrency-related bugs.
 
+## Building and testing offline
+
+The default devshell (`nix develop`) restores NuGet packages from nuget.org as usual. On a
+machine or in a sandbox with no network, use the `offline` devshell instead, for example:
+
+```bash
+nix develop .#offline -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
+```
+
+It resolves NuGet packages and SDK packs only from the Nix store, including
+self-contained publishing packs for `linux-x64`, `linux-arm64` and `osx-arm64`. Nix may need
+network access to populate the store on first use; once its closure is present,
+restores, builds and tests need no access to nuget.org. NuGet's writable package
+cache is the ignored `packages/` directory at the root of the checkout. Online
+vulnerability auditing is disabled in this shell.
+
+Local tools use their own NuGet configuration. Bootstrap the manifest's tools from
+the offline shell's installable feed, then run the formatter as usual:
+
+```bash
+nix develop .#offline -c sh -c 'dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG"'
+nix develop .#offline -c dotnet fantomas .
+```
+
+The offline shell knows only the packages pinned in `nix/deps.json`. After changing package
+references, regenerate the pins with network access:
+
+```bash
+nix build .#default.fetch-deps && ./result nix/deps.json
+```
+
+Re-enter `nix develop .#offline` to use the new closure. A package missing from the pins fails
+restore in that shell instead of falling back to nuget.org. `nix flake check` verifies that the
+whole solution and the local tools restore offline with empty package, tool and HTTP
+caches, that both tools start, and that `CSharpExample` publishes as a self-contained
+application for each supported RID.
+
 ## Goals
 
 * Fully deterministic, ultimately to the point of supporting time-travel debugging and fuzzing over the order of thread execution. All sources of nondeterminism must be controllable by the PawPrint user somehow, such that emulating the same program twice from the same starting state always produces the same execution history.
