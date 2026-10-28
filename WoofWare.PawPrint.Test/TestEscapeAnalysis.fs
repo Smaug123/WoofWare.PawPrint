@@ -11816,6 +11816,124 @@ public static class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// Binding a P/Invoke to its native code runs its declaring type's initializer first, unless
+    /// the type is `beforefieldinit` (`IsClassConstructorTriggeredAtLinkTime`, `PInvokeLink`): the
+    /// host's CoreCLR, binding suppressed P/Invokes into `libSystem.Native` as it compiles their
+    /// callers, says so. So `NativeMethod.bindsWithoutManagedCode` holds of CoreLib's P/Invokes into
+    /// `QCall` or a framework shim only where binding runs no initializer, and of no other P/Invoke.
+    /// An assembly named `System.Private.CoreLib` stands in for CoreLib.
+    [<Test>]
+    let ``binding a P/Invoke runs its declaring type's initializer unless it is beforefieldinit`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let natives (ns : string) : string =
+            $$"""
+using System.Runtime.InteropServices;
+
+namespace {{ns}};
+
+public static class Log { public static bool initialized; }
+
+public static class Precise
+{
+    static Precise() { Log.initialized = true; }
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo"), SuppressGCTransition] public static extern int Shim();
+    [DllImport("QCall", EntryPoint = "GetErrNo"), SuppressGCTransition] public static extern int Runtime();
+}
+
+public static class Relaxed
+{
+    static readonly bool initialized = Log.initialized = true;
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo"), SuppressGCTransition] public static extern int Shim();
+    [DllImport("QCall", EntryPoint = "GetErrNo"), SuppressGCTransition] public static extern int Runtime();
+    [DllImport("libSomethingElse"), SuppressGCTransition] public static extern int Elsewhere();
+}
+
+public static class Calls
+{
+    static bool never;
+    public static void Precise() { if (never) {{ns}}.Precise.Shim(); }
+    public static void Relaxed() { if (never) {{ns}}.Relaxed.Shim(); }
+}
+"""
+
+        let clientImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                []
+                [ natives "Client" ]
+
+        // Whether running each caller, which never makes its call, ran the initializer.
+        let hostInitializesFirst : Map<string, bool> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("BindingInitializers", isCollectible = true)
+
+            try
+                let assembly = context.LoadFromStream (new MemoryStream (clientImage))
+                let log = assembly.GetType "Client.Log"
+
+                [ "Precise" ; "Relaxed" ]
+                |> List.map (fun name ->
+                    assembly.GetType("Client.Calls").GetMethod(name).Invoke ((null : obj), [||])
+                    |> ignore
+
+                    let initialized = unbox<bool> (log.GetField("initialized").GetValue (null : obj))
+                    log.GetField("initialized").SetValue ((null : obj), box false)
+                    name, initialized
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        hostInitializesFirst
+        |> shouldEqual (Map.ofList [ "Precise", true ; "Relaxed", false ])
+
+        // `text` compiled as the assembly `name`. Roslyn is not asked to name its output after the
+        // CoreLib it compiles against: it compiles a stand-in name of the same length, whose bytes
+        // are then rewritten.
+        let named (name : string) (text : string) : byte[] =
+            let standIn = System.String ('Q', name.Length)
+
+            let image =
+                Roslyn.compileOptimizedAssemblyWithReferences standIn OutputKind.DynamicallyLinkedLibrary [] [ text ]
+
+            let from = System.Text.Encoding.UTF8.GetBytes standIn
+            let into = System.Text.Encoding.UTF8.GetBytes name
+            let patched = Array.copy image
+            let mutable replaced = 0
+
+            for i in 0 .. patched.Length - from.Length do
+                if Array.forall2 (=) from (Array.sub patched i from.Length) then
+                    Array.blit into 0 patched i into.Length
+                    replaced <- replaced + 1
+
+            if replaced = 0 then
+                failwith $"The image compiled as %s{standIn} does not name it"
+
+            patched
+
+        let read (name : string) (namespaceName : string) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (named name (natives namespaceName)))
+
+        let binds (assembly : DumpedAssembly) (typeName : string) (methodName : string) : bool =
+            let key = methodNamed assembly typeName methodName
+            NativeMethod.bindsWithoutManagedCode assembly key.Method.Get
+
+        let corelib = read "System.Private.CoreLib" "Shaped"
+        let client = read "Client" "Client"
+
+        [
+            binds corelib "Shaped.Precise" "Shim"
+            binds corelib "Shaped.Precise" "Runtime"
+            binds corelib "Shaped.Relaxed" "Shim"
+            binds corelib "Shaped.Relaxed" "Runtime"
+            binds corelib "Shaped.Relaxed" "Elsewhere"
+            binds client "Client.Relaxed" "Shim"
+            binds client "Client.Relaxed" "Runtime"
+        ]
+        |> shouldEqual [ false ; false ; true ; true ; false ; false ; false ]
+
     /// A client compiled against one version of a provider, run against another lacking two types,
     /// taking the address of a method whose signature names a type that fails to load. The JIT
     /// loads the return type of the method whose address it takes in full; CoreCLR prepares the
