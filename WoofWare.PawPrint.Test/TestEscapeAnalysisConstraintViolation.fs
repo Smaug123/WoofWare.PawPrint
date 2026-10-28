@@ -1551,9 +1551,9 @@ public static class Cases
     /// definition tokens rather than references to them on the type's instantiation: CoreCLR takes
     /// a definition token to name the method on the type's typical instantiation, whose parameter
     /// an argument constrained to it does not satisfy, and whose own parameter a signature names.
-    /// And a generic method instantiates another with a pointer to its type variable, which CoreCLR
-    /// admits in no instantiation, rejecting it compiling the caller even in code shared between
-    /// instantiations. The library is emitted, the client compiled against it.
+    /// And a generic method instantiates another, or a generic type, with a pointer to its type
+    /// variable, which CoreCLR admits in no instantiation, rejecting it compiling the caller even in
+    /// code shared between instantiations. The library is emitted, the client compiled against it.
     [<Test>]
     let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -1572,6 +1572,17 @@ public static class Cases
 
             holder.DefineDefaultConstructor Reflection.MethodAttributes.Public
             |> ignore<Reflection.Emit.ConstructorBuilder>
+
+            // `static void Touch()`.
+            let touch =
+                holder.DefineMethod (
+                    "Touch",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            touch.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
 
             // `static void M<U>() where U : T`.
             let constrained =
@@ -1662,6 +1673,28 @@ public static class Cases
             )
 
             pointingIl.Emit Reflection.Emit.OpCodes.Ret
+
+            // `static void H<T>() { Holder<T*>.Touch(); }`.
+            let pointingType =
+                plain.DefineMethod (
+                    "H",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let typeVariable = (pointingType.DefineGenericParameters [| "T" |]).[0]
+            let pointingTypeIl = pointingType.GetILGenerator ()
+
+            pointingTypeIl.Emit (
+                Reflection.Emit.OpCodes.Call,
+                Reflection.Emit.TypeBuilder.GetMethod (
+                    holder.MakeGenericType [| typeVariable.MakePointerType () |],
+                    touch
+                )
+            )
+
+            pointingTypeIl.Emit Reflection.Emit.OpCodes.Ret
             plain.CreateType () |> ignore<Type>
 
             use stream = new MemoryStream ()
@@ -1678,10 +1711,11 @@ public static class Cases
     public static int CallsRun() { new Holder<int>().Run(); return 0; }
     public static int CallsRunMake() { new Holder<int>().RunMake(); return 0; }
     public static int CallsPointing() { Plain.G<string>(); return 0; }
+    public static int CallsPointingType() { Plain.H<string>(); return 0; }
 }
 """
 
-        let names = [ "CallsRun" ; "CallsRunMake" ; "CallsPointing" ]
+        let names = [ "CallsRun" ; "CallsRunMake" ; "CallsPointing" ; "CallsPointingType" ]
         let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
         Assert.That (hostOutcomes.["CallsRun"], Is.EqualTo (Outcome.Escapes verification))
         Assert.That (hostOutcomes.["CallsPointing"], Is.EqualTo (Outcome.Escapes badImage))
@@ -1724,6 +1758,7 @@ public static class Cases
                         "CallsRun", "Holder`1", "Run"
                         "CallsRunMake", "Holder`1", "RunMake"
                         "CallsPointing", "Plain", "G"
+                        "CallsPointingType", "Plain", "H"
                     ] do
                     let raised =
                         match hostOutcomes.[case] with
