@@ -1042,7 +1042,26 @@ module TypeResolution =
             // CoreCLR's `SigPointer::GetTypeHandleThrowing` loads an array's element type before
             // the array, through every array, pointer, byref, pinned and function-pointer layer
             // around it, so an element that does not bind is the array's failure.
+            //
+            // A node already found to bind is not walked again, so that the walk costs the
+            // element's size as a DAG: a function pointer may share one subterm between its return
+            // and parameter positions. Within this walk the environment, the expansion chain and
+            // the assembly are fixed, so a node's answer is too, and keying on reference identity
+            // can only miss, never lie.
+            let bound = System.Collections.Generic.HashSet<TypeDefn> HashIdentity.Reference
+
             let rec elementBinds (assemblies : LoadedAssemblies) (element : TypeDefn) =
+                if bound.Contains element then
+                    assemblies, Ok ()
+                else
+
+                match elementBindsUncached assemblies element with
+                | assemblies, Error failure -> assemblies, Error failure
+                | assemblies, Ok () ->
+                    bound.Add element |> ignore<bool>
+                    assemblies, Ok ()
+
+            and elementBindsUncached (assemblies : LoadedAssemblies) (element : TypeDefn) =
                 match element with
                 | TypeDefn.OneDimensionalArrayLowerBoundZero inner
                 | TypeDefn.Array (inner, _)
@@ -1069,8 +1088,9 @@ module TypeResolution =
                         match traverseLoaded elementBinds assemblies (returned @ signature.ParameterTypes) with
                         | assemblies, Error failure -> assemblies, Error failure
                         | assemblies, Ok _ -> assemblies, Ok ()
+                // CoreLib declares every one of these, `typedref` among them.
                 | TypeDefn.PrimitiveType _
-                | TypeDefn.Void
+                | TypeDefn.Void -> assemblies, Ok ()
                 | TypeDefn.FromReference _
                 | TypeDefn.FromDefinition _
                 | TypeDefn.GenericInstantiation _
