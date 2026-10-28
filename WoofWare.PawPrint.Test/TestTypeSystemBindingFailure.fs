@@ -717,6 +717,42 @@ module TestTypeSystemBindingFailure =
             | Error failure ->
                 failwith $"expected List<%O{argument}> to bind, got %s{TypeBindingFailure.describe failure}"
 
+    /// A refusal costs the size of the refused type as a DAG, as resolving it does: its diagnostic
+    /// does not spell the type out as a tree.
+    [<Test>]
+    let ``refusing a type whose parts are shared costs its size as a DAG`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        // `shared d` is d nodes as a DAG and 2^d as a tree.
+        let rec shared (depth : int) : TypeDefn =
+            if depth = 0 then
+                int32
+            else
+                let inner = shared (depth - 1)
+                TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ inner ; inner ]))
+
+        let inner = shared 20
+
+        let generic =
+            match genericFunctionPointer with
+            | TypeDefn.FunctionPointer genericSignature ->
+                TypeDefn.FunctionPointer
+                    { genericSignature with
+                        ParameterTypes = [ inner ; inner ]
+                    }
+            | other -> failwith $"unreachable: %O{other}"
+
+        for refused in
+            [
+                listOf f (TypeDefn.FunctionPointer (signature [ inner ; inner ]))
+                listOf f (TypeDefn.OneDimensionalArrayLowerBoundZero generic)
+                TypeDefn.OneDimensionalArrayLowerBoundZero generic
+            ] do
+            match resolveIn f [] refused |> snd with
+            | Error (TypeBindingFailure.Unmodelled unmodelled) ->
+                unmodelled.Diagnostic.Length |> shouldBeSmallerThan 1000
+            | other -> failwith $"expected Unmodelled, got %A{other}"
+
     /// One layer a generated generic parameter is spelled inside.
     [<RequireQualifiedAccess>]
     type private Wrapper =
