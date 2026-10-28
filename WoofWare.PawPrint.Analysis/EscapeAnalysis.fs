@@ -91,7 +91,9 @@ type Opacity =
     /// not decide: an abstract argument can be cast to an interface constraint that declares abstract
     /// static virtual methods, each of which CoreCLR requires to resolve on the argument
     /// (`ConstraintVerdict.Undecided`), or the types the load reaches nest deeper than the analysis
-    /// follows. Where the check fails, CoreCLR raises `TypeLoadException` or
+    /// follows, or a method specification names a generic type's method by its definition token,
+    /// which CoreCLR instantiates on the type's typical instantiation, and the method's constraints
+    /// mention type variables. Where the check fails, CoreCLR raises `TypeLoadException` or
     /// `VerificationException` before the method runs.
     | UndecidedConstraint
     /// A token naming a type in an assembly the analysis does not find. Before raising
@@ -8988,6 +8990,18 @@ module EscapeAnalysis =
                 let token = MetadataToken.MethodSpecification handle
 
                 match callTarget state spelledAssembly token with
+                | state, CallTarget.Method callee when
+                    (match callee.Spelling with
+                     | CalleeSpelling.Typical ->
+                         (snd (methodOf state callee.Callee)).Generics
+                         |> Seq.exists (fun (_, metadata) -> metadata.Constraints |> Seq.exists mentionsTypeVariable)
+                     | CalleeSpelling.Fixed
+                     | CalleeSpelling.Spelled _ -> false)
+                    ->
+                    // The specification names the method on its type's typical instantiation, whose
+                    // arguments are the type's own parameters, which the analysis does not
+                    // instantiate; so it does not decide constraints that mention them.
+                    state, Some BindFailure.UndecidedConstraint
                 | state, CallTarget.Method callee ->
                     let state, calleeTypeArguments, calleeMethodArguments =
                         spelledInstantiation state spelledAssembly typeArguments methodArguments token

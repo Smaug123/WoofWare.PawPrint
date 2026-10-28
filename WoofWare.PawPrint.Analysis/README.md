@@ -447,6 +447,11 @@ These checks are exact where the instantiation is closed, but some are left open
   (`Opacity.UndecidedConstraint`), unless no generic definition it names, nor any their loads
   bring, has a constrained type parameter. Binding goes on past an undecided check as though it
   passed.
+- **A generic type's method instantiated by its definition token:** IL that C# does not write, a
+  method specification over a `MethodDef` of a generic type's method, or over a `MemberRef` whose
+  parent names the generic type without arguments, names the method on the type's typical
+  instantiation, whose arguments are its own type parameters. Where the method's constraints
+  mention type variables, the check is undecided (`Opacity.UndecidedConstraint`).
 - **Order within one load:** a load that misses is reported as the miss, which is exact for the
   instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
