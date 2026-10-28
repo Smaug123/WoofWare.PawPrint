@@ -640,7 +640,7 @@ public static class Outer<U>
                 }
 
         let malformed (arguments : ConcreteTypeHandle list) =
-            ConstraintSatisfaction.malformedArgument bct state arguments
+            AllConcreteTypes.malformedArgument bct state.ConcreteTypes arguments
 
         malformed [ int32 ; ConcreteTypeHandle.Byref int32 ]
         |> shouldEqual (Some (1, MalformedArgument.Byref))

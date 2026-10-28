@@ -1,6 +1,6 @@
 # Type-load validity at concretization
 
-Status: proposal, awaiting a choice.
+Status: option A with representation R1 chosen (2026-10-28), moving the arity and bare-definition refusals too; the Loader's `resolveTypeFromDefn` is left for a follow-up. "PawPrint today" below describes the code before the change.
 
 ## The rules
 

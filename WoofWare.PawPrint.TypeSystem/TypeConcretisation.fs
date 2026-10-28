@@ -346,9 +346,11 @@ module AllConcreteTypes =
         toRet, newState
 
     /// The first of an instantiation's arguments, by index, that CoreCLR admits in no instantiation
-    /// (`Generics::CheckInstantiation`, generics.cpp), and why. CoreCLR stops at the first type
-    /// variable among the arguments; a handle is closed, so never is one.
-    let private malformedArgument
+    /// of a type or a method (`Generics::CheckInstantiation`, generics.cpp), and why: a byref,
+    /// `TypedReference`, `void`, a pointer or a function pointer. CoreCLR stops at the first type
+    /// variable among the arguments; a handle is closed, so never is one. Each nominal argument must
+    /// be interned in `this`.
+    let malformedArgument
         (baseClassTypes : BaseClassTypes<'corelib>)
         (this : AllConcreteTypes)
         (arguments : ConcreteTypeHandle seq)
