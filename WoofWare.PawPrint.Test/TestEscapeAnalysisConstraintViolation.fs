@@ -1781,7 +1781,17 @@ public static class Cases
                                     Set.ofList [ typeLoad ; verification ; badImage ]
                                     |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
 
-                                if named = raised || (escapes.Unknown && named.IsSubsetOf raised) then
+                                // Making a `TypeLoadException` runs code that may raise a
+                                // `BadImageFormatException`, so where the host raises one only the
+                                // other two say the analysis names a violation the host does not.
+                                let agrees =
+                                    (raised.IsSubsetOf named || escapes.Unknown)
+                                    && (if raised.Contains typeLoad then
+                                            (Set.remove badImage named).IsSubsetOf raised
+                                        else
+                                            named.IsSubsetOf raised)
+
+                                if agrees then
                                     None
                                 else
                                     Some $"%s{name}: %A{Set.toList named}, unknown %b{escapes.Unknown}"
