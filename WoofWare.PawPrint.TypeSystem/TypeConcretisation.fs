@@ -323,10 +323,18 @@ module AllConcreteTypes =
     let getRequiredNonGenericHandle (allConcreteTypes : AllConcreteTypes) (ty : TypeInfo<'a, 'b>) : ConcreteTypeHandle =
         findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
 
-    let add (ct : ConcreteType<ConcreteTypeHandle>) (this : AllConcreteTypes) : ConcreteTypeHandle * AllConcreteTypes =
+    let private intern
+        (ct : ConcreteType<ConcreteTypeHandle>)
+        (this : AllConcreteTypes)
+        : ConcreteTypeHandle * AllConcreteTypes
+        =
+        let key = (ct.Identity, Seq.toList ct.Generics)
+
+        if this.ReverseIndex.ContainsKey key then
+            failwith $"BUG: %O{ct} is already interned; a caller must look it up before adding it"
+
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
-        let key = (ct.Identity, Seq.toList ct.Generics)
 
         let newState =
             {
@@ -336,6 +344,63 @@ module AllConcreteTypes =
             }
 
         toRet, newState
+
+    /// The first of an instantiation's arguments, by index, that CoreCLR admits in no instantiation
+    /// (`Generics::CheckInstantiation`, generics.cpp), and why. CoreCLR stops at the first type
+    /// variable among the arguments; a handle is closed, so never is one.
+    let private malformedArgument
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (this : AllConcreteTypes)
+        (arguments : ConcreteTypeHandle seq)
+        : (int * MalformedArgument) option
+        =
+        arguments
+        |> Seq.indexed
+        |> Seq.tryPick (fun (index, argument) ->
+            match argument with
+            | ConcreteTypeHandle.Byref _ -> Some (index, MalformedArgument.Byref)
+            | ConcreteTypeHandle.Pointer _ -> Some (index, MalformedArgument.Pointer)
+            | ConcreteTypeHandle.FunctionPointer _ -> Some (index, MalformedArgument.FunctionPointer)
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> None
+            | ConcreteTypeHandle.Concrete id ->
+                match this.Mapping |> Map.tryFind id with
+                | None -> failwith $"BUG: the argument %O{argument} of an instantiation is not interned"
+                | Some concrete when concrete.Identity = baseClassTypes.TypedReference.Identity ->
+                    Some (index, MalformedArgument.TypedReference)
+                | Some concrete when concrete.Identity = baseClassTypes.Void.Identity ->
+                    Some (index, MalformedArgument.Void)
+                | Some _ -> None
+        )
+
+    /// Intern `ct`, which must not already be interned, as a type CoreCLR's class loader admits.
+    ///
+    /// This and `addNonGeneric` are the only ways to mint a `Concrete` handle, so every handle in the
+    /// table is an instantiation CoreCLR could create: none of its arguments is a byref,
+    /// `TypedReference`, `void`, a pointer or a function pointer. An instantiation with one is
+    /// refused, as `ClassLoader::LoadTypeHandleForTypeKey` refuses it, and nothing is interned. Its
+    /// arguments must already be interned.
+    let add
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (ct : ConcreteType<ConcreteTypeHandle>)
+        (this : AllConcreteTypes)
+        : Result<ConcreteTypeHandle * AllConcreteTypes, TypeLoadRefusal>
+        =
+        match malformedArgument baseClassTypes this ct.Generics with
+        | Some (index, malformed) -> Error (TypeLoadRefusal.InvalidInstantiation (ct.Identity, index, malformed))
+        | None -> Ok (intern ct this)
+
+    /// Intern `ct`, a non-generic type, which must not already be interned. No rule `add` checks
+    /// can refuse it.
+    let addNonGeneric
+        (ct : ConcreteType<ConcreteTypeHandle>)
+        (this : AllConcreteTypes)
+        : ConcreteTypeHandle * AllConcreteTypes
+        =
+        if not ct.Generics.IsEmpty then
+            failwith $"BUG: %O{ct} is an instantiation; intern it with `add`, which checks its arguments"
+
+        intern ct this
 
 // Active patterns for matching concrete types
 
@@ -738,18 +803,19 @@ module TypeConcretization =
         =
         findExistingType concreteTypes identity ImmutableArray.Empty
 
-    // Helper function to create and add a ConcreteType to the context
-    let private createAndAddConcreteType
+    // Intern a non-generic type, which nothing can refuse.
+    let private createAndAddNonGenericType
         (ctx : ConcretizationContext<'corelib>)
         (identity : ResolvedTypeIdentity)
         (ns : string)
         (name : string)
-        (generics : ConcreteTypeHandle ImmutableArray)
         : ConcreteTypeHandle * ConcretizationContext<'corelib>
         =
-        let concreteType = ConcreteType.makeFromIdentity identity ns name generics
+        let concreteType =
+            ConcreteType.makeFromIdentity identity ns name ImmutableArray.Empty
 
-        let handle, newConcreteTypes = AllConcreteTypes.add concreteType ctx.ConcreteTypes
+        let handle, newConcreteTypes =
+            AllConcreteTypes.addNonGeneric concreteType ctx.ConcreteTypes
 
         let newCtx =
             { ctx with
@@ -760,8 +826,8 @@ module TypeConcretization =
 
     /// Register the nominal type `identity` instantiated at `generics`, having first loaded every
     /// assembly its base-type chain runs through: CoreCLR loads a type's parent before the type, so a
-    /// type whose base chain does not bind has no runtime type. The failure is the chain's, with what
-    /// loaded before it in the context.
+    /// type whose base chain does not bind has no runtime type. The failure is the chain's, or an
+    /// instantiation `AllConcreteTypes.add` refuses, with what loaded before it in the context.
     let private registerNominal
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
@@ -784,17 +850,23 @@ module TypeConcretization =
                 LoadedAssemblies = assemblies
             }
         | assemblies, None ->
-            let handle, ctx =
-                createAndAddConcreteType
-                    { ctx with
-                        LoadedAssemblies = assemblies
-                    }
-                    identity
-                    ns
-                    name
-                    generics
+            let ctx =
+                { ctx with
+                    LoadedAssemblies = assemblies
+                }
 
-            Ok handle, ctx
+            match
+                AllConcreteTypes.add
+                    ctx.BaseTypes
+                    (ConcreteType.makeFromIdentity identity ns name generics)
+                    ctx.ConcreteTypes
+            with
+            | Error refusal -> Error (TypeBindingFailure.Refused refusal), ctx
+            | Ok (handle, concreteTypes) ->
+                Ok handle,
+                { ctx with
+                    ConcreteTypes = concreteTypes
+                }
 
     /// What `f` makes of a value that bound, or the failure that stopped it, with the context either
     /// way.
@@ -833,22 +905,33 @@ module TypeConcretization =
                 }
         )
 
-    /// The argument `environment` binds the generic parameter at `index` to, that parameter being
-    /// spelled `sigil` then its index (`!` for a type's, `!!` for a method's). Guest metadata can name
-    /// a parameter the environment does not hold (a TypeSpec `!0` read from a non-generic context,
-    /// say), and CoreCLR's `SigPointer::GetTypeVariableThrowing` refuses that with
-    /// <c>BadImageFormatException</c>, which here is unmodelled.
-    let private argumentOf
-        (environment : ImmutableArray<ConcreteTypeHandle>)
-        (sigil : string)
-        (index : int)
-        : Result<ConcreteTypeHandle, TypeBindingFailure>
+    let private refused (refusal : TypeLoadRefusal) : Result<'a, TypeBindingFailure> =
+        Error (TypeBindingFailure.Refused refusal)
+
+    /// Whether a signature's `CLASS`/`VALUETYPE` spelling of the definition `identity` matches what
+    /// the definition is, as `SigPointer::GetTypeHandleThrowing` checks once it has loaded the type;
+    /// a kind no signature spelled (`Unknown`, from a bare token) is not checked. The definition's
+    /// base-chain assemblies must be loaded.
+    let private checkSpelling
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (identity : ResolvedTypeIdentity)
+        (spelled : SignatureTypeKind)
+        : Result<unit, TypeBindingFailure>
         =
-        if 0 <= index && index < environment.Length then
-            Ok environment.[index]
-        else
-            unmodelled
-                $"The generic parameter %s{sigil}%d{index} is out of range of an environment of %d{environment.Length} argument(s); CoreCLR refuses that with BadImageFormatException, which is not modelled"
+        match spelled with
+        | SignatureTypeKind.Unknown -> Ok ()
+        | SignatureTypeKind.Class
+        | SignatureTypeKind.ValueType ->
+            let definition =
+                Assembly.resolveTypeIdentityDefinition
+                    (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                    identity
+
+            if LoadedTypeInfo.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies definition = spelled then
+                Ok ()
+            else
+                refused (TypeLoadRefusal.KindMismatch (identity, spelled))
+        | other -> failwith $"BUG: a signature's nominal type has the kind %O{other}"
 
     // Helper function for assembly loading with retry pattern
     let private loadAssemblyAndResolveTypeRef
@@ -907,9 +990,7 @@ module TypeConcretization =
 
         match findExistingPrimitiveType ctx.ConcreteTypes identity with
         | Some handle -> handle, ctx
-        | None ->
-            // Create and add the concrete type (primitives have no generic arguments)
-            createAndAddConcreteType ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty // Primitives have no generic parameters
+        | None -> createAndAddNonGenericType ctx identity typeInfo.Namespace typeInfo.Name
 
     let private concretizeArray
         (ctx : ConcretizationContext<'corelib>)
@@ -950,27 +1031,43 @@ module TypeConcretization =
         | Some handle -> Ok handle, ctx
         | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
-    let private concretizeTypeReference
+    /// The non-generic type a signature names by the definition `identity`, spelled `spelled`: a
+    /// generic definition named without an instantiation is refused (CoreCLR loads such a token with
+    /// `FailIfUninstDefOrRef`), then the type is loaded, then its spelling checked.
+    let private concretizeNamedDefinition
         (loadAssembly : IAssemblyLoad)
-        (ctx : ConcretizationContext<'corelib>)
-        (currentAssemblyFullName : string)
-        (typeRef : TypeRef)
-        : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<'corelib>
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (identity : ResolvedTypeIdentity)
+        (spelled : SignatureTypeKind)
+        : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<DumpedAssembly>
         =
-        loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssemblyFullName typeRef
-        |> andThen (fun ctx (_, identity, typeInfo) ->
-            // A generic definition named without an instantiation, which no signature can spell.
-            if not typeInfo.Generics.IsEmpty then
-                unmodelled
-                    $"Cannot concretize type reference to open generic type %s{typeInfo.Namespace}.%s{typeInfo.Name} - it has %d{typeInfo.Generics.Length} generic parameters",
-                ctx
-            else
+        let typeInfo =
+            Assembly.resolveTypeIdentityDefinition
+                (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                identity
 
-            // Create or find the concrete type
+        if not typeInfo.Generics.IsEmpty then
+            refused (TypeLoadRefusal.UninstantiatedDefinition identity), ctx
+        else
+
+        let loaded =
             match findExistingType ctx.ConcreteTypes identity ImmutableArray.Empty with
             | Some handle -> Ok handle, ctx
             | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
-        )
+
+        loaded
+        |> andThen (fun ctx handle -> checkSpelling ctx identity spelled |> Result.map (fun () -> handle), ctx)
+
+    let private concretizeTypeReference
+        (loadAssembly : IAssemblyLoad)
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (currentAssemblyFullName : string)
+        (typeRef : TypeRef)
+        (spelled : SignatureTypeKind)
+        : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<DumpedAssembly>
+        =
+        loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssemblyFullName typeRef
+        |> andThen (fun ctx (_, identity, _) -> concretizeNamedDefinition loadAssembly ctx identity spelled)
 
     /// Does this signature type carry an ECMA-335 custom modifier (`modreq`/`modopt`) anywhere
     /// inside it? Concretisation refuses a generic instantiation with a type argument that does,
@@ -1000,12 +1097,14 @@ module TypeConcretization =
 
     /// Concretize a type in a specific generic context.
     ///
-    /// The first part of the type, in the order the runtime type is built from it, that does not
-    /// bind is the result's failure, with what was loaded and registered before it in the context:
-    /// a type or assembly the metadata names that is not there, or a shape PawPrint does not
-    /// implement (a generic definition named without an instantiation or instantiated at the wrong
-    /// number of arguments, a generic function pointer, a type argument carrying a custom modifier,
-    /// a generic parameter outside `typeGenerics` or `methodGenerics`).
+    /// The first part of the type, in the order CoreCLR's `SigPointer::GetTypeHandleThrowing` loads
+    /// it, that does not bind is the result's failure, with what was loaded and registered before it
+    /// in the context: a type or assembly the metadata names that is not there; a type CoreCLR's
+    /// class loader refuses (`TypeBindingFailure.Refused`: a type variable out of the context's
+    /// scope, a `CLASS`/`VALUETYPE` spelling the definition does not match, a generic definition
+    /// named without an instantiation or instantiated at the wrong number of arguments, an
+    /// instantiation with an argument no instantiation may have); or a shape PawPrint does not
+    /// implement (a generic function pointer, a type argument carrying a custom modifier).
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
@@ -1037,28 +1136,25 @@ module TypeConcretization =
                 Ok handle, ctx
             )
 
-        | TypeDefn.GenericTypeParameter index -> argumentOf typeGenerics "!" index, ctx
+        | TypeDefn.GenericTypeParameter index ->
+            if 0 <= index && index < typeGenerics.Length then
+                Ok typeGenerics.[index], ctx
+            else
+                refused (TypeLoadRefusal.TypeParameterOutOfScope (index, typeGenerics.Length)), ctx
 
-        | TypeDefn.GenericMethodParameter index -> argumentOf methodGenerics "!!" index, ctx
+        | TypeDefn.GenericMethodParameter index ->
+            if 0 <= index && index < methodGenerics.Length then
+                Ok methodGenerics.[index], ctx
+            else
+                refused (TypeLoadRefusal.MethodParameterOutOfScope (index, methodGenerics.Length)), ctx
 
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assemblyFullName typeGenerics methodGenerics genericDef args
 
-        | TypeDefn.FromDefinition (identity, _) ->
-            let typeInfo =
-                Assembly.resolveTypeIdentityDefinition
-                    (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
-                    identity
+        | TypeDefn.FromDefinition (identity, spelled) -> concretizeNamedDefinition loadAssembly ctx identity spelled
 
-            // As for a type reference: a generic definition named without an instantiation.
-            if not typeInfo.Generics.IsEmpty then
-                unmodelled
-                    $"Cannot concretize open generic type %s{typeInfo.Namespace}.%s{typeInfo.Name} - it has %d{typeInfo.Generics.Length} generic parameters",
-                ctx
-            else
-                concretizeTypeDefinition loadAssembly ctx identity
-
-        | TypeDefn.FromReference (typeRef, _) -> concretizeTypeReference loadAssembly ctx assemblyFullName typeRef
+        | TypeDefn.FromReference (typeRef, spelled) ->
+            concretizeTypeReference loadAssembly ctx assemblyFullName typeRef spelled
 
         | TypeDefn.Byref elementType ->
             // Byref types are managed references to other types
@@ -1098,16 +1194,14 @@ module TypeConcretization =
             with
             | Some handle -> Ok handle, ctx
             | None ->
-                // Create and add the concrete Void type
                 let handle, ctx =
-                    createAndAddConcreteType
+                    createAndAddNonGenericType
                         ctx
                         (ResolvedTypeIdentity.ofDefinitionInAssembly
                             voidTypeInfo.AssemblyFullName
                             voidTypeInfo.TypeDefHandle)
                         voidTypeInfo.Namespace
                         voidTypeInfo.Name
-                        ImmutableArray.Empty // Void has no generic parameters
 
                 Ok handle, ctx
 
@@ -1234,48 +1328,66 @@ module TypeConcretization =
             ctx
         | None ->
 
-        // First, concretize all type arguments
-        args
-        |> concretizeEach
-            (fun ctx arg -> concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics arg)
-            ctx
-        |> andThen (fun ctxAfterArgs argHandles ->
-            let argHandles = ImmutableArray.CreateRange argHandles
+        // A signature cannot spell an instantiation with no arguments at all.
+        if args.IsEmpty then
+            unmodelled $"TODO: generic instantiation of %O{genericDef} in %s{assemblyFullName} names no arguments", ctx
+        else
 
-            // Get the base type definition
-            let baseDefinition =
-                match genericDef with
-                | FromDefinition (identity, _) ->
-                    let currentAssy =
-                        ctxAfterArgs.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
+        // `SigPointer::GetTypeHandleThrowing` reads the head first, loading the definition (and so its
+        // parent) and checking its spelling (`GetGenericInstType`); then loads each argument in full,
+        // in order; then checks the arity (`IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS`), for any count
+        // other than the definition's, a non-generic definition's included; and checks the arguments'
+        // kinds only as it creates the instantiation, which `registerNominal` does.
+        let head =
+            match genericDef with
+            | FromDefinition (identity, spelled) -> Ok (identity, spelled), ctx
+            | FromReference (typeRef, spelled) ->
+                loadAssemblyAndResolveTypeRef loadAssembly ctx assemblyFullName typeRef
+                |> andThen (fun ctx (_, identity, _) -> Ok (identity, spelled), ctx)
+            | _ -> unmodelled $"Generic instantiation of %A{genericDef} not supported", ctx
 
-                    let typeDef = Assembly.resolveTypeIdentityDefinition currentAssy identity
-                    Ok (identity, typeDef.Namespace, typeDef.Name, typeDef.Generics.Length), ctxAfterArgs
-                | FromReference (typeRef, _) ->
-                    loadAssemblyAndResolveTypeRef loadAssembly ctxAfterArgs assemblyFullName typeRef
-                    |> andThen (fun ctx (_, identity, typeInfo) ->
-                        Ok (identity, typeInfo.Namespace, typeInfo.Name, typeInfo.Generics.Length), ctx
-                    )
-                | _ -> unmodelled $"Generic instantiation of %A{genericDef} not supported", ctxAfterArgs
+        head
+        |> andThen (fun ctx (identity, spelled) ->
+            match
+                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                    loadAssembly
+                    ctx.LoadedAssemblies
+                    (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                    identity.TypeDefinition.Get
+            with
+            | assemblies, Some failure ->
+                Error (TypeBindingFailure.ofBaseChain failure),
+                { ctx with
+                    LoadedAssemblies = assemblies
+                }
+            | assemblies, None ->
+                let ctx =
+                    { ctx with
+                        LoadedAssemblies = assemblies
+                    }
 
-            baseDefinition
-            |> andThen (fun ctxAfterArgs (baseIdentity, baseNamespace, baseName, baseArity) ->
-                // CoreCLR's class loader checks the arity once the arguments are loaded, and throws
-                // TypeLoadException (IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS, `ClassLoader::LoadTypeDefThrowing`)
-                // for any count other than the definition's, including a non-generic definition given
-                // arguments. A signature cannot spell an instantiation with no arguments at all.
-                if args.IsEmpty || args.Length <> baseArity then
-                    unmodelled
-                        $"Type %s{baseNamespace}.%s{baseName} in %s{baseIdentity.AssemblyFullName} declares %d{baseArity} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled",
-                    ctxAfterArgs
+                checkSpelling ctx identity spelled |> Result.map (fun () -> identity), ctx
+        )
+        |> andThen (fun ctx identity ->
+            args
+            |> concretizeEach
+                (fun ctx arg -> concretizeType ctx loadAssembly assemblyFullName typeGenerics methodGenerics arg)
+                ctx
+            |> andThen (fun ctx argHandles ->
+                let argHandles = ImmutableArray.CreateRange argHandles
+
+                let definition =
+                    Assembly.resolveTypeIdentityDefinition
+                        (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                        identity
+
+                if args.Length <> definition.Generics.Length then
+                    refused (TypeLoadRefusal.WrongArity (identity, definition.Generics.Length, args.Length)), ctx
                 else
 
-                // Check if this exact generic instantiation already exists
-                match findExistingType ctxAfterArgs.ConcreteTypes baseIdentity argHandles with
-                | Some existingHandle ->
-                    // Type already exists, return it
-                    Ok existingHandle, ctxAfterArgs
-                | None -> registerNominal loadAssembly ctxAfterArgs baseIdentity baseNamespace baseName argHandles
+                match findExistingType ctx.ConcreteTypes identity argHandles with
+                | Some existingHandle -> Ok existingHandle, ctx
+                | None -> registerNominal loadAssembly ctx identity definition.Namespace definition.Name argHandles
             )
         )
 

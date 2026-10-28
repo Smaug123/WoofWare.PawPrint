@@ -40,7 +40,7 @@ module TestEvalStackPrimitiveLikeBoundary =
                         byReference.Name
                         ImmutableArray.Empty
 
-                AllConcreteTypes.add byReferenceConcrete concreteTypes |> snd
+                AllConcreteTypes.addNonGeneric byReferenceConcrete concreteTypes |> snd
         | _ -> concreteTypes
 
     let private handleFor (ti : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
