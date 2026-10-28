@@ -289,10 +289,11 @@ module LayoutFacts =
 
         // Each instance field's signature is concretised against this instantiation's generic
         // arguments, in the declaring type's assembly; a field signature names no method generics.
+        // A literal has no storage, static or not (`InitializeFieldDescs`).
         let state, fields =
             (state, (seen, []), typeInfo.Fields)
             |||> StateResult.fold (fun state (seen, acc) field ->
-                if field.IsStatic then
+                if field.IsStatic || field.Attributes.HasFlag FieldAttributes.Literal then
                     state, Ok (seen, acc)
                 else
 
