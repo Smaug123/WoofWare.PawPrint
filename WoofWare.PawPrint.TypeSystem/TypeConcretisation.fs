@@ -910,18 +910,18 @@ module TypeConcretization =
     let private refused (refusal : TypeLoadRefusal) : Result<'a, TypeBindingFailure> =
         Error (TypeBindingFailure.Refused refusal)
 
-    /// Whether a signature's `CLASS`/`VALUETYPE` spelling of the definition `identity` matches what
-    /// the definition is, as `SigPointer::GetTypeHandleThrowing` checks once it has loaded the type;
-    /// a kind no signature spelled (`Unknown`, from a bare token) is not checked. The definition's
-    /// base-chain assemblies must be loaded.
-    let private checkSpelling
+    /// Whether a signature's `CLASS`/`VALUETYPE` spelling of the definition `identity` is not what
+    /// the definition is, which `SigPointer::GetTypeHandleThrowing` checks once it has loaded the
+    /// type; a kind no signature spelled (`Unknown`, from a bare token) never mismatches. The
+    /// definition's base-chain assemblies must be loaded.
+    let private spellingMismatches
         (ctx : ConcretizationContext<DumpedAssembly>)
         (identity : ResolvedTypeIdentity)
         (spelled : SignatureTypeKind)
-        : Result<unit, TypeBindingFailure>
+        : bool
         =
         match spelled with
-        | SignatureTypeKind.Unknown -> Ok ()
+        | SignatureTypeKind.Unknown -> false
         | SignatureTypeKind.Class
         | SignatureTypeKind.ValueType ->
             let definition =
@@ -929,11 +929,16 @@ module TypeConcretization =
                     (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
                     identity
 
-            if LoadedTypeInfo.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies definition = spelled then
-                Ok ()
-            else
-                refused (TypeLoadRefusal.KindMismatch (identity, spelled))
+            LoadedTypeInfo.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies definition
+            <> spelled
         | other -> failwith $"BUG: a signature's nominal type has the kind %O{other}"
+
+    /// Whether CoreCLR overlooks a mismatched spelling of a type named directly (not as a
+    /// `GENERICINST` head) in a signature of `image`: it does where the image's metadata table
+    /// stream is version 1.0 (`MD_STREAM_VER_1X`, siginfo.cpp).
+    let private overlooksNominalSpelling (image : DumpedAssembly) : bool =
+        let version = image.MetadataTableStreamVersion
+        version.Major = 1 && version.Minor = 0
 
     // Helper function for assembly loading with retry pattern
     let private loadAssemblyAndResolveTypeRef
@@ -1033,12 +1038,14 @@ module TypeConcretization =
         | Some handle -> Ok handle, ctx
         | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
-    /// The non-generic type a signature names by the definition `identity`, spelled `spelled`: a
-    /// generic definition named without an instantiation is refused (CoreCLR loads such a token with
-    /// `FailIfUninstDefOrRef`), then the type is loaded, then its spelling checked.
+    /// The non-generic type a signature of the image `signatureAssemblyFullName` names by the
+    /// definition `identity`, spelled `spelled`: a generic definition named without an instantiation
+    /// is refused (CoreCLR loads such a token with `FailIfUninstDefOrRef`), then the type is loaded,
+    /// then its spelling checked.
     let private concretizeNamedDefinition
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<DumpedAssembly>)
+        (signatureAssemblyFullName : string)
         (identity : ResolvedTypeIdentity)
         (spelled : SignatureTypeKind)
         : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<DumpedAssembly>
@@ -1058,7 +1065,15 @@ module TypeConcretization =
             | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
         loaded
-        |> andThen (fun ctx handle -> checkSpelling ctx identity spelled |> Result.map (fun () -> handle), ctx)
+        |> andThen (fun ctx handle ->
+            if
+                spellingMismatches ctx identity spelled
+                && not (overlooksNominalSpelling (ctx.LoadedAssemblies.ByDefinitionName signatureAssemblyFullName))
+            then
+                refused (TypeLoadRefusal.KindMismatch (identity, spelled)), ctx
+            else
+                Ok handle, ctx
+        )
 
     let private concretizeTypeReference
         (loadAssembly : IAssemblyLoad)
@@ -1069,7 +1084,9 @@ module TypeConcretization =
         : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<DumpedAssembly>
         =
         loadAssemblyAndResolveTypeRef loadAssembly ctx currentAssemblyFullName typeRef
-        |> andThen (fun ctx (_, identity, _) -> concretizeNamedDefinition loadAssembly ctx identity spelled)
+        |> andThen (fun ctx (_, identity, _) ->
+            concretizeNamedDefinition loadAssembly ctx currentAssemblyFullName identity spelled
+        )
 
     /// Does this signature type carry an ECMA-335 custom modifier (`modreq`/`modopt`) anywhere
     /// inside it? Concretisation refuses a generic instantiation with a type argument that does,
@@ -1153,7 +1170,8 @@ module TypeConcretization =
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assemblyFullName typeGenerics methodGenerics genericDef args
 
-        | TypeDefn.FromDefinition (identity, spelled) -> concretizeNamedDefinition loadAssembly ctx identity spelled
+        | TypeDefn.FromDefinition (identity, spelled) ->
+            concretizeNamedDefinition loadAssembly ctx assemblyFullName identity spelled
 
         | TypeDefn.FromReference (typeRef, spelled) ->
             concretizeTypeReference loadAssembly ctx assemblyFullName typeRef spelled
@@ -1368,7 +1386,11 @@ module TypeConcretization =
                         LoadedAssemblies = assemblies
                     }
 
-                checkSpelling ctx identity spelled |> Result.map (fun () -> identity), ctx
+                // `GetGenericInstType` makes no exception for a 1.0 table stream.
+                if spellingMismatches ctx identity spelled then
+                    refused (TypeLoadRefusal.KindMismatch (identity, spelled)), ctx
+                else
+                    Ok identity, ctx
         )
         |> andThen (fun ctx identity ->
             args

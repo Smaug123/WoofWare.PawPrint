@@ -52,6 +52,8 @@ module TestTypeLoadValidity =
         | Klass
         /// `Pair`2`, a class.
         | Pair
+        /// CoreLib's `System.Tuple`1`, a class named by a TypeRef.
+        | Tuple
 
     [<RequireQualifiedAccess>]
     type private Named =
@@ -84,7 +86,8 @@ module TestTypeLoadValidity =
         match head with
         | Head.Holder
         | Head.Enum
-        | Head.Klass -> 1
+        | Head.Klass
+        | Head.Tuple -> 1
         | Head.Pair -> 2
 
     let private isValueType (target : Target) : bool =
@@ -94,6 +97,7 @@ module TestTypeLoadValidity =
         | Target.Named Named.Plain -> true
         | Target.Head Head.Klass
         | Target.Head Head.Pair
+        | Target.Head Head.Tuple
         | Target.Named Named.Ref -> false
         | Target.Named (Named.Core name) ->
             match name with
@@ -109,8 +113,12 @@ module TestTypeLoadValidity =
     let private int32 : Signature = Signature.Primitive 0x08uy
 
     /// The image: `Holder`1`, `Klass`1`, `Pair`2`, `Plain`, `Outer`1` (enclosing the enum `E`) and
-    /// `Ref`, then one TypeSpec per signature, whose tokens are returned in order.
-    let private emit (name : string) (signatures : Signature list) : byte[] * int list =
+    /// `Ref`, then one TypeSpec per signature, whose tokens are returned in order. A `legacy` image's
+    /// metadata table stream says it is version 1.0, for which CoreCLR overlooks a mismatched
+    /// CLASS/VALUETYPE spelling of a type named directly. Version 1.0 has another schema for generic
+    /// parameters, so a legacy image declares none: its own types are not generic, and its
+    /// signatures may instantiate only `Head.Tuple`.
+    let private emit (name : string) (legacy : bool) (signatures : Signature list) : byte[] * int list =
         let md = MetadataBuilder ()
         let text (s : string) : StringHandle = md.GetOrAddString s
 
@@ -159,6 +167,8 @@ module TestTypeLoadValidity =
         let mutable nextField = 1
 
         let addType (name : string) (attrs : TypeAttributes) (parent : EntityHandle) (parameters : int) =
+            let parameters = if legacy then 0 else parameters
+
             let handle =
                 md.AddTypeDefinition (
                     attrs,
@@ -217,6 +227,7 @@ module TestTypeLoadValidity =
             | Target.Named Named.Plain -> typeDef 5
             | Target.Head Head.Enum -> typeDef 7
             | Target.Named Named.Ref -> typeDef 8
+            | Target.Head Head.Tuple -> core "Tuple`1"
             | Target.Named (Named.Core name) -> core name
 
         let rec encode (builder : BlobBuilder) (signature : Signature) : unit =
@@ -272,7 +283,38 @@ module TestTypeLoadValidity =
 
         let image = BlobBuilder ()
         pe.Serialize image |> ignore
-        image.ToArray (), tokens
+        let image = image.ToArray ()
+
+        if legacy then
+            // ECMA-335 II.24.2.1-2: the metadata root, then stream headers {Offset, Size, Name}, each
+            // name null-terminated and padded to four bytes; the `#~` stream's MajorVersion and
+            // MinorVersion are its bytes 4 and 5.
+            let root =
+                use reader = new PEReader (ImmutableArray.CreateRange image)
+                reader.PEHeaders.MetadataStartOffset
+
+            let int32At (offset : int) : int = BitConverter.ToInt32 (image, offset)
+            let versionLength = int32At (root + 12)
+            let streams = int (BitConverter.ToUInt16 (image, root + 16 + versionLength + 2))
+
+            let rec find (header : int) (remaining : int) : int =
+                if remaining = 0 then
+                    failwith "test bug: the image has no #~ stream"
+                else
+                    let nameStart = header + 8
+                    let nameEnd = Array.IndexOf (image, 0uy, nameStart)
+                    let name = Text.Encoding.ASCII.GetString (image, nameStart, nameEnd - nameStart)
+
+                    if name = "#~" then
+                        root + int32At header
+                    else
+                        find (nameStart + ((nameEnd - nameStart) / 4 + 1) * 4) (remaining - 1)
+
+            let tables = find (root + 16 + versionLength + 4) streams
+            image.[tables + 4] <- 1uy
+            image.[tables + 5] <- 0uy
+
+        image, tokens
 
     /// The class loader's rule that refused a type.
     [<RequireQualifiedAccess>]
@@ -341,12 +383,13 @@ module TestTypeLoadValidity =
     /// through the signatures in order, so a refusal must leave a state the next one can use.
     let private check
         (name : string)
+        (legacy : bool)
         (typeArity : int)
         (methodArity : int)
         (signatures : Signature list)
         : (Outcome * Outcome) list
         =
-        let image, tokens = emit name signatures
+        let image, tokens = emit name legacy signatures
         use stream = new MemoryStream (image)
         let dumped = Assembly.read loggerFactory (Some (name + ".dll")) stream
         let context = AssemblyLoadContext (name, isCollectible = true)
@@ -484,9 +527,41 @@ module TestTypeLoadValidity =
     [<Test>]
     let ``Measured signatures agree with CoreCLR`` () : unit =
         let signatures = measured |> List.map fst
-        let outcomes = check "MeasuredTypeLoads" 1 1 signatures
+        let outcomes = check "MeasuredTypeLoads" false 1 1 signatures
 
         for (signature, measured), (host, _) in List.zip (List.zip signatures (List.map snd measured)) outcomes do
+            if host <> measured then
+                failwith
+                    $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{host}"
+
+        assertAgree signatures outcomes
+
+    /// In an image whose table stream is version 1.0, CoreCLR overlooks a mismatched spelling of a
+    /// type named directly, but not of an instantiation's head.
+    [<Test>]
+    let ``A version 1.0 table stream waives the spelling check, as CoreCLR does`` () : unit =
+        let tuple (arg : Signature) =
+            Signature.Generic (false, Head.Tuple, [ arg ])
+
+        let core (isValueType : bool) (name : string) =
+            Signature.Nominal (isValueType, Target.Named (Named.Core name))
+
+        let measured =
+            [
+                tuple (core true "String"), Outcome.Loads
+                tuple (core false "Int32"), Outcome.Loads
+                Signature.Vector (Signature.Nominal (false, Target.Named Named.Plain)), Outcome.Loads
+                Signature.Pointer (Signature.Nominal (true, Target.Named Named.Ref)), Outcome.Loads
+                Signature.Generic (true, Head.Tuple, [ int32 ]), Outcome.TypeLoad (Rule.KindMismatch, "System.Tuple`1")
+                tuple (Signature.Generic (true, Head.Tuple, [ int32 ])),
+                Outcome.TypeLoad (Rule.KindMismatch, "System.Tuple`1")
+                tuple (Signature.Pointer int32), Outcome.TypeLoad (Rule.InvalidInstantiation, "System.Tuple`1")
+            ]
+
+        let signatures = measured |> List.map fst
+        let outcomes = check "LegacyTypeLoads" true 1 1 signatures
+
+        for (signature, measured), (host, _) in List.zip measured outcomes do
             if host <> measured then
                 failwith
                     $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{host}"
@@ -506,7 +581,8 @@ module TestTypeLoadValidity =
             Signature.FunctionReturning int32
         ]
 
-    let private heads : Head list = [ Head.Holder ; Head.Enum ; Head.Klass ; Head.Pair ]
+    let private heads : Head list =
+        [ Head.Holder ; Head.Enum ; Head.Klass ; Head.Pair ; Head.Tuple ]
 
     let private named : Named list =
         [
@@ -527,7 +603,7 @@ module TestTypeLoadValidity =
                 1, Gen.constant (not (isValueType target))
             ]
 
-    let private leaf : Gen<Signature> =
+    let private leaf (heads : Head list) : Gen<Signature> =
         Gen.frequency
             [
                 4, Gen.elements [ int32 ; Signature.Primitive 0x0euy ; Signature.Primitive 0x1cuy ]
@@ -549,7 +625,11 @@ module TestTypeLoadValidity =
 
     /// A signature of a type: never a byref, `TypedReference` or `void`, so that it is admissible as an
     /// array element and a pointer target, and the only rules it can break are the ones under test.
-    let rec private typeSignature (size : int) : Gen<Signature> =
+    let rec private typeSignature (heads : Head list) (size : int) : Gen<Signature> =
+        let leaf = leaf heads
+        let typeSignature = typeSignature heads
+        let argument = argument heads
+
         if size <= 0 then
             leaf
         else
@@ -590,27 +670,34 @@ module TestTypeLoadValidity =
                     1, functionPart |> Gen.map Signature.FunctionReturning
                 ]
 
-    and private argument (size : int) : Gen<Signature> =
-        Gen.frequency [ 8, typeSignature size ; 1, Gen.elements malformed ]
+    and private argument (heads : Head list) (size : int) : Gen<Signature> =
+        Gen.frequency [ 8, typeSignature heads size ; 1, Gen.elements malformed ]
 
     [<Test>]
     let ``Generated signatures agree with CoreCLR, whatever kind of type they name`` () : unit =
         let generator =
             gen {
+                let! legacy = Gen.frequency [ 3, Gen.constant false ; 1, Gen.constant true ]
                 let! typeArity = Gen.choose (0, 2)
                 let! methodArity = Gen.choose (0, 2)
                 let! count = Gen.choose (1, 8)
-                let! signatures = Gen.listOfLength count (Gen.choose (0, 12) |> Gen.bind typeSignature)
-                return typeArity, methodArity, signatures
+                // Only CoreLib's generic types can be instantiated in a legacy image.
+                let heads = if legacy then [ Head.Tuple ] else heads
+
+                let! signatures = Gen.listOfLength count (Gen.choose (0, 12) |> Gen.bind (typeSignature heads))
+                return legacy, typeArity, methodArity, signatures
             }
 
         let seen = HashSet<Outcome> ()
         let refusingHeads = HashSet<string> ()
         let mutable cases = 0
 
-        let property (typeArity : int, methodArity : int, signatures : Signature list) : unit =
+        let property (legacy : bool, typeArity : int, methodArity : int, signatures : Signature list) : unit =
             cases <- cases + 1
-            let outcomes = check $"GeneratedTypeLoads%d{cases}" typeArity methodArity signatures
+
+            let outcomes =
+                check $"GeneratedTypeLoads%d{cases}" legacy typeArity methodArity signatures
+
             assertAgree signatures outcomes
 
             for host, _ in outcomes do
