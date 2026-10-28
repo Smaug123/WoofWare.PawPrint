@@ -486,6 +486,21 @@ module TestTypeSystemBindingFailure =
         resolve (TypeDefn.OneDimensionalArrayLowerBoundZero genericFunctionPointer)
         |> unmodelledSaying "BadImageFormatException"
 
+        // CoreLib declares every primitive, `typedref` among them, so none stops an array binding.
+        let typedref = TypeDefn.PrimitiveType PrimitiveType.TypedReference
+
+        for element in
+            [
+                TypeDefn.Pointer typedref
+                TypeDefn.FunctionPointer
+                    { signature [ typedref ] with
+                        ReturnType = MethodReturnType.Returns typedref
+                    }
+            ] do
+            match resolve (TypeDefn.OneDimensionalArrayLowerBoundZero element) with
+            | Ok _ -> ()
+            | Error failure -> failwith $"expected %O{element}[] to bind, got %s{TypeBindingFailure.describe failure}"
+
         match bindMember f f.Shapes.TypeParameterVectorToString with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>)
