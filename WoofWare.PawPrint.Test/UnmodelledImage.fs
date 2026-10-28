@@ -89,6 +89,21 @@ module internal UnmodelledImage =
             ListOfMethodParameter : TypeSpecificationHandle
             /// `List`1<!!0>::Clear()`, whose parent is <c>ListOfMethodParameter</c>.
             ListOfMethodParameterClear : MemberReferenceHandle
+            /// `class System.Gone[]`, whose element type CoreLib does not declare.
+            AbsentVector : TypeSpecificationHandle
+            /// `class [Nowhere]System.Gone[]`, whose element type is in an assembly no runtime
+            /// directory supplies.
+            UnboundVector : TypeSpecificationHandle
+            /// `!0[]`.
+            TypeParameterVector : TypeSpecificationHandle
+            /// `class System.Gone[0...,0...]`, whose element type CoreLib does not declare.
+            AbsentMatrix : TypeSpecificationHandle
+            /// `System.Gone[]::ToString()`, whose parent is <c>AbsentVector</c>.
+            AbsentVectorToString : MemberReferenceHandle
+            /// `!0[]::ToString()`, whose parent is <c>TypeParameterVector</c>.
+            TypeParameterVectorToString : MemberReferenceHandle
+            /// `System.Gone[,]::Get(int32, int32)`, whose parent is <c>AbsentMatrix</c>.
+            AbsentMatrixGet : MemberReferenceHandle
         }
 
     let emit () : byte[] * Shapes =
@@ -399,6 +414,53 @@ module internal UnmodelledImage =
         let listOfMethodParameter = listOfSpec (fun arg -> arg.GenericMethodTypeParameter 0)
         let listOfMethodParameterClear = clearOn listOfMethodParameter
 
+        let absentVector =
+            parameterSpec (fun spec -> spec.SZArray().Type (TypeReferenceHandle.op_Implicit absent, false))
+
+        let unboundVector =
+            parameterSpec (fun spec -> spec.SZArray().Type (TypeReferenceHandle.op_Implicit unbound, false))
+
+        let typeParameterVector =
+            parameterSpec (fun spec -> spec.SZArray().GenericTypeParameter 0)
+
+        let absentMatrix =
+            parameterSpec (fun spec ->
+                spec.Array (
+                    (fun element -> element.Type (TypeReferenceHandle.op_Implicit absent, false)),
+                    (fun shape -> shape.Shape (2, ImmutableArray.Empty, ImmutableArray.Create (0, 0)))
+                )
+            )
+
+        let toStringOn (parent : TypeSpecificationHandle) : MemberReferenceHandle =
+            metadata.AddMemberReference (
+                TypeSpecificationHandle.op_Implicit parent,
+                metadata.GetOrAddString "ToString",
+                toStringSignature
+            )
+
+        let absentVectorToString = toStringOn absentVector
+        let typeParameterVectorToString = toStringOn typeParameterVector
+
+        let absentMatrixGet =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    2,
+                    (fun returnType -> returnType.Type().Type (TypeReferenceHandle.op_Implicit absent, false)),
+                    (fun parameters ->
+                        parameters.AddParameter().Type().Int32 ()
+                        parameters.AddParameter().Type().Int32 ()
+                    )
+                )
+
+            metadata.AddMemberReference (
+                TypeSpecificationHandle.op_Implicit absentMatrix,
+                metadata.GetOrAddString "Get",
+                metadata.GetOrAddBlob blob
+            )
+
         let moduleParent =
             metadata.AddMemberReference (
                 ModuleReferenceHandle.op_Implicit otherModule,
@@ -492,6 +554,13 @@ module internal UnmodelledImage =
             ListOfTypeParameterClear = listOfTypeParameterClear
             ListOfMethodParameter = listOfMethodParameter
             ListOfMethodParameterClear = listOfMethodParameterClear
+            AbsentVector = absentVector
+            UnboundVector = unboundVector
+            TypeParameterVector = typeParameterVector
+            AbsentMatrix = absentMatrix
+            AbsentVectorToString = absentVectorToString
+            TypeParameterVectorToString = typeParameterVectorToString
+            AbsentMatrixGet = absentMatrixGet
         }
 
     /// The emitted image read, CoreLib, and everything needed to resolve against them.

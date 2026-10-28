@@ -430,12 +430,114 @@ module TestTypeSystemBindingFailure =
                 |> unmodelledSaying "BadImageFormatException"
             | other -> failwith $"expected TypeUnbound, got %A{other}"
 
-    /// A generated spelling of a generic parameter: which one, and how deep in `List`1` it sits.
+    [<Test>]
+    let ``an array whose element type does not bind does not bind`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let fromSpec (handle : TypeSpecificationHandle) (environment : TypeDefn list) =
+            TypeResolution.resolveTypeFromSpec
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                handle
+                f.Analysed
+                (ImmutableArray.CreateRange environment)
+                ImmutableArray.Empty
+                f.Assemblies
+            |> snd
+
+        fromSpec f.Shapes.AbsentVector [] |> isAbsentGone
+        fromSpec f.Shapes.AbsentMatrix [] |> isAbsentGone
+        fromSpec f.Shapes.UnboundVector [] |> isNowhere
+
+        fromSpec f.Shapes.TypeParameterVector []
+        |> unmodelledSaying "generic parameter !0 is out of range of an environment of 0 argument(s)"
+
+        match fromSpec f.Shapes.TypeParameterVector [ int32 ] with
+        | Ok (_, info) -> $"%s{info.Namespace}.%s{info.Name}" |> shouldEqual "System.Array"
+        | Error failure -> failwith $"expected !0[] to bind in [int32], got %s{TypeBindingFailure.describe failure}"
+
+        let resolve (ty : TypeDefn) =
+            TypeResolution.resolveTypeFromDefn
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                ty
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                f.Analysed
+                f.Assemblies
+            |> snd
+
+        // The element is loaded through every wrapper CoreCLR loads it through.
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.Pointer (spelled f f.Shapes.Absent)))
+        |> isAbsentGone
+
+        resolve (
+            TypeDefn.OneDimensionalArrayLowerBoundZero (
+                TypeDefn.FunctionPointer
+                    { signature [ int32 ; spelled f f.Shapes.Unbound ] with
+                        ReturnType = MethodReturnType.Returns (spelled f f.Shapes.Absent)
+                    }
+            )
+        )
+        |> isAbsentGone
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero genericFunctionPointer)
+        |> unmodelledSaying "BadImageFormatException"
+
+        // CoreLib declares every primitive, `typedref` among them, so none stops an array binding.
+        let typedref = TypeDefn.PrimitiveType PrimitiveType.TypedReference
+
+        for element in
+            [
+                TypeDefn.Pointer typedref
+                TypeDefn.FunctionPointer
+                    { signature [ typedref ] with
+                        ReturnType = MethodReturnType.Returns typedref
+                    }
+            ] do
+            match resolve (TypeDefn.OneDimensionalArrayLowerBoundZero element) with
+            | Ok _ -> ()
+            | Error failure -> failwith $"expected %O{element}[] to bind, got %s{TypeBindingFailure.describe failure}"
+
+        // An array of an instantiation binds exactly where the instantiation does. Substitution
+        // does not yet walk into a function pointer, so an instantiation whose argument contains
+        // one is unmodelled, alone or as an array's element.
+        let listOfFunctionPointers =
+            TypeDefn.GenericInstantiation (
+                spelled f f.Shapes.List,
+                ImmutableArray.Create (
+                    TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ int32 ]))
+                )
+            )
+
+        resolve listOfFunctionPointers
+        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero listOfFunctionPointers)
+        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+
+        match bindMember f f.Shapes.TypeParameterVectorToString with
+        | Error (MemberBindingFailure.TypeUnbound failure) ->
+            (Error failure : Result<unit, TypeBindingFailure>)
+            |> unmodelledSaying "BadImageFormatException"
+        | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    /// One layer a generated generic parameter is spelled inside.
+    [<RequireQualifiedAccess>]
+    type private Wrapper =
+        | InList
+        | InVector
+        | InMatrix
+
+    /// A generated spelling of a generic parameter: which one, and what it sits inside, innermost
+    /// first.
     type private ParameterSpelling =
         {
             IsMethod : bool
             Index : int
-            Depth : int
+            Wrappers : Wrapper list
         }
 
     [<RequireQualifiedAccess>]
@@ -452,7 +554,13 @@ module TestTypeSystemBindingFailure =
             gen {
                 let! isMethod = Gen.elements [ true ; false ]
                 let! index = Gen.choose (0, 3)
-                let! depth = Gen.choose (0, 2)
+
+                let! wrappers =
+                    Gen.choose (0, 2)
+                    |> Gen.bind (fun n ->
+                        Gen.listOfLength n (Gen.elements [ Wrapper.InList ; Wrapper.InVector ; Wrapper.InMatrix ])
+                    )
+
                 let! typeArgs = Gen.choose (0, 3)
                 let! methodArgs = Gen.choose (0, 3)
 
@@ -460,7 +568,7 @@ module TestTypeSystemBindingFailure =
                     {
                         IsMethod = isMethod
                         Index = index
-                        Depth = depth
+                        Wrappers = wrappers
                     },
                     typeArgs,
                     methodArgs
@@ -474,9 +582,14 @@ module TestTypeSystemBindingFailure =
                     TypeDefn.GenericTypeParameter spelling.Index
 
             let ty =
-                Seq.replicate spelling.Depth ()
-                |> Seq.fold
-                    (fun inner () -> TypeDefn.GenericInstantiation (list, ImmutableArray.Create inner))
+                spelling.Wrappers
+                |> List.fold
+                    (fun inner wrapper ->
+                        match wrapper with
+                        | Wrapper.InList -> TypeDefn.GenericInstantiation (list, ImmutableArray.Create inner)
+                        | Wrapper.InVector -> TypeDefn.OneDimensionalArrayLowerBoundZero inner
+                        | Wrapper.InMatrix -> TypeDefn.Array (inner, 2)
+                    )
                     parameter
 
             let result =
@@ -833,3 +946,65 @@ module TestTypeSystemBindingFailure =
             f.Assemblies
         |> snd
         |> unmodelledSaying "generic parameter"
+
+    [<RequireQualifiedAccess>]
+    type private ArrayAgreement =
+        | Binds
+        | Absent
+        | Unavailable
+        | Unmodelled
+
+    /// Concretisation loads an array's element type before the array, as CoreCLR does; the Loader,
+    /// which answers only with `System.Array`, must still fail where the element does.
+    [<Test>]
+    let ``the Loader binds an array exactly where concretisation binds it`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let kind (result : Result<'a, TypeBindingFailure>) : ArrayAgreement =
+            match result with
+            | Ok _ -> ArrayAgreement.Binds
+            | Error (TypeBindingFailure.TypeAbsent _) -> ArrayAgreement.Absent
+            | Error (TypeBindingFailure.AssemblyUnavailable _) -> ArrayAgreement.Unavailable
+            | Error (TypeBindingFailure.BaseTypeAbsent _)
+            | Error (TypeBindingFailure.Unmodelled _) -> ArrayAgreement.Unmodelled
+
+        let genArray : Gen<Spelling> =
+            Gen.oneof
+                [
+                    Gen.map Spelling.Vector genSpelling
+                    Gen.map2 (fun element rank -> Spelling.Array (element, rank)) genSpelling (Gen.choose (1, 3))
+                ]
+
+        let property (cover : ArrayAgreement -> unit) (spelling : Spelling) : bool =
+            let ty = toTypeDefn f spelling
+            let concretised = kind (concretize f ty)
+
+            let loaded =
+                TypeResolution.resolveTypeFromDefn
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ty
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    f.Analysed
+                    f.Assemblies
+                |> snd
+                |> kind
+
+            match concretised, loaded with
+            // Each refuses shapes the other models, so an unmodelled answer constrains nothing.
+            | ArrayAgreement.Unmodelled, _
+            | _, ArrayAgreement.Unmodelled -> cover ArrayAgreement.Unmodelled
+            | concretised, loaded when concretised = loaded -> cover concretised
+            | concretised, loaded ->
+                failwith $"concretisation says %A{concretised} and the Loader %A{loaded} for %A{ty}"
+
+            true
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genArray) property
+
+        coverage.Count ArrayAgreement.Binds |> shouldBeGreaterThan 100
+        coverage.Count ArrayAgreement.Absent |> shouldBeGreaterThan 100
+        coverage.Count ArrayAgreement.Unavailable |> shouldBeGreaterThan 100

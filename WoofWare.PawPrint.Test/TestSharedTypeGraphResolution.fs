@@ -279,6 +279,56 @@ module TestSharedTypeGraphResolution =
 
         check nestDepth resolved
 
+    /// <c>fnptr(d) := delegate*&lt;fnptr(d-1), fnptr(d-1)&gt;</c>, sharing one <c>fnptr(d-1)</c> between
+    /// the return type and the parameter, with Int32 at the bottom.
+    let private functionPointerNest (depth : int) : TypeDefn =
+        let rec go (d : int) : TypeDefn =
+            if d = 0 then
+                TypeDefn.PrimitiveType PrimitiveType.Int32
+            else
+                let prev = go (d - 1)
+
+                TypeDefn.FunctionPointer
+                    {
+                        Header =
+                            ComparableSignatureHeader.Make (
+                                SignatureHeader (
+                                    SignatureKind.Method,
+                                    SignatureCallingConvention.Default,
+                                    SignatureAttributes.None
+                                )
+                            )
+                        ParameterTypes = [ prev ]
+                        GenericParameterCount = 0
+                        RequiredParameterCount = 1
+                        ReturnType = MethodReturnType.Returns prev
+                    }
+
+        go depth
+
+    /// Resolving an array loads its element type, through any function pointers in it, and that
+    /// walk too must cost the element's size as a DAG.
+    [<Test>]
+    let ``an array of a deeply shared function pointer nest resolves in work linear in its depth`` () : unit =
+        let fixture = setUp ()
+
+        let subject =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (functionPointerNest nestDepth)
+
+        resolveToTypeDefn fixture (TypeDefn.OneDimensionalArrayLowerBoundZero (functionPointerNest 1)) [] []
+        |> ignore<TypeDefn>
+
+        let before = GC.GetAllocatedBytesForCurrentThread ()
+        let stopwatch = Stopwatch.StartNew ()
+        resolveToTypeDefn fixture subject [] [] |> ignore<TypeDefn>
+        stopwatch.Stop ()
+        let allocated = GC.GetAllocatedBytesForCurrentThread () - before
+
+        TestContext.Out.WriteLine
+            $"resolved an array of fnptr(%d{nestDepth}) in %d{stopwatch.ElapsedMilliseconds} ms, allocating %d{allocated} bytes"
+
+        allocated |> shouldBeSmallerThan nestAllocationBudget
+
     // ------------------------------------------------------------------
     // What a bare spelling of a generic definition names.
     // ------------------------------------------------------------------
