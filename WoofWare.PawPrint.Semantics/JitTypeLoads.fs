@@ -455,6 +455,67 @@ module JitTypeLoads =
            | UnmanagedTarget.PInvoke facts -> describingRefuses facts
            | UnmanagedTarget.FunctionPointer _ -> false
 
+    /// Whether the JIT compiling `call` may have the VM walk the signature `signature` for whether
+    /// the call needs marshalling: it may begin the walk, the VM does not refuse the P/Invoke as it
+    /// begins, and the P/Invoke neither sets the last error nor converts a locale, which need
+    /// marshalling before the walk meets any type.
+    let private walks (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : bool =
+        beginsWalk call signature
+        && match call.Target with
+           | UnmanagedTarget.PInvoke facts ->
+               not (describingRefuses facts)
+               && not facts.SetsLastError
+               && not facts.ConvertsLocale
+           | UnmanagedTarget.FunctionPointer _ -> true
+
+    /// The walk's step at each position of `signature`, 0 the return type and then each parameter
+    /// from 1. A marshalling the metadata spells ends it, with runtime marshalling, once it has met
+    /// the type at that position.
+    let private walkSteps (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : WalkStep list =
+        let returnedSpelling =
+            match signature.ReturnType with
+            | MethodReturnType.Void -> TypeDefn.Void
+            | MethodReturnType.Returns returned -> returned
+
+        let runtimeMarshalling, marshalled =
+            match call.Target with
+            | UnmanagedTarget.PInvoke facts -> facts.RuntimeMarshalling, facts.MarshalledPositions
+            | UnmanagedTarget.FunctionPointer runtimeMarshalling -> runtimeMarshalling, Set.empty
+
+        (returnedSpelling :: signature.ParameterTypes)
+        |> List.mapi (fun position spelling ->
+            match walkStep runtimeMarshalling spelling with
+            | WalkStep.MayPass when runtimeMarshalling && marshalled.Contains position -> WalkStep.EndsAt
+            | step -> step
+        )
+
+    /// Whether the walk of a signature whose steps are `steps` may find nothing that needs
+    /// marshalling.
+    let private mayFindNoMarshalling (steps : WalkStep list) : bool =
+        steps |> List.forall (fun step -> step = WalkStep.MayPass)
+
+    /// Whether the VM may bind the P/Invoke that `call`, a call of unmanaged code with signature
+    /// `signature`, calls to its native code as the JIT compiles the call, before any of the calling
+    /// method runs. The JIT asks for the P/Invoke's address where it makes the transition to
+    /// unmanaged code in the calling method's own code (`getAddressOfPInvokeTarget`), which it does
+    /// where it may walk the signature (`unmanagedMeetings`) and the walk may find nothing that needs
+    /// marshalling (`impCheckForPInvokeCall`); the VM binds the P/Invoke there if it has not yet and
+    /// CoreCLR suppresses its GC transition (`TryGetResolvedPInvokeTarget`), as `call`'s convention
+    /// says by the GC-transition modifier (`UnmanagedCallingConvention.ofPInvoke`). A function
+    /// pointer names nothing to bind. Whether the JIT makes the transition turns on block weights,
+    /// and whether the VM has bound the P/Invoke on what ran before, so this is a binding it may make
+    /// or not.
+    let unmanagedTargetBinds (call : UnmanagedCall) (signature : TypeMethodSignature<TypeDefn>) : bool =
+        match call.Target, call.Convention with
+        | UnmanagedTarget.PInvoke _, UnmanagedConventionRead.Reads (_, modifiers) ->
+            modifiers.Contains UnmanagedCallConvModifier.SuppressGcTransition
+            && walks call signature
+            && mayFindNoMarshalling (walkSteps call signature)
+        | UnmanagedTarget.PInvoke _, UnmanagedConventionRead.MultipleBases
+        | UnmanagedTarget.PInvoke _, UnmanagedConventionRead.Unreadable _
+        | UnmanagedTarget.PInvoke _, UnmanagedConventionRead.NullArray
+        | UnmanagedTarget.FunctionPointer _, _ -> false
+
     /// Where the JIT for `target` compiling `call`, a call of unmanaged code, meets the types of
     /// `signature`, the signature of the method it calls or the call site's, in the order it meets
     /// them, for an instruction whose operand `memberPositions` answers `MemberPositions.BySignature`.
@@ -478,10 +539,10 @@ module JitTypeLoads =
         let at (position : JitTypePosition) : (JitTypePosition * TypeDefn) list =
             signature.ParameterTypes |> List.map (fun parameter -> position, parameter)
 
-        let returned, returnedSpelling =
+        let returned =
             match signature.ReturnType with
-            | MethodReturnType.Void -> [], TypeDefn.Void
-            | MethodReturnType.Returns returned -> [ JitTypePosition.CalleeReturn, returned ], returned
+            | MethodReturnType.Void -> []
+            | MethodReturnType.Returns returned -> [ JitTypePosition.CalleeReturn, returned ]
 
         match call.Convention with
         | UnmanagedConventionRead.MultipleBases
@@ -493,30 +554,8 @@ module JitTypeLoads =
             returned
         | UnmanagedConventionRead.Reads _ ->
 
-        let walks =
-            beginsWalk call signature
-            && match call.Target with
-               | UnmanagedTarget.PInvoke facts ->
-                   not (describingRefuses facts)
-                   && not facts.SetsLastError
-                   && not facts.ConvertsLocale
-               | UnmanagedTarget.FunctionPointer _ -> true
-
-        let runtimeMarshalling, marshalled =
-            match call.Target with
-            | UnmanagedTarget.PInvoke facts -> facts.RuntimeMarshalling, facts.MarshalledPositions
-            | UnmanagedTarget.FunctionPointer runtimeMarshalling -> runtimeMarshalling, Set.empty
-
-        // The walk's step at each position, 0 the return type and then each parameter from 1. A
-        // marshalling the metadata spells ends it, with runtime marshalling, once it has met the
-        // type at that position.
-        let steps =
-            (returnedSpelling :: signature.ParameterTypes)
-            |> List.mapi (fun position spelling ->
-                match walkStep runtimeMarshalling spelling with
-                | WalkStep.MayPass when runtimeMarshalling && marshalled.Contains position -> WalkStep.EndsAt
-                | step -> step
-            )
+        let mayWalk = walks call signature
+        let steps = walkSteps call signature
 
         // The parameters the walk meets: those before the first step that ends it, and that one if
         // it loads the type there.
@@ -533,21 +572,18 @@ module JitTypeLoads =
             | WalkStep.MayPass :: parameters -> reached (List.zip parameters signature.ParameterTypes)
             | _ -> []
 
-        let mayFindNoMarshalling =
-            steps |> List.forall (fun step -> step = WalkStep.MayPass)
-
         let swift =
             if
                 UnmanagedCallingConvention.isSwift target call.Convention
-                && walks
-                && mayFindNoMarshalling
+                && mayWalk
+                && mayFindNoMarshalling steps
             then
                 at JitTypePosition.SwiftCalleeParameter
             else
                 []
 
         let walk =
-            if walks then
+            if mayWalk then
                 walked |> List.map (fun parameter -> JitTypePosition.MarshallingWalk, parameter)
             else
                 []

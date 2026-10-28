@@ -249,7 +249,14 @@ method) may add more:
   P/Invoke that is synchronized, or whose `[UnmanagedCallConv]` or signature's modifiers name two
   base conventions, or whose import or attribute names one convention and its signature's
   modifiers another, the VM refuses with a `TypeLoadException` where the JIT may begin its walk
-  for whether the call needs marshalling;
+  for whether the call needs marshalling; and where the JIT may make the transition to unmanaged code in
+  the caller's own code, it has the VM bind a P/Invoke whose GC transition CoreCLR suppresses
+  (`[SuppressGCTransition]`, or `[UnmanagedCallConv]`'s modifier where CoreCLR reads the
+  attribute) to its native code as it compiles the call, running the program's resolvers and the
+  declaring type's initializer, and raising `DllNotFoundException` or
+  `EntryPointNotFoundException` where the library or export is not on the machine, which the
+  analysis does not name (`Opacity.NativeLibraryBinding`), except for CoreLib's P/Invokes into the
+  framework's shims or into CoreCLR, which it takes to bind without fail;
 * the JIT refuses to compile a method over an instruction for what its token names, wherever in
   the code it compiles the instruction is, whether a run would reach it or not: a `call` or
   `ldftn` naming an abstract method without a `constrained.` prefix (`BadImageFormatException`),

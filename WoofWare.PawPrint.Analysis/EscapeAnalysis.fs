@@ -93,6 +93,17 @@ type Opacity =
     /// can (<c>Assumption.MembersAccessible</c>). Where it cannot, CoreCLR raises the access
     /// exception there through a QCall the analysis does not follow.
     | UndecidedAccess
+    /// A call of a P/Invoke whose GC transition CoreCLR suppresses, where the JIT may make the
+    /// transition to unmanaged code in the method's own code (<c>JitTypeLoads.unmanagedTargetBinds</c>):
+    /// the VM binds the P/Invoke to its native code as the JIT compiles the call, before any of the
+    /// method runs. Binding runs the program's <c>DllImportResolver</c>, its load context's
+    /// <c>LoadUnmanagedDll</c> and <c>ResolvingUnmanagedDll</c> handlers, and the type initializer
+    /// of the P/Invoke's declaring type unless it is <c>beforefieldinit</c>, any of which may throw;
+    /// where it finds no library, or no export of the name, it raises <c>DllNotFoundException</c> or
+    /// <c>EntryPointNotFoundException</c>, which turns on the files of the machine it runs on. Not
+    /// for CoreLib's P/Invokes into the framework's shims or into CoreCLR itself
+    /// (<c>NativeMethod.bindsWithoutManagedCode</c>).
+    | NativeLibraryBinding
 
 /// A place the analysis cannot see through, from which something it cannot name may escape: one of
 /// those that make an answer's <c>Escapes.Unknown</c> true (<c>EscapeAnalysis.unknownSources</c>).
@@ -106,7 +117,7 @@ type OpaqueSite =
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
         /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>,
-        /// <c>ValueTypeMarshallingVerdict</c>).
+        /// <c>ValueTypeMarshallingVerdict</c>, <c>NativeLibraryBinding</c>).
         Offset : int option
         Reason : Opacity
         /// The method the instruction's token names, where it names one. For a call, that need not
@@ -4443,9 +4454,31 @@ module EscapeAnalysis =
                                     :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) run
                                 | _ -> []
 
+                            // Where the JIT may make the transition to unmanaged code here, the VM
+                            // may bind the P/Invoke as it compiles the call
+                            // (`JitTypeLoads.unmanagedTargetBinds`). Compiling a method it inlines
+                            // this body into, it binds only where the call of this body is where
+                            // it may make the transition, so what binding raises escapes there as
+                            // this body's own answer does.
+                            let binding =
+                                match operand, signature, target with
+                                | MemberOperand.UnmanagedCall call,
+                                  MemberSignature.Method methodSignature,
+                                  Some (CallTarget.Method callee) when
+                                    JitTypeLoads.unmanagedTargetBinds call methodSignature
+                                    ->
+                                    let calleeAssembly, _ = methodOf state callee.Callee
+
+                                    if NativeMethod.bindsWithoutManagedCode calleeAssembly callee.Callee.Method.Get then
+                                        []
+                                    else
+                                        [ OutsideBodyFact.Opaque Opacity.NativeLibraryBinding ]
+                                | _ -> []
+
                             let possible =
                                 (loads.Possible |> List.collect (Some >> raisesOf))
                                 @ walkRefusal
+                                @ binding
                                 @ delegateFailures
 
                             let inlined =

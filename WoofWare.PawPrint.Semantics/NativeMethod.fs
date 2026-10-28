@@ -305,6 +305,32 @@ module NativeMethod =
             mathFunction |> Option.orElseWith tabulated
         | _ -> None
 
+    /// Whether CoreCLR binds `method`, a P/Invoke of `assembly`, to its native code without running
+    /// managed code and without fail, on the assumption that the framework's shims are present and
+    /// export what its CoreLib imports (`contract`). It does so for a P/Invoke of CoreLib's into
+    /// `QCall`, which it binds to its own function by entry point (`QCallResolveDllImport`), or into
+    /// one of the shims, for which it runs no `DllImportResolver` (CoreLib's, which it never asks)
+    /// and no load context's `LoadUnmanagedDll` (CoreLib's, the default context's) before it finds
+    /// the shim on disk; so long as the P/Invoke's declaring type has no type initializer that
+    /// binding runs first (`IsClassConstructorTriggeredAtLinkTime`): none, or one of a type marked
+    /// `beforefieldinit`.
+    let bindsWithoutManagedCode (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : bool =
+        let definition = assembly.Methods.[method]
+
+        let declaringType =
+            assembly.TypeDefs.[definition.RequiredDeclaringType.Definition.Get]
+
+        let initializesOnBinding =
+            not (declaringType.TypeAttributes.HasFlag System.Reflection.TypeAttributes.BeforeFieldInit)
+            && declaringType.Methods
+               |> List.exists (fun candidate -> candidate.Name = ".cctor" && candidate.IsStatic)
+
+        assembly.ThisAssemblyDefinition.Name.Name = corelib
+        && not initializesOnBinding
+        && match definition.Body, definition.TryNativeImport with
+           | MethodBody.PInvoke, Some import -> import.ModuleName = qcall || shims.ContainsKey import.ModuleName
+           | _ -> false
+
     /// What `native` can do to its caller.
     let contract (native : NativeMethod) : NativeContract =
         match native with
