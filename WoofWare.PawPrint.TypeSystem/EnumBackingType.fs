@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint
 
-open System.Collections.Generic
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
@@ -47,148 +46,6 @@ module internal EnumBackingType =
         | TypeDefn.GenericInstantiation (generic, _) -> isNominalValueType generic
         | _ -> false
 
-    let rec private parametersInScope (arity : int) (signature : TypeDefn) : bool =
-        let inScope = parametersInScope arity
-
-        match signature with
-        | TypeDefn.GenericTypeParameter index -> index >= 0 && index < arity
-        | TypeDefn.GenericMethodParameter _ -> false
-        | TypeDefn.Array (element, _)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.Pinned element -> inScope element
-        | TypeDefn.Modified modifier -> inScope modifier.Unmodified
-        | TypeDefn.GenericInstantiation (generic, arguments) -> inScope generic && Seq.forall inScope arguments
-        | TypeDefn.FunctionPointer signature ->
-            (match signature.ReturnType with
-             | MethodReturnType.Void -> true
-             | MethodReturnType.Returns ty -> inScope ty)
-            && List.forall inScope signature.ParameterTypes
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.FromReference _
-        | TypeDefn.Void -> true
-
-    let private hasLegalGenericArguments
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : TypeSystemState)
-        (handle : ConcreteTypeHandle)
-        : bool
-        =
-        let validated = HashSet<ConcreteTypeHandle> ()
-
-        let rec legal (handle : ConcreteTypeHandle) : bool =
-            if validated.Contains handle then
-                true
-            else
-                let result =
-                    match handle with
-                    | ConcreteTypeHandle.Concrete _ ->
-                        match TypeSystemState.tryGetConcreteTypeInfo state handle with
-                        | None -> false
-                        | Some (concrete, _) ->
-                            ConstraintSatisfaction.malformedArgument baseClassTypes state (List.ofSeq concrete.Generics)
-                            |> Option.isNone
-                            && Seq.forall legal concrete.Generics
-                    | ConcreteTypeHandle.Array (element, _)
-                    | ConcreteTypeHandle.OneDimArrayZero element
-                    | ConcreteTypeHandle.Pointer element
-                    | ConcreteTypeHandle.Byref element -> legal element
-                    | ConcreteTypeHandle.FunctionPointer signature ->
-                        (match signature.ReturnType with
-                         | MethodReturnType.Void -> true
-                         | MethodReturnType.Returns ty -> legal ty)
-                        && List.forall legal signature.ParameterTypes
-
-                // Generic arguments can share entire subgraphs. Cache only completed validation.
-                if result then
-                    validated.Add handle |> ignore
-
-                result
-
-        legal handle
-
-    let private hasConsistentNominalKinds
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : TypeSystemState)
-        (declaring : DumpedAssembly)
-        (signature : TypeDefn)
-        : TypeSystemState * Result<bool, TypeBindingFailure>
-        =
-        let rec check
-            (state : TypeSystemState)
-            (signature : TypeDefn)
-            : TypeSystemState * Result<bool, TypeBindingFailure>
-            =
-            match signature with
-            | TypeDefn.FromDefinition (identity, kind) ->
-                match
-                    TypeSystemState.lookupTypeDefn
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        state
-                        (state._LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
-                        identity.TypeDefinition.Get
-                with
-                | state, Error failure -> state, Error failure
-                | state, Ok resolved ->
-                    let actual =
-                        if isNominalValueType resolved then
-                            SignatureTypeKind.ValueType
-                        else
-                            SignatureTypeKind.Class
-
-                    state, Ok (kind = actual)
-            | TypeDefn.FromReference (reference, kind) ->
-                match
-                    TypeSystemState.resolveTypeFromRef
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        declaring
-                        reference
-                        ImmutableArray.Empty
-                        state
-                with
-                | state, Error failure -> state, Error failure
-                | state, Ok (_, resolved) ->
-                    state, Ok (kind = LoadedTypeInfo.signatureTypeKind baseClassTypes state._LoadedAssemblies resolved)
-            | TypeDefn.GenericInstantiation (generic, arguments) -> checkAll state (generic :: List.ofSeq arguments)
-            | TypeDefn.Array (element, _)
-            | TypeDefn.OneDimensionalArrayLowerBoundZero element
-            | TypeDefn.Pointer element
-            | TypeDefn.Byref element
-            | TypeDefn.Pinned element -> check state element
-            | TypeDefn.Modified modifier -> check state modifier.Unmodified
-            | TypeDefn.FunctionPointer signature ->
-                let types =
-                    match signature.ReturnType with
-                    | MethodReturnType.Void -> signature.ParameterTypes
-                    | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
-
-                checkAll state types
-            | TypeDefn.PrimitiveType _
-            | TypeDefn.GenericTypeParameter _
-            | TypeDefn.GenericMethodParameter _
-            | TypeDefn.Void -> state, Ok true
-
-        and checkAll
-            (state : TypeSystemState)
-            (signatures : TypeDefn list)
-            : TypeSystemState * Result<bool, TypeBindingFailure>
-            =
-            match signatures with
-            | [] -> state, Ok true
-            | signature :: rest ->
-                match check state signature with
-                | state, Ok true -> checkAll state rest
-                | state, result -> state, result
-
-        check state signature
-
     let rec private resolveEnum
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -202,13 +59,7 @@ module internal EnumBackingType =
         | None -> state, Error (unmodelled $"the enum handle %O{handle} has no nominal type definition")
         | Some (concrete, typeInfo) ->
 
-        if not (hasLegalGenericArguments baseClassTypes state handle) then
-            state,
-            Error (
-                unmodelled
-                    $"PawPrint cannot normalize the enum %O{concrete}: it contains a malformed generic instantiation"
-            )
-        elif stripping.Contains handle then
+        if stripping.Contains handle then
             state,
             Error (unmodelled $"the enum %O{concrete} has a cycle in its backing fields, which CoreCLR refuses to load")
         elif stripping.Count >= MaxNesting then
@@ -247,17 +98,6 @@ module internal EnumBackingType =
 
         match fields with
         | [ field ] ->
-            let unsupported
-                (state : TypeSystemState)
-                (reason : string)
-                : TypeSystemState * Result<PrimitiveType, TypeBindingFailure>
-                =
-                state,
-                Error (
-                    unmodelled
-                        $"PawPrint cannot normalize the enum %O{concrete}: its backing-field signature %O{field.Signature} %s{reason}"
-                )
-
             let refused (state : TypeSystemState) : TypeSystemState * Result<PrimitiveType, TypeBindingFailure> =
                 state,
                 Error (
@@ -270,21 +110,6 @@ module internal EnumBackingType =
                 | TypeDefn.Modified modifier -> fieldType modifier.Unmodified
                 | TypeDefn.PrimitiveType primitive when isBackingPrimitive primitive -> state, Ok primitive
                 | signature when isNominalValueType signature ->
-                    // Concretization erases CLASS/VALUETYPE spellings, including those on
-                    // generic arguments. SigPointer checks them against the resolved definitions.
-                    match
-                        hasConsistentNominalKinds
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            state
-                            declaring
-                            signature
-                    with
-                    | state, Error failure -> state, Error failure
-                    | state, Ok false -> unsupported state "contains a nominal kind inconsistent with its definition"
-                    | state, Ok true ->
-
                     match
                         TypeSystemState.concretizeType
                             loggerFactory
@@ -322,10 +147,7 @@ module internal EnumBackingType =
                 // closed instantiation would substitute a primitive for the parameter.
                 | _ -> refused state
 
-            if parametersInScope concrete.Generics.Length field.Signature then
-                fieldType field.Signature
-            else
-                unsupported state "contains a generic parameter outside the declaring type's scope"
+            fieldType field.Signature
         | fields ->
             state,
             Error (
@@ -335,11 +157,10 @@ module internal EnumBackingType =
 
     /// The exact primitive backing type of a concrete enum, stripping enum-typed backing fields;
     /// `None` for a handle whose immediate base is not CoreLib's System.Enum.
-    /// Checks backing-field shape and nominal spellings, parameter scope, generic argument kinds,
-    /// enum layout and generic arity, not unrelated type members or generic parameter constraints.
-    /// Inconsistent nominal spellings, out-of-scope parameters and malformed instantiations inside
-    /// reference-type arguments are unsupported even where CoreCLR can skip resolving them while
-    /// normalizing the field.
+    /// Checks the rules CoreCLR applies to an enum as such: backing-field shape and spelling, enum
+    /// layout and generic arity. It does not check rules that every type load applies, such as
+    /// legal generic arguments, CLASS/VALUETYPE spellings inside them or generic parameters in
+    /// scope: an enum breaking only those is treated as concretization treats any other type.
     /// Binding failures and unsupported shapes retain the state reached before the failure.
     /// A cycle is refused; a chain beyond 64 enums reports a PawPrint limit rather than a CLR refusal.
     let tryResolve
