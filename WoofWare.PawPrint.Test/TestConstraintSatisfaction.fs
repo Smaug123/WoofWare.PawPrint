@@ -818,6 +818,108 @@ public static class Outer<U>
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
+    /// A type parameter constrained to a value type named by a bare token, which C# cannot declare:
+    /// `System.Int32` by a TypeRef, and a struct of the same image by a TypeDef. A constraint token
+    /// spells no CLASS/VALUETYPE kind, so CoreCLR checks none, and admits the value type itself as
+    /// the argument; TypeSystem must too.
+    [<Test>]
+    let ``a constraint naming a value type by a bare token admits that value type, as on the host`` () : unit =
+        let fabricated =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (
+                    Reflection.AssemblyName "ValueTypeConstraints",
+                    typeof<obj>.Assembly
+                )
+
+            let modul = builder.DefineDynamicModule "ValueTypeConstraints"
+
+            let local =
+                modul.DefineType (
+                    "LocalStruct",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Sealed
+                    ||| Reflection.TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            local.CreateType () |> ignore<Type>
+
+            let holder (name : string) (bound : Type) : unit =
+                let ty =
+                    modul.DefineType (name, Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+                (ty.DefineGenericParameters [| "T" |]).[0].SetBaseTypeConstraint bound
+                ty.CreateType () |> ignore<Type>
+
+            holder "OnInt32`1" typeof<int>
+            holder "OnLocal`1" local
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let hostAssembly = Reflection.Assembly.Load fabricated
+
+        let assembly =
+            use stream = new MemoryStream (fabricated)
+            AssemblyApi.read loggerFactory None stream
+
+        let mutable state = initialState.WithLoadedAssembly assembly
+
+        let byName (name : string) =
+            assembly.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+        let failures =
+            [
+                for holderName, argumentName, hostArgument in
+                    [
+                        "OnInt32`1", None, typeof<int>
+                        "OnLocal`1", Some "LocalStruct", hostAssembly.GetType "LocalStruct"
+                    ] do
+                    match
+                        hostVerdict (fun () -> box ((hostAssembly.GetType holderName).MakeGenericType hostArgument))
+                    with
+                    | None -> ()
+                    | other -> yield $"%s{holderName}: the host's verdict is %A{other}, not None"
+
+                    let argument =
+                        match argumentName with
+                        | None -> TypeDefn.PrimitiveType PrimitiveType.Int32
+                        | Some name ->
+                            let typeInfo = byName name
+                            TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.ValueType)
+
+                    let next, handle =
+                        TypeSystemState.concretizeType
+                            loggerFactory
+                            HostImage.runtimeDirs
+                            bct
+                            state
+                            assembly.DefinitionFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            argument
+                        |> BindingResult.bound
+
+                    match
+                        ConstraintSatisfaction.satisfiesClosed
+                            loggerFactory
+                            HostImage.runtimeDirs
+                            bct
+                            next
+                            assembly.DefinitionFullName
+                            (ImmutableArray.Create handle)
+                            ImmutableArray.Empty
+                            (byName holderName).Generics
+                            [ handle ]
+                    with
+                    | next, Ok ConstraintVerdict.Satisfied -> state <- next
+                    | _, other -> yield $"%s{holderName}: TypeSystem's verdict is %A{other}"
+            ]
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
+
     /// An abstract class implementing, without implementing its static abstract method, an
     /// interface that declares one, and an interface deriving from that, which C# cannot declare.
     /// CoreCLR loads it. Against a constraint naming the interface that declares the method, it

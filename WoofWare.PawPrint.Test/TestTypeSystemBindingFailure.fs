@@ -893,7 +893,36 @@ module TestTypeSystemBindingFailure =
             )
             |> Gen.map (List.map Spelling.Leaf >> Spelling.ListOf)
 
-        // An argument no instantiation may have is refused only once everything else binds.
+        let rec go (size : int) : Gen<Spelling> =
+            if size <= 0 then
+                leaf
+            else
+                let smaller = go (size / 2)
+                let several = Gen.choose (1, 3) |> Gen.bind (fun n -> Gen.listOfLength n smaller)
+
+                Gen.frequency
+                    [
+                        3, leaf
+                        1, Gen.map2 (fun element rank -> Spelling.Array (element, rank)) smaller (Gen.choose (1, 3))
+                        1, Gen.map Spelling.Vector smaller
+                        1, Gen.map Spelling.Byref smaller
+                        1, Gen.map Spelling.Pointer smaller
+                        1, Gen.map Spelling.Pinned smaller
+                        1, Gen.map Spelling.Modified smaller
+                        2, Gen.map Spelling.ListOf several
+                        1, wrongArity
+                        2,
+                        Gen.map2
+                            (fun returns parameters -> Spelling.FunctionPointer (returns, parameters))
+                            (Gen.optionOf smaller)
+                            (Gen.choose (0, 3) |> Gen.bind (fun n -> Gen.listOfLength n smaller))
+                    ]
+
+        Gen.sized (fun size -> go (min size 16))
+
+    /// `genSpelling`, now and then an instantiation at an argument no instantiation may have, which
+    /// is refused only once everything else binds, and which arbitrary spellings rarely reach.
+    let private genSpellingWithMalformedArguments : Gen<Spelling> =
         let malformedArgument =
             leaves
             |> List.filter (fun leaf -> leaf.Fails.IsNone)
@@ -910,33 +939,7 @@ module TestTypeSystemBindingFailure =
             )
             |> Gen.map (fun argument -> Spelling.ListOf [ argument ])
 
-        let rec go (size : int) : Gen<Spelling> =
-            if size <= 0 then
-                leaf
-            else
-                let smaller = go (size / 2)
-                let several = Gen.choose (1, 3) |> Gen.bind (fun n -> Gen.listOfLength n smaller)
-
-                Gen.frequency
-                    [
-                        12, leaf
-                        4, Gen.map2 (fun element rank -> Spelling.Array (element, rank)) smaller (Gen.choose (1, 3))
-                        4, Gen.map Spelling.Vector smaller
-                        4, Gen.map Spelling.Byref smaller
-                        4, Gen.map Spelling.Pointer smaller
-                        4, Gen.map Spelling.Pinned smaller
-                        4, Gen.map Spelling.Modified smaller
-                        8, Gen.map Spelling.ListOf several
-                        4, wrongArity
-                        1, malformedArgument
-                        8,
-                        Gen.map2
-                            (fun returns parameters -> Spelling.FunctionPointer (returns, parameters))
-                            (Gen.optionOf smaller)
-                            (Gen.choose (0, 3) |> Gen.bind (fun n -> Gen.listOfLength n smaller))
-                    ]
-
-        Gen.sized (fun size -> go (min size 16))
+        Gen.frequency [ 12, genSpelling ; 1, malformedArgument ]
 
     [<RequireQualifiedAccess>]
     type private Shown =
@@ -977,7 +980,10 @@ module TestTypeSystemBindingFailure =
             true
 
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1200) (Arb.fromGen genSpelling) property
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1200)
+                (Arb.fromGen genSpellingWithMalformedArguments)
+                property
 
         coverage.Count Shown.Binds |> shouldBeGreaterThan 100
         coverage.Count Shown.FailsAbsent |> shouldBeGreaterThan 100
