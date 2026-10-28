@@ -11448,6 +11448,374 @@ public static unsafe class Calls
         if not failures.IsEmpty then
             failures |> String.concat Environment.NewLine |> failwith
 
+    /// Callers of P/Invokes whose GC transition CoreCLR suppresses, into a library that is not there,
+    /// into the framework's `libSystem.Native`, and into an export that library lacks. Where the JIT
+    /// makes the transition in the caller's own code, it asks the VM for the P/Invoke's target as it
+    /// compiles the caller (`getAddressOfPInvokeTarget`), and the VM binds a suppressed one there
+    /// (`TryGetResolvedPInvokeTarget`): running the assembly's `DllImportResolver`, the load
+    /// context's handlers and a probe of the disk, and raising `DllNotFoundException` or
+    /// `EntryPointNotFoundException` before any of the caller runs. Elsewhere it binds the target
+    /// as the call is made, or never, for a call never made. The JIT makes the transition there
+    /// where it may begin its walk of the signature for whether the call needs marshalling, the walk
+    /// may find none, and the P/Invoke neither sets the last error nor converts a locale; compiling
+    /// an optimised caller, it does so for each P/Invoke of each method it inlines into it. The
+    /// suppression comes from `[SuppressGCTransition]`, or from `[UnmanagedCallConv]`'s modifier where
+    /// CoreCLR reads the attribute; a function pointer names no target to bind. Each caller records
+    /// that it has begun to run before it calls, and each client's `DllImportResolver` records
+    /// whether that has happened when CoreCLR calls it, so that the host says where it binds even
+    /// where binding succeeds. The analysis must report `NativeLibraryBinding` from the entry of each
+    /// method whose own compilation binds, and nowhere else. CoreLib's P/Invokes into the framework's
+    /// shims and into CoreCLR itself, which the analysis takes to bind without fail, are no such
+    /// place. The host compiles in process, so the analysis reads the host's own image
+    /// (`analysisOverHostImage`).
+    [<Test>]
+    let ``the JIT binds a P/Invoke's native library as it compiles a call whose GC transition it suppresses``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let client =
+            """
+using System;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Client;
+
+public struct Blittable { public int X; }
+
+public static unsafe class Natives
+{
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void Missing();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingOptimised();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingCalled();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingInTryCatch();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingInTryCatchOptimised();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingCalledInTryCatch();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingInTryFinally();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingInCatch();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingInlined();
+    [DllImport("nowhere"), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSuppressGCTransition) })]
+    public static extern void MissingByModifier();
+    [DllImport("nowhere", CallingConvention = CallingConvention.Cdecl), UnmanagedCallConv(CallConvs = new[] { typeof(CallConvSuppressGCTransition) })]
+    public static extern void MissingModifierUnread();
+    [DllImport("nowhere")] public static extern void MissingUnsuppressed();
+    [DllImport("nowhere", SetLastError = true), SuppressGCTransition] public static extern void MissingSetsLastError();
+    [DllImport("nowhere", PreserveSig = false), SuppressGCTransition] public static extern void MissingUnpreserved();
+    [DllImport("nowhere"), LCIDConversion(0), SuppressGCTransition] public static extern void MissingLocale(int locale);
+    [DllImport("nowhere", CallingConvention = CallingConvention.FastCall), SuppressGCTransition]
+    public static extern void MissingFastcall();
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingTakesString(string s);
+    [DllImport("nowhere"), SuppressGCTransition] public static extern void MissingTakesBool(bool b);
+    [DllImport("nowhere"), SuppressGCTransition] public static extern int MissingTakesBlittable(Blittable b, int* p);
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo"), SuppressGCTransition] public static extern int Present();
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo"), SuppressGCTransition] public static extern int PresentInTryCatch();
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo"), SuppressGCTransition] public static extern int PresentCalledInTryCatch();
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetErrNo")] public static extern int PresentUnsuppressed();
+    [DllImport("libSystem.Native", EntryPoint = "PawPrintNoSuchExport"), SuppressGCTransition] public static extern void NoSuchExport();
+}
+
+public static unsafe class Calls
+{
+    public static bool entered;
+    static bool never;
+    static void* pointer;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Use() { }
+
+    public static void Missing() { entered = true; if (never) Natives.Missing(); }
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void MissingOptimised() { entered = true; if (never) Natives.MissingOptimised(); }
+    public static void MissingCalled() { entered = true; Natives.MissingCalled(); }
+    public static void MissingInTryCatch()
+    {
+        entered = true;
+        try { if (never) Natives.MissingInTryCatch(); } catch (Exception) { }
+    }
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void MissingInTryCatchOptimised()
+    {
+        entered = true;
+        try { if (never) Natives.MissingInTryCatchOptimised(); } catch (Exception) { }
+    }
+    public static void MissingCalledInTryCatch()
+    {
+        entered = true;
+        try { Natives.MissingCalledInTryCatch(); } catch (DllNotFoundException) { }
+    }
+    public static void MissingInTryFinally()
+    {
+        entered = true;
+        try { if (never) Natives.MissingInTryFinally(); } finally { Use(); }
+    }
+    public static void MissingInCatch()
+    {
+        entered = true;
+        try { Use(); } catch (Exception) { if (never) Natives.MissingInCatch(); }
+    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Wrapper() { if (never) Natives.MissingInlined(); }
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void Inliner() { entered = true; Wrapper(); }
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    public static void InlinerCaught() { entered = true; try { Wrapper(); } catch { } }
+    public static void MissingByModifier() { entered = true; if (never) Natives.MissingByModifier(); }
+    public static void MissingModifierUnread() { entered = true; if (never) Natives.MissingModifierUnread(); }
+    public static void MissingUnsuppressed() { entered = true; if (never) Natives.MissingUnsuppressed(); }
+    public static void MissingSetsLastError() { entered = true; if (never) Natives.MissingSetsLastError(); }
+    public static void MissingUnpreserved() { entered = true; if (never) Natives.MissingUnpreserved(); }
+    public static void MissingLocale() { entered = true; if (never) Natives.MissingLocale(0); }
+    public static void MissingFastcall() { entered = true; if (never) Natives.MissingFastcall(); }
+    public static void MissingTakesString() { entered = true; if (never) Natives.MissingTakesString(null); }
+    public static void MissingTakesBool() { entered = true; if (never) Natives.MissingTakesBool(false); }
+    public static void MissingTakesBlittable() { entered = true; if (never) Natives.MissingTakesBlittable(default, null); }
+    public static void Present() { entered = true; if (never) Natives.Present(); }
+    public static void PresentInTryCatch()
+    {
+        entered = true;
+        try { if (never) Natives.PresentInTryCatch(); } catch (Exception) { }
+    }
+    public static void PresentCalledInTryCatch()
+    {
+        entered = true;
+        try { Natives.PresentCalledInTryCatch(); } catch (Exception) { }
+    }
+    public static void PresentUnsuppressed() { entered = true; Natives.PresentUnsuppressed(); }
+    public static void NoSuchExport() { entered = true; if (never) Natives.NoSuchExport(); }
+    public static void Indirect()
+    {
+        entered = true;
+        if (never) ((delegate* unmanaged[SuppressGCTransition]<void>)pointer)();
+    }
+    public static void CoreLibShim() { entered = true; Stopwatch.GetTimestamp(); }
+    public static void CoreLibQCall() { entered = true; Debugger.IsLogging(); }
+}
+"""
+
+        // With runtime marshalling disabled, a `bool` needs no marshalling.
+        let drmClient =
+            """
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[assembly: DisableRuntimeMarshalling]
+
+namespace DrmClient;
+
+public static class Calls
+{
+    public static bool entered;
+    static bool never;
+
+    [DllImport("nowhere"), SuppressGCTransition] static extern void TakesBool(bool b);
+
+    public static void MissingTakesBool() { entered = true; if (never) TakesBool(false); }
+}
+"""
+
+        // Its `DebuggableAttribute` disables optimisation.
+        let debugClient =
+            """
+using System.Runtime.InteropServices;
+
+namespace DebugClient;
+
+public static class Calls
+{
+    public static bool entered;
+    static bool never;
+
+    [DllImport("nowhere"), SuppressGCTransition] static extern void Missing();
+
+    public static void MissingUnoptimised() { entered = true; if (never) Missing(); }
+}
+"""
+
+        let clientImage =
+            Roslyn.compileOptimizedAssemblyWithReferences "Client" OutputKind.DynamicallyLinkedLibrary [] [ client ]
+
+        let drmImage =
+            Roslyn.compileOptimizedAssemblyWithReferences
+                "DrmClient"
+                OutputKind.DynamicallyLinkedLibrary
+                []
+                [ drmClient ]
+
+        let debugImage =
+            Roslyn.compileAssembly "DebugClient" OutputKind.DynamicallyLinkedLibrary [] [ debugClient ]
+
+        let dllNotFound = "System.DllNotFoundException"
+        let entryPointNotFound = "System.EntryPointNotFoundException"
+
+        // Each caller, by its type's full name and its name; whether the host binds a native target
+        // as it compiles the caller; what running it does; and the methods from whose entry the
+        // analysis must report the binding, of those the caller reaches.
+        let methods =
+            [
+                "Client.Calls", "Missing", true, CallOutcome.Escapes dllNotFound, [ "Client.Calls::Missing" ]
+                "Client.Calls",
+                "MissingOptimised",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "Client.Calls::MissingOptimised" ]
+                // It binds before the caller runs, not at the call.
+                "Client.Calls",
+                "MissingCalled",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "Client.Calls::MissingCalled" ]
+                "Client.Calls", "MissingInTryCatch", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingInTryCatchOptimised", false, CallOutcome.Runs, []
+                // It binds at the call, whose `catch` stops the failure.
+                "Client.Calls", "MissingCalledInTryCatch", false, CallOutcome.Runs, []
+                // A `try` whose only handler is a `finally` does not stop it.
+                "Client.Calls",
+                "MissingInTryFinally",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "Client.Calls::MissingInTryFinally" ]
+                "Client.Calls", "MissingInCatch", false, CallOutcome.Runs, []
+                "Client.Calls", "Wrapper", true, CallOutcome.Escapes dllNotFound, [ "Client.Calls::Wrapper" ]
+                // Compiling it, the JIT inlines `Wrapper` and binds `Wrapper`'s P/Invoke; the analysis
+                // reports that where `Wrapper` binds it, which this reaches.
+                "Client.Calls", "Inliner", true, CallOutcome.Escapes dllNotFound, [ "Client.Calls::Wrapper" ]
+                // Inlined into a `try` with a `catch`, the P/Invoke's transition is not made there.
+                "Client.Calls", "InlinerCaught", false, CallOutcome.Runs, []
+                "Client.Calls",
+                "MissingByModifier",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "Client.Calls::MissingByModifier" ]
+                // The import names a convention, so CoreCLR does not read the attribute.
+                "Client.Calls", "MissingModifierUnread", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingUnsuppressed", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingSetsLastError", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingUnpreserved", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingLocale", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingFastcall", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingTakesString", false, CallOutcome.Runs, []
+                "Client.Calls", "MissingTakesBool", false, CallOutcome.Runs, []
+                "Client.Calls",
+                "MissingTakesBlittable",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "Client.Calls::MissingTakesBlittable" ]
+                "Client.Calls", "Present", true, CallOutcome.Runs, [ "Client.Calls::Present" ]
+                "Client.Calls", "PresentInTryCatch", false, CallOutcome.Runs, []
+                "Client.Calls", "PresentCalledInTryCatch", false, CallOutcome.Runs, []
+                "Client.Calls", "PresentUnsuppressed", false, CallOutcome.Runs, []
+                "Client.Calls",
+                "NoSuchExport",
+                true,
+                CallOutcome.Escapes entryPointNotFound,
+                [ "Client.Calls::NoSuchExport" ]
+                "Client.Calls", "Indirect", false, CallOutcome.Runs, []
+                "Client.Calls", "CoreLibShim", false, CallOutcome.Runs, []
+                "Client.Calls", "CoreLibQCall", false, CallOutcome.Runs, []
+                "DrmClient.Calls",
+                "MissingTakesBool",
+                true,
+                CallOutcome.Escapes dllNotFound,
+                [ "DrmClient.Calls::MissingTakesBool" ]
+                "DebugClient.Calls", "MissingUnoptimised", false, CallOutcome.Runs, []
+            ]
+
+        let images =
+            [ "Client", clientImage ; "DrmClient", drmImage ; "DebugClient", debugImage ]
+
+        // What running each caller does on the host's CoreCLR, and whether a `DllImportResolver`
+        // ran before the caller began to.
+        let hostOutcomes : Map<string * string, bool * CallOutcome> =
+            let context =
+                Runtime.Loader.AssemblyLoadContext ("SuppressedTransitionBinding", isCollectible = true)
+
+            // Whether each resolution came before its caller began to run.
+            let resolutions = Collections.Generic.List<bool> ()
+
+            try
+                let loaded =
+                    images
+                    |> List.map (fun (name, image) ->
+                        let assembly = context.LoadFromStream (new MemoryStream (image))
+                        let entered = assembly.GetType($"%s{name}.Calls").GetField "entered"
+
+                        Runtime.InteropServices.NativeLibrary.SetDllImportResolver (
+                            assembly,
+                            Runtime.InteropServices.DllImportResolver (fun _ _ _ ->
+                                resolutions.Add (not (unbox<bool> (entered.GetValue (null : obj))))
+                                IntPtr.Zero
+                            )
+                        )
+
+                        name, (assembly, entered)
+                    )
+                    |> Map.ofList
+
+                methods
+                |> List.map (fun (typeName, name, _, _, _) ->
+                    let assembly, entered = loaded.[typeName.Substring (0, typeName.IndexOf '.')]
+                    entered.SetValue ((null : obj), box false)
+                    resolutions.Clear ()
+
+                    let outcome =
+                        try
+                            assembly.GetType(typeName).GetMethod(name).Invoke ((null : obj), [||]) |> ignore
+
+                            CallOutcome.Runs
+                        with :? TargetInvocationException as e ->
+                            CallOutcome.Escapes (e.InnerException.GetType().FullName)
+
+                    (typeName, name), (Seq.contains true resolutions, outcome)
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clients =
+            images |> List.map (fun (name, image) -> name, read name image) |> Map.ofList
+
+        let mutable analysis =
+            analysisOverHostImage (clients |> Map.toList |> List.map snd) id
+
+        let failures =
+            [
+                for typeName, name, bindsAtCompile, outcome, bindingSites in methods do
+                    let hostBinds, hostOutcome = hostOutcomes.[typeName, name]
+
+                    if hostBinds <> bindsAtCompile || hostOutcome <> outcome then
+                        yield
+                            $"%s{typeName}.%s{name}: the host binds as it compiles %b{hostBinds} and %A{hostOutcome}, not %b{bindsAtCompile} and %A{outcome}"
+
+                    let client = clients.[typeName.Substring (0, typeName.IndexOf '.')]
+                    let key = methodNamed client typeName name
+                    let next, sources = EscapeAnalysis.unknownSources analysis key
+                    analysis <- next
+
+                    let reported =
+                        sources
+                        |> Seq.map (renderSite analysis)
+                        |> Seq.filter (fun site -> site.Contains " NativeLibraryBinding")
+                        |> Set.ofSeq
+
+                    let wanted =
+                        bindingSites
+                        |> List.map (fun method -> $"%s{method} entry NativeLibraryBinding")
+                        |> Set.ofList
+
+                    if reported <> wanted then
+                        yield
+                            $"%s{typeName}.%s{name}: the analysis reports %A{Set.toList reported}, not %A{Set.toList wanted}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat Environment.NewLine |> failwith
+
     /// A client compiled against one version of a provider, run against another lacking two types,
     /// taking the address of a method whose signature names a type that fails to load. The JIT
     /// loads the return type of the method whose address it takes in full; CoreCLR prepares the
