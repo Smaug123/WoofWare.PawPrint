@@ -446,7 +446,8 @@ These checks are exact where the instantiation is closed, but some are left open
 - **The static-virtual rule:** an abstract argument against an interface constraint that declares
   abstract static virtual methods (`Opacity.UndecidedConstraint`).
 - **Types TypeSystem cannot instantiate:** a load reaching a type whose argument carries a custom
-  modifier, or a function pointer naming a type that is not there, leaves its checks undecided
+  modifier or a function pointer naming a type that is not there, a constraint carrying a custom
+  modifier, or a token whose arguments the analysis does not resolve, leaves its checks undecided
   (`Opacity.UndecidedConstraint`), unless no generic definition it names, nor any their loads
   bring, has a constrained type parameter, or one not allowing a byref-like argument given one
   that may be. Binding goes on past an undecided check as though it passed.

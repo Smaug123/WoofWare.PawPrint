@@ -2590,6 +2590,22 @@ module EscapeAnalysis =
         | ConcreteTypeHandle.Pointer element -> 1 + nestingOf state element
         | ConcreteTypeHandle.FunctionPointer _ -> 1
 
+    /// Whether TypeSystem instantiates every constraint of `generics`, type parameters of
+    /// `assembly` (`concretizable`), as `ConstraintSatisfaction` needs to decide them.
+    let private constraintsConcretizable
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (generics : GenericParamFromMetadata seq)
+        : EscapeAnalysisState * bool
+        =
+        ((state, true), generics |> Seq.collect (fun (_, metadata) -> metadata.Constraints))
+        ||> Seq.fold (fun (state, soFar) constraint' ->
+            if soFar then
+                concretizable state assembly constraint'
+            else
+                state, false
+        )
+
     /// How deeply the types a full load reaches may nest before the analysis stops following it. A
     /// type whose load expands without end CoreCLR refuses; the analysis does not decide that.
     let private closureNestingLimit : int = 16
@@ -2741,6 +2757,10 @@ module EscapeAnalysis =
                     (state, visited), None
                 else
 
+                match constraintsConcretizable state definedIn typeInfo.Generics with
+                | state, false -> (state, visited), Some BindFailure.UndecidedConstraint
+                | state, true ->
+
                 let typeSystem, verdict =
                     ConstraintSatisfaction.satisfiesClosed
                         state.LoggerFactory
@@ -2760,6 +2780,7 @@ module EscapeAnalysis =
 
                 match verdict with
                 | Ok verdict -> (state, visited), verdictFailure false verdict
+                | Error (TypeBindingFailure.Unmodelled _) -> (state, visited), Some BindFailure.UndecidedConstraint
                 | Error failure -> (state, visited), Some (failureOfBinding failure)
 
             firstFailure ((state, visited), None) (parents @ arguments @ fields @ [ self ])
@@ -3042,6 +3063,10 @@ module EscapeAnalysis =
                 state, None
             else
 
+            match constraintsConcretizable state calleeAssembly calleeMethod.Generics with
+            | state, false -> state, Some BindFailure.UndecidedConstraint
+            | state, true ->
+
             let typeSystem, verdict =
                 ConstraintSatisfaction.satisfiesClosed
                     state.LoggerFactory
@@ -3061,6 +3086,7 @@ module EscapeAnalysis =
 
             match verdict with
             | Ok verdict -> state, verdictFailure true verdict
+            | Error (TypeBindingFailure.Unmodelled _) -> state, Some BindFailure.UndecidedConstraint
             | Error failure -> state, Some (failureOfBinding failure)
 
         { state with
@@ -7942,6 +7968,78 @@ module EscapeAnalysis =
             state, List.rev calleeTypeArguments, []
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} spells an instantiation with %O{other}"
 
+    /// As `spelledInstantiation`, but `None` where the analysis does not instantiate the token's
+    /// arguments: an argument TypeSystem does not instantiate (`concretizable`), or a MemberRef
+    /// whose parent's arguments the resolver does not.
+    let rec private trySpelledInstantiation
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (typeArguments : ConcreteTypeHandle list)
+        (methodArguments : ConcreteTypeHandle list)
+        (token : MetadataToken)
+        : EscapeAnalysisState * (ConcreteTypeHandle list * ConcreteTypeHandle list) option
+        =
+        // Each of `spellings` instantiated in this context, in order, or `None` at the first that is not.
+        let all
+            (state : EscapeAnalysisState)
+            (typeArguments : ConcreteTypeHandle list)
+            (methodArguments : ConcreteTypeHandle list)
+            (spellings : TypeDefn seq)
+            =
+            ((state, Some []), spellings)
+            ||> Seq.fold (fun (state, handles) spelling ->
+                match handles with
+                | None -> state, None
+                | Some handles ->
+
+                match concretizable state assembly spelling with
+                | state, false -> state, None
+                | state, true ->
+
+                match instantiate state assembly.DefinitionFullName typeArguments methodArguments spelling with
+                | state, Ok handle -> state, Some (handle :: handles)
+                | state, Error _ -> state, None
+            )
+            |> fun (state, handles) -> state, Option.map List.rev handles
+
+        match token with
+        | MetadataToken.MethodSpecification handle ->
+            let spec = assembly.MethodSpecs.[handle]
+
+            match all state typeArguments methodArguments spec.Signature with
+            | state, None -> state, None
+            | state, Some calleeMethodArguments ->
+
+            match spec.Method with
+            | MetadataToken.MethodDef _ -> state, Some ([], calleeMethodArguments)
+            | inner ->
+                match trySpelledInstantiation state assembly typeArguments methodArguments inner with
+                | state, Some (calleeTypeArguments, _) -> state, Some (calleeTypeArguments, calleeMethodArguments)
+                | state, None -> state, None
+        | MetadataToken.MemberReference handle ->
+            match
+                MemberReferenceInstantiation.resolveMember
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    assembly
+                    (ImmutableArray.CreateRange typeArguments)
+                    (ImmutableArray.CreateRange methodArguments)
+                    handle
+                    state.TypeSystem
+            with
+            | _, Error _ -> state, None
+            | typeSystem, Ok resolved ->
+                let state =
+                    { state with
+                        TypeSystem = typeSystem
+                    }
+
+                match all state [] [] resolved.TargetTypeGenerics with
+                | state, Some calleeTypeArguments -> state, Some (calleeTypeArguments, [])
+                | state, None -> state, None
+        | _ -> state, None
+
     /// The instance a call of `callee` from a body of `assembly` reaches, when that body runs as
     /// `caller`.
     let private calleeInstance
@@ -9100,16 +9198,19 @@ module EscapeAnalysis =
                     state, Some BindFailure.UndecidedConstraint
                 else
 
-                let state, memberTypeArguments, memberMethodArguments =
+                let state, memberArguments =
                     match token with
                     | MetadataToken.MethodSpecification _
                     | MetadataToken.MemberReference _ ->
-                        spelledInstantiation state assembly typeArguments methodArguments token
+                        trySpelledInstantiation state assembly typeArguments methodArguments token
                     // A member definition of a type of this assembly: the body's own type, whose
                     // variables are the body's.
-                    | _ -> state, typeArguments, []
+                    | _ -> state, Some (typeArguments, [])
 
-                loadInFull state spelledIn memberTypeArguments memberMethodArguments spelling
+                match memberArguments with
+                | None -> state, Some BindFailure.UndecidedConstraint
+                | Some (memberTypeArguments, memberMethodArguments) ->
+                    loadInFull state spelledIn memberTypeArguments memberMethodArguments spelling
             | InstanceCheck.Instantiates (spelledIn, handle) ->
                 let spelledAssembly = assemblyOf state spelledIn
                 let token = MetadataToken.MethodSpecification handle
@@ -9128,10 +9229,10 @@ module EscapeAnalysis =
                     // instantiate; so it does not decide constraints that mention them.
                     state, Some BindFailure.UndecidedConstraint
                 | state, CallTarget.Method callee ->
-                    let state, calleeTypeArguments, calleeMethodArguments =
-                        spelledInstantiation state spelledAssembly typeArguments methodArguments token
-
-                    methodInstantiationFailure state callee.Callee calleeTypeArguments calleeMethodArguments
+                    match trySpelledInstantiation state spelledAssembly typeArguments methodArguments token with
+                    | state, None -> state, Some BindFailure.UndecidedConstraint
+                    | state, Some (calleeTypeArguments, calleeMethodArguments) ->
+                        methodInstantiationFailure state callee.Callee calleeTypeArguments calleeMethodArguments
                 | state, _ -> state, None
 
         match instance.Arguments with
