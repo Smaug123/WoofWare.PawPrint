@@ -1101,7 +1101,9 @@ public static unsafe class Cases
     /// it, meets only through part of what it names, against the host: a closed argument beside
     /// one over the method's type variable, of a method or of a type; a closed method argument of a
     /// method of a type over the variable; generic structs whose full loads reach each other, one
-    /// of them reaching a violation; and a callee's return type whose full load reaches one.
+    /// of them reaching a violation; a callee's return type whose full load reaches one; and the
+    /// address of a method instantiated with an argument carrying a custom modifier, which the
+    /// analysis does not instantiate, of an unconstrained method and of one the argument violates.
     [<Test>]
     let ``a violation reached through part of what a generic method names agrees with the host`` () : unit =
         let scenarios =
@@ -1359,7 +1361,12 @@ public static class Cases
                 }
                 {
                     Name = "ModifiedMethodArgument"
-                    Libraries = []
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public static class Methods { public static void M<T>() { } }",
+                            "namespace Lib; public static class Methods { public static void M<T>() where T : struct { } }"
+                        ]
                     Client =
                         """
 namespace Client;
@@ -1371,9 +1378,14 @@ public static unsafe class Cases
         try { delegate*<void> p = &M<System.Collections.Generic.List<delegate*<out int, void>[]>>; return p == null ? 1 : 0; }
         catch (System.Exception) { return 1; }
     }
+    public static int TakesConstrainedAddress()
+    {
+        try { delegate*<void> p = &Lib.Methods.M<System.Collections.Generic.List<delegate*<out int, void>[]>>; return p == null ? 1 : 0; }
+        catch (System.Exception) { return 1; }
+    }
 }
 """
-                    Cases = [ "TakesAddress" ]
+                    Cases = [ "TakesAddress" ; "TakesConstrainedAddress" ]
                     Exact = false
                     Generics = []
                 }
