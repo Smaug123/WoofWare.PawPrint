@@ -657,13 +657,12 @@ module TypeResolution =
             args
             |> Seq.indexed
             |> Seq.tryPick (fun (index, arg) ->
-                malformedArgument baseClassTypes arg
-                |> Option.map (fun what -> index, arg, what)
+                malformedArgument baseClassTypes arg |> Option.map (fun what -> index, what)
             )
         with
-        | Some (index, arg, what) ->
+        | Some (index, what) ->
             unmodelled
-                $"An instantiation of %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} has %s{what}, %O{arg}, as its argument %d{index}; CoreCLR refuses that with TypeLoadException (IDS_CLASSLOAD_INVALIDINSTANTIATION), which is not modelled"
+                $"An instantiation of %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} has %s{what} as its argument %d{index}; CoreCLR refuses that with TypeLoadException (IDS_CLASSLOAD_INVALIDINSTANTIATION), which is not modelled"
         | None -> Ok (TypeInfo.applyGenericArgs args definition)
 
     /// <summary>
@@ -710,11 +709,13 @@ module TypeResolution =
 
     /// CoreCLR's `SigPointer::GetTypeHandleThrowing` refuses a function pointer type whose signature
     /// carries the GENERIC calling convention (`BFA_FNPTR_CANNOT_BE_GENERIC`).
-    let private refuseGenericFunctionPointer (functionPointer : TypeDefn) : TypeBindingFailure =
+    let private refuseGenericFunctionPointer (signature : TypeMethodSignature<TypeDefn>) : TypeBindingFailure =
+        // The signature is not spelled out: its types may share parts, and spelling them out as a
+        // tree can cost exponentially more than resolving them.
         TypeBindingFailure.Unmodelled
             {
                 Diagnostic =
-                    $"The function pointer type %O{functionPointer} carries the GENERIC calling convention; CoreCLR refuses that with BadImageFormatException, which is not modelled"
+                    $"A function pointer type with %d{signature.ParameterTypes.Length} parameter(s) carries the GENERIC calling convention; CoreCLR refuses that with BadImageFormatException, which is not modelled"
             }
 
     /// A cyclic environment is not something metadata can express: environments are built by the
@@ -1005,7 +1006,7 @@ module TypeResolution =
         | TypeDefn.Modified modified -> remodified (substitute expanding) assemblies modified
         | TypeDefn.FunctionPointer signature ->
             if signature.Header.Get.IsGeneric then
-                assemblies, Error (refuseGenericFunctionPointer ty)
+                assemblies, Error (refuseGenericFunctionPointer signature)
             else
 
             let returned =
@@ -1240,7 +1241,7 @@ module TypeResolution =
                 | TypeDefn.Modified modified -> elementBinds assemblies modified.Unmodified
                 | TypeDefn.FunctionPointer signature ->
                     if signature.Header.Get.IsGeneric then
-                        assemblies, Error (refuseGenericFunctionPointer element)
+                        assemblies, Error (refuseGenericFunctionPointer signature)
                     else
                         let returned =
                             match signature.ReturnType with
