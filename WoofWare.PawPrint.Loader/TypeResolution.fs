@@ -943,6 +943,7 @@ module TypeResolution =
         // that the modifier means the same wherever the substituted type is read.
         let remodified
             (unmodified : LoadedAssemblies -> TypeDefn -> LoadedAssemblies * Result<TypeDefn, TypeBindingFailure>)
+            (assemblies : LoadedAssemblies)
             (modified : ModifiedTypeDefn)
             =
             match unmodified assemblies modified.Unmodified with
@@ -979,7 +980,7 @@ module TypeResolution =
         let rec returnColumn (assemblies : LoadedAssemblies) (returned : TypeDefn) =
             match returned with
             | TypeDefn.Void -> assemblies, Ok TypeDefn.Void
-            | TypeDefn.Modified modified -> remodified returnColumn modified
+            | TypeDefn.Modified modified -> remodified returnColumn assemblies modified
             | returned -> substitute expanding assemblies returned
 
         // A parameter replaced by its argument, which is substituted in turn.
@@ -1001,7 +1002,7 @@ module TypeResolution =
         | TypeDefn.Pointer elementType -> wrapped TypeDefn.Pointer elementType
         | TypeDefn.Byref elementType -> wrapped TypeDefn.Byref elementType
         | TypeDefn.Pinned elementType -> wrapped TypeDefn.Pinned elementType
-        | TypeDefn.Modified modified -> remodified (substitute expanding) modified
+        | TypeDefn.Modified modified -> remodified (substitute expanding) assemblies modified
         | TypeDefn.FunctionPointer signature ->
             if signature.Header.Get.IsGeneric then
                 assemblies, Error (refuseGenericFunctionPointer ty)
@@ -1305,8 +1306,9 @@ module TypeResolution =
     /// A bare <c>FromDefinition</c> or <c>FromReference</c> names the definition itself, so a
     /// generic one comes back open, at its own parameters, whatever the environment. An
     /// instantiation names exactly as many arguments as its definition declares parameters, none
-    /// of them a generic definition spelled bare; CoreCLR refuses either with
-    /// <c>TypeLoadException</c>, and here either is unmodelled. So is a generic parameter that
+    /// of them a generic definition spelled bare nor, once substituted, a byref, a pointer, a
+    /// function pointer, <c>TypedReference</c> or <c>void</c>; CoreCLR refuses any of these with
+    /// <c>TypeLoadException</c>, and here each is unmodelled. So is a generic parameter that
     /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold,
     /// which CoreCLR refuses with <c>BadImageFormatException</c>.
     /// </para>
