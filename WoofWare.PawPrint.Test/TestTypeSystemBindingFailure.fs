@@ -501,6 +501,23 @@ module TestTypeSystemBindingFailure =
             | Ok _ -> ()
             | Error failure -> failwith $"expected %O{element}[] to bind, got %s{TypeBindingFailure.describe failure}"
 
+        // An array of an instantiation binds exactly where the instantiation does. Substitution
+        // does not yet walk into a function pointer, so an instantiation whose argument contains
+        // one is unmodelled, alone or as an array's element.
+        let listOfFunctionPointers =
+            TypeDefn.GenericInstantiation (
+                spelled f f.Shapes.List,
+                ImmutableArray.Create (
+                    TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ int32 ]))
+                )
+            )
+
+        resolve listOfFunctionPointers
+        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero listOfFunctionPointers)
+        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+
         match bindMember f f.Shapes.TypeParameterVectorToString with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>)
