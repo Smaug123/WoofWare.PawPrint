@@ -1097,6 +1097,7 @@ module TestTypeSystemBindingFailure =
         | Absent
         | Unavailable
         | Unmodelled
+        | Refused
 
     /// Concretisation loads an array's element type before the array, as CoreCLR does; the Loader,
     /// which answers only with `System.Array`, must still fail where the element does.
@@ -1111,6 +1112,7 @@ module TestTypeSystemBindingFailure =
             | Error (TypeBindingFailure.AssemblyUnavailable _) -> ArrayAgreement.Unavailable
             | Error (TypeBindingFailure.BaseTypeAbsent _)
             | Error (TypeBindingFailure.Unmodelled _) -> ArrayAgreement.Unmodelled
+            | Error (TypeBindingFailure.Refused _) -> ArrayAgreement.Refused
             | Error (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
                 failwith
                     $"Neither concretisation nor the Loader binds a MethodImpl's declaration, but one reported %O{miss}"
@@ -1140,9 +1142,12 @@ module TestTypeSystemBindingFailure =
                 |> kind
 
             match concretised, loaded with
-            // Each refuses shapes the other models, so an unmodelled answer constrains nothing.
+            // Each refuses shapes the other models, so an unmodelled answer constrains nothing; nor
+            // does a type CoreCLR refuses to load, whose rules the Loader does not check.
             | ArrayAgreement.Unmodelled, _
             | _, ArrayAgreement.Unmodelled -> cover ArrayAgreement.Unmodelled
+            | ArrayAgreement.Refused, _
+            | _, ArrayAgreement.Refused -> cover ArrayAgreement.Refused
             | concretised, loaded when concretised = loaded -> cover concretised
             | concretised, loaded ->
                 failwith $"concretisation says %A{concretised} and the Loader %A{loaded} for %A{ty}"
