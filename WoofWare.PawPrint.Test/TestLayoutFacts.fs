@@ -841,7 +841,8 @@ module TestLayoutFacts =
     /// only an `int`. `HoldsExpandingEnum` holds an `Outer<int>.E`, an enum over `Outer<Wrap<int>>.E`.
     /// `HoldsSwapped` holds a `Pair<Swap<int>, int>`, which reaches `Pair<int, Swap<int>>` and ends.
     /// `HoldsPayload` holds a `Wrap<Payload>`, where `Payload` holds a `Wrap<Holder<Payload>>`.
-    /// `HoldsSelf` holds itself by value.
+    /// `HoldsSelf` holds itself by value. `HoldsLiteral` holds an `int`, and a literal `string` that
+    /// is not static, which CoreCLR gives no storage.
     ///
     /// `CustomFormat` and `AutoCustomFormat` declare a custom string format, which CoreCLR refuses on
     /// a type with layout and ignores on one without; `Holds` of each holds it.
@@ -931,6 +932,14 @@ module TestLayoutFacts =
             let tb = md.DefineType (name, sequential, typeof<ValueType>)
             tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
             tb.CreateType () |> ignore
+
+        let holdsLiteral = md.DefineType ("HoldsLiteral", sequential, typeof<ValueType>)
+        holdsLiteral.DefineField ("X", typeof<int>, FieldAttributes.Public) |> ignore
+
+        (holdsLiteral.DefineField ("L", typeof<string>, FieldAttributes.Public ||| FieldAttributes.Literal)).SetConstant
+            "literal"
+
+        holdsLiteral.CreateType () |> ignore
 
         for name, layout in
             [
@@ -1036,6 +1045,7 @@ module TestLayoutFacts =
                     "HoldsSwapped"
                     "HoldsPayload"
                     "HoldsSelf"
+                    "HoldsLiteral"
                     "CustomFormat"
                     "HoldsCustomFormat"
                     "AutoCustomFormat"
@@ -1081,7 +1091,16 @@ module TestLayoutFacts =
                         if hostType.IsEnum then
                             facts |> shouldEqual ValueTypeLayoutFacts.Enum
                         else
-                            Some facts.IsBlittable |> shouldEqual (hostBlittable true hostType)
+                            let pinnable = hostPinnable hostType
+
+                            if facts.ContainsGcPointers = pinnable then
+                                failwith $"%s{name}: the host pins it %b{pinnable}, but the facts are %A{facts}"
+
+                            match hostBlittable pinnable hostType with
+                            | Some blittable when blittable <> facts.IsBlittable ->
+                                failwith
+                                    $"%s{name}: the host finds it blittable %b{blittable}, but the facts are %A{facts}"
+                            | _ -> ()
                     | None, Error (TypeBindingFailure.Unmodelled _) -> ()
                     | _, other -> failwith $"%s{name}: the host loads it %b{hostLoads}, but the facts are %A{other}"
 
@@ -1123,6 +1142,7 @@ module TestLayoutFacts =
                     "HoldsSwapped", true
                     "HoldsPayload", true
                     "HoldsSelf", false
+                    "HoldsLiteral", true
                     "CustomFormat", false
                     "HoldsCustomFormat", false
                     "AutoCustomFormat", true
