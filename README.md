@@ -43,36 +43,38 @@ See the [run-a-program.md](./docs/user/run-a-program.md) doc for how to run a pr
 
 ## Building and testing offline
 
-From the repository root, run builds and tests through `nix develop`, for example:
+The default devshell (`nix develop`) restores NuGet packages from nuget.org as usual. On a
+machine or in a sandbox with no network, use the `offline` devshell instead, for example:
 
 ```bash
-nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
+nix develop .#offline -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
 ```
 
-The devshell resolves NuGet packages and SDK packs from the Nix store, including
+It resolves NuGet packages and SDK packs only from the Nix store, including
 self-contained publishing packs for `linux-x64`, `linux-arm64` and `osx-arm64`. Nix may need
 network access to populate the store on first use; once its closure is present,
 restores, builds and tests need no access to nuget.org. NuGet's writable package
-cache is the ignored `packages/` directory in the directory where you enter the
-shell. Online vulnerability auditing is disabled in this offline shell.
+cache is the ignored `packages/` directory at the root of the checkout. Online
+vulnerability auditing is disabled in this shell.
 
 Local tools use their own NuGet configuration. Bootstrap the manifest's tools from
-the devshell's installable feed, then run the formatter as usual:
+the offline shell's installable feed, then run the formatter as usual:
 
 ```bash
-nix develop -c sh -c 'dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG"'
-nix develop -c dotnet fantomas .
+nix develop .#offline -c sh -c 'dotnet tool restore --configfile "$PAWPRINT_TOOL_NUGET_CONFIG"'
+nix develop .#offline -c dotnet fantomas .
 ```
 
-After changing package references, regenerate the pins with network access:
+The offline shell knows only the packages pinned in `nix/deps.json`. After changing package
+references, regenerate the pins with network access:
 
 ```bash
 nix build .#default.fetch-deps && ./result nix/deps.json
 ```
 
-Re-enter `nix develop` to use the new closure. A package missing from the pins fails
-restore instead of falling back to nuget.org. `nix flake check` verifies that the
-whole solution and the local tools restore with empty package, tool and HTTP
+Re-enter `nix develop .#offline` to use the new closure. A package missing from the pins fails
+restore in that shell instead of falling back to nuget.org. `nix flake check` verifies that the
+whole solution and the local tools restore offline with empty package, tool and HTTP
 caches, that both tools start, and that `CSharpExample` publishes as a self-contained
 application for each supported RID.
 

@@ -4,7 +4,6 @@
     "^refs/heads/main$"
   ],
   "pathFilters": [
-    ":/.config/dotnet-tools.json",
     ":/.gitignore",
     ":/Directory.Build.props",
     ":/Directory.Build.targets",
@@ -12,7 +11,6 @@
     ":/WoofWare.PawPrint.Domain",
     ":/flake.lock",
     ":/flake.nix",
-    ":/logos/light.png",
-    ":/nix/deps.json"
+    ":/logos/light.png"
   ]
 }

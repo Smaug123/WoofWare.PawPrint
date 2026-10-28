@@ -18,6 +18,7 @@ This file holds only what applies across the repository. It is read by every age
 ## Tooling
 
 * Run `dotnet` as `nix develop -c dotnet ...`; the Nix devshell provides the toolchain.
+* Without network access, use `nix develop .#offline -c dotnet ...`, which restores NuGet packages only from the Nix store; `README.md`'s "Building and testing offline" says how to bootstrap local tools and refresh the pins.
 * After changes, `nix develop -c dotnet fantomas .` to format.
 * The solution file is `WoofWare.PawPrint.slnx`.
 * The genuine .NET runtime's source is pinned in `flake.nix` and exposed in the devshell as `$DOTNET_RUNTIME_SRC_NET10` (and `$DOTNET_RUNTIME_SRC_NET11`), sparse-checked-out to the trees we read most. Read upstream behaviour there. The `sync-dotnet-runtime` skill says how to bump a pin or widen the checkout. (A sibling checkout `../dotnet`, without the `-runtime` suffix, is the .NET SDK source and is not what you want.)

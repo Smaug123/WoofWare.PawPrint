@@ -342,53 +342,63 @@
               else "touch $out"
             )))
         runtimes;
-      devShell = pkgs.mkShell {
-        buildInputs = [dotnet-devshell];
-        DOTNET_CLI_TELEMETRY_OPTOUT = "1";
-        env = offlineNugetEnvironment;
-        shellHook = ''
-          # Keep NuGet's writable bookkeeping within the sandbox's checkout. Packages
-          # themselves resolve from the read-only store through the fallback folder.
-          export NUGET_PACKAGES="$PWD/packages"
-        '';
-        # Each runtime's variables carry its name, and no unsuffixed name exists, so nothing can
-        # read one runtime's pins believing them another's. Tests read them only through
-        # `FrameworkUnderTest` (TestFrameworkLocatorRatchet enforces it), keyed on the runtime.
-        #
-        # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
-        # sync-dotnet-runtime skill.
-        DOTNET_RUNTIME_SRC_NET10 = runtimeSource runtimes.net10;
-        DOTNET_RUNTIME_SRC_NET11 = runtimeSource runtimes.net11;
-        # Managed linux-x64 and osx-arm64 framework assemblies, so tests can point the
-        # interpreter at the CoreLib flavour of the kernel it emulates instead of the host's.
-        # See `frameworkPack`. Tests that need one skip when it is unset, so a non-Nix checkout
-        # still works.
-        DOTNET_LINUX_FRAMEWORK_DIR_NET10 = frameworkPack "linux-x64" runtimes.net10.linuxFrameworkHash "net10" runtimes.net10;
-        DOTNET_LINUX_FRAMEWORK_DIR_NET11 = frameworkPack "linux-x64" runtimes.net11.linuxFrameworkHash "net11" runtimes.net11;
-        DOTNET_OSX_FRAMEWORK_DIR_NET10 = frameworkPack "osx-arm64" runtimes.net10.osxFrameworkHash "net10" runtimes.net10;
-        DOTNET_OSX_FRAMEWORK_DIR_NET11 = frameworkPack "osx-arm64" runtimes.net11.osxFrameworkHash "net11" runtimes.net11;
-        # The net11 shared framework inside `dotnet-devshell`, as `dotnet --list-runtimes` names
-        # it. The net10 one needs no variable: the test host runs on it, and finds it from its
-        # own runtimeconfig.
-        DOTNET_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.NETCore.App/${runtimes.net11.expectedRuntimeVersion}";
-        # Likewise its ASP.NET Core shared framework, which net10's comes with the SDK.
-        DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.AspNetCore.App/${runtimes.net11.expectedRuntimeVersion}";
-        # Force polling-based file watcher to avoid hangs in
-        # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
-        # path can deadlock under load when ASP.NET hosts created in tests
-        # initialise their JSON configuration providers).
-        DOTNET_USE_POLLING_FILE_WATCHER = "1";
-        packages = [
-          pkgs.alejandra
-          pkgs.lychee
-          pkgs.shellcheck
-          pkgs.xmlstarlet
-          pkgs.claude-code
-          pkgs.codex
-          # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
-          # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
-          python
-        ];
+      devShells = let
+        # What both shells share. NuGet restores from its usual sources.
+        shell = {
+          buildInputs = [dotnet-devshell];
+          DOTNET_CLI_TELEMETRY_OPTOUT = "1";
+          # Each runtime's variables carry its name, and no unsuffixed name exists, so nothing can
+          # read one runtime's pins believing them another's. Tests read them only through
+          # `FrameworkUnderTest` (TestFrameworkLocatorRatchet enforces it), keyed on the runtime.
+          #
+          # Pinned read-only dotnet/runtime source for checking upstream behaviour; see the
+          # sync-dotnet-runtime skill.
+          DOTNET_RUNTIME_SRC_NET10 = runtimeSource runtimes.net10;
+          DOTNET_RUNTIME_SRC_NET11 = runtimeSource runtimes.net11;
+          # Managed linux-x64 and osx-arm64 framework assemblies, so tests can point the
+          # interpreter at the CoreLib flavour of the kernel it emulates instead of the host's.
+          # See `frameworkPack`. Tests that need one skip when it is unset, so a non-Nix checkout
+          # still works.
+          DOTNET_LINUX_FRAMEWORK_DIR_NET10 = frameworkPack "linux-x64" runtimes.net10.linuxFrameworkHash "net10" runtimes.net10;
+          DOTNET_LINUX_FRAMEWORK_DIR_NET11 = frameworkPack "linux-x64" runtimes.net11.linuxFrameworkHash "net11" runtimes.net11;
+          DOTNET_OSX_FRAMEWORK_DIR_NET10 = frameworkPack "osx-arm64" runtimes.net10.osxFrameworkHash "net10" runtimes.net10;
+          DOTNET_OSX_FRAMEWORK_DIR_NET11 = frameworkPack "osx-arm64" runtimes.net11.osxFrameworkHash "net11" runtimes.net11;
+          # The net11 shared framework inside `dotnet-devshell`, as `dotnet --list-runtimes` names
+          # it. The net10 one needs no variable: the test host runs on it, and finds it from its
+          # own runtimeconfig.
+          DOTNET_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.NETCore.App/${runtimes.net11.expectedRuntimeVersion}";
+          # Likewise its ASP.NET Core shared framework, which net10's comes with the SDK.
+          DOTNET_ASPNETCORE_FRAMEWORK_DIR_NET11 = "${dotnet-devshell.unwrapped}/share/dotnet/shared/Microsoft.AspNetCore.App/${runtimes.net11.expectedRuntimeVersion}";
+          # Force polling-based file watcher to avoid hangs in
+          # FileSystemWatcher.StartRaisingEvents on macOS (FSEvents/CoreFoundation
+          # path can deadlock under load when ASP.NET hosts created in tests
+          # initialise their JSON configuration providers).
+          DOTNET_USE_POLLING_FILE_WATCHER = "1";
+          packages = [
+            pkgs.alejandra
+            pkgs.lychee
+            pkgs.shellcheck
+            pkgs.xmlstarlet
+            pkgs.claude-code
+            pkgs.codex
+            # The `*.py` probes under `docs/plans/` are run by hand from this shell, and
+            # `scripts/check-docstring-attachment-branch.sh` runs its checker with it.
+            python
+          ];
+        };
+      in {
+        default = pkgs.mkShell shell;
+        # For a machine or sandbox with no network: NuGet restores only from the pinned Nix
+        # closure (see README.md, "Building and testing offline").
+        offline = pkgs.mkShell (shell
+          // {
+            env = offlineNugetEnvironment;
+            shellHook = ''
+              # Keep NuGet's writable bookkeeping within the checkout, which a sandbox can write.
+              # Packages themselves resolve from the read-only store through the fallback folder.
+              export NUGET_PACKAGES="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/packages"
+            '';
+          });
       };
     });
 }

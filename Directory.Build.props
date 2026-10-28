@@ -14,10 +14,6 @@
     <WarnOn>FS3388,FS3390,FS3559</WarnOn>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The devshell and Nix package build read these restore pins outside MSBuild. -->
-    <FootprintInput Include="$(MSBuildThisFileDirectory)nix/deps.json" />
-    <!-- The devshell's offline tool feed selects packages from this manifest. -->
-    <FootprintInput Include="$(MSBuildThisFileDirectory).config/dotnet-tools.json" />
     <PackageReference Include="Nerdbank.GitVersioning" Version="3.8.38-alpha" PrivateAssets="all"/>
     <SourceLinkGitHubHost Include="github.com" ContentUrl="https://raw.githubusercontent.com"/>
   </ItemGroup>
