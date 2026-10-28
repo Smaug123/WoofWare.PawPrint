@@ -26,14 +26,26 @@ module Netstandard21FSharpCore =
             | "" -> Path.Combine (Environment.GetFolderPath Environment.SpecialFolder.UserProfile, ".nuget", "packages")
             | value -> value
 
-        let fsharpCoreDir = Path.Combine (nugetRoot, "fsharp.core")
+        let packageRoots =
+            seq {
+                yield nugetRoot
 
-        if not (Directory.Exists fsharpCoreDir) then
-            Assert.Ignore
-                $"FSharp.Core nuget package not found under %s{fsharpCoreDir}; skipping netstandard2.1 base-chain regression."
+                match Environment.GetEnvironmentVariable "NUGET_FALLBACK_PACKAGES" with
+                | null
+                | "" -> ()
+                | value -> yield! value.Split (';', StringSplitOptions.RemoveEmptyEntries)
+            }
 
         let candidate =
-            Directory.EnumerateDirectories fsharpCoreDir
+            packageRoots
+            |> Seq.collect (fun (root : string) ->
+                let fsharpCoreDir = Path.Combine (root, "fsharp.core")
+
+                if Directory.Exists fsharpCoreDir then
+                    Directory.EnumerateDirectories fsharpCoreDir
+                else
+                    Seq.empty
+            )
             |> Seq.choose (fun versionDir ->
                 let dll = Path.Combine (versionDir, "lib", "netstandard2.1", "FSharp.Core.dll")
 
@@ -45,12 +57,12 @@ module Netstandard21FSharpCore =
         | Some dll -> dll
         | None ->
             Assert.Ignore
-                "No FSharp.Core/*/lib/netstandard2.1/FSharp.Core.dll found; skipping netstandard2.1 base-chain regression."
+                $"No FSharp.Core/*/lib/netstandard2.1/FSharp.Core.dll found in package roots %A{Seq.toList packageRoots}; skipping netstandard2.1 base-chain regression."
 
             failwith "unreachable"
 
-    /// Path to a netstandard2.1 FSharp.Core.dll. Forces an <c>Assert.Ignore</c> if the nuget
-    /// cache does not hold one, so a checkout without it still passes.
+    /// Path to a netstandard2.1 FSharp.Core.dll. Forces an <c>Assert.Ignore</c> if neither the
+    /// NuGet cache nor its fallback folders hold one, so a checkout without it still passes.
     let path : string Lazy = System.Lazy<_>.Create locate
 
     let corelibPath : string = HostImage.coreLibPath
