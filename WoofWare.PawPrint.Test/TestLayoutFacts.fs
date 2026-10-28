@@ -841,6 +841,10 @@ module TestLayoutFacts =
     /// only an `int`. `HoldsExpandingEnum` holds an `Outer<int>.E`, an enum over `Outer<Wrap<int>>.E`.
     /// `HoldsSwapped` holds a `Pair<Swap<int>, int>`, which reaches `Pair<int, Swap<int>>` and ends.
     /// `HoldsPayload` holds a `Wrap<Payload>`, where `Payload` holds a `Wrap<Holder<Payload>>`.
+    /// `HoldsSelf` holds itself by value.
+    ///
+    /// `CustomFormat` and `AutoCustomFormat` declare a custom string format, which CoreCLR refuses on
+    /// a type with layout and ignores on one without; `Holds` of each holds it.
     let private oddCorpus : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "OddTypes", typeof<obj>.Assembly)
@@ -922,10 +926,32 @@ module TestLayoutFacts =
                 "HoldsExpandingEnum", (fun _ -> expandingEnum.MakeGenericType typeof<int>)
                 "HoldsSwapped", (fun _ -> pair.MakeGenericType (swap.MakeGenericType typeof<int>, typeof<int>))
                 "HoldsPayload", (fun _ -> wrap.MakeGenericType payload)
+                "HoldsSelf", (fun tb -> tb :> Type)
             ] do
             let tb = md.DefineType (name, sequential, typeof<ValueType>)
             tb.DefineField ("X", field tb, FieldAttributes.Public) |> ignore
             tb.CreateType () |> ignore
+
+        for name, layout in
+            [
+                "CustomFormat", TypeAttributes.SequentialLayout
+                "AutoCustomFormat", TypeAttributes.AutoLayout
+            ] do
+            let tb =
+                md.DefineType (
+                    name,
+                    TypeAttributes.Public
+                    ||| TypeAttributes.Sealed
+                    ||| layout
+                    ||| TypeAttributes.CustomFormatClass,
+                    typeof<ValueType>
+                )
+
+            tb.DefineField ("X", typeof<int>, FieldAttributes.Public) |> ignore
+            let formatted = tb.CreateType ()
+            let holder = md.DefineType ("Holds" + name, sequential, typeof<ValueType>)
+            holder.DefineField ("X", formatted, FieldAttributes.Public) |> ignore
+            holder.CreateType () |> ignore
 
         let ordinary =
             (md.DefineEnum ("Ordinary", TypeAttributes.Public, typeof<int>)).CreateType ()
@@ -1009,6 +1035,11 @@ module TestLayoutFacts =
                     "HoldsExpandingEnum"
                     "HoldsSwapped"
                     "HoldsPayload"
+                    "HoldsSelf"
+                    "CustomFormat"
+                    "HoldsCustomFormat"
+                    "AutoCustomFormat"
+                    "HoldsAutoCustomFormat"
                 ]
                 |> List.map (fun name ->
                     // The host may refuse the type as soon as it is named.
@@ -1091,6 +1122,11 @@ module TestLayoutFacts =
                     "HoldsExpandingEnum", false
                     "HoldsSwapped", true
                     "HoldsPayload", true
+                    "HoldsSelf", false
+                    "CustomFormat", false
+                    "HoldsCustomFormat", false
+                    "AutoCustomFormat", true
+                    "HoldsAutoCustomFormat", true
                 ]
         finally
             context.Unload ()
