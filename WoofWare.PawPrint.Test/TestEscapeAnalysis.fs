@@ -1652,8 +1652,6 @@ public static class SR
 
     [<Test>]
     let ``a fixture method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
-        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
-
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1687,8 +1685,6 @@ public static class SR
 
     [<Test>]
     let ``a CoreLib method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
-        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
-
         let corelib = hostCoreLib ()
 
         let analysis =
@@ -1745,8 +1741,6 @@ public static class SR
 
     [<Test>]
     let ``what callers pass makes a fixture method's answer only more precise`` () : unit =
-        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
-
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1766,8 +1760,6 @@ public static class SR
 
     [<Test>]
     let ``what callers pass makes a CoreLib method's answer only more precise`` () : unit =
-        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
-
         let analysis = analysisOver [] id
         let corelib = hostCoreLib ()
 
@@ -1859,8 +1851,6 @@ public static class SR
 
     [<Test>]
     let ``allowed no assumption, no answer assumes anything, and one that relied on none is unchanged`` () : unit =
-        Net11Frontier.park Net11Frontier.synchronizedMethodHelpers
-
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
