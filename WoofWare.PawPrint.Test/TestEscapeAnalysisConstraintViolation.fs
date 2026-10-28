@@ -267,6 +267,37 @@ module TestEscapeAnalysisConstraintViolation =
             Position.SharedMethodSpec
         ]
 
+    /// Pairs of constraint sets, each by name, the first a generic method's own and the second the
+    /// set of what its body instantiates with its bare type variable, where the first demands at
+    /// least as much as the second by a rule the analysis states: so the analysis must know the
+    /// method's answer by itself. A variable constrained to a class other than `Object`, `ValueType`
+    /// and `Enum` satisfies `class`; `struct` gives `new()`; and a type constraint is satisfied by
+    /// one of the variable's own, or by an interface one of those inherits.
+    let private impliedWithin : Set<string * string> =
+        Set.ofList
+            [
+                "Class", "Class"
+                "Struct", "Struct"
+                "Struct", "New"
+                "New", "New"
+                "Base", "Class"
+                "Base", "Base"
+                "IFoo", "IFoo"
+                "ClassIFoo", "Class"
+                "ClassIFoo", "IFoo"
+                "StructIFoo", "Struct"
+                "StructIFoo", "New"
+                "StructIFoo", "IFoo"
+                "IFooNew", "New"
+                "IFooNew", "IFoo"
+                "IComparable", "IComparable"
+                "IEquatableOfSelf", "IEquatableOfSelf"
+                "EnumerableOfObject", "EnumerableOfObject"
+                "ListOfObject", "ListOfObject"
+                "ListOfObject", "EnumerableOfObject"
+                "Enum", "Enum"
+            ]
+
     let private cases : Case list =
         [
             for position in positions do
@@ -677,11 +708,18 @@ public static class Driver
                             match case.Position, case.Within with
                             | Position.SharedClosedBase, _ -> named = raised
                             | _, None -> escapes.Unknown
-                            | _, Some _ ->
+                            | _, Some within ->
                                 if not escapes.Unknown then
                                     knownWithin <- Set.add case.Position knownWithin
 
-                                escapes.Unknown || named = raised
+                                let mustKnow =
+                                    fst within.Spelled = "T"
+                                    && impliedWithin.Contains (within.Outer.Name, case.Set.Name)
+
+                                if mustKnow then
+                                    not escapes.Unknown && named = raised
+                                else
+                                    escapes.Unknown || named = raised
 
                         if not agrees then
                             yield
@@ -732,13 +770,18 @@ public static class Driver
     /// a type in an assembly that is not there. CoreCLR's full load of the instantiation loads the
     /// generic definition's constraints before it checks the instantiation's, so the missing
     /// assembly's `FileNotFoundException` comes out, and the violation's `TypeLoadException` never
-    /// does; so too for a generic method of a type whose generic methods' constraints name it.
+    /// does; so too for a generic method of a type whose generic methods' constraints name it. So
+    /// too where the definition's own load misses, at its base or at the type of a value-type field,
+    /// before its instantiation's constraints, which the argument violates, are checked.
     [<Test>]
     let ``a load that misses fails before the constraint it would check`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let missing =
-            compile "Missing" [] "namespace Missing; public interface IMissing { }"
+            compile
+                "Missing"
+                []
+                "namespace Missing; public interface IMissing { } public class BaseMissing { } public struct StructMissing { }"
 
         let library (constrained : bool) : string =
             if constrained then
@@ -746,12 +789,16 @@ public static class Driver
 namespace Lib;
 public class Both<T> where T : class, Missing.IMissing { public static void Touch() { } }
 public class BothMethod<T> where T : class { public static void Touch() { } public static void Gm<U>() where U : Missing.IMissing { } }
+public class Based<T> : Missing.BaseMissing where T : class { public static void Touch() { } }
+public class Fielded<T> where T : class { public Missing.StructMissing F; public static void Touch() { } }
 """
             else
                 """
 namespace Lib;
 public class Both<T> { public static void Touch() { } }
 public class BothMethod<T> { public static void Touch() { } public static void Gm<U>() { } }
+public class Based<T> { public static void Touch() { } }
+public class Fielded<T> { public static void Touch() { } }
 """
 
         let constrained = compile "Lib" [ missing ] (library true)
@@ -767,10 +814,14 @@ public static class Cases
     public static int BothInt() { try { Lib.Both<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int BothString() { try { Lib.Both<string>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int BothMethodInt() { try { Lib.BothMethod<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int BasedInt() { try { Lib.Based<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int FieldedInt() { try { Lib.Fielded<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
 }
 """
 
-        let names = [ "BothInt" ; "BothString" ; "BothMethodInt" ]
+        let names =
+            [ "BothInt" ; "BothString" ; "BothMethodInt" ; "BasedInt" ; "FieldedInt" ]
+
         let fileNotFound = "System.IO.FileNotFoundException"
 
         // `Missing` is not beside the client.
