@@ -439,19 +439,23 @@ These checks are exact where the instantiation is closed, but some are left open
   `Object`, `ValueType` and `Enum` gives `class`); a byref-like argument only where the variable
   allows none, or the parameter allows one; and each type constraint where it is among the bases
   and interfaces of the variable's own constraints. Another argument satisfies it by what its
-  definition is, and by its own bases and interfaces.
+  definition is, and by its own bases and interfaces, though an abstract class or an interface
+  does not satisfy an interface constraint that declares abstract static virtual methods. A
+  pointer, a byref or a function pointer satisfies nothing, even in code shared between
+  instantiations, where CoreCLR checks an argument's form though not its constraints.
 - **The static-virtual rule:** an abstract argument against an interface constraint that declares
   abstract static virtual methods (`Opacity.UndecidedConstraint`).
 - **Types TypeSystem cannot instantiate:** a load reaching a type whose argument carries a custom
   modifier, or a function pointer naming a type that is not there, leaves its checks undecided
   (`Opacity.UndecidedConstraint`), unless no generic definition it names, nor any their loads
-  bring, has a constrained type parameter. Binding goes on past an undecided check as though it
-  passed.
+  bring, has a constrained type parameter, or one not allowing a byref-like argument given one
+  that may be. Binding goes on past an undecided check as though it passed.
 - **A generic type's method instantiated by its definition token:** IL that C# does not write, a
   method specification over a `MethodDef` of a generic type's method, or over a `MemberRef` whose
   parent names the generic type without arguments, names the method on the type's typical
-  instantiation, whose arguments are its own type parameters. Where the method's constraints
-  mention type variables, the check is undecided (`Opacity.UndecidedConstraint`).
+  instantiation, whose arguments are its own type parameters. Where the method's constraints, or
+  a type of its signature the JIT loads, mention type variables, the check is undecided
+  (`Opacity.UndecidedConstraint`).
 - **Order within one load:** a load that misses is reported as the miss, which is exact for the
   instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before

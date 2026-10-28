@@ -91,9 +91,9 @@ type Opacity =
     /// not decide: an abstract argument can be cast to an interface constraint that declares abstract
     /// static virtual methods, each of which CoreCLR requires to resolve on the argument
     /// (`ConstraintVerdict.Undecided`), or the types the load reaches nest deeper than the analysis
-    /// follows, or a method specification names a generic type's method by its definition token,
-    /// which CoreCLR instantiates on the type's typical instantiation, and the method's constraints
-    /// mention type variables. Where the check fails, CoreCLR raises `TypeLoadException` or
+    /// follows, or a method token names a generic type's method on the type's typical
+    /// instantiation, and the method's constraints, or a type of its signature the JIT loads,
+    /// mention type variables, or a load TypeSystem does not instantiate may break a constraint. Where the check fails, CoreCLR raises `TypeLoadException` or
     /// `VerificationException` before the method runs.
     | UndecidedConstraint
     /// A token naming a type in an assembly the analysis does not find. Before raising
@@ -2252,10 +2252,46 @@ module EscapeAnalysis =
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void -> state, true
 
+    /// Whether a generic argument `assembly` spells may be byref-like, which a type parameter that
+    /// does not allow one rejects. A type variable may be where `variables`, the type parameters of
+    /// the definition whose spelling it is, say it allows one, and where they are not known; a
+    /// reference that does not bind may be.
+    let private mayBeByRefLike
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (variables : GenericParamFromMetadata ImmutableArray option)
+        (argument : TypeDefn)
+        : EscapeAnalysisState * bool
+        =
+        match TypeDefn.stripCustomModifiers argument with
+        | TypeDefn.GenericTypeParameter index ->
+            match variables with
+            | Some variables when index < variables.Length -> state, (snd variables.[index]).AllowsByRefLike
+            | _ -> state, true
+        | TypeDefn.GenericMethodParameter _ -> state, true
+        | TypeDefn.GenericInstantiation _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.PrimitiveType _ as nominal ->
+            match nominalIdentity state assembly nominal with
+            | state, None -> state, true
+            | state, Some identity ->
+                let _, definition = definitionOf state identity
+                state, LoadedTypeInfo.isByRefLike state.BaseTypes state.TypeSystem._LoadedAssemblies definition
+        | TypeDefn.Array _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Pointer _
+        | TypeDefn.Byref _
+        | TypeDefn.Pinned _
+        | TypeDefn.Modified _
+        | TypeDefn.FunctionPointer _
+        | TypeDefn.Void -> state, false
+
     /// <summary>
     /// Whether no constraint check a full load of a spelling of <paramref name="assembly" /> makes
     /// can fail, whatever its type arguments: no generic definition it names, nor any that their
-    /// full loads bring (<c>TypeLoad.fullLoadParts</c>), has a type parameter with a constraint, and
+    /// full loads bring (<c>TypeLoad.fullLoadParts</c>), has a type parameter with a constraint, nor
+    /// one not allowing a byref-like argument given one that may be (<c>mayBeByRefLike</c>), and
     /// no generic argument it spells is one CoreCLR admits in no instantiation (a byref, a pointer,
     /// a function pointer, <c>void</c> or <c>TypedReference</c>). This decides, without
     /// instantiating it, a spelling TypeSystem does not instantiate (<c>concretizable</c>).
@@ -2281,10 +2317,12 @@ module EscapeAnalysis =
             | TypeDefn.PrimitiveType PrimitiveType.TypedReference -> false
             | _ -> true
 
-        // The walk threads the definitions it has entered, so that it enters each once.
+        // The walk threads the definitions it has entered, so that it enters each once. `variables`
+        // are the type parameters of the definition whose part the spelling is, if it is one.
         let rec ofSpelling
             (state : EscapeAnalysisState, entered : Set<ResolvedTypeIdentity>)
             (assembly : DumpedAssembly)
+            (variables : GenericParamFromMetadata ImmutableArray option)
             (spelling : TypeDefn)
             : (EscapeAnalysisState * Set<ResolvedTypeIdentity>) * bool
             =
@@ -2296,10 +2334,25 @@ module EscapeAnalysis =
                 | state, None -> (state, entered), false
                 | state, Some identity ->
 
+                let _, definition = definitionOf state identity
+
+                let state, byRefLikeRejected =
+                    ((state, false), Seq.zip definition.Generics arguments)
+                    ||> Seq.fold (fun (state, rejected) ((_, parameter), argument) ->
+                        if rejected || parameter.AllowsByRefLike then
+                            state, rejected
+                        else
+                            mayBeByRefLike state assembly variables argument
+                    )
+
+                if byRefLikeRejected then
+                    (state, entered), false
+                else
+
                 ((ofDefinition (state, entered) identity), arguments)
                 ||> Seq.fold (fun (walked, free) argument ->
                     if free then
-                        ofSpelling walked assembly argument
+                        ofSpelling walked assembly variables argument
                     else
                         walked, false
                 )
@@ -2307,8 +2360,8 @@ module EscapeAnalysis =
             | TypeDefn.OneDimensionalArrayLowerBoundZero element
             | TypeDefn.Pointer element
             | TypeDefn.Byref element
-            | TypeDefn.Pinned element -> ofSpelling (state, entered) assembly element
-            | TypeDefn.Modified modified -> ofSpelling (state, entered) assembly modified.Unmodified
+            | TypeDefn.Pinned element -> ofSpelling (state, entered) assembly variables element
+            | TypeDefn.Modified modified -> ofSpelling (state, entered) assembly variables modified.Unmodified
             | TypeDefn.FromReference _
             | TypeDefn.FromDefinition _ ->
                 match nominalIdentity state assembly spelling with
@@ -2346,11 +2399,12 @@ module EscapeAnalysis =
                 match part with
                 | TypeLoad.FullLoadPart.Base spelling
                 | TypeLoad.FullLoadPart.Interface spelling
-                | TypeLoad.FullLoadPart.ValueTypeField spelling -> ofSpelling walked definedIn spelling
+                | TypeLoad.FullLoadPart.ValueTypeField spelling ->
+                    ofSpelling walked definedIn (Some definition.Generics) spelling
                 | TypeLoad.FullLoadPart.UnmodelledInterface _ -> walked, false
             )
 
-        let (state, _), free = ofSpelling (state, Set.empty) assembly spelling
+        let (state, _), free = ofSpelling (state, Set.empty) assembly None spelling
         state, free
 
     /// What the constraint checks of a full load of a spelling of `assembly` that TypeSystem does
@@ -2550,8 +2604,9 @@ module EscapeAnalysis =
     /// satisfies its constraints.
     /// </summary>
     /// <remarks>
-    /// An instantiation containing <c>System.__Canon</c> is what shared code sees, which CoreCLR does
-    /// not check, though it checks what that instantiation's load brings that does not contain it.
+    /// An instantiation containing <c>System.__Canon</c> is what shared code sees, whose constraints
+    /// CoreCLR does not check, though it checks its arguments' form, and what that instantiation's
+    /// load brings that does not contain it.
     /// The load is assumed to meet no type reference that names nothing (<c>TypeLoad</c>), which the
     /// caller decides first. A part TypeSystem does not instantiate (<c>concretizable</c>) is decided
     /// as far as <c>uninstantiableConstraints</c> does.
@@ -2675,15 +2730,16 @@ module EscapeAnalysis =
             // `DoFullyLoad` brings the parents, then the generic arguments, then the fields, and checks
             // the instantiation itself last.
             let self (state : EscapeAnalysisState, visited) =
-                if concrete.Generics.IsEmpty || containsCanon state canon handle then
-                    (state, visited), None
-                else
-
                 let arguments = List.ofSeq concrete.Generics
 
                 match ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem arguments with
                 | Some _ -> (state, visited), Some BindFailure.MalformedTypeInstantiation
                 | None ->
+
+                // CoreCLR does not check the constraints of what shared code sees.
+                if concrete.Generics.IsEmpty || containsCanon state canon handle then
+                    (state, visited), None
+                else
 
                 let typeSystem, verdict =
                     ConstraintSatisfaction.satisfiesClosed
@@ -2957,7 +3013,8 @@ module EscapeAnalysis =
     /// with the wrong number of arguments, or an argument CoreCLR admits in no instantiation
     /// (`BadImageFormatException`), or an argument the method's constraints reject
     /// (`VerificationException`). An instantiation either of whose argument lists contains
-    /// `System.__Canon` is what shared code sees, which CoreCLR does not check.
+    /// `System.__Canon` is what shared code sees, whose constraints CoreCLR does not check, though it
+    /// checks its arguments' number and form.
     let private methodInstantiationFailure
         (state : EscapeAnalysisState)
         (callee : MethodKey)
@@ -2974,10 +3031,6 @@ module EscapeAnalysis =
         let state, canon = canonHandle state
 
         let state, failure =
-            if typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
-                state, None
-            else
-
             let calleeAssembly, calleeMethod = methodOf state callee
 
             if
@@ -2985,6 +3038,8 @@ module EscapeAnalysis =
                 || (ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments).IsSome
             then
                 state, Some BindFailure.MalformedMethodInstantiation
+            elif typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
+                state, None
             else
 
             let typeSystem, verdict =
@@ -3183,8 +3238,10 @@ module EscapeAnalysis =
     /// Another argument mentioning a variable satisfies it by what its definition is: a value type
     /// other than <c>Nullable</c> for <c>struct</c>, not one for <c>class</c>, a value type for
     /// <c>new()</c>, not byref-like unless the parameter allows it, and each general constraint,
-    /// instantiated, among its own ancestors. A constraint mentioning a variable
-    /// <paramref name="substitute" /> does not give decides nothing.
+    /// instantiated, among its own ancestors, though not, for an abstract class or an interface, an
+    /// interface declaring abstract static virtual methods, which CoreCLR requires to resolve on it.
+    /// A pointer, a byref, a function pointer and <c>void</c> satisfy nothing. A constraint
+    /// mentioning a variable <paramref name="substitute" /> does not give decides nothing.
     /// </para>
     /// </remarks>
     let private argumentSatisfies
@@ -3198,8 +3255,10 @@ module EscapeAnalysis =
         =
         let valueTypeShape = Shape.Named (state.BaseTypes.ValueType.Identity, [])
 
-        // Whether every general constraint, instantiated, is among `ancestors`.
-        let general (state : EscapeAnalysisState) (ancestors : Shape list) (isValueType : bool) =
+        // Whether every general constraint, instantiated, is among `ancestors`, and, for an argument
+        // that is an abstract class or an interface, none is an interface declaring abstract static
+        // virtual methods, each of which CoreCLR requires to resolve on the argument.
+        let general (state : EscapeAnalysisState) (ancestors : Shape list) (isValueType : bool) (isAbstract : bool) =
             ((state, true), parameter.Constraints)
             ||> Seq.fold (fun (state, satisfied) constraint' ->
                 if not satisfied then
@@ -3208,8 +3267,26 @@ module EscapeAnalysis =
 
                 let state, required = shapeOf state parameterAssembly substitute constraint'
 
+                let staticAbstract =
+                    match required with
+                    | Shape.Named (identity, _) ->
+                        let _, definition = definitionOf state identity
+
+                        definition.IsInterface
+                        && definition.Methods
+                           |> List.exists (fun method ->
+                               method.IsStatic
+                               && method.IsVirtual
+                               && method.TryMetadata
+                                  |> Option.exists (fun facts ->
+                                      facts.MethodAttributes.HasFlag System.Reflection.MethodAttributes.Abstract
+                                  )
+                           )
+                    | _ -> false
+
                 state,
                 not (shapeHasOpaque required)
+                && not (isAbstract && staticAbstract)
                 && ((required = valueTypeShape && isValueType) || List.contains required ancestors)
             )
 
@@ -3270,8 +3347,10 @@ module EscapeAnalysis =
                 state, false
             else
 
+            // An abstract argument the variable stands for is checked against the variable's own
+            // constraints where the instantiation it is an argument of is made.
             let state, ancestors = ancestorShapes state owned
-            general state ancestors own.RequiresNonNullableValueType
+            general state ancestors own.RequiresNonNullableValueType false
         | Shape.Named (identity, _) ->
             let _, definition = definitionOf state identity
             let loaded = state.TypeSystem._LoadedAssemblies
@@ -3290,11 +3369,18 @@ module EscapeAnalysis =
             else
 
             let state, ancestors = ancestorShapes state [ argument ]
-            general state ancestors isValueType
-        | Shape.Array _
+
+            general
+                state
+                ancestors
+                isValueType
+                (definition.TypeAttributes.HasFlag System.Reflection.TypeAttributes.Abstract)
+        | Shape.Array _ -> state, not (constrains parameter)
+        // A pointer, a byref, a function pointer and `void` CoreCLR admits in no instantiation, and an
+        // opaque shape may be one.
         | Shape.Pointer _
         | Shape.Byref _
-        | Shape.Opaque -> state, not (constrains parameter)
+        | Shape.Opaque -> state, false
 
     /// <summary>
     /// Whether the type parameters <paramref name="generics" /> of
@@ -3819,8 +3905,9 @@ module EscapeAnalysis =
             // A constraint check the analysis does not decide leaves an argument it may not
             // instantiate, and the method's instantiation open. Where TypeSystem cannot instantiate
             // an argument, the method's instantiation fails no check only where it has as many
-            // arguments as parameters, none CoreCLR admits in no instantiation, and none of its
-            // parameters is constrained.
+            // arguments as parameters, none CoreCLR admits in no instantiation, none of its
+            // parameters is constrained, and none that does not allow a byref-like argument is given
+            // one that may be.
             let state, failures, instantiates =
                 match target, failures with
                 | CallTarget.Method _, [] when representable ->
@@ -3840,10 +3927,20 @@ module EscapeAnalysis =
                             | _ -> true
                         )
 
+                    let state, byRefLikeRejected =
+                        ((state, false), Seq.zip calleeMethod.Generics spec.Signature)
+                        ||> Seq.fold (fun (state, rejected) ((_, parameter), argument) ->
+                            if rejected || parameter.AllowsByRefLike then
+                                state, rejected
+                            else
+                                mayBeByRefLike state assembly None argument
+                        )
+
                     let unconstrained =
                         calleeMethod.Generics.Length = spec.Signature.Length
                         && admitted
                         && calleeMethod.Generics |> Seq.forall (snd >> constrains >> not)
+                        && not byRefLikeRejected
 
                     if unconstrained then
                         state, failures, []
@@ -8975,6 +9072,34 @@ module EscapeAnalysis =
             | InstanceCheck.LoadsInFull (spelledIn, spelling) ->
                 loadInFull state spelledIn typeArguments methodArguments spelling
             | InstanceCheck.LoadsInMember (spelledIn, spelling, token) ->
+                // A method token naming its method on the typical instantiation of its generic type,
+                // whose arguments are the type's own parameters, which the analysis does not
+                // instantiate, leaves undecided a signature that mentions variables.
+                let namesMethod =
+                    match token with
+                    | MetadataToken.MethodSpecification _ -> true
+                    | MetadataToken.MemberReference handle ->
+                        match assembly.Members.[handle].Signature with
+                        | MemberSignature.Method _ -> true
+                        | MemberSignature.Field _ -> false
+                    | _ -> false
+
+                let state, typical =
+                    if namesMethod && mentionsTypeVariable spelling then
+                        match callTarget state assembly token with
+                        | state, CallTarget.Method callee ->
+                            match callee.Spelling with
+                            | CalleeSpelling.Typical -> state, true
+                            | CalleeSpelling.Fixed
+                            | CalleeSpelling.Spelled _ -> state, false
+                        | state, _ -> state, false
+                    else
+                        state, false
+
+                if typical then
+                    state, Some BindFailure.UndecidedConstraint
+                else
+
                 let state, memberTypeArguments, memberMethodArguments =
                     match token with
                     | MetadataToken.MethodSpecification _
