@@ -999,7 +999,8 @@ public static class Cases
     /// method's variable, against an interface constraint that has gained an abstract static
     /// member, in code shared between instantiations; and a byref-like argument carrying a custom
     /// modifier, of a method whose address is taken and of a type whose token is loaded, which no
-    /// longer allow one.
+    /// longer allow one; a constraint carrying a custom modifier, which an argument satisfies; and
+    /// the address of a method of a generic type instantiated over function pointers.
     [<Test>]
     let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
         let scenarios =
@@ -1149,6 +1150,48 @@ public static unsafe class Cases
 }
 """
                     Cases = [ "TakesAddress" ; "TakesToken" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "ModifiedConstraint"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public interface I<X> { } public static unsafe class Methods { public static void M<T>() where T : I<delegate*<out int, void>[]> { } } public unsafe class C<T> where T : I<delegate*<out int, void>[]> { public static void Touch() { } }",
+                            "namespace Lib; public interface I<X> { } public static unsafe class Methods { public static void M<T>() where T : I<delegate*<out int, void>[]> { } } public unsafe class C<T> where T : I<delegate*<out int, void>[]> { public static void Touch() { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public unsafe class Arg : Lib.I<delegate*<out int, void>[]> { }
+public static class Cases
+{
+    public static int CallsMethod() { Lib.Methods.M<Arg>(); return 0; }
+    public static int TouchesType() { Lib.C<Arg>.Touch(); return 0; }
+}
+"""
+                    Cases = [ "CallsMethod" ; "TouchesType" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "FunctionPointerOwner"
+                    Libraries = []
+                    Client =
+                        """
+namespace Client;
+public class Holder<T> { public static T Make() => default; }
+public static unsafe class Cases
+{
+    public static int TakesAddress()
+    {
+        delegate*<System.Collections.Generic.List<delegate*<int, void>[]>> p = &Holder<System.Collections.Generic.List<delegate*<int, void>[]>>.Make;
+        return p == null ? 1 : 0;
+    }
+}
+"""
+                    Cases = [ "TakesAddress" ]
                     Exact = false
                     Generics = []
                 }
