@@ -3266,7 +3266,7 @@ module EscapeAnalysis =
     /// <c>new()</c>, not byref-like unless the parameter allows it, and each general constraint,
     /// instantiated, among its own ancestors, though not, for an abstract class or an interface, an
     /// interface declaring abstract static virtual methods, which CoreCLR requires to resolve on it.
-    /// A pointer, a byref, a function pointer and <c>void</c> satisfy nothing. A constraint
+    /// A pointer, a byref, a function pointer, <c>void</c> and <c>TypedReference</c> satisfy nothing. A constraint
     /// mentioning a variable <paramref name="substitute" /> does not give decides nothing.
     /// </para>
     /// </remarks>
@@ -3383,8 +3383,10 @@ module EscapeAnalysis =
             let isValueType = LoadedTypeInfo.isValueType state.BaseTypes loaded definition
             let isNullable = identity = state.BaseTypes.Nullable.Identity
 
+            // CoreCLR admits `TypedReference` in no instantiation.
             let special =
-                (not parameter.RequiresNonNullableValueType || (isValueType && not isNullable))
+                identity <> state.BaseTypes.TypedReference.Identity
+                && (not parameter.RequiresNonNullableValueType || (isValueType && not isNullable))
                 && (not parameter.RequiresReferenceType || not isValueType)
                 && (not parameter.RequiresParameterlessConstructor || isValueType)
                 && (parameter.AllowsByRefLike
@@ -3661,9 +3663,12 @@ module EscapeAnalysis =
                 let calleeAssembly, calleeMethod = methodOf state callee.Callee
                 let argumentArray = Array.ofList arguments
 
+                // The parent's arguments are the declaring type's only where the parent is that type;
+                // a method it inherits from a generic base has the base's, which are not spelled here.
                 let parentArguments =
                     match parentShape with
-                    | Some (Shape.Named (_, parentArguments)) -> Array.ofList parentArguments
+                    | Some (Shape.Named (parent, parentArguments)) when parent = declaringTypeOf state callee.Callee ->
+                        Array.ofList parentArguments
                     | _ -> [||]
 
                 let substitute (ofMethod : bool) (index : int) : Shape option =
@@ -9085,6 +9090,37 @@ module EscapeAnalysis =
             OutsideBodyFact.Raises thrown
             :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
 
+    /// The type definition declaring the member a member reference of `assembly` names: the
+    /// reference's parent, or a base of it from which the member is inherited. `None` where the
+    /// reference does not resolve to a definition.
+    let private memberDeclaringType
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (reference : MemberReferenceHandle)
+        : EscapeAnalysisState * ResolvedTypeIdentity option
+        =
+        match assembly.Members.[reference].Signature with
+        | MemberSignature.Method _ ->
+            match callTarget state assembly (MetadataToken.MemberReference reference) with
+            | state, CallTarget.Method callee -> state, Some (declaringTypeOf state callee.Callee)
+            | state, _ -> state, None
+        | MemberSignature.Field _ ->
+            let assemblies, target =
+                FieldReferenceResolution.resolve
+                    state.LoggerFactory
+                    state.RuntimeDirs
+                    state.BaseTypes
+                    state.TypeSystem._LoadedAssemblies
+                    assembly
+                    reference
+
+            let state = withAssemblies state assemblies
+
+            match target with
+            | FieldReferenceTarget.Defined (declaring, field) ->
+                state, Some declaring.Fields.[field].DeclaringType.Identity
+            | _ -> state, None
+
     /// <summary>
     /// What the constraint checks binding the body of <paramref name="instance" /> makes raise, where
     /// only an instance decides them (<c>LocalFacts.InstanceChecks</c>), before the body runs, and
@@ -9294,7 +9330,14 @@ module EscapeAnalysis =
                                         match
                                             shapeOf state assembly noSubstitution assembly.TypeSpecs.[parent].Signature
                                         with
-                                        | state, Shape.Named (_, arguments) -> state, Array.ofList arguments
+                                        | state, Shape.Named (parent, arguments) ->
+                                            // The parent's arguments are the declaring type's only
+                                            // where the parent is that type, not a type inheriting
+                                            // the member from a generic base.
+                                            match memberDeclaringType state assembly reference with
+                                            | state, Some declaring when declaring = parent ->
+                                                state, Array.ofList arguments
+                                            | state, _ -> state, [||]
                                         | state, _ -> state, [||]
                                     | _ -> state, [||]
                                 | _ -> state, [||]
