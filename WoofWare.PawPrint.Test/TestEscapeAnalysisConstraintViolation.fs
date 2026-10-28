@@ -994,8 +994,12 @@ public static class Cases
     /// Programs whose constraint checks reach a type the analysis follows less directly than most,
     /// against the host: a `calli` in a generic method, whose signature is over the method's own
     /// type variables; a generic argument whose base is gone; a function pointer to a method whose
-    /// signature names a struct that is gone, which the JIT does not load; and a struct field's or
-    /// a parameter's type whose argument carries a custom modifier.
+    /// signature names a struct that is gone, which the JIT does not load; a struct field's or a
+    /// parameter's type whose argument carries a custom modifier; an abstract class over a generic
+    /// method's variable, against an interface constraint that has gained an abstract static
+    /// member, in code shared between instantiations; and a byref-like argument carrying a custom
+    /// modifier, of a method whose address is taken and of a type whose token is loaded, which no
+    /// longer allow one.
     [<Test>]
     let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
         let scenarios =
@@ -1103,6 +1107,50 @@ public static unsafe class Cases
                     Cases = [ "PassesPair" ; "CallsGeneric" ]
                     Exact = false
                     Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "AbstractOverVariable"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public interface I<T> { } public static class Methods { public static void Go<U, V>() where U : I<V> { } }",
+                            "namespace Lib; public interface I<T> { static abstract void S(); } public static class Methods { public static void Go<U, V>() where U : I<V> { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public abstract class A<T> : Lib.I<T> { }
+public static class Cases
+{
+    public static void Generic<T>() { Lib.Methods.Go<A<T>, T>(); }
+    public static int CallsGeneric() { Generic<string>(); return 0; }
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = [ "Generic", "CallsGeneric" ]
+                }
+                {
+                    Name = "ModifiedByRefLike"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public static class Methods { public static void M<T>() where T : allows ref struct { } } public class C<T> where T : allows ref struct { public static void Touch() { } }",
+                            "namespace Lib; public static class Methods { public static void M<T>() { } } public class C<T> { public static void Touch() { } }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public ref struct R<X> { }
+public static unsafe class Cases
+{
+    public static int TakesAddress() { delegate*<void> p = &Lib.Methods.M<R<delegate*<out int, void>[]>>; return p == null ? 1 : 0; }
+    public static int TakesToken() { System.Type t = typeof(Lib.C<R<delegate*<out int, void>[]>>); return t == null ? 1 : 0; }
+}
+"""
+                    Cases = [ "TakesAddress" ; "TakesToken" ]
+                    Exact = false
+                    Generics = []
                 }
             ]
 
@@ -1498,15 +1546,18 @@ public static class Cases
 
         Assert.That (named analysis escapes, Is.Empty)
 
-    /// A method of a generic type calling the type's own generic method, constrained to the type's
-    /// parameter, through a method specification over the method's definition token rather than a
-    /// reference to it on the type's instantiation: IL that C# does not write. CoreCLR takes the
-    /// definition token to name the method on the type's typical instantiation, whose parameter the
-    /// argument does not satisfy, and rejects the instantiation compiling the caller. The library is
-    /// emitted, the client compiled against it.
+    /// IL that C# does not write, which CoreCLR compiles, against the host. A method of a generic
+    /// type calls the type's own generic methods through method specifications over their
+    /// definition tokens rather than references to them on the type's instantiation: CoreCLR takes
+    /// a definition token to name the method on the type's typical instantiation, whose parameter
+    /// an argument constrained to it does not satisfy, and whose own parameter a signature names.
+    /// And a generic method instantiates another with a pointer to its type variable, which CoreCLR
+    /// admits in no instantiation, rejecting it compiling the caller even in code shared between
+    /// instantiations. The library is emitted, the client compiled against it.
     [<Test>]
-    let ``a generic method instantiated by its definition token agrees with the host`` () : unit =
+    let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
+        let badImage = "System.BadImageFormatException"
 
         let libraryImage =
             let builder =
@@ -1522,7 +1573,8 @@ public static class Cases
             holder.DefineDefaultConstructor Reflection.MethodAttributes.Public
             |> ignore<Reflection.Emit.ConstructorBuilder>
 
-            let generic =
+            // `static void M<U>() where U : T`.
+            let constrained =
                 holder.DefineMethod (
                     "M",
                     Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
@@ -1530,18 +1582,88 @@ public static class Cases
                     Type.EmptyTypes
                 )
 
-            let methodParameter = (generic.DefineGenericParameters [| "U" |]).[0]
+            let methodParameter = (constrained.DefineGenericParameters [| "U" |]).[0]
             methodParameter.SetBaseTypeConstraint (parameter :> Type)
-            generic.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+            constrained.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
 
-            let run =
-                holder.DefineMethod ("Run", Reflection.MethodAttributes.Public, typeof<Void>, Type.EmptyTypes)
+            // `static ValueTuple<T> Make<U>()`, a value type over the type's parameter, which the JIT
+            // loads in full compiling a call.
+            let made = typedefof<ValueTuple<int>>.MakeGenericType [| parameter :> Type |]
 
-            let il = run.GetILGenerator ()
-            il.Emit (Reflection.Emit.OpCodes.Call, generic.MakeGenericMethod [| parameter :> Type |])
-            il.Emit Reflection.Emit.OpCodes.Ret
+            let make =
+                holder.DefineMethod (
+                    "Make",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    made,
+                    Type.EmptyTypes
+                )
+
+            make.DefineGenericParameters [| "U" |]
+            |> ignore<Reflection.Emit.GenericTypeParameterBuilder[]>
+
+            let makeIl = make.GetILGenerator ()
+            let result = makeIl.DeclareLocal made
+            makeIl.Emit (Reflection.Emit.OpCodes.Ldloca_S, result)
+            makeIl.Emit (Reflection.Emit.OpCodes.Initobj, made)
+            makeIl.Emit (Reflection.Emit.OpCodes.Ldloc, result)
+            makeIl.Emit Reflection.Emit.OpCodes.Ret
+
+            // Each instance method calls one of those with the type's parameter.
+            for name, callee, returns in [ "Run", constrained, false ; "RunMake", make, true ] do
+                let run =
+                    holder.DefineMethod (name, Reflection.MethodAttributes.Public, typeof<Void>, Type.EmptyTypes)
+
+                let il = run.GetILGenerator ()
+                il.Emit (Reflection.Emit.OpCodes.Call, callee.MakeGenericMethod [| parameter :> Type |])
+
+                if returns then
+                    il.Emit Reflection.Emit.OpCodes.Pop
+
+                il.Emit Reflection.Emit.OpCodes.Ret
 
             holder.CreateType () |> ignore<Type>
+
+            let plain =
+                modul.DefineType (
+                    "Plain",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Abstract
+                    ||| Reflection.TypeAttributes.Sealed
+                )
+
+            let unconstrained =
+                plain.DefineMethod (
+                    "P",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            unconstrained.DefineGenericParameters [| "V" |]
+            |> ignore<Reflection.Emit.GenericTypeParameterBuilder[]>
+
+            unconstrained.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+
+            // `static void G<T>() { P<T*>(); }`.
+            let pointing =
+                plain.DefineMethod (
+                    "G",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let variable = (pointing.DefineGenericParameters [| "T" |]).[0]
+            let pointingIl = pointing.GetILGenerator ()
+
+            pointingIl.Emit (
+                Reflection.Emit.OpCodes.Call,
+                unconstrained.MakeGenericMethod [| variable.MakePointerType () |]
+            )
+
+            pointingIl.Emit Reflection.Emit.OpCodes.Ret
+            plain.CreateType () |> ignore<Type>
+
             use stream = new MemoryStream ()
             builder.Save stream
             stream.ToArray ()
@@ -1554,11 +1676,15 @@ namespace Client;
 public static class Cases
 {
     public static int CallsRun() { new Holder<int>().Run(); return 0; }
+    public static int CallsRunMake() { new Holder<int>().RunMake(); return 0; }
+    public static int CallsPointing() { Plain.G<string>(); return 0; }
 }
 """
 
-        let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage [ "CallsRun" ]
+        let names = [ "CallsRun" ; "CallsRunMake" ; "CallsPointing" ]
+        let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
         Assert.That (hostOutcomes.["CallsRun"], Is.EqualTo (Outcome.Escapes verification))
+        Assert.That (hostOutcomes.["CallsPointing"], Is.EqualTo (Outcome.Escapes badImage))
 
         let read (name : string) (image : byte[]) : DumpedAssembly =
             Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
@@ -1566,18 +1692,19 @@ public static class Cases
         let clientAssembly = read "Client" clientImage
         let libraryAssembly = read "Lib" libraryImage
 
-        // The emitter spells the call as the test means it to.
+        // The emitter spells the calls as the test means it to.
         let byDefinition =
             libraryAssembly.MethodSpecs.Values
-            |> Seq.exists (fun spec ->
+            |> Seq.filter (fun spec ->
                 match spec.Method with
                 | MetadataToken.MethodDef _ -> true
                 | _ -> false
             )
+            |> Seq.length
 
-        Assert.That (byDefinition, Is.True)
+        Assert.That (byDefinition, Is.EqualTo 3)
 
-        let analysis =
+        let mutable analysis =
             analysisOver
                 [ clientAssembly ; libraryAssembly ]
                 (fun loaded ->
@@ -1588,35 +1715,51 @@ public static class Cases
                     fst (loaded.WithBoundReference reference libraryAssembly)
                 )
 
-        let violations = Set.ofList [ typeLoad ; verification ]
+        let failures =
+            [
+                // Each instance, through its caller, and each definition for every instantiation:
+                // each names what the host raises, or is unknown, naming nothing else.
+                for case, definitionType, definition in
+                    [
+                        "CallsRun", "Holder`1", "Run"
+                        "CallsRunMake", "Holder`1", "RunMake"
+                        "CallsPointing", "Plain", "G"
+                    ] do
+                    let raised =
+                        match hostOutcomes.[case] with
+                        | Outcome.Escapes raised -> Set.singleton raised
+                        | Outcome.Runs
+                        | Outcome.Caught -> Set.empty
 
-        let named (analysis : EscapeAnalysisState) (escapes : Escapes) : Set<string> =
-            let shown = render analysis escapes
-            violations |> Set.filter (fun name -> shown.Contains $"=%s{name}")
+                    for name, key in
+                        [
+                            case, methodNamed clientAssembly "Client.Cases" case
+                            $"%s{definitionType}::%s{definition}", methodNamed libraryAssembly definitionType definition
+                        ] do
+                        let named =
+                            try
+                                let next, escapes = EscapeAnalysis.escapes analysis key
+                                analysis <- next
+                                let shown = render next escapes
 
-        // The instance, through its caller, and the definition for every instantiation: each names
-        // the host's `VerificationException`, or is unknown, naming nothing else.
-        let analysis, escapes =
-            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Cases" "CallsRun")
+                                let named =
+                                    Set.ofList [ typeLoad ; verification ; badImage ]
+                                    |> Set.filter (fun exceptionName -> shown.Contains $"=%s{exceptionName}")
 
-        let shown = named analysis escapes
+                                if named = raised || (escapes.Unknown && named.IsSubsetOf raised) then
+                                    None
+                                else
+                                    Some $"%s{name}: %A{Set.toList named}, unknown %b{escapes.Unknown}"
+                            with e ->
+                                Some $"%s{name}: the analysis throws %s{e.Message}"
 
-        Assert.That (
-            shown = Set.singleton verification
-            || (escapes.Unknown && shown.IsSubsetOf (Set.singleton verification)),
-            $"CallsRun: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
-        )
+                        match named with
+                        | Some failure -> yield $"%s{failure}; %s{case}'s outcome is %A{hostOutcomes.[case]}"
+                        | None -> ()
+            ]
 
-        let analysis, escapes =
-            EscapeAnalysis.escapes analysis (methodNamed libraryAssembly "Holder`1" "Run")
-
-        let shown = named analysis escapes
-
-        Assert.That (
-            shown = Set.singleton verification
-            || (escapes.Unknown && shown.IsSubsetOf (Set.singleton verification)),
-            $"Holder`1::Run: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
-        )
+        if not failures.IsEmpty then
+            failures |> String.concat "\n" |> failwith
 
     /// A method, inlined into its caller, taking the address of a method whose signature an update
     /// has made violate a constraint. CoreCLR prepares the method as a function pointer where the
