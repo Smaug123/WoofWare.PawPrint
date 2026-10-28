@@ -484,14 +484,20 @@ module ConcreteVirtualDispatch =
             )
             |> ImmutableArray.CreateRange
 
-        let resolveMethodReference
+        /// The method a MethodImpl row of `owner` declares an override of, with the type arguments
+        /// a MemberRef declaration spells for its parent.
+        let resolveMethodImplDeclaration
+            (owner : ResolvedTypeIdentity)
             (contextTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
             (relativeAssembly : DumpedAssembly)
             (token : MetadataToken)
             (state : TypeSystemState)
             : TypeSystemState *
-              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn> *
-              TypeDefn ImmutableArray option
+              Result<
+                  WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn> *
+                  TypeDefn ImmutableArray option,
+                  TypeBindingFailure
+               >
             =
             match token with
             | MetadataToken.MethodDef h ->
@@ -499,7 +505,7 @@ module ConcreteVirtualDispatch =
                     relativeAssembly.Methods.[h]
                     |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-                state, method, None
+                state, Ok (method, None)
             | MetadataToken.MemberReference h ->
                 let contextTypeGenerics = concreteTypeHandlesToTypeDefns state contextTypeGenerics
                 let contextMethodGenerics = concreteTypeHandlesToTypeDefns state methodGenerics
@@ -515,14 +521,23 @@ module ConcreteVirtualDispatch =
                         h
                         state
 
-                let method, extractedTypeArgs =
-                    match resolved with
-                    | Ok resolved -> resolved.Member, resolved.TargetTypeGenerics
-                    | Error failure ->
-                        failwith (MemberReferenceInstantiation.describeFailure relativeAssembly h failure)
+                match resolved with
+                | Error MemberBindingFailure.NoSuchMethod ->
+                    let miss : MethodImplDeclarationMiss =
+                        {
+                            Type = owner
+                            Declaration = h
+                            Description = MemberReferenceInstantiation.rowDescription relativeAssembly h
+                        }
 
-                match method with
-                | Choice1Of2 method -> state, method, Some extractedTypeArgs
+                    state, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
+                | Error (MemberBindingFailure.TypeUnbound failure) -> state, Error failure
+                | Error (MemberBindingFailure.Unmodelled unmodelled) ->
+                    state, Error (TypeBindingFailure.Unmodelled unmodelled)
+                | Ok resolved ->
+
+                match resolved.Member with
+                | Choice1Of2 method -> state, Ok (method, Some resolved.TargetTypeGenerics)
                 | Choice2Of2 _field -> failwith "MethodImpl referenced a field where a method was expected"
             | other ->
                 // ECMA-335 permits MethodSpec here for generic method implementations; resolve it when
@@ -568,8 +583,16 @@ module ConcreteVirtualDispatch =
                 if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
                     state, Ok acc
                 else
-                    let state, declaration, declarationTypeArgs =
-                        resolveMethodReference currentTy.Generics currentAssy impl.Declaration state
+                    match
+                        resolveMethodImplDeclaration
+                            currentTy.Identity
+                            currentTy.Generics
+                            currentAssy
+                            impl.Declaration
+                            state
+                    with
+                    | state, Error failure -> state, Error failure
+                    | state, Ok (declaration, declarationTypeArgs) ->
 
                     let state, declarationTypeGenerics =
                         match declarationTypeArgs with

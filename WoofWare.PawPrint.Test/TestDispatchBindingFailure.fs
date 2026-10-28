@@ -26,6 +26,9 @@ module TestDispatchBindingFailure =
         | Absent of name : string
         /// A type scoped to the assembly `Nowhere`, which no runtime directory supplies.
         | Unavailable
+        /// One of the type's own MethodImpls declares an override of `<method>`, by a MemberRef that
+        /// names no method.
+        | DeclarationAbsent of method : string
 
     type private Image =
         {
@@ -532,6 +535,25 @@ module TestDispatchBindingFailure =
                         (memberRef disposable "Dispose" instanceVoid)
                 )
 
+        // Derives from `Base`, with a MethodImpl declaring `System.Exception::Take(object)`, which
+        // `System.Exception` does not declare. The declaration's parent is a class that is not an
+        // ancestor, so laying out the type's method table and its interface map both leave the row
+        // aside; a walk of the type's own MethodImpls for an override of `Base.Take` must bind the
+        // MemberRef, which matches by name and arity.
+        let declaresAbsentMethod =
+            declareType
+                "DeclaresAbsentMethod"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef exceptionType "Take" voidOfObject)
+                )
+
         // A value type with a field of a type CoreLib does not declare, the only type owning a field
         // but the one after it.
         let holdsGone =
@@ -639,6 +661,7 @@ module TestDispatchBindingFailure =
                 "ImplementsUnboundConstraint", implementsUnboundConstraint, Expected.Unavailable
                 "DeclaresOnAbsent", declaresOnAbsent, Expected.Absent "Gone"
                 "BodyOnAbsentInstantiation", bodyOnAbsentInstantiation, Expected.Absent "Gone`1"
+                "DeclaresAbsentMethod", declaresAbsentMethod, Expected.DeclarationAbsent "Take"
                 "HoldsGone", holdsGone, Expected.Absent "Gone"
                 "HoldsHoldsGone", holdsHoldsGone, Expected.Absent "Gone"
                 "DerivesOverridesUnbound", derivesOverridesUnbound, Expected.Unavailable
@@ -766,6 +789,34 @@ module TestDispatchBindingFailure =
 
         state, concretized
 
+    /// The method `name` of the analysed image's type `typeName`, which declares one of that name,
+    /// instantiated.
+    let private analysedMethod
+        (f : Fixture)
+        (typeName : string)
+        (name : string)
+        (state : TypeSystemState)
+        : TypeSystemState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let method =
+            f.Analysed.TypeDefs.Values
+            |> Seq.find (fun ty -> ty.Name = typeName)
+            |> _.Methods
+            |> List.find (fun m -> m.Name = name)
+
+        let state, (concretized, _) =
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                f.LoggerFactory
+                dirs
+                f.BaseClassTypes
+                ImmutableArray.Empty
+                method
+                ImmutableArray.Empty
+                state
+            |> BindingResult.bound
+
+        state, concretized
+
     /// `IDisposable`, and its `Dispose` instantiated.
     let private dispose
         (f : Fixture)
@@ -797,7 +848,7 @@ module TestDispatchBindingFailure =
     /// Whether `result` is `expected`'s failure. A type absent from a base chain is reported as
     /// `BaseTypeAbsent` by concretising a type, which loads its base chain, and as `TypeAbsent` by a
     /// walk that resolves the base reference itself.
-    let private isExpected (expected : Expected) (result : Result<'a, TypeBindingFailure>) : bool =
+    let private isExpected (f : Fixture) (expected : Expected) (result : Result<'a, TypeBindingFailure>) : bool =
         match expected, result with
         | Expected.Absent name,
           Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", absent)))
@@ -806,6 +857,11 @@ module TestDispatchBindingFailure =
             absent = name
         | Expected.Unavailable, Error (TypeBindingFailure.AssemblyUnavailable reference) ->
             reference.Name.Name = "Nowhere"
+        | Expected.DeclarationAbsent name, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
+            miss.Type.AssemblyFullName = f.Analysed.DefinitionFullName
+            && f.Analysed.TypeDefs.[miss.Type.TypeDefinition.Get].MethodImpls.Values
+               |> Seq.exists (fun impl -> impl.Declaration = MetadataToken.MemberReference miss.Declaration)
+            && f.Analysed.Members.[miss.Declaration].PrettyName = name
         | _ -> false
 
     let private describe (result : Result<'a, TypeBindingFailure>) : string =
@@ -1170,6 +1226,24 @@ module TestDispatchBindingFailure =
                     |> snd
                 )
             onReceiver
+                "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+                (fun (state, receiver, _, _) ->
+                    let state, take = analysedMethod f "Base" "Take" state
+
+                    // Not walking base types is the `constrained.` probe of the receiver's own level,
+                    // which looks for the override among the receiver's own MethodImpls and methods.
+                    ConcreteVirtualDispatch.tryResolveVirtualImplementation
+                        f.LoggerFactory
+                        dirs
+                        f.BaseClassTypes
+                        ImmutableArray.Empty
+                        take
+                        receiver
+                        false
+                        state
+                    |> snd
+                )
+            onReceiver
                 "ConstrainedType.resolveClassMethodOnValueType of Object.ToString"
                 (fun (state, receiver, _, _) ->
                     let typeInfo = f.Analysed.TypeDefs.[handle]
@@ -1206,7 +1280,7 @@ module TestDispatchBindingFailure =
 
                         match outcome with
                         | Ok () -> ()
-                        | Error _ when isExpected expected outcome -> ()
+                        | Error _ when isExpected f expected outcome -> ()
                         | other ->
                             failwith
                                 $"%s{question} of %s{name}: expected success or %A{expected}, got %s{describe other}"
@@ -1283,6 +1357,8 @@ module TestDispatchBindingFailure =
             "ExtendsUnboundInstantiation", "interfaceMapHandles"
             "ExtendsUnboundInstantiation", "tryResolveVirtualImplementation of Object.ToString"
             "ExtendsUnboundInstantiation", "ConstrainedType.resolve of Object.GetHashCode on the receiver"
+            "DeclaresUnboundOverride", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresAbsentMethod", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
         ]
 
     [<Test>]
@@ -1294,5 +1370,5 @@ module TestDispatchBindingFailure =
             let _, ask = questions f handle |> List.find (fun (q, _) -> q = question)
             let outcome = ask ()
 
-            if not (isExpected expected outcome) then
+            if not (isExpected f expected outcome) then
                 failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"

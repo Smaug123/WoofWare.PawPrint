@@ -1698,6 +1698,9 @@ module EscapeAnalysis =
             | MethodReferenceTarget.Unbound (TypeBindingFailure.BaseTypeAbsent _ as failure) ->
                 failwith
                     $"Binding a call's reference in %s{assembly.DefinitionFullName} reached a type that is not declared, laying out a searched type's method table (%O{failure}): CoreCLR raises TypeLoadException loading that type, which the analysis does not model"
+            | MethodReferenceTarget.Unbound (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
+                failwith
+                    $"Binding a call's reference in %s{assembly.DefinitionFullName} reached a type whose MethodImpl declares an override of %s{miss.Description}, which names no method: CoreCLR raises TypeLoadException loading that type, which the analysis does not model"
         | other -> failwith $"A call in %s{assembly.DefinitionFullName} names %O{other}, which is not a method"
 
     /// What a call instruction's metadata token names.

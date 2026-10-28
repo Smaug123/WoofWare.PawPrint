@@ -39,7 +39,8 @@ module FieldReferenceTarget =
             FieldReferenceTarget.SignatureAssemblyUnavailable reference
         | TypeBindingFailure.Unmodelled unmodelled -> FieldReferenceTarget.Unmodelled unmodelled
         | TypeBindingFailure.TypeAbsent _
-        | TypeBindingFailure.BaseTypeAbsent _ ->
+        | TypeBindingFailure.BaseTypeAbsent _
+        | TypeBindingFailure.MethodImplDeclarationAbsent _ ->
             failwith
                 $"BUG: comparing field signatures reported %O{failure}, but it answers a reference that names nothing as unequal rather than failing"
 
