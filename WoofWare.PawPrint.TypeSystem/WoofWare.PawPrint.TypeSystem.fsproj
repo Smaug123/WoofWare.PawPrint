@@ -35,6 +35,7 @@
         <Compile Include="GcReferences.fs" />
         <Compile Include="FieldBlittability.fs" />
         <Compile Include="StructLayoutFacts.fs" />
+        <Compile Include="LayoutFacts.fs" />
         <Compile Include="MemberReferenceInstantiation.fs" />
         <Compile Include="MethodConcretisation.fs" />
         <Compile Include="TypeAssignability.fs" />
