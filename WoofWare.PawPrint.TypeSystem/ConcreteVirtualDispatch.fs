@@ -527,7 +527,7 @@ module ConcreteVirtualDispatch =
                         {
                             Type = owner
                             Declaration = h
-                            Description = MemberReferenceInstantiation.rowDescription relativeAssembly h
+                            Name = relativeAssembly.Members.[h].PrettyName
                         }
 
                     state, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
@@ -602,8 +602,14 @@ module ConcreteVirtualDispatch =
                         | None when declaration.RequiredDeclaringType.Identity = currentTy.Identity ->
                             state, Ok currentTy.Generics
                         | None ->
-                            failwith
-                                $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} referenced generic MethodDef %s{declaration.Name} without concrete type arguments"
+                            state,
+                            Error (
+                                TypeBindingFailure.Unmodelled
+                                    {
+                                        Diagnostic =
+                                            $"MethodImpl declaration for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} names %s{declaration.Name} of a generic type other than its own by MethodDef, which carries no instantiation; that is not modelled"
+                                    }
+                            )
 
                     match declarationTypeGenerics with
                     | Error failure -> state, Error failure
@@ -637,9 +643,18 @@ module ConcreteVirtualDispatch =
                     | state, Ok true ->
                         match impl.Body with
                         | MetadataToken.MethodDef body -> state, Ok (currentAssy.Methods.[body] :: acc)
+                        | MetadataToken.MemberReference _ ->
+                            state,
+                            Error (
+                                TypeBindingFailure.Unmodelled
+                                    {
+                                        Diagnostic =
+                                            $"MethodImpl on %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} names its body by a MemberRef, which CoreCLR resolves to a method of the type itself; that is not modelled"
+                                    }
+                            )
                         | other ->
                             failwith
-                                $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
+                                $"BUG: MethodImpl on %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
             )
 
         let dispatchedOn

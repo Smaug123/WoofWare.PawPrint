@@ -889,7 +889,7 @@ module TestDispatchBindingFailure =
                 declaresInheritedOverride,
                 Expected.Unmodelled "FindDeclMethodOnClassInHierarchy"
                 "BodyByMemberRef", bodyByMemberRef, Expected.Unmodelled "names its body by a MemberRef"
-                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "not a virtual method of the type itself"
+                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "another type declares it"
                 "ImplementsByForeignBody", implementsByForeignBody, Expected.Unmodelled "a method of another type"
                 "DeclaresGenericClassByDef", declaresGenericClassByDef, Expected.Unmodelled "carries no instantiation"
                 "DeclaresGenericInterfaceByDef",
@@ -1095,6 +1095,7 @@ module TestDispatchBindingFailure =
             && f.Analysed.TypeDefs.[miss.Type.TypeDefinition.Get].MethodImpls.Values
                |> Seq.exists (fun impl -> impl.Declaration = MetadataToken.MemberReference miss.Declaration)
             && f.Analysed.Members.[miss.Declaration].PrettyName = name
+            && miss.Name = name
         | Expected.Unmodelled fragment, Error (TypeBindingFailure.Unmodelled unmodelled) ->
             unmodelled.Diagnostic.Contains fragment
         | _ -> false
@@ -1594,6 +1595,21 @@ module TestDispatchBindingFailure =
             "ExtendsUnboundInstantiation", "ConstrainedType.resolve of Object.GetHashCode on the receiver"
             "DeclaresUnboundOverride", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresAbsentMethod", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresAbsentInterfaceMethod", "ownDispatchMapOf"
+            "DeclaresAbsentInterfaceMethod", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresAbsentOverride", "contentVtableOfDefinition"
+            "DeclaresAbsentOverride", "dispatchTableOfClosed"
+            "DeclaresAbsentOverload", "contentVtableOfDefinition"
+            "DeclaresAbsentOverload", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresNonVirtual", "contentVtableOfDefinition"
+            "DeclaresInheritedOverride", "contentVtableOfDefinition"
+            "BodyByMemberRef", "contentVtableOfDefinition"
+            "BodyByMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyOnAncestor", "contentVtableOfDefinition"
+            "ImplementsByForeignBody", "ownDispatchMapOf"
+            "DeclaresGenericClassByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresGenericInterfaceByDef", "ownDispatchMapOf"
+            "DeclaresGenericInterfaceByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
         ]
 
     [<Test>]

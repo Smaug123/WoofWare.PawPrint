@@ -316,7 +316,9 @@ module ConcreteInterfaceDispatch =
     /// of that kind. An instance declaration that is not an interface method makes the row a vtable
     /// write (see `ConcreteMethodTable.contentVtableOfDefinition`); a static one implements a static
     /// virtual, which `StaticVirtualDispatch` reads the rows for, and which is not in this map. A type
-    /// the declaration names that does not bind is the failure.
+    /// the declaration names that does not bind is the failure, as is a declaration naming a method
+    /// its interface does not declare (`MethodImplDeclarationAbsent`), and one naming a generic
+    /// interface's method by MethodDef, which is not modelled.
     let internal interfaceMethodImplDeclaration
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -390,8 +392,14 @@ module ConcreteInterfaceDispatch =
             elif not declaringTypeInfo.Generics.IsEmpty then
                 // A MethodDef token carries no instantiation, so it can name a generic interface only
                 // at its typical instantiation, which no class implements.
-                failwith
-                    $"TODO: %s{operation}: a MethodImpl on %s{ownerDescription} names %s{method.Name} on the generic interface %s{declaringTypeInfo.Name} by MethodDef, which carries no instantiation"
+                state,
+                Error (
+                    TypeBindingFailure.Unmodelled
+                        {
+                            Diagnostic =
+                                $"%s{operation}: a MethodImpl on %s{ownerDescription} names %s{method.Name} on the generic interface %s{declaringTypeInfo.Name} by MethodDef, which carries no instantiation; that is not modelled"
+                        }
+                )
             else
                 match
                     concretizeParent state (MetadataToken.TypeDefinition method.RequiredDeclaringType.Definition.Get)
@@ -496,8 +504,16 @@ module ConcreteInterfaceDispatch =
                         )
                     )
                 | [] ->
-                    failwith
-                        $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no method of that name, signature and staticness; CoreCLR rejects this type at load time"
+                    // `FindDeclMethodOnInterfaceEntry` searches the named interface alone, and its
+                    // finding nothing is a `MissingMethodException` (methodtablebuilder.cpp:5939-5968).
+                    let miss : MethodImplDeclarationMiss =
+                        {
+                            Type = ownerTy.Identity
+                            Declaration = handle
+                            Name = memberRef.PrettyName
+                        }
+
+                    state, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
             | _ ->
                 // A ModuleRef or MethodDef parent (the vararg case) cannot name an interface method.
                 state, Ok None
@@ -508,7 +524,8 @@ module ConcreteInterfaceDispatch =
     /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
     /// row is that method; a MemberRef is resolved against the owner's own methods by name and
     /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one. A type on the way
-    /// that does not bind is the failure.
+    /// that does not bind is the failure, and a body that names anything else is an unmodelled one:
+    /// CoreCLR refuses to load the owner (`IDS_CLASSLOAD_MI_ILLEGAL_BODY`).
     let internal methodImplBody
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -522,25 +539,30 @@ module ConcreteInterfaceDispatch =
         : TypeSystemState *
           Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
         =
-        let refuse (detail : string) =
-            failwith
-                $"%s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{body}, %s{detail}; ECMA-335 II.22.27 requires the body to be a method of the type itself"
+        let refuse (state : TypeSystemState) (detail : string) : TypeSystemState * Result<'a, TypeBindingFailure> =
+            state,
+            Error (
+                TypeBindingFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            $"%s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{body}, %s{detail}; ECMA-335 II.22.27 requires the body to be a method of the type itself, and CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_ILLEGAL_BODY), which is not modelled"
+                    }
+            )
 
         match body with
         | MetadataToken.MethodDef handle ->
             let method = assembly.Methods.[handle]
 
             if method.RequiredDeclaringType.Identity <> owner.Identity then
-                refuse "a method of another type"
-
-            state, Ok method
+                refuse state "a method of another type"
+            else
+                state, Ok method
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
 
-            let signature =
-                match memberRef.Signature with
-                | MemberSignature.Method signature -> signature
-                | MemberSignature.Field _ -> refuse "which names a field"
+            match memberRef.Signature with
+            | MemberSignature.Field _ -> refuse state "which names a field"
+            | MemberSignature.Method signature ->
 
             let state, parentIdentity =
                 match memberRef.Parent with
@@ -576,14 +598,12 @@ module ConcreteInterfaceDispatch =
                         state
                         assembly
                         spelling
-                | _ -> refuse "whose parent is not a type"
+                | _ -> refuse state "whose parent is not a type"
 
             match parentIdentity with
             | Error failure -> state, Error failure
-            | Ok parentIdentity ->
-
-            if parentIdentity <> owner.Identity then
-                refuse "a method of another type"
+            | Ok parentIdentity when parentIdentity <> owner.Identity -> refuse state "a method of another type"
+            | Ok _ ->
 
             let rec first
                 (state : TypeSystemState)
@@ -592,7 +612,7 @@ module ConcreteInterfaceDispatch =
                   Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
                 =
                 match candidates with
-                | [] -> refuse "which names no method the type declares"
+                | [] -> refuse state "which names no method the type declares"
                 | (candidate : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) :: rest ->
                     if candidate.Name <> memberRef.PrettyName then
                         first state rest
@@ -621,7 +641,9 @@ module ConcreteInterfaceDispatch =
                     | state, Ok false -> first state rest
 
             first state ownerTypeInfo.Methods
-        | _ -> refuse "which is neither a MethodDef nor a MemberRef"
+        | other ->
+            failwith
+                $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
 
     /// The interface dispatch entries `typeHandle` itself contributes, excluding everything it
     /// inherits: `MethodTableBuilder::PlaceInterfaceMethods` followed by the interface half of

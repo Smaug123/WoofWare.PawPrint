@@ -84,8 +84,8 @@ type MethodImplDeclarationMiss =
         Type : ResolvedTypeIdentity
         /// The row's declaration, a MemberRef of the type's own assembly.
         Declaration : MemberReferenceHandle
-        /// The declaration, described for a run that stops on it.
-        Description : string
+        /// The name the declaration gives the method.
+        Name : string
     }
 
 /// <summary>
@@ -141,7 +141,12 @@ module TypeBindingFailure =
         | TypeBindingFailure.TypeAbsent miss -> string<TypeResolutionMiss> miss
         | TypeBindingFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
         | TypeBindingFailure.MethodImplDeclarationAbsent miss ->
-            $"%s{miss.Description}, the declaration of a MethodImpl, binds to no method, so CoreCLR refuses to load the type the MethodImpl belongs to; that is not modelled"
+            let row =
+                System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                    MemberReferenceHandle.op_Implicit miss.Declaration : EntityHandle
+                )
+
+            $"MemberRef %s{miss.Name} (row %d{row}) of %s{miss.Type.AssemblyFullName}, the declaration of a MethodImpl, binds to no method, so CoreCLR refuses to load the type the MethodImpl belongs to; that is not modelled"
         | TypeBindingFailure.Unmodelled unmodelled -> unmodelled.Diagnostic
         | TypeBindingFailure.Refused refusal -> TypeLoadRefusal.describe refusal
 
