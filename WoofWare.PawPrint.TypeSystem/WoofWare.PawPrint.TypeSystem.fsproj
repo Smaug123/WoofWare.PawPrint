@@ -29,6 +29,7 @@
         <Compile Include="MethodTableLayout.fs" />
         <Compile Include="MethodReferenceResolution.fs" />
         <Compile Include="TypeSystemState.fs" />
+        <Compile Include="EnumBackingType.fs" />
         <Compile Include="CodeSharing.fs" />
         <Compile Include="JitTypeComparison.fs" />
         <Compile Include="GcReferences.fs" />
