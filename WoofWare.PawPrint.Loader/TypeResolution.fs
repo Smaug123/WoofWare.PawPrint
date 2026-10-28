@@ -1037,16 +1037,72 @@ module TypeResolution =
             assemblies, Ok (baseClassTypes.Corelib, ty)
         | TypeDefn.GenericTypeParameter param -> resolveParameter (ExpandingParam.Type param)
         | TypeDefn.GenericMethodParameter param -> resolveParameter (ExpandingParam.Method param)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _
-        | TypeDefn.Array _ ->
-            // This is lossy: we return System.Array's TypeInfo, discarding the element type.
-            // Callers that need precise array type identity (e.g. Ldtoken) should use
-            // concretizeType directly instead of going through this function.
-            let arrayTy =
-                baseClassTypes.Array
-                |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Array (element, _) ->
+            // CoreCLR's `SigPointer::GetTypeHandleThrowing` loads an array's element type before
+            // the array, through every array, pointer, byref, pinned and function-pointer layer
+            // around it, so an element that does not bind is the array's failure.
+            let rec elementBinds (assemblies : LoadedAssemblies) (element : TypeDefn) =
+                match element with
+                | TypeDefn.OneDimensionalArrayLowerBoundZero inner
+                | TypeDefn.Array (inner, _)
+                | TypeDefn.Pointer inner
+                | TypeDefn.Byref inner
+                | TypeDefn.Pinned inner -> elementBinds assemblies inner
+                | TypeDefn.Modified modified -> elementBinds assemblies modified.Unmodified
+                | TypeDefn.FunctionPointer signature ->
+                    if signature.Header.Get.IsGeneric then
+                        assemblies,
+                        Error (
+                            TypeBindingFailure.Unmodelled
+                                {
+                                    Diagnostic =
+                                        $"The function pointer type %O{element} carries the GENERIC calling convention; CoreCLR refuses that with BadImageFormatException, which is not modelled"
+                                }
+                        )
+                    else
+                        let returned =
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> []
+                            | MethodReturnType.Returns returned -> [ returned ]
 
-            assemblies, Ok (baseClassTypes.Corelib, arrayTy)
+                        match traverseLoaded elementBinds assemblies (returned @ signature.ParameterTypes) with
+                        | assemblies, Error failure -> assemblies, Error failure
+                        | assemblies, Ok _ -> assemblies, Ok ()
+                | TypeDefn.PrimitiveType _
+                | TypeDefn.Void
+                | TypeDefn.FromReference _
+                | TypeDefn.FromDefinition _
+                | TypeDefn.GenericInstantiation _
+                | TypeDefn.GenericTypeParameter _
+                | TypeDefn.GenericMethodParameter _ ->
+                    match
+                        resolveTypeFromDefnTracked
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            element
+                            typeGenericArgs
+                            methodGenericArgs
+                            expanding
+                            memo
+                            assy
+                            assemblies
+                    with
+                    | assemblies, Error failure -> assemblies, Error failure
+                    | assemblies, Ok _ -> assemblies, Ok ()
+
+            match elementBinds assemblies element with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok () ->
+                // This is lossy: we return System.Array's TypeInfo, discarding the element type.
+                // Callers that need precise array type identity (e.g. Ldtoken) should use
+                // concretizeType directly instead of going through this function.
+                let arrayTy =
+                    baseClassTypes.Array
+                    |> TypeInfo.mapGeneric (fun _ -> failwith "System.Array is not generic")
+
+                assemblies, Ok (baseClassTypes.Corelib, arrayTy)
         | TypeDefn.Pointer _
         | TypeDefn.Byref _
         | TypeDefn.Pinned _ ->
@@ -1072,6 +1128,11 @@ module TypeResolution =
     /// <c>TypeLoadException</c>, and here either is unmodelled. So is a generic parameter that
     /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold,
     /// which CoreCLR refuses with <c>BadImageFormatException</c>.
+    /// </para>
+    /// <para>
+    /// An array resolves to <c>System.Array</c>, whatever its element type, but only where that
+    /// element type binds: CoreCLR loads the element before the array, so an element that does
+    /// not bind is the array's failure.
     /// </para>
     /// <para>
     /// <paramref name="typeGenericArgs" /> and <paramref name="methodGenericArgs" /> must be
