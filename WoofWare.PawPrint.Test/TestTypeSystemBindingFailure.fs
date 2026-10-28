@@ -609,7 +609,39 @@ module TestTypeSystemBindingFailure =
 
     /// Classify `result` as binding or out of range, failing unless that is what an environment of
     /// `typeArgs` and `methodArgs` arguments makes of `spelling`.
+    /// Whether `failure` is how the Loader reports `spelling` out of an environment of `size`: as
+    /// unmodelled, naming the parameter.
+    let private loaderOutOfRange (spelling : ParameterSpelling) (size : int) (failure : TypeBindingFailure) : bool =
+        let name =
+            if spelling.IsMethod then
+                $"!!%d{spelling.Index}"
+            else
+                $"!%d{spelling.Index}"
+
+        match failure with
+        | TypeBindingFailure.Unmodelled unmodelled ->
+            unmodelled.Diagnostic.Contains
+                $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
+        | _ -> false
+
+    /// Whether `failure` is how concretisation reports `spelling` out of an environment of `size`: as
+    /// CoreCLR's refusal of the signature.
+    let private concretisationOutOfRange
+        (spelling : ParameterSpelling)
+        (size : int)
+        (failure : TypeBindingFailure)
+        : bool
+        =
+        let expected =
+            if spelling.IsMethod then
+                TypeLoadRefusal.MethodParameterOutOfScope (spelling.Index, size)
+            else
+                TypeLoadRefusal.TypeParameterOutOfScope (spelling.Index, size)
+
+        failure = TypeBindingFailure.Refused expected
+
     let private checkInRange
+        (outOfRange : ParameterSpelling -> int -> TypeBindingFailure -> bool)
         (spelling : ParameterSpelling)
         (typeArgs : int)
         (methodArgs : int)
@@ -620,17 +652,7 @@ module TestTypeSystemBindingFailure =
 
         match result with
         | Ok _ when spelling.Index < size -> InRange.Binds
-        | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
-            let name =
-                if spelling.IsMethod then
-                    $"!!%d{spelling.Index}"
-                else
-                    $"!%d{spelling.Index}"
-
-            unmodelled.Diagnostic
-            |> shouldContainText $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
-
-            InRange.OutOfRange
+        | Error failure when spelling.Index >= size && outOfRange spelling size failure -> InRange.OutOfRange
         | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
 
     [<Test>]
@@ -648,7 +670,7 @@ module TestTypeSystemBindingFailure =
                 f.Analysed
                 f.Assemblies
             |> snd
-            |> checkInRange spelling typeArgs methodArgs
+            |> checkInRange loaderOutOfRange spelling typeArgs methodArgs
             |> cover
 
             true
@@ -688,22 +710,20 @@ module TestTypeSystemBindingFailure =
             |> fst
 
     [<Test>]
-    let ``concretising a TypeSpec's generic parameter outside its environment is unmodelled`` () : unit =
+    let ``concretising a TypeSpec's generic parameter outside its environment is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
 
-        for handle, parameter in
+        for handle, parameter, refusal in
             [
-                f.Shapes.TypeParameter, "!0"
-                f.Shapes.ListOfTypeParameter, "!0"
-                f.Shapes.MethodParameter, "!!0"
-                f.Shapes.ListOfMethodParameter, "!!0"
+                f.Shapes.TypeParameter, "!0", TypeLoadRefusal.TypeParameterOutOfScope (0, 0)
+                f.Shapes.ListOfTypeParameter, "!0", TypeLoadRefusal.TypeParameterOutOfScope (0, 0)
+                f.Shapes.MethodParameter, "!!0", TypeLoadRefusal.MethodParameterOutOfScope (0, 0)
+                f.Shapes.ListOfMethodParameter, "!!0", TypeLoadRefusal.MethodParameterOutOfScope (0, 0)
             ] do
             let signature = f.Analysed.TypeSpecs.[handle].Signature
 
             concretizeIn f 0 0 signature
-            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
-
-            concretizeIn f 0 0 signature |> unmodelledSaying "BadImageFormatException"
+            |> shouldEqual (Error (TypeBindingFailure.Refused refusal))
 
             match concretizeIn f 1 1 signature with
             | Ok _ -> ()
@@ -716,7 +736,7 @@ module TestTypeSystemBindingFailure =
 
         let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
             concretizeIn f typeArgs methodArgs (spellParameter f spelling)
-            |> checkInRange spelling typeArgs methodArgs
+            |> checkInRange concretisationOutOfRange spelling typeArgs methodArgs
             |> cover
 
             true
