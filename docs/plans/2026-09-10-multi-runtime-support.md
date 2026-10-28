@@ -898,9 +898,10 @@ mutation-testing skill applies to each table/classifier they introduce.
    * the other tables read from one runtime's source, kept per runtime: `NativeContractTable.tsv`
      (the `get_CurrentManagedThreadId` FCall and the four `Monitor` natives, which RC1 dropped), and the escape analysis's
      resource-lookup assumption (`Environment.GetResourceStringLocal` is gone);
-   * the escape analysis's helpers around a synchronized method, per runtime: RC1's JIT calls
-     `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
-     `Monitor.ExitIfLockTaken`;
+   * **(landed)** the escape analysis's helpers around a synchronized method, per runtime: RC1's
+     JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
+     `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
+     holds it to that runtime's `jithelpers.h` and `corelib.h`;
    * the guest cases whose real .NET 11 ending differs from .NET 10's, recorded in
      `TestPureCases.endingsOnNet11` (delegate equality, `Delegate.Method`'s declaring type,
      `GetCallingAssembly` from `Main`, and the private reflection several cases lean on);

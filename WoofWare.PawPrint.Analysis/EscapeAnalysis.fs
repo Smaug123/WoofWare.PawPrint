@@ -4888,11 +4888,11 @@ module EscapeAnalysis =
         let spellings = Array.ofList bodySpellings.Spellings
 
         // A synchronized method takes a monitor around its body, outside its handlers, as the JIT
-        // has it on a target with funclets, which every `JitTarget` is (`CORINFO_HELP_MON_ENTER`
-        // and `CORINFO_HELP_MON_EXIT`): `Monitor.Enter(lock, ref acquired)` before the body, with
-        // `acquired` false, and `Monitor.ExitIfLockTaken(lock, ref acquired)` after it, however it
-        // ends. The lock is the receiver as the caller passed it, which `call` may pass as null, or
-        // for a static method its type's `RuntimeType`, which the JIT may make by calling
+        // has it on a target with funclets, which every `JitTarget` is: the runtime's
+        // `SynchronizedMethodHelpers`, its `Enter(lock, ref acquired)` before the body, with
+        // `acquired` false, and its `Exit(lock, ref acquired)` after it, however it ends. The lock
+        // is the receiver as the caller passed it, which `call` may pass as null, or for a static
+        // method its type's `RuntimeType`, which the JIT may make by calling
         // `RuntimeTypeHandle.GetRuntimeTypeFromHandle` (`CORINFO_HELP_GETSYNCFROMCLASSHANDLE`), which
         // raises only what `lookupRaises` says.
         let state, spellings, monitor =
@@ -4932,6 +4932,8 @@ module EscapeAnalysis =
 
                         state, spellings, receiver
 
+                let helpers = SynchronizedMethodHelpers.onRuntime state.Runtime
+
                 let acquired =
                     SpelledArgument.Pointer (
                         PrimitiveType.Boolean,
@@ -4942,11 +4944,11 @@ module EscapeAnalysis =
                 spellings,
                 [
                     OutsideBodyFact.Runs (
-                        corelibStatic state "System.Threading" "Monitor" "Enter" 2,
+                        corelibStatic state "System.Threading" "Monitor" helpers.Enter 2,
                         [ SpelledArgument.Value lock ; acquired ]
                     )
                     OutsideBodyFact.Runs (
-                        corelibStatic state "System.Threading" "Monitor" "ExitIfLockTaken" 2,
+                        corelibStatic state "System.Threading" "Monitor" helpers.Exit 2,
                         [ SpelledArgument.Value lock ; SpelledArgument.Value StackValue.Unknown ]
                     )
                     if method.IsStatic then

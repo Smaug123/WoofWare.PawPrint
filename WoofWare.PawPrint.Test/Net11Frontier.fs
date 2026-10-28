@@ -21,10 +21,6 @@ module Net11Frontier =
     let spanHelpersMemoryQCalls : string =
         "On .NET 11, `SpanHelpers.Memmove` and `SpanHelpers.ClearWithoutReferences` hand a long copy or clear to QCalls whose entry points are `memmove` and `memset` (SpanHelpers.ByteMemOps.cs), where .NET 10 copies through the `Buffer_MemMove` QCall. `NativeContractTable.tsv` is .NET 10's (`nativeContractTable`), so it has no row for either, and the escape analysis cannot see through `CastHelpers.Box`, `Box_Nullable` or `Unbox_Nullable`, which copy a struct that way, nor so through any struct `box`, any `unbox` of a `Nullable<T>`, or `Unsafe.Unbox`. Un-park when the table is kept per runtime."
 
-    /// The escape analysis models .NET 10's helpers around a synchronized method.
-    let synchronizedMethodHelpers : string =
-        "On .NET 11, the JIT brackets a synchronized method with `Monitor.SynchronizedMethodEnter` and `Monitor.SynchronizedMethodExit` (corelib.h's `SYNCHRONIZED_METHOD_ENTER` and `_EXIT`), where .NET 10 calls `Monitor.Enter(object, ref bool)` and `Monitor.ExitIfLockTaken`, which RC1's CoreLib does not define. The escape analysis runs .NET 10's pair, so over RC1's CoreLib it refuses every synchronized method it reaches: \"expected System.Private.CoreLib, Version=11.0.0.0 ... to define one static System.Threading.Monitor.ExitIfLockTaken of 2 arguments, found 0\". Un-park when the analysis runs each runtime's helpers."
-
     /// Real .NET 11 ends the process when making an exception raises another.
     let exceptionMaking : string =
         "Measured on real .NET 11: when the parameterless constructor the runtime runs to make a fault's or a failed bind's exception raises an exception of its own (here, from the culture's resource lookup), the process aborts (SIGABRT, exit 134), where .NET 10 delivers the constructor's exception in place of the one being made, as `ExceptionMaking` describes. `ExceptionMaking` describes .NET 10's making. Un-park when it describes each runtime's."
