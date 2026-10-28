@@ -108,146 +108,48 @@ module LayoutFacts =
 
     type private Status =
         | InProgress
-        | Completed of ValueTypeLayoutFacts
-
-    /// The element type CoreCLR judges a field by. A field of value type takes the value type's
-    /// `GetInternalCorElementType`: the primitive for an enum, or for one of the CoreLib value
-    /// types `CheckForSystemTypes` (methodtablebuilder.cpp) marks as one.
-    [<RequireQualifiedAccess>]
-    type private FieldElement =
-        | Boolean
-        | Char
-        | OneByte
-        | TwoBytes
-        | FourBytes
-        | EightBytes
-        | Single
-        | Double
-        | NativeInteger
-        | Void
-        | TypedReference
-        | Pointer
-        | FunctionPointer
-        | Byref
-        /// An object reference: a class, an interface, an array, `string` or `object`.
-        | Reference
-        | ValueType of isDecimal : bool * ValueTypeLayoutFacts
+        | Completed of StructLayoutFacts
 
     /// The element type `CheckForSystemTypes` gives a value type of CoreLib's `System` namespace,
     /// by name: those `CorTypeInfo::FindPrimitiveType` knows, and the three handle types it gives
     /// `ELEMENT_TYPE_I`.
-    let private systemPrimitive (name : string) : FieldElement option =
+    let private systemPrimitive (name : string) : FieldBlittability.Element<StructLayoutFacts> option =
         match name with
-        | "Boolean" -> Some FieldElement.Boolean
-        | "Char" -> Some FieldElement.Char
+        | "Boolean" -> Some FieldBlittability.Element.Boolean
+        | "Char" -> Some FieldBlittability.Element.Char
         | "SByte"
-        | "Byte" -> Some FieldElement.OneByte
+        | "Byte" -> Some FieldBlittability.Element.OneByte
         | "Int16"
-        | "UInt16" -> Some FieldElement.TwoBytes
+        | "UInt16" -> Some FieldBlittability.Element.TwoBytes
         | "Int32"
-        | "UInt32" -> Some FieldElement.FourBytes
+        | "UInt32" -> Some FieldBlittability.Element.FourBytes
         | "Int64"
-        | "UInt64" -> Some FieldElement.EightBytes
-        | "Single" -> Some FieldElement.Single
-        | "Double" -> Some FieldElement.Double
+        | "UInt64" -> Some FieldBlittability.Element.EightBytes
+        | "Single" -> Some FieldBlittability.Element.Single
+        | "Double" -> Some FieldBlittability.Element.Double
         | "IntPtr"
         | "UIntPtr"
         | "RuntimeArgumentHandle"
         | "RuntimeMethodHandleInternal"
-        | "RuntimeFieldHandleInternal" -> Some FieldElement.NativeInteger
-        | "Void" -> Some FieldElement.Void
-        | "TypedReference" -> Some FieldElement.TypedReference
+        | "RuntimeFieldHandleInternal" -> Some FieldBlittability.Element.NativeInteger
+        | "Void" -> Some FieldBlittability.Element.Void
+        | "TypedReference" -> Some FieldBlittability.Element.TypedReference
         | _ -> None
 
-    // `NATIVE_TYPE_*` (corhdr.h): the leading byte of a field's marshalling blob.
-    [<Literal>]
-    let private NativeTypeI1 = 0x03uy
-
-    [<Literal>]
-    let private NativeTypeU1 = 0x04uy
-
-    [<Literal>]
-    let private NativeTypeI2 = 0x05uy
-
-    [<Literal>]
-    let private NativeTypeU2 = 0x06uy
-
-    [<Literal>]
-    let private NativeTypeI4 = 0x07uy
-
-    [<Literal>]
-    let private NativeTypeU4 = 0x08uy
-
-    [<Literal>]
-    let private NativeTypeI8 = 0x09uy
-
-    [<Literal>]
-    let private NativeTypeU8 = 0x0Auy
-
-    [<Literal>]
-    let private NativeTypeR4 = 0x0Buy
-
-    [<Literal>]
-    let private NativeTypeR8 = 0x0Cuy
-
-    [<Literal>]
-    let private NativeTypeStruct = 0x1Buy
-
-    [<Literal>]
-    let private NativeTypeInt = 0x1Fuy
-
-    [<Literal>]
-    let private NativeTypeUInt = 0x20uy
-
-    [<Literal>]
-    let private NativeTypeFunc = 0x26uy
-
-    [<Literal>]
-    let private NativeTypeError = 0x2Duy
-
-    /// The leading byte of a field's marshalling blob, which is all `IsFieldBlittable` reads:
-    /// `NATIVE_TYPE_DEFAULT` for no blob, and for an empty one.
-    let private leadingNativeType (descriptor : FieldMarshalDescriptor option) : byte =
-        match descriptor with
-        | None
-        | Some FieldMarshalDescriptor.Empty -> NativeTypeParamInfo.NativeTypeDefault
-        | Some (FieldMarshalDescriptor.ByValTStr _) -> NativeTypeParamInfo.NativeTypeFixedSysString
-        | Some (FieldMarshalDescriptor.ByValArray _) -> NativeTypeParamInfo.NativeTypeFixedArray
-        | Some (FieldMarshalDescriptor.Other unmanagedType) -> byte unmanagedType
-        | Some (FieldMarshalDescriptor.Malformed nativeType) -> nativeType
-
-    /// `IsFieldBlittable` (fieldmarshaler.cpp), for a field of `element` whose marshalling blob
-    /// leads with `nativeType`, declared in a type of ANSI charset or not.
-    let private isFieldBlittable (ansi : bool) (nativeType : byte) (element : FieldElement) : bool =
-        let isDefault = nativeType = NativeTypeParamInfo.NativeTypeDefault
-
-        match element with
-        | FieldElement.Char ->
-            (isDefault && not ansi)
-            || nativeType = NativeTypeI2
-            || nativeType = NativeTypeU2
-        | FieldElement.OneByte -> isDefault || nativeType = NativeTypeI1 || nativeType = NativeTypeU1
-        | FieldElement.TwoBytes -> isDefault || nativeType = NativeTypeI2 || nativeType = NativeTypeU2
-        | FieldElement.FourBytes ->
-            isDefault
-            || nativeType = NativeTypeI4
-            || nativeType = NativeTypeU4
-            || nativeType = NativeTypeError
-        | FieldElement.EightBytes -> isDefault || nativeType = NativeTypeI8 || nativeType = NativeTypeU8
-        | FieldElement.Single -> isDefault || nativeType = NativeTypeR4
-        | FieldElement.Double -> isDefault || nativeType = NativeTypeR8
-        | FieldElement.NativeInteger -> isDefault || nativeType = NativeTypeInt || nativeType = NativeTypeUInt
-        | FieldElement.Pointer -> isDefault
-        | FieldElement.FunctionPointer -> isDefault || nativeType = NativeTypeFunc
-        | FieldElement.ValueType (isDecimal, facts) ->
-            (isDefault || nativeType = NativeTypeStruct)
-            && not isDecimal
-            && facts.IsBlittable
-        | FieldElement.Boolean
-        | FieldElement.Void
-        | FieldElement.TypedReference
-        | FieldElement.Byref
-        | FieldElement.Reference -> false
+    /// The public form of a struct's facts.
+    let private ofStructFacts (facts : StructLayoutFacts) : ValueTypeLayoutFacts =
+        match facts with
+        | StructLayoutFacts.WithoutLayout containsGcPointers -> ValueTypeLayoutFacts.WithoutLayout containsGcPointers
+        | StructLayoutFacts.WithLayout facts ->
+            ValueTypeLayoutFacts.WithLayout
+                {
+                    IsBlittable = facts.IsBlittable
+                    HasAutoLayoutField = facts.HasAutoLayoutField
+                    IsInt128OrHasInt128Fields = facts.IsInt128OrHasInt128Fields
+                    IsDecimalFloatingPointOrHasDecimalFloatingPointFields =
+                        facts.IsDecimalFloatingPointOrHasDecimalFloatingPointFields
+                    ContainsGcPointers = facts.ContainsGcPointers
+                }
 
     let private unmodelled (diagnostic : string) : TypeBindingFailure =
         TypeBindingFailure.Unmodelled
@@ -326,7 +228,7 @@ module LayoutFacts =
         (handle : ConcreteTypeHandle)
         (concrete : ConcreteType<ConcreteTypeHandle>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeSystemState * Result<FieldElement, TypeBindingFailure>
+        : TypeSystemState * Result<FieldBlittability.Element<StructLayoutFacts>, TypeBindingFailure>
         =
         let refused (state : TypeSystemState) =
             state,
@@ -382,8 +284,8 @@ module LayoutFacts =
                     None
 
             match primitive with
-            | Some FieldElement.Void
-            | Some FieldElement.TypedReference -> refused state
+            | Some FieldBlittability.Element.Void
+            | Some FieldBlittability.Element.TypedReference -> refused state
             | Some element -> state, Ok element
             | None ->
 
@@ -422,7 +324,7 @@ module LayoutFacts =
         (concrete : ConcreteType<ConcreteTypeHandle>)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : TypeSystemState *
-          Result<ImmutableDictionary<ConcreteTypeHandle, Status> * ValueTypeLayoutFacts, TypeBindingFailure>
+          Result<ImmutableDictionary<ConcreteTypeHandle, Status> * StructLayoutFacts, TypeBindingFailure>
         =
         match seen.TryGetValue handle with
         | true, Completed facts -> state, Ok (seen, facts)
@@ -478,104 +380,54 @@ module LayoutFacts =
 
         let fields = List.rev fields
 
-        let containsGcPointers =
-            fields
-            |> List.exists (fun (_, element) ->
-                match element with
-                | FieldElement.Reference -> true
-                | FieldElement.ValueType (_, facts) -> facts.ContainsGcPointers
-                | FieldElement.Boolean
-                | FieldElement.Char
-                | FieldElement.OneByte
-                | FieldElement.TwoBytes
-                | FieldElement.FourBytes
-                | FieldElement.EightBytes
-                | FieldElement.Single
-                | FieldElement.Double
-                | FieldElement.NativeInteger
-                | FieldElement.Void
-                | FieldElement.TypedReference
-                | FieldElement.Pointer
-                | FieldElement.FunctionPointer
-                | FieldElement.Byref -> false
-            )
-
-        let facts =
+        let layoutAndAnsi =
             match layoutMask with
-            | TypeAttributes.AutoLayout -> Ok (ValueTypeLayoutFacts.WithoutLayout containsGcPointers)
+            // `ofStruct` reads no charset for a type without layout.
+            | TypeAttributes.AutoLayout -> Ok (TypeLayoutKind.Auto, true)
             | TypeAttributes.SequentialLayout
             | TypeAttributes.ExplicitLayout ->
+                let layout =
+                    if layoutMask = TypeAttributes.SequentialLayout then
+                        TypeLayoutKind.Sequential
+                    else
+                        TypeLayoutKind.Explicit
+
                 // `HasLayoutMetadata`: the charset off Windows, where `Auto` means ANSI.
-                let ansi =
-                    match typeInfo.TypeAttributes &&& TypeAttributes.StringFormatMask with
-                    | TypeAttributes.AnsiClass
-                    | TypeAttributes.AutoClass -> Ok true
-                    | TypeAttributes.UnicodeClass -> Ok false
-                    | _ ->
-                        Error (
-                            unmodelled
-                                $"the value type %O{concrete} declares a custom string format, which CoreCLR refuses to load"
-                        )
-
-                ansi
-                |> Result.map (fun ansi ->
-                    // `TypeHasAutoLayoutField`, `TypeHasInt128Field` and their .NET 11 sibling pass
-                    // on the flags of a field's type only for `ELEMENT_TYPE_VALUETYPE`, after the
-                    // normalisation to primitives (classlayoutinfo.cpp).
-                    let fieldFacts =
-                        fields
-                        |> List.choose (fun (_, element) ->
-                            match element with
-                            | FieldElement.ValueType (_, facts) -> Some facts
-                            | FieldElement.Boolean
-                            | FieldElement.Char
-                            | FieldElement.OneByte
-                            | FieldElement.TwoBytes
-                            | FieldElement.FourBytes
-                            | FieldElement.EightBytes
-                            | FieldElement.Single
-                            | FieldElement.Double
-                            | FieldElement.NativeInteger
-                            | FieldElement.Void
-                            | FieldElement.TypedReference
-                            | FieldElement.Pointer
-                            | FieldElement.FunctionPointer
-                            | FieldElement.Byref
-                            | FieldElement.Reference -> None
-                        )
-
-                    // `CheckForSystemTypes`, which runs after the fields are placed, marks these
-                    // CoreLib types by name, and only a top-level one.
-                    let named (``namespace`` : string) (names : string list) : bool =
-                        isCoreLib
-                        && not typeInfo.IsNested
-                        && concrete.Namespace = ``namespace``
-                        && List.contains concrete.Name names
-
-                    ValueTypeLayoutFacts.WithLayout
-                        {
-                            IsBlittable =
-                                fields
-                                |> List.forall (fun (descriptor, element) ->
-                                    isFieldBlittable ansi (leadingNativeType descriptor) element
-                                )
-                            HasAutoLayoutField = fieldFacts |> List.exists _.IsAutoLayoutOrHasAutoLayoutField
-                            IsInt128OrHasInt128Fields =
-                                named "System" [ "Int128" ; "UInt128" ]
-                                || fieldFacts |> List.exists _.IsInt128OrHasInt128Fields
-                            IsDecimalFloatingPointOrHasDecimalFloatingPointFields =
-                                named "System.Numerics" [ "Decimal32" ; "Decimal64" ; "Decimal128" ]
-                                || fieldFacts
-                                   |> List.exists _.IsDecimalFloatingPointOrHasDecimalFloatingPointFields
-                            ContainsGcPointers = containsGcPointers
-                        }
-                )
+                match typeInfo.TypeAttributes &&& TypeAttributes.StringFormatMask with
+                | TypeAttributes.AnsiClass
+                | TypeAttributes.AutoClass -> Ok (layout, true)
+                | TypeAttributes.UnicodeClass -> Ok (layout, false)
+                | _ ->
+                    Error (
+                        unmodelled
+                            $"the value type %O{concrete} declares a custom string format, which CoreCLR refuses to load"
+                    )
             | _ ->
                 // .NET 11 reads this pattern as extended layout (`CStruct`, `CUnion`); .NET 10
                 // refuses it.
                 Error (
                     unmodelled $"the value type %O{concrete} declares extended layout, which PawPrint does not model"
                 )
+
+        // `CheckForSystemTypes`, which runs after the fields are placed, marks these CoreLib types
+        // by name, and only a top-level one.
+        let named (``namespace`` : string) (names : string list) : bool =
+            isCoreLib
+            && not typeInfo.IsNested
+            && concrete.Namespace = ``namespace``
+            && List.contains concrete.Name names
+
+        let selfKind =
+            if named "System" [ "Int128" ; "UInt128" ] then
+                StructLayoutFacts.SelfKind.Int128
+            elif named "System.Numerics" [ "Decimal32" ; "Decimal64" ; "Decimal128" ] then
+                StructLayoutFacts.SelfKind.DecimalFloatingPoint
+            else
+                StructLayoutFacts.SelfKind.Ordinary
+
+        let facts =
+            layoutAndAnsi
+            |> Result.map (fun (layout, ansi) -> StructLayoutFacts.ofStruct layout ansi selfKind fields)
 
         match facts with
         | Error failure -> state, Error failure
@@ -589,14 +441,18 @@ module LayoutFacts =
         (seen : ImmutableDictionary<ConcreteTypeHandle, Status>)
         (depth : int)
         (handle : ConcreteTypeHandle)
-        : TypeSystemState * Result<ImmutableDictionary<ConcreteTypeHandle, Status> * FieldElement, TypeBindingFailure>
+        : TypeSystemState *
+          Result<
+              ImmutableDictionary<ConcreteTypeHandle, Status> * FieldBlittability.Element<StructLayoutFacts>,
+              TypeBindingFailure
+           >
         =
         match handle with
-        | ConcreteTypeHandle.Pointer _ -> state, Ok (seen, FieldElement.Pointer)
-        | ConcreteTypeHandle.FunctionPointer _ -> state, Ok (seen, FieldElement.FunctionPointer)
-        | ConcreteTypeHandle.Byref _ -> state, Ok (seen, FieldElement.Byref)
+        | ConcreteTypeHandle.Pointer _ -> state, Ok (seen, FieldBlittability.Element.Pointer)
+        | ConcreteTypeHandle.FunctionPointer _ -> state, Ok (seen, FieldBlittability.Element.FunctionPointer)
+        | ConcreteTypeHandle.Byref _ -> state, Ok (seen, FieldBlittability.Element.Byref)
         | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> state, Ok (seen, FieldElement.Reference)
+        | ConcreteTypeHandle.Array _ -> state, Ok (seen, FieldBlittability.Element.Reference)
         | ConcreteTypeHandle.Concrete _ ->
 
         match TypeSystemState.tryGetConcreteTypeInfo state handle with
@@ -619,7 +475,7 @@ module LayoutFacts =
 
         match categoryOf loggerFactory dotnetRuntimeDirs baseClassTypes state concrete typeInfo with
         | state, Error failure -> state, Error failure
-        | state, Ok Category.Reference -> state, Ok (seen, FieldElement.Reference)
+        | state, Ok Category.Reference -> state, Ok (seen, FieldBlittability.Element.Reference)
         | state, Ok Category.Enum ->
             match
                 enumElement loggerFactory dotnetRuntimeDirs baseClassTypes state Set.empty handle concrete typeInfo
@@ -636,7 +492,7 @@ module LayoutFacts =
                 && concrete.Namespace = "System"
                 && concrete.Name = "Decimal"
 
-            state, Ok (seen, FieldElement.ValueType (isDecimal, facts))
+            state, Ok (seen, FieldBlittability.Element.ValueType (isDecimal, facts))
 
     /// The layout facts of `handle`, or `None` where it is not a value type: a class, an
     /// interface, an array, a pointer or a byref. A type on the way that does not bind is the
@@ -678,4 +534,4 @@ module LayoutFacts =
                 concrete
                 typeInfo
 
-        state, result |> Result.map (snd >> Some)
+        state, result |> Result.map (snd >> ofStructFacts >> Some)
