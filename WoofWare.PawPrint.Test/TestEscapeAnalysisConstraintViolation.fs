@@ -777,7 +777,9 @@ public static class Driver
     /// too where the definition's own load misses, at its base or at the type of a value-type field,
     /// before its instantiation's constraints, which the argument violates, are checked. And a class
     /// whose value-type field's type is missing misses before its base, which violates a
-    /// constraint, is checked, though the base comes first among what its full load brings.
+    /// constraint, is checked, though the base comes first among what its full load brings. And a
+    /// method specification whose argument misses fails there, before its parent, which violates a
+    /// constraint, is checked.
     [<Test>]
     let ``a load that misses fails before the constraint it would check`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -797,6 +799,7 @@ public class BothMethod<T> where T : class { public static void Touch() { } publ
 public class Based<T> : Missing.BaseMissing where T : class { public static void Touch() { } }
 public class Fielded<T> where T : class { public Missing.StructMissing F; public static void Touch() { } }
 public class Strict<U> where U : class { }
+public class Owner<T> where T : class { public static void M<U>() { } }
 """
             else
                 """
@@ -806,6 +809,7 @@ public class BothMethod<T> { public static void Touch() { } public static void G
 public class Based<T> { public static void Touch() { } }
 public class Fielded<T> { public static void Touch() { } }
 public class Strict<U> { }
+public class Owner<T> { public static void M<U>() { } }
 """
 
         let constrained = compile "Lib" [ missing ] (library true)
@@ -825,6 +829,7 @@ public static class Cases
     public static int BasedInt() { try { Lib.Based<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int FieldedInt() { try { Lib.Fielded<int>.Touch(); return 0; } catch (System.Exception) { return 1; } }
     public static int OrderedTouch() { try { Ordered.Touch(); return 0; } catch (System.Exception) { return 1; } }
+    public static int ArgumentMisses() { try { Lib.Owner<int>.M<Missing.StructMissing>(); return 0; } catch (System.Exception) { return 1; } }
 }
 """
 
@@ -836,6 +841,7 @@ public static class Cases
                 "BasedInt"
                 "FieldedInt"
                 "OrderedTouch"
+                "ArgumentMisses"
             ]
 
         let fileNotFound = "System.IO.FileNotFoundException"
@@ -1671,8 +1677,8 @@ public static class Cases
     /// variable, which CoreCLR admits in no instantiation, rejecting it compiling the caller even in
     /// code shared between instantiations; or with `TypedReference`, for a parameter allowing a
     /// byref-like argument, which .NET 10 rejects there and .NET 11 admits. And a method instantiation
-    /// violating the method's constraint whose closed return type violates another, of which CoreCLR
-    /// raises only the method's. The library is emitted, the client
+    /// violating the method's constraint whose return type, closed or over the method's parameter,
+    /// has a closed part violating another, of which CoreCLR raises only the method's. The library is emitted, the client
     /// compiled against it.
     [<Test>]
     let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
@@ -1894,6 +1900,38 @@ public static class Cases
             callsClosedReturnIl.Emit (Reflection.Emit.OpCodes.Call, closedReturn.MakeGenericMethod [| typeof<int> |])
             callsClosedReturnIl.Emit Reflection.Emit.OpCodes.Pop
             callsClosedReturnIl.Emit Reflection.Emit.OpCodes.Ret
+
+            // `static ValueTuple<T, S<int>> MP<T>() where T : class`, whose return type names the
+            // method's parameter and a closed part that violates `S`'s constraint, called by
+            // `static void CallsMP() { MP<int>(); }`.
+            let partly =
+                plain.DefineMethod ("MP", Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static)
+
+            let partlyParameter = (partly.DefineGenericParameters [| "T" |]).[0]
+
+            partlyParameter.SetGenericParameterAttributes Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+
+            let partlyReturns =
+                typedefof<ValueTuple<int, int>>.MakeGenericType [| partlyParameter :> Type ; structOfInt |]
+
+            partly.SetReturnType partlyReturns
+            let partlyIl = partly.GetILGenerator ()
+            let partlyResult = partlyIl.DeclareLocal partlyReturns
+            partlyIl.Emit (Reflection.Emit.OpCodes.Ldloc, partlyResult)
+            partlyIl.Emit Reflection.Emit.OpCodes.Ret
+
+            let callsPartly =
+                plain.DefineMethod (
+                    "CallsMP",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let callsPartlyIl = callsPartly.GetILGenerator ()
+            callsPartlyIl.Emit (Reflection.Emit.OpCodes.Call, partly.MakeGenericMethod [| typeof<int> |])
+            callsPartlyIl.Emit Reflection.Emit.OpCodes.Pop
+            callsPartlyIl.Emit Reflection.Emit.OpCodes.Ret
             plain.CreateType () |> ignore<Type>
 
             use stream = new MemoryStream ()
@@ -1913,6 +1951,7 @@ public static class Cases
     public static int CallsPointingType() { Plain.H<string>(); return 0; }
     public static int CallsTypedReference() { Plain.G2<string>(); return 0; }
     public static int CallsClosedReturn() { Plain.CallsMR(); return 0; }
+    public static int CallsPartlyClosedReturn() { Plain.CallsMP(); return 0; }
 }
 """
 
@@ -1924,6 +1963,7 @@ public static class Cases
                 "CallsPointingType"
                 "CallsTypedReference"
                 "CallsClosedReturn"
+                "CallsPartlyClosedReturn"
             ]
 
         let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
@@ -1946,7 +1986,7 @@ public static class Cases
             )
             |> Seq.length
 
-        Assert.That (byDefinition, Is.EqualTo 5)
+        Assert.That (byDefinition, Is.EqualTo 6)
 
         let mutable analysis =
             analysisOver
@@ -1973,6 +2013,7 @@ public static class Cases
                         "CallsPointingType", "Plain", "H", true
                         "CallsTypedReference", "Plain", "G2", false
                         "CallsClosedReturn", "Plain", "CallsMR", false
+                        "CallsPartlyClosedReturn", "Plain", "CallsMP", false
                     ] do
                     let raised =
                         match hostOutcomes.[case] with
