@@ -615,10 +615,10 @@ static class Program
         run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
         run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
 
-        Net11Frontier.park Net11Frontier.nonExceptionWrapping
-
-        // The constructor looks up its message, and what that raises is thrown in the wrapper's place.
-        run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        // The VM runs the constructor, which looks up its message, and what that raises is thrown
+        // in the wrapper's place, as the VM does with what any making it runs raises.
+        run "nameless" |> shouldEqual (vmMakingRaised ())
+        run "nameless-once" |> shouldEqual vmMakingRaisedOnce
 
     /// The provider a binding guest is compiled against: it declares a field and a method, an
     /// interface method one of two interfaces overrides, an interface method with a default body, and
