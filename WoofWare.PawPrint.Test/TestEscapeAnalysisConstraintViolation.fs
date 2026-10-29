@@ -1002,8 +1002,12 @@ public static class Cases
     /// method's variable, against an interface constraint that has gained an abstract static
     /// member, in code shared between instantiations; and a byref-like argument carrying a custom
     /// modifier, of a method whose address is taken and of a type whose token is loaded, which no
-    /// longer allow one; a constraint carrying a custom modifier, which an argument satisfies; and
-    /// the address of a method of a generic type instantiated over function pointers.
+    /// longer allow one; a constraint carrying a custom modifier, which an argument satisfies; the
+    /// address of a method of a generic type instantiated over function pointers; a member gone
+    /// from a parent whose instantiation now violates a constraint, which CoreCLR loads first; a
+    /// type token over a function pointer whose signature names a variable, in shared code, which
+    /// CoreCLR looks up as the method runs; and a method instantiation violating constraints both
+    /// of the method and of its return type, of which CoreCLR raises only the method's.
     [<Test>]
     let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
         let scenarios =
@@ -1175,6 +1179,72 @@ public static class Cases
 }
 """
                     Cases = [ "CallsMethod" ; "TouchesType" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "MissingMemberOfViolatingParent"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class C<T> { public static void Touch() { } public static int F; }",
+                            "namespace Lib; public class C<T> where T : class { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int CallsTouch() { Lib.C<int>.Touch(); return 0; }
+    public static int ReadsField() { return Lib.C<int>.F; }
+}
+"""
+                    Cases = [ "CallsTouch" ; "ReadsField" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "CanonInFunctionPointer"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public class C<X> { }",
+                            "namespace Lib; public class C<X> where X : struct { }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static unsafe class Cases
+{
+    public static int Generic<T>()
+    {
+        try { System.Type t = typeof(Lib.C<delegate*<T, void>[]>); return t == null ? 1 : 0; }
+        catch (System.Exception) { return 1; }
+    }
+    public static int CallsGeneric() => Generic<string>();
+}
+"""
+                    Cases = [ "CallsGeneric" ]
+                    Exact = false
+                    Generics = []
+                }
+                {
+                    Name = "MethodAndReturnViolated"
+                    Libraries =
+                        [
+                            "Lib",
+                            "namespace Lib; public struct S<T> { } public static class Methods { public static S<T> M<T>() => default; }",
+                            "namespace Lib; public struct S<T> where T : class { } public static class Methods { public static S<T> M<T>() where T : class => default; }"
+                        ]
+                    Client =
+                        """
+namespace Client;
+public static class Cases
+{
+    public static int CallsM() { Lib.Methods.M<int>(); return 0; }
+}
+"""
+                    Cases = [ "CallsM" ]
                     Exact = false
                     Generics = []
                 }
