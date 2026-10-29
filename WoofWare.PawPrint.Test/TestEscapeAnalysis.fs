@@ -1376,6 +1376,21 @@ public static class SR
                 None
         )
 
+    /// `corelib`'s `Exception.InternalPreserveStackTrace()`, which CoreCLR runs on an exception it
+    /// throws again.
+    let private internalPreserveStackTrace (corelib : DumpedAssembly) : MethodKey =
+        corelib.Methods
+        |> Seq.filter (fun (KeyValue (_, method)) ->
+            method.Name = "InternalPreserveStackTrace"
+            && not method.IsStatic
+            && method.Signature.ParameterTypes.IsEmpty
+            && TypeInfo.fullName
+                (fun h -> corelib.TypeDefs.[h])
+                corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get] = "System.Exception"
+        )
+        |> Seq.exactlyOne
+        |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
     /// The architecture the framework under test's JIT compiles for.
     let private hostTarget () : JitTarget =
         match Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
@@ -5874,10 +5889,23 @@ public static class Cases
 
         let constructorShown = constructorShown
 
-        // A fault raises its exception, and what the constructor the runtime runs to make it raises.
+        // What preserving the stack trace of an exception the VM throws again raises.
+        let preserveShown =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (internalPreserveStackTrace corelib)
+
+            analysis <- next
+            render analysis escapes
+
+        // A fault raises its exception, what the constructor the runtime runs to make it raises,
+        // and, where the VM throws that again preserving its stack trace, what preserving raises.
         let made (fullName : string) (making : ExceptionMaking option) : Set<string> =
-            match making with
-            | Some ExceptionMaking.ParameterlessConstructor -> Set.add ("=" + fullName) constructorShown.[fullName]
+            match making, ExceptionMaking.vmMakingRaise (EmulatedRuntime.ofCoreLib corelib) with
+            | Some ExceptionMaking.ThrownByIl, _
+            | Some ExceptionMaking.VmConstructor, VmMakingRaise.EscapesInPlace ->
+                Set.add ("=" + fullName) constructorShown.[fullName]
+            | Some ExceptionMaking.VmConstructor, VmMakingRaise.ThrownAgainPreservingTrace ->
+                Set.add ("=" + fullName) (Set.union constructorShown.[fullName] preserveShown)
             | _ -> Set.singleton ("=" + fullName)
 
         let instructionFaultShown (fault : InstructionFault) : Set<string> =
@@ -16493,8 +16521,9 @@ public static class Runners
         let shownRefusals (shown : Set<string>) : Set<string> =
             refusalTypes |> Set.filter (fun ty -> shown.Contains ("=" + ty))
 
-        // What the runtime runs to make the exception of a refusal, which escapes in its place
-        // (`ExceptionMaking`): what that raises, and where it is opaque.
+        // What the runtime runs to make the exception of a refusal, which escapes in its place, and
+        // where the VM throws that again preserving its stack trace (`ExceptionMaking.vmMakingRaise`),
+        // what preserving runs: what those raise, and where they are opaque.
         let made (refusal : string) : Set<string> * Set<string> =
             let maker =
                 if refusal = typeLoad then
@@ -16503,10 +16532,21 @@ public static class Runners
                     let dot = refusal.LastIndexOf '.'
                     parameterlessConstructor (hostCoreLib ()) (refusal.Substring (0, dot)) (refusal.Substring (dot + 1))
 
-            let next, escapes = EscapeAnalysis.escapes analysis maker
-            let next, sources = EscapeAnalysis.unknownSources next maker
-            analysis <- next
-            render analysis escapes, Set.map (renderSite analysis) sources
+            let makers =
+                match ExceptionMaking.vmMakingRaise (FrameworkUnderTest.runtime ()) with
+                | VmMakingRaise.EscapesInPlace -> [ maker ]
+                | VmMakingRaise.ThrownAgainPreservingTrace -> [ maker ; internalPreserveStackTrace (hostCoreLib ()) ]
+
+            let shown =
+                makers
+                |> List.map (fun maker ->
+                    let next, escapes = EscapeAnalysis.escapes analysis maker
+                    let next, sources = EscapeAnalysis.unknownSources next maker
+                    analysis <- next
+                    render analysis escapes, Set.map (renderSite analysis) sources
+                )
+
+            Set.unionMany (List.map fst shown), Set.unionMany (List.map snd shown)
 
         let analysisFailures =
             [

@@ -26,13 +26,15 @@ type Assumption =
     /// Reading an exception's `Source` and `StackTrace` raises only what `Assumption.raises` lists.
     /// CoreCLR reads both when it throws an exception that has been thrown before
     /// (`Exception.InternalPreserveStackTrace`), as it does a type initializer's own exception when
-    /// it cannot wrap that in a `TypeInitializationException`. `Exception`'s own getters walk the
+    /// it cannot wrap that in a `TypeInitializationException`, and, on .NET 11, what its making of
+    /// an exception raises (`ExceptionMaking.vmMakingRaise`). `Exception`'s own getters walk the
     /// exception's stack trace, reading each method's metadata through reflection and native code
     /// the analysis does not see into. This holds when every exception class that overrides either
     /// getter raises from it only what `Exception`'s own does, and when the metadata of each method
     /// on the stack trace, and of every type and assembly it names, is intact and loads without
     /// running the program's `AssemblyResolve` or `Resolving` handlers.
-    /// Without this, wherever a type initializer may fail is "unknown".
+    /// Without this, wherever a type initializer may fail is "unknown", and on .NET 11 so is
+    /// wherever the VM makes an exception by running managed code.
     | StackTracePreserved
     /// CoreLib's type initializers, each of them, raise only what `Assumption.raises` lists. Every
     /// CoreLib exception's constructor runs one, `SR`'s, which reads an `AppContext` switch through
