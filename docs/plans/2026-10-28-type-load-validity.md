@@ -1,6 +1,6 @@
 # Type-load validity at concretization
 
-Status: option A with representation R1 chosen (2026-10-28), moving the arity and bare-definition refusals too; the Loader's `resolveTypeFromDefn` is left for a follow-up. "PawPrint today" below describes the code before the change.
+Status: option A with representation R1 chosen (2026-10-28), moving the arity and bare-definition refusals too. The Loader's `resolveTypeFromDefn` was migrated afterwards: it refuses every rule here as `TypeBindingFailure.Refused`, in CoreCLR's order, and shares concretization's spelling check. "PawPrint today" below describes the code before the change.
 
 ## The rules
 

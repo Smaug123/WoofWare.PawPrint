@@ -353,41 +353,69 @@ module TestTypeLoadValidity =
             Outcome.TypeLoad (rule, e.TypeName)
         | :? ArgumentException as e when (e.InnerException :? BadImageFormatException) -> Outcome.BadImageFormat
 
-    let private typeName (state : TypeSystemState) (identity : ResolvedTypeIdentity) : string =
+    let private typeName (assemblies : LoadedAssemblies) (identity : ResolvedTypeIdentity) : string =
         let definition =
-            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+            assemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
 
         if String.IsNullOrEmpty definition.Namespace then
             definition.Name
         else
             $"%s{definition.Namespace}.%s{definition.Name}"
 
-    let private pawPrintOutcome (state : TypeSystemState) (result : Result<ConcreteTypeHandle, TypeBindingFailure>) =
+    /// What PawPrint made of a signature, by concretization or the Loader's walk, in the load context
+    /// `assemblies` that walk left.
+    let private pawPrintOutcome (assemblies : LoadedAssemblies) (result : Result<'a, TypeBindingFailure>) : Outcome =
         match result with
         | Ok _ -> Outcome.Loads
         | Error (TypeBindingFailure.Refused refusal) ->
             match refusal with
             | TypeLoadRefusal.InvalidInstantiation (definition, _, _) ->
-                Outcome.TypeLoad (Rule.InvalidInstantiation, typeName state definition)
-            | TypeLoadRefusal.KindMismatch (named, _) -> Outcome.TypeLoad (Rule.KindMismatch, typeName state named)
+                Outcome.TypeLoad (Rule.InvalidInstantiation, typeName assemblies definition)
+            | TypeLoadRefusal.KindMismatch (named, _) -> Outcome.TypeLoad (Rule.KindMismatch, typeName assemblies named)
             | TypeLoadRefusal.WrongArity (definition, _, _) ->
-                Outcome.TypeLoad (Rule.WrongArity, typeName state definition)
+                Outcome.TypeLoad (Rule.WrongArity, typeName assemblies definition)
             | TypeLoadRefusal.UninstantiatedDefinition definition ->
-                Outcome.TypeLoad (Rule.UninstantiatedDefinition, typeName state definition)
+                Outcome.TypeLoad (Rule.UninstantiatedDefinition, typeName assemblies definition)
             | TypeLoadRefusal.TypeParameterOutOfScope _
             | TypeLoadRefusal.MethodParameterOutOfScope _ -> Outcome.BadImageFormat
         | Error failure -> failwith $"expected a binding or a refusal, got %s{TypeBindingFailure.describe failure}"
 
-    /// Each signature's outcome on the host and in PawPrint, under a context instantiating
-    /// `typeArity` type parameters and `methodArity` method parameters. PawPrint's state is threaded
-    /// through the signatures in order, so a refusal must leave a state the next one can use.
+    /// Whether the Loader's walk answers `signature` with the type it names. It has no `TypeInfo` for
+    /// a pointer, a byref or a function pointer, and it binds a generic definition named bare as the
+    /// open definition, which a token naming one denotes.
+    let private loaderAnswers (signature : Signature) : bool =
+        match signature with
+        | Signature.Pointer _
+        | Signature.Byref _
+        | Signature.FunctionReturning _
+        | Signature.FunctionTaking _
+        | Signature.Nominal (_, Target.Head _) -> false
+        | Signature.Primitive _
+        | Signature.Nominal (_, Target.Named _)
+        | Signature.Generic _
+        | Signature.Vector _
+        | Signature.TypeParameter _
+        | Signature.MethodParameter _ -> true
+
+    /// One signature's outcome on the host, under concretization, and under the Loader's walk where
+    /// that walk answers it (see `loaderAnswers`).
+    type private Outcomes =
+        {
+            Host : Outcome
+            Concretized : Outcome
+            Loaded : Outcome option
+        }
+
+    /// Each signature's outcomes under a context instantiating `typeArity` type parameters and
+    /// `methodArity` method parameters. PawPrint's state, and the Loader's load context, are each
+    /// threaded through the signatures in order, so a refusal must leave one the next can use.
     let private check
         (name : string)
         (legacy : bool)
         (typeArity : int)
         (methodArity : int)
         (signatures : Signature list)
-        : (Outcome * Outcome) list
+        : Outcomes list
         =
         let image, tokens = emit name legacy signatures
         use stream = new MemoryStream (image)
@@ -428,8 +456,19 @@ module TestTypeLoadValidity =
             let methodGenerics =
                 concretizeAll ([ PrimitiveType.String ; PrimitiveType.Int32 ] |> List.take methodArity)
 
+            let primitives (primitives : PrimitiveType list) : ImmutableArray<TypeDefn> =
+                primitives |> List.map TypeDefn.PrimitiveType |> ImmutableArray.CreateRange
+
+            let loaderTypeGenerics =
+                primitives ([ PrimitiveType.Int32 ; PrimitiveType.String ] |> List.take typeArity)
+
+            let loaderMethodGenerics =
+                primitives ([ PrimitiveType.String ; PrimitiveType.Int32 ] |> List.take methodArity)
+
+            let mutable assemblies = state._LoadedAssemblies
+
             [
-                for token in tokens do
+                for signatureSpelled, token in List.zip signatures tokens do
                     let expected = hostOutcome host token typeArgs methodArgs
 
                     let signature =
@@ -447,15 +486,45 @@ module TestTypeLoadValidity =
                             signature
 
                     state <- next
-                    yield expected, pawPrintOutcome next result
+
+                    let loaded =
+                        if loaderAnswers signatureSpelled then
+                            let next, result =
+                                TypeResolution.resolveTypeFromDefn
+                                    loggerFactory
+                                    HostImage.runtimeDirs
+                                    bct
+                                    signature
+                                    loaderTypeGenerics
+                                    loaderMethodGenerics
+                                    dumped
+                                    assemblies
+
+                            assemblies <- next
+                            Some (pawPrintOutcome next result)
+                        else
+                            None
+
+                    yield
+                        {
+                            Host = expected
+                            Concretized = pawPrintOutcome next._LoadedAssemblies result
+                            Loaded = loaded
+                        }
             ]
         finally
             context.Unload ()
 
-    let private assertAgree (signatures : Signature list) (outcomes : (Outcome * Outcome) list) : unit =
-        for signature, (host, pawPrint) in List.zip signatures outcomes do
-            if host <> pawPrint then
-                failwith $"%A{signature}: the host gives %A{host}, PawPrint %A{pawPrint}"
+    let private assertAgree (signatures : Signature list) (outcomes : Outcomes list) : unit =
+        for signature, outcome in List.zip signatures outcomes do
+            if outcome.Host <> outcome.Concretized then
+                failwith $"%A{signature}: the host gives %A{outcome.Host}, concretization %A{outcome.Concretized}"
+
+            match outcome.Loaded with
+            | Some loaded when loaded <> outcome.Host ->
+                failwith $"%A{signature}: the host gives %A{outcome.Host}, the Loader %A{loaded}"
+            | Some _
+            | None -> ()
 
     /// Signatures the host was measured on while designing these checks, with what it gave under
     /// a context of one type parameter (`int`) and one method parameter (`string`).
@@ -529,10 +598,10 @@ module TestTypeLoadValidity =
         let signatures = measured |> List.map fst
         let outcomes = check "MeasuredTypeLoads" false 1 1 signatures
 
-        for (signature, measured), (host, _) in List.zip (List.zip signatures (List.map snd measured)) outcomes do
-            if host <> measured then
+        for (signature, measured), outcome in List.zip (List.zip signatures (List.map snd measured)) outcomes do
+            if outcome.Host <> measured then
                 failwith
-                    $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{host}"
+                    $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{outcome.Host}"
 
         assertAgree signatures outcomes
 
@@ -561,10 +630,10 @@ module TestTypeLoadValidity =
         let signatures = measured |> List.map fst
         let outcomes = check "LegacyTypeLoads" true 1 1 signatures
 
-        for (signature, measured), (host, _) in List.zip measured outcomes do
-            if host <> measured then
+        for (signature, measured), outcome in List.zip measured outcomes do
+            if outcome.Host <> measured then
                 failwith
-                    $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{host}"
+                    $"%A{signature}: measured %A{measured} while designing this test, but the host now gives %A{outcome.Host}"
 
         assertAgree signatures outcomes
 
@@ -689,6 +758,7 @@ module TestTypeLoadValidity =
             }
 
         let seen = HashSet<Outcome> ()
+        let seenByTheLoader = HashSet<Outcome> ()
         let refusingHeads = HashSet<string> ()
         let mutable cases = 0
 
@@ -700,19 +770,27 @@ module TestTypeLoadValidity =
 
             assertAgree signatures outcomes
 
-            for host, _ in outcomes do
-                match host with
-                | Outcome.TypeLoad (rule, name) ->
-                    seen.Add (Outcome.TypeLoad (rule, "")) |> ignore
+            for outcome in outcomes do
+                let kind =
+                    match outcome.Host with
+                    | Outcome.TypeLoad (rule, _) -> Outcome.TypeLoad (rule, "")
+                    | other -> other
 
-                    if rule = Rule.InvalidInstantiation then
-                        refusingHeads.Add name |> ignore
-                | other -> seen.Add other |> ignore
+                seen.Add kind |> ignore
+
+                if outcome.Loaded.IsSome then
+                    seenByTheLoader.Add kind |> ignore
+
+                match outcome.Host with
+                | Outcome.TypeLoad (Rule.InvalidInstantiation, name) -> refusingHeads.Add name |> ignore
+                | _ -> ()
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen generator) property)
 
-        // Every outcome, and an invalid instantiation of a struct, an enum and a class alike.
+        // Every outcome, under concretization and the Loader alike, and an invalid instantiation of a
+        // struct, an enum and a class.
         seen.Count |> shouldEqual 6
+        seenByTheLoader.Count |> shouldEqual 6
 
         refusingHeads
         |> Set.ofSeq
