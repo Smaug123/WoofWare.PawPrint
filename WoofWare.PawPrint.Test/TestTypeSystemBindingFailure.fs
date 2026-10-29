@@ -87,6 +87,27 @@ module TestTypeSystemBindingFailure =
         | Error (TypeBindingFailure.Unmodelled unmodelled) -> unmodelled.Diagnostic |> shouldContainText fragment
         | other -> failwith $"expected Unmodelled saying %s{fragment}, got %A{other}"
 
+    /// The identity of `System.Collections.Generic.List`1`, which the fixture's `Shapes.List` names.
+    let private listIdentity (f : UnmodelledImage.Fixture) : ResolvedTypeIdentity =
+        match
+            TypeResolution.resolveTypeFromDefn
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                (spelled f f.Shapes.List)
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                f.Analysed
+                f.Assemblies
+        with
+        | _, Ok (_, info) -> info.Identity
+        | _, Error failure -> failwith $"expected List`1 to bind, got %s{TypeBindingFailure.describe failure}"
+
+    let private refusedWith (expected : TypeLoadRefusal) (result : Result<'a, TypeBindingFailure>) : unit =
+        match result with
+        | Error (TypeBindingFailure.Refused refusal) -> refusal |> shouldEqual expected
+        | other -> failwith $"expected a refusal %A{expected}, got %A{other}"
+
     let private isAbsentGone (result : Result<'a, TypeBindingFailure>) : unit =
         match result with
         | Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) -> ()
@@ -352,9 +373,11 @@ module TestTypeSystemBindingFailure =
         | other -> failwith $"expected Unmodelled, got %A{other}"
 
     [<Test>]
-    let ``an instantiation whose argument is an uninstantiated generic definition is unmodelled`` () : unit =
+    let ``an instantiation whose argument is an uninstantiated generic definition is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
-        let fragment = "names the generic definition"
+        let bare = TypeLoadRefusal.UninstantiatedDefinition (listIdentity f)
+
+        let refused (result : Result<'a, TypeBindingFailure>) : unit = refusedWith bare result
 
         TypeResolution.resolveTypeFromSpec
             f.LoggerFactory
@@ -366,7 +389,7 @@ module TestTypeSystemBindingFailure =
             ImmutableArray.Empty
             f.Assemblies
         |> snd
-        |> unmodelledSaying fragment
+        |> refused
 
         TypeSystemState.resolveTypeFromSpec
             f.LoggerFactory
@@ -378,7 +401,7 @@ module TestTypeSystemBindingFailure =
             ImmutableArray.Empty
             (typeSystem f)
         |> snd
-        |> unmodelledSaying fragment
+        |> refused
 
         // An environment has nothing to instantiate the bare argument at, however many arguments
         // it holds.
@@ -392,15 +415,15 @@ module TestTypeSystemBindingFailure =
             ImmutableArray.Empty
             (typeSystem f)
         |> snd
-        |> unmodelledSaying fragment
+        |> refused
 
         match bindMember f f.Shapes.ListOfBareListClear with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
-            (Error failure : Result<unit, TypeBindingFailure>) |> unmodelledSaying fragment
+            (Error failure : Result<unit, TypeBindingFailure>) |> refused
         | other -> failwith $"expected TypeUnbound, got %A{other}"
 
     [<Test>]
-    let ``a generic parameter outside its environment is unmodelled`` () : unit =
+    let ``a generic parameter outside its environment is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
 
         let fromSpec (handle : TypeSpecificationHandle) (environment : TypeDefn list) =
@@ -415,15 +438,17 @@ module TestTypeSystemBindingFailure =
                 f.Assemblies
             |> snd
 
-        for handle, parameter in
+        let typeParameter = TypeLoadRefusal.TypeParameterOutOfScope (0, 0)
+        let methodParameter = TypeLoadRefusal.MethodParameterOutOfScope (0, 0)
+
+        for handle, parameter, refusal in
             [
-                f.Shapes.TypeParameter, "!0"
-                f.Shapes.ListOfTypeParameter, "!0"
-                f.Shapes.MethodParameter, "!!0"
-                f.Shapes.ListOfMethodParameter, "!!0"
+                f.Shapes.TypeParameter, "!0", typeParameter
+                f.Shapes.ListOfTypeParameter, "!0", typeParameter
+                f.Shapes.MethodParameter, "!!0", methodParameter
+                f.Shapes.ListOfMethodParameter, "!!0", methodParameter
             ] do
-            fromSpec handle []
-            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
+            fromSpec handle [] |> refusedWith refusal
 
             match fromSpec handle [ int32 ] with
             | Ok _ -> ()
@@ -440,13 +465,16 @@ module TestTypeSystemBindingFailure =
             ImmutableArray.Empty
             (typeSystem f)
         |> snd
-        |> unmodelledSaying "BadImageFormatException"
+        |> refusedWith typeParameter
 
-        for handle in [ f.Shapes.ListOfTypeParameterClear ; f.Shapes.ListOfMethodParameterClear ] do
+        for handle, refusal in
+            [
+                f.Shapes.ListOfTypeParameterClear, typeParameter
+                f.Shapes.ListOfMethodParameterClear, methodParameter
+            ] do
             match bindMember f handle with
             | Error (MemberBindingFailure.TypeUnbound failure) ->
-                (Error failure : Result<unit, TypeBindingFailure>)
-                |> unmodelledSaying "BadImageFormatException"
+                (Error failure : Result<unit, TypeBindingFailure>) |> refusedWith refusal
             | other -> failwith $"expected TypeUnbound, got %A{other}"
 
     [<Test>]
@@ -470,7 +498,7 @@ module TestTypeSystemBindingFailure =
         fromSpec f.Shapes.UnboundVector [] |> isNowhere
 
         fromSpec f.Shapes.TypeParameterVector []
-        |> unmodelledSaying "generic parameter !0 is out of range of an environment of 0 argument(s)"
+        |> refusedWith (TypeLoadRefusal.TypeParameterOutOfScope (0, 0))
 
         match fromSpec f.Shapes.TypeParameterVector [ int32 ] with
         | Ok (_, info) -> $"%s{info.Namespace}.%s{info.Name}" |> shouldEqual "System.Array"
@@ -547,8 +575,13 @@ module TestTypeSystemBindingFailure =
         match bindMember f f.Shapes.TypeParameterVectorToString with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>)
-            |> unmodelledSaying "BadImageFormatException"
+            |> refusedWith (TypeLoadRefusal.TypeParameterOutOfScope (0, 0))
         | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+        // CoreCLR loads an array's element in full, so a generic definition named bare as one is
+        // refused, as it is anywhere a type is required.
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero (spelled f f.Shapes.List))
+        |> refusedWith (TypeLoadRefusal.UninstantiatedDefinition (listIdentity f))
 
     let private resolveIn
         (f : UnmodelledImage.Fixture)
@@ -675,34 +708,36 @@ module TestTypeSystemBindingFailure =
         |> isNowhere
 
     [<Test>]
-    let ``an instantiation at a byref, pointer, function pointer, typedref or void is unmodelled`` () : unit =
+    let ``an instantiation at a byref, pointer, function pointer, typedref or void is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
         let bct = f.BaseClassTypes
         let functionPointer = TypeDefn.FunctionPointer (signature [ int32 ])
+        let list = listIdentity f
 
         let malformed =
             [
-                TypeDefn.Byref int32
-                TypeDefn.Pointer int32
-                functionPointer
-                TypeDefn.PrimitiveType PrimitiveType.TypedReference
-                TypeDefn.Void
-                TypeDefn.FromDefinition (bct.TypedReference.Identity, SignatureTypeKind.ValueType)
-                TypeDefn.FromDefinition (bct.Void.Identity, SignatureTypeKind.ValueType)
+                TypeDefn.Byref int32, MalformedArgument.Byref
+                TypeDefn.Pointer int32, MalformedArgument.Pointer
+                functionPointer, MalformedArgument.FunctionPointer
+                TypeDefn.PrimitiveType PrimitiveType.TypedReference, MalformedArgument.TypedReference
+                TypeDefn.Void, MalformedArgument.Void
+                TypeDefn.FromDefinition (bct.TypedReference.Identity, SignatureTypeKind.ValueType),
+                MalformedArgument.TypedReference
+                TypeDefn.FromDefinition (bct.Void.Identity, SignatureTypeKind.ValueType), MalformedArgument.Void
                 // CoreCLR reads the argument's element type past its modifiers and `pinned`.
-                modified (TypeDefn.Pointer int32) (spelled f f.Shapes.Object)
-                TypeDefn.Pinned (TypeDefn.Byref int32)
+                modified (TypeDefn.Pointer int32) (spelled f f.Shapes.Object), MalformedArgument.Pointer
+                TypeDefn.Pinned (TypeDefn.Byref int32), MalformedArgument.Byref
             ]
 
-        for argument in malformed do
+        for argument, what in malformed do
             resolveIn f [] (listOf f argument)
             |> snd
-            |> unmodelledSaying "IDS_CLASSLOAD_INVALIDINSTANTIATION"
+            |> refusedWith (TypeLoadRefusal.InvalidInstantiation (list, 0, what))
 
         // The argument is checked once substituted.
         resolveIn f [ TypeDefn.Pointer int32 ] (listOf f (TypeDefn.GenericTypeParameter 0))
         |> snd
-        |> unmodelledSaying "IDS_CLASSLOAD_INVALIDINSTANTIATION"
+        |> refusedWith (TypeLoadRefusal.InvalidInstantiation (list, 0, MalformedArgument.Pointer))
 
         // Only the argument's own element type counts.
         for argument in
@@ -749,9 +784,10 @@ module TestTypeSystemBindingFailure =
                 TypeDefn.OneDimensionalArrayLowerBoundZero generic
             ] do
             match resolveIn f [] refused |> snd with
-            | Error (TypeBindingFailure.Unmodelled unmodelled) ->
-                unmodelled.Diagnostic.Length |> shouldBeSmallerThan 1000
-            | other -> failwith $"expected Unmodelled, got %A{other}"
+            | Error (TypeBindingFailure.Unmodelled _ as failure)
+            | Error (TypeBindingFailure.Refused _ as failure) ->
+                (TypeBindingFailure.describe failure).Length |> shouldBeSmallerThan 1000
+            | other -> failwith $"expected a refusal, got %A{other}"
 
     /// One layer a generated generic parameter is spelled inside.
     [<RequireQualifiedAccess>]
@@ -817,29 +853,8 @@ module TestTypeSystemBindingFailure =
             )
             parameter
 
-    /// Whether `failure` is how the Loader reports `spelling` out of an environment of `size`: as
-    /// unmodelled, naming the parameter.
-    let private loaderOutOfRange (spelling : ParameterSpelling) (size : int) (failure : TypeBindingFailure) : bool =
-        let name =
-            if spelling.IsMethod then
-                $"!!%d{spelling.Index}"
-            else
-                $"!%d{spelling.Index}"
-
-        match failure with
-        | TypeBindingFailure.Unmodelled unmodelled ->
-            unmodelled.Diagnostic.Contains
-                $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
-        | _ -> false
-
-    /// Whether `failure` is how concretisation reports `spelling` out of an environment of `size`: as
-    /// CoreCLR's refusal of the signature.
-    let private concretisationOutOfRange
-        (spelling : ParameterSpelling)
-        (size : int)
-        (failure : TypeBindingFailure)
-        : bool
-        =
+    /// Whether `failure` is CoreCLR's refusal of `spelling` out of an environment of `size`.
+    let private outOfScope (spelling : ParameterSpelling) (size : int) (failure : TypeBindingFailure) : bool =
         let expected =
             if spelling.IsMethod then
                 TypeLoadRefusal.MethodParameterOutOfScope (spelling.Index, size)
@@ -849,10 +864,8 @@ module TestTypeSystemBindingFailure =
         failure = TypeBindingFailure.Refused expected
 
     /// Classify `result` as binding or out of range, failing unless that is what an environment of
-    /// `typeArgs` and `methodArgs` arguments makes of `spelling`; `outOfRange` says how the side
-    /// under test reports a parameter out of range.
+    /// `typeArgs` and `methodArgs` arguments makes of `spelling`.
     let private checkInRange
-        (outOfRange : ParameterSpelling -> int -> TypeBindingFailure -> bool)
         (spelling : ParameterSpelling)
         (typeArgs : int)
         (methodArgs : int)
@@ -863,7 +876,7 @@ module TestTypeSystemBindingFailure =
 
         match result with
         | Ok _ when spelling.Index < size -> InRange.Binds
-        | Error failure when spelling.Index >= size && outOfRange spelling size failure -> InRange.OutOfRange
+        | Error failure when spelling.Index >= size && outOfScope spelling size failure -> InRange.OutOfRange
         | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
 
     [<Test>]
@@ -881,7 +894,7 @@ module TestTypeSystemBindingFailure =
                 f.Analysed
                 f.Assemblies
             |> snd
-            |> checkInRange loaderOutOfRange spelling typeArgs methodArgs
+            |> checkInRange spelling typeArgs methodArgs
             |> cover
 
             true
@@ -947,7 +960,7 @@ module TestTypeSystemBindingFailure =
 
         let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
             concretizeIn f typeArgs methodArgs (spellParameter f spelling)
-            |> checkInRange concretisationOutOfRange spelling typeArgs methodArgs
+            |> checkInRange spelling typeArgs methodArgs
             |> cover
 
             true
@@ -1269,9 +1282,10 @@ module TestTypeSystemBindingFailure =
 
     /// The reference implementation of the Loader: the first part of the spelling that does not
     /// bind, as CoreCLR loads the parts: an array's element before the array, a function pointer's
-    /// return type before its parameters, and an instantiation's arguments, in order, before the
-    /// generic definition, which here always binds but refuses any number of arguments other than its
-    /// one generic parameter, and then refuses an argument `Generics::CheckInstantiation` does.
+    /// return type before its parameters, and an instantiation's generic definition, which here
+    /// always binds and is spelled as the class it is, then its arguments in order, then its arity
+    /// (one generic parameter), then the kinds of its arguments. A generic definition named bare is
+    /// the open definition as the whole spelling, and refused anywhere else.
     let rec private loaderExpected
         (f : UnmodelledImage.Fixture)
         (position : Position)
@@ -1284,9 +1298,9 @@ module TestTypeSystemBindingFailure =
         match spelling with
         | Spelling.Leaf leaf when leaf.BareDefinition ->
             match position with
-            | Position.Argument -> Some Expected.Unmodelled
-            | Position.Whole
-            | Position.ArrayElement -> None
+            | Position.Argument
+            | Position.ArrayElement -> Some Expected.RefusedBare
+            | Position.Whole -> None
         | Spelling.Leaf leaf -> leaf.Fails
         | Spelling.Array (element, _)
         | Spelling.Vector element ->
@@ -1308,8 +1322,9 @@ module TestTypeSystemBindingFailure =
         | Spelling.ListOf arguments ->
             match firstOf Position.Argument arguments with
             | Some failure -> Some failure
-            | None when arguments.Length <> 1 -> Some Expected.Unmodelled
-            | None when malformedArgument f arguments.Head -> Some Expected.Unmodelled
+            | None when arguments.IsEmpty -> Some Expected.Unmodelled
+            | None when arguments.Length <> 1 -> Some Expected.RefusedArity
+            | None when malformedArgument f arguments.Head -> Some Expected.RefusedArgument
             | None -> None
 
     let rec private mentionsFunctionPointer (spelling : Spelling) : bool =
@@ -1349,7 +1364,8 @@ module TestTypeSystemBindingFailure =
         | FailsAbsent
         | FailsUnavailable
         | FailsUnmodelled
-        | RefusedForABareArgument
+        | RefusedForABareDefinition
+        | RefusedForArity
         | RefusedForAMalformedArgument
 
     [<Test>]
@@ -1366,14 +1382,13 @@ module TestTypeSystemBindingFailure =
             | Some Expected.Absent, Error (TypeBindingFailure.TypeAbsent _) -> cover Resolved.FailsAbsent
             | Some Expected.Unavailable, Error (TypeBindingFailure.AssemblyUnavailable _) ->
                 cover Resolved.FailsUnavailable
-            | Some Expected.Unmodelled, Error (TypeBindingFailure.Unmodelled unmodelled) ->
-                if unmodelled.Diagnostic.Contains "names the generic definition" then
-                    cover Resolved.RefusedForABareArgument
-
-                if unmodelled.Diagnostic.Contains "IDS_CLASSLOAD_INVALIDINSTANTIATION" then
-                    cover Resolved.RefusedForAMalformedArgument
-
-                cover Resolved.FailsUnmodelled
+            | Some Expected.Unmodelled, Error (TypeBindingFailure.Unmodelled _) -> cover Resolved.FailsUnmodelled
+            | Some Expected.RefusedBare, Error (TypeBindingFailure.Refused (TypeLoadRefusal.UninstantiatedDefinition _)) ->
+                cover Resolved.RefusedForABareDefinition
+            | Some Expected.RefusedArity, Error (TypeBindingFailure.Refused (TypeLoadRefusal.WrongArity (_, 1, _))) ->
+                cover Resolved.RefusedForArity
+            | Some Expected.RefusedArgument, Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation _)) ->
+                cover Resolved.RefusedForAMalformedArgument
             | expected, actual -> failwith $"expected %A{expected}, got %A{actual}"
 
             true
@@ -1399,7 +1414,8 @@ module TestTypeSystemBindingFailure =
         coverage.Count Resolved.FailsAbsent |> shouldBeGreaterThan 100
         coverage.Count Resolved.FailsUnavailable |> shouldBeGreaterThan 100
         coverage.Count Resolved.FailsUnmodelled |> shouldBeGreaterThan 100
-        coverage.Count Resolved.RefusedForABareArgument |> shouldBeGreaterThan 5
+        coverage.Count Resolved.RefusedForABareDefinition |> shouldBeGreaterThan 20
+        coverage.Count Resolved.RefusedForArity |> shouldBeGreaterThan 20
         coverage.Count Resolved.RefusedForAMalformedArgument |> shouldBeGreaterThan 20
 
     /// The type with every custom modifier inside it deleted.
@@ -1499,10 +1515,8 @@ module TestTypeSystemBindingFailure =
                     cover ArgumentVerdict.AdmittedOverAFunctionPointer
 
                 cover ArgumentVerdict.Admitted
-            | Error (TypeBindingFailure.Unmodelled unmodelled), Some _ when
-                unmodelled.Diagnostic.Contains "IDS_CLASSLOAD_INVALIDINSTANTIATION"
-                ->
-                cover ArgumentVerdict.Refused
+            | Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation (_, index, refused))),
+              Some verdict when (index, refused) = verdict -> cover ArgumentVerdict.Refused
             | loaded, malformed ->
                 failwith $"for List<%O{argument}> the Loader says %A{loaded} and the type system %A{malformed}"
 
@@ -1568,7 +1582,7 @@ module TestTypeSystemBindingFailure =
         coverage.Count Agreement.Fails |> shouldBeGreaterThan 100
 
     [<Test>]
-    let ``an instantiation of a type reference whose arguments do not match its parameters is unmodelled`` () : unit =
+    let ``an instantiation of a type reference whose arguments do not match its parameters is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
         let list = spelled f f.Shapes.List
         let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
@@ -1583,7 +1597,7 @@ module TestTypeSystemBindingFailure =
             f.Analysed
             f.Assemblies
         |> snd
-        |> unmodelledSaying "generic parameter"
+        |> refusedWith (TypeLoadRefusal.WrongArity (listIdentity f, 1, 2))
 
     [<RequireQualifiedAccess>]
     type private ArrayAgreement =
@@ -1620,7 +1634,7 @@ module TestTypeSystemBindingFailure =
 
         let property (cover : ArrayAgreement -> unit) (spelling : Spelling) : bool =
             let ty = toTypeDefn f spelling
-            let concretised = kind (concretize f ty)
+            let concretised = concretize f ty
 
             let loaded =
                 TypeResolution.resolveTypeFromDefn
@@ -1633,15 +1647,16 @@ module TestTypeSystemBindingFailure =
                     f.Analysed
                     f.Assemblies
                 |> snd
-                |> kind
 
-            match concretised, loaded with
-            // Each refuses shapes the other models, so an unmodelled answer constrains nothing; nor
-            // does a type CoreCLR refuses to load, whose rules the Loader does not check.
+            match kind concretised, kind loaded with
+            // Each refuses shapes the other models, so an unmodelled answer constrains nothing.
             | ArrayAgreement.Unmodelled, _
             | _, ArrayAgreement.Unmodelled -> cover ArrayAgreement.Unmodelled
-            | ArrayAgreement.Refused, _
-            | _, ArrayAgreement.Refused -> cover ArrayAgreement.Refused
+            | ArrayAgreement.Refused, ArrayAgreement.Refused ->
+                match concretised, loaded with
+                | Error concretised, Error loaded when concretised = loaded -> cover ArrayAgreement.Refused
+                | concretised, loaded ->
+                    failwith $"concretisation refuses with %A{concretised} and the Loader with %A{loaded} for %A{ty}"
             | concretised, loaded when concretised = loaded -> cover concretised
             | concretised, loaded ->
                 failwith $"concretisation says %A{concretised} and the Loader %A{loaded} for %A{ty}"
@@ -1654,3 +1669,4 @@ module TestTypeSystemBindingFailure =
         coverage.Count ArrayAgreement.Binds |> shouldBeGreaterThan 100
         coverage.Count ArrayAgreement.Absent |> shouldBeGreaterThan 100
         coverage.Count ArrayAgreement.Unavailable |> shouldBeGreaterThan 100
+        coverage.Count ArrayAgreement.Refused |> shouldBeGreaterThan 100
