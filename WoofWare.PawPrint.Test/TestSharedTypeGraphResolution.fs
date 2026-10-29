@@ -109,8 +109,18 @@ module TestSharedTypeGraphResolution =
         | Error (TypeBindingFailure.Unmodelled unmodelled) -> unmodelled.Diagnostic
         | other -> failwith $"expected the resolution to be unmodelled, got %A{other}"
 
-    /// What the resolver says of a generic definition named bare as an instantiation's argument.
-    let private bareArgumentMarker = "names the generic definition"
+    /// The type CoreCLR's class loader refuses that a resolution reports, failing the test where it
+    /// bound or failed otherwise.
+    let private refusal (result : Result<TypeDefn, TypeBindingFailure>) : TypeLoadRefusal =
+        match result with
+        | Error (TypeBindingFailure.Refused refusal) -> refusal
+        | other -> failwith $"expected the resolution to be refused, got %A{other}"
+
+    /// The identity of a definition `topLevel` names.
+    let private identityOf (ty : TypeDefn) : ResolvedTypeIdentity =
+        match ty with
+        | TypeDefn.FromDefinition (identity, _) -> identity
+        | other -> failwith $"test bug: %O{other} does not name a definition"
 
     /// The number of distinct nodes in <paramref name="ty"/> counted <i>by reference</i>, i.e. its
     /// size as a DAG. A traversal that counted structurally would itself be the exponential this
@@ -379,8 +389,8 @@ module TestSharedTypeGraphResolution =
 
         for environment in environments do
             tryResolveToTypeDefn fixture subject environment []
-            |> unmodelledDiagnostic
-            |> shouldContainText bareArgumentMarker
+            |> refusal
+            |> shouldEqual (TypeLoadRefusal.UninstantiatedDefinition (identityOf list))
 
     /// <summary>
     /// An instantiation supplies exactly as many arguments as its head declares parameters, and
@@ -398,16 +408,16 @@ module TestSharedTypeGraphResolution =
         let object = topLevel fixture "System" "Object"
         let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
 
-        for subject in
+        for subject, expected in
             [
-                genericInstantiation list [ int32 ; int32 ]
-                genericInstantiation dictionary [ int32 ]
-                genericInstantiation object [ int32 ]
+                genericInstantiation list [ int32 ; int32 ], TypeLoadRefusal.WrongArity (identityOf list, 1, 2)
+                genericInstantiation dictionary [ int32 ], TypeLoadRefusal.WrongArity (identityOf dictionary, 2, 1)
+                genericInstantiation object [ int32 ], TypeLoadRefusal.WrongArity (identityOf object, 0, 1)
             ] do
             for environment in environments do
                 tryResolveToTypeDefn fixture subject environment []
-                |> unmodelledDiagnostic
-                |> shouldContainText "generic parameter"
+                |> refusal
+                |> shouldEqual expected
 
         for environment in environments do
             tryResolveToTypeDefn fixture (genericInstantiation int32 [ int32 ]) environment []
@@ -536,8 +546,7 @@ module TestSharedTypeGraphResolution =
         try
             match tryResolveToTypeDefn fixture ty typeArgs methodArgs with
             | Ok resolved -> Outcome.Resolved resolved
-            | Error (TypeBindingFailure.Unmodelled unmodelled) when unmodelled.Diagnostic.Contains bareArgumentMarker ->
-                Outcome.BareArgument
+            | Error (TypeBindingFailure.Refused (TypeLoadRefusal.UninstantiatedDefinition _)) -> Outcome.BareArgument
             | Error failure -> failwith $"expected %O{ty} to resolve, but: %s{TypeBindingFailure.describe failure}"
         with e when e.Message.Contains cyclicMarker ->
             Outcome.Cyclic
