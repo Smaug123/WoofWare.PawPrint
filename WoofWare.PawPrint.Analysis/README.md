@@ -464,6 +464,10 @@ These checks are exact where the instantiation is closed, but some are left open
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
   it reaches a later part that misses, it raises that check's `TypeLoadException`, where the
   analysis reports the miss.
+  Across one instruction it keeps CoreCLR's order where it checks: a method specification's
+  arguments load before its method is bound, a member reference's parent before its member is
+  looked up, and a method's instantiation is checked before its signature loads; the first that
+  fails is what the instruction raises.
 - **A generic definition spelled bare:** this is its typical instantiation, which CoreCLR checks
   against its own type parameters; the analysis does not check it.
 - **Run-time lookups:** where shared code looks a type up as it runs, as `ldtoken` does, a violation

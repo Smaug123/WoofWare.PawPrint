@@ -379,6 +379,10 @@ type internal InstanceCheck =
     /// A method specification of this assembly the JIT instantiates the method of: its arguments
     /// must satisfy the method's constraints.
     | Instantiates of spelledIn : string * MethodSpecificationHandle
+    /// The parts of a type spelled in this assembly over a member's type variables that mention none
+    /// of them (`closedPartsFailure`), which are the same in every instantiation, where the JIT
+    /// checks them only once it has instantiated the method a specification names.
+    | ClosedParts of spelledIn : string * TypeDefn
 
 /// How the JIT comes to make a constraint check that only an instance decides.
 [<RequireQualifiedAccess>]
@@ -3951,13 +3955,21 @@ module EscapeAnalysis =
             state, TokenReferent.Field (assembly, handle), unlessOwnerFails [], ownerChecks
         | MetadataToken.MethodSpecification handle ->
             let spec = assembly.MethodSpecs.[handle]
-            let state, _, failures, checks = bindToken state assembly spec.Method
             // The specification, not the method it instantiates, says how the callee is instantiated.
             let state, target = callTarget state assembly token
 
+            // CoreCLR loads a specification's arguments before it binds the method it instantiates
+            // (`MemberLoader::GetMethodDescFromMethodSpec`), so where one fails, nothing of the
+            // method is bound.
             let state, argumentsFailure, argumentChecks =
                 firstJitFullLoadFailure state assembly spec.Signature
 
+            match argumentsFailure with
+            | Some failure when failure <> BindFailure.UndecidedConstraint ->
+                state, TokenReferent.Method target, raisesOf argumentsFailure, argumentChecks
+            | _ ->
+
+            let state, _, failures, checks = bindToken state assembly spec.Method
             let failures = raisesOf argumentsFailure @ failures
 
             // Once the method and its arguments load, CoreCLR instantiates it, which an instance
@@ -4349,8 +4361,18 @@ module EscapeAnalysis =
                 match token with
                 | _ when overBodyVariables -> fullLoadConstraints state assembly loaded
                 | _ when mentionsTypeVariable loaded ->
-                    let state, failure = closedPartsFailure state assembly loaded
-                    state, failure, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
+                    match token with
+                    // After the method's instantiation, as below.
+                    | MetadataToken.MethodSpecification _ ->
+                        state,
+                        None,
+                        [
+                            InstanceCheck.ClosedParts (assembly.DefinitionFullName, loaded)
+                            InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token)
+                        ]
+                    | _ ->
+                        let state, failure = closedPartsFailure state assembly loaded
+                        state, failure, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
                 // CoreCLR instantiates the method a specification names, checking its constraints,
                 // before it loads the signature, so where an instance makes that check, it makes this
                 // one after it.
@@ -9316,6 +9338,8 @@ module EscapeAnalysis =
                 | None -> state, Some BindFailure.UndecidedConstraint
                 | Some (memberTypeArguments, memberMethodArguments) ->
                     loadInFull state spelledIn memberTypeArguments memberMethodArguments spelling
+            | InstanceCheck.ClosedParts (spelledIn, spelling) ->
+                closedPartsFailure state (assemblyOf state spelledIn) spelling
             | InstanceCheck.Instantiates (spelledIn, handle) ->
                 let spelledAssembly = assemblyOf state spelledIn
                 let token = MetadataToken.MethodSpecification handle
@@ -9475,6 +9499,8 @@ module EscapeAnalysis =
                                     (scopeOf assembly method)
                                     (Some method.RequiredDeclaringType.Identity)
                                     shape
+                    // The same in every instantiation.
+                    | InstanceCheck.ClosedParts _ -> false, (fun state -> state, false)
                     | InstanceCheck.Instantiates (spelledIn, handle) ->
                         spelledArguments (assemblyOf state spelledIn) (MetadataToken.MethodSpecification handle)
                         |> List.exists mentionsTypeVariable,
