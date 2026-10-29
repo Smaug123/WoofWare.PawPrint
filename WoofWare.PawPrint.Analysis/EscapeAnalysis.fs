@@ -677,7 +677,7 @@ type internal BindFailure =
     /// program's resolve handlers throws or supplies one (`Opacity.UnresolvedAssembly`).
     | AssemblyUnavailable
     /// An instantiation the load reaches has an argument CoreCLR admits in no instantiation
-    /// (`ConstraintSatisfaction.malformedArgument`): `TypeLoadException`, made by its
+    /// (`AllConcreteTypes.malformedArgument`): `TypeLoadException`, made by its
     /// `(string, string, string, int)` constructor, as `ClassLoader::CreateTypeHandleForTypeKey`
     /// throws it.
     | MalformedTypeInstantiation
@@ -2484,6 +2484,17 @@ module EscapeAnalysis =
         | TypeBindingFailure.AssemblyUnavailable _ -> BindFailure.AssemblyUnavailable
         | TypeBindingFailure.TypeAbsent _
         | TypeBindingFailure.BaseTypeAbsent _ -> BindFailure.TypeAbsent
+        // .NET 11 admits a `TypedReference` argument where .NET 10 rejects it (measured of a
+        // method's, in shared code, for a parameter allowing a byref-like argument).
+        | TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation (_, _, MalformedArgument.TypedReference)) ->
+            BindFailure.UndecidedConstraint
+        | TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation _) -> BindFailure.MalformedTypeInstantiation
+        | TypeBindingFailure.Refused refusal ->
+            failwith
+                $"A type the analysis instantiates is one CoreCLR refuses to load, which the analysis does not model: %s{TypeLoadRefusal.describe refusal}"
+        | TypeBindingFailure.MethodImplDeclarationAbsent miss ->
+            failwith
+                $"A type the analysis instantiates has a MethodImpl declaring an override of %s{miss.Description}, which names no method: CoreCLR raises TypeLoadException loading that type, which the analysis does not model"
         | TypeBindingFailure.Unmodelled unmodelled -> failwith unmodelled.Diagnostic
 
     /// What CoreCLR raises for a verdict on an instantiation's constraints: for a method's,
@@ -2763,7 +2774,7 @@ module EscapeAnalysis =
             let self (state : EscapeAnalysisState, visited) =
                 let arguments = List.ofSeq concrete.Generics
 
-                match ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem arguments with
+                match AllConcreteTypes.malformedArgument state.BaseTypes state.TypeSystem.ConcreteTypes arguments with
                 // .NET 11 admits a `TypedReference` argument where .NET 10 rejects it (measured of a
                 // method's, in shared code, for a parameter allowing a byref-like argument).
                 | Some (_, MalformedArgument.TypedReference) -> (state, visited), Some BindFailure.UndecidedConstraint
@@ -3073,7 +3084,7 @@ module EscapeAnalysis =
             let calleeAssembly, calleeMethod = methodOf state callee
 
             let malformed =
-                ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments
+                AllConcreteTypes.malformedArgument state.BaseTypes state.TypeSystem.ConcreteTypes methodArguments
 
             if calleeMethod.Generics.Length <> methodArguments.Length then
                 state, Some BindFailure.MalformedMethodInstantiation
