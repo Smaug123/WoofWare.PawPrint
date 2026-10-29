@@ -81,7 +81,8 @@ module TestConcretePrimitivePattern =
         let lookalike =
             ConcreteType.makeFromIdentity guestIdentity ti.Namespace ti.Name ImmutableArray.Empty
 
-        let handle, concreteTypes = AllConcreteTypes.add lookalike baseConcreteTypes
+        let handle, concreteTypes =
+            AllConcreteTypes.addNonGeneric lookalike baseConcreteTypes
 
         match handle with
         | ConcretePrimitive concreteTypes matched ->

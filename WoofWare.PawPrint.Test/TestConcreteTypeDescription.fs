@@ -48,7 +48,10 @@ module TestConcreteTypeDescription =
         : ConcreteTypeHandle * AllConcreteTypes
         =
         ConcreteType.makeFromIdentity ti.Identity ti.Namespace ti.Name (ImmutableArray.CreateRange args)
-        |> fun ct -> AllConcreteTypes.add ct concreteTypes
+        |> fun ct -> AllConcreteTypes.add bct ct concreteTypes
+        |> function
+            | Ok added -> added
+            | Error refusal -> failwith (TypeLoadRefusal.describe refusal)
 
     /// The nested type `leaf` declared inside the corelib type named `parent`. A nested type's own
     /// `Namespace` is empty, so `typeDefNamed` cannot find one.

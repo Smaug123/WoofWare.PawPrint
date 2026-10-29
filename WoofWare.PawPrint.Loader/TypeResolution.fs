@@ -114,6 +114,8 @@ type TypeBindingFailure =
     | MethodImplDeclarationAbsent of MethodImplDeclarationMiss
     /// The way reached a shape PawPrint does not implement binding.
     | Unmodelled of UnmodelledBinding
+    /// The way reached a type CoreCLR's class loader refuses to load, whatever kind of type it is.
+    | Refused of TypeLoadRefusal
 
 /// Functions on <see cref="TypeBindingFailure" />.
 [<RequireQualifiedAccess>]
@@ -141,6 +143,7 @@ module TypeBindingFailure =
         | TypeBindingFailure.MethodImplDeclarationAbsent miss ->
             $"%s{miss.Description}, the declaration of a MethodImpl, binds to no method, so CoreCLR refuses to load the type the MethodImpl belongs to; that is not modelled"
         | TypeBindingFailure.Unmodelled unmodelled -> unmodelled.Diagnostic
+        | TypeBindingFailure.Refused refusal -> TypeLoadRefusal.describe refusal
 
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
 /// Operates on the loaded-assemblies dictionary directly, without requiring IlMachineState.
@@ -453,7 +456,8 @@ module TypeResolution =
                 miss
         | TypeBindingFailure.AssemblyUnavailable _
         | TypeBindingFailure.MethodImplDeclarationAbsent _
-        | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
+        | TypeBindingFailure.Unmodelled _
+        | TypeBindingFailure.Refused _ -> TypeBindingFailure.describe failure
 
     /// The type `target`, a reference of `referencedInAssembly`, names, its base chain primed.
     let rec internal resolveTypeFromRef
@@ -502,7 +506,8 @@ module TypeResolution =
         | TypeBindingFailure.AssemblyUnavailable _
         | TypeBindingFailure.BaseTypeAbsent _
         | TypeBindingFailure.MethodImplDeclarationAbsent _
-        | TypeBindingFailure.Unmodelled _ -> TypeBindingFailure.describe failure
+        | TypeBindingFailure.Unmodelled _
+        | TypeBindingFailure.Refused _ -> TypeBindingFailure.describe failure
 
     /// <summary>
     /// Resolve a TypeRef to the identity of the TypeDef it names, following AssemblyRefs and type

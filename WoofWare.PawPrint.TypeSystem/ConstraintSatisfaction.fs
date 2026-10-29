@@ -43,18 +43,9 @@ type ConstraintVerdict =
     /// later arguments are checked in turn.
     | Undecided of parameter : int * required : ConcreteTypeHandle
 
-/// An argument CoreCLR does not admit in any instantiation (`Generics::CheckInstantiation`,
-/// generics.cpp).
-[<RequireQualifiedAccess>]
-type MalformedArgument =
-    | Byref
-    | TypedReference
-    | Void
-    | Pointer
-    | FunctionPointer
-
 /// Whether a closed instantiation of a generic type or method is one CoreCLR admits: well formed
-/// (`malformedArgument`), and satisfying its type parameters' constraints (`satisfiesClosed`).
+/// (`AllConcreteTypes.malformedArgument`, which `AllConcreteTypes.add` applies to every type it
+/// interns), and satisfying its type parameters' constraints (`satisfiesClosed`).
 ///
 /// CoreCLR checks a type's constraints as it completes the instantiation's load to `CLASS_LOADED`
 /// (`SatisfiesClassConstraints`, from `MethodTable::DoFullyLoad`), raising `TypeLoadException`; and a
@@ -67,33 +58,6 @@ type MalformedArgument =
 /// behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
 [<RequireQualifiedAccess>]
 module ConstraintSatisfaction =
-
-    /// The first argument, by index, that CoreCLR admits in no instantiation, and why: a byref,
-    /// `TypedReference`, `void`, a pointer or a function pointer. CoreCLR stops at the first type
-    /// variable among the arguments and checks none after it; a closed argument is never one.
-    let malformedArgument
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : TypeSystemState)
-        (arguments : ConcreteTypeHandle list)
-        : (int * MalformedArgument) option
-        =
-        arguments
-        |> List.indexed
-        |> List.tryPick (fun (index, argument) ->
-            match argument with
-            | ConcreteTypeHandle.Byref _ -> Some (index, MalformedArgument.Byref)
-            | ConcreteTypeHandle.Pointer _ -> Some (index, MalformedArgument.Pointer)
-            | ConcreteTypeHandle.FunctionPointer _ -> Some (index, MalformedArgument.FunctionPointer)
-            | ConcreteTypeHandle.OneDimArrayZero _
-            | ConcreteTypeHandle.Array _ -> None
-            | ConcreteTypeHandle.Concrete _ ->
-                match TypeSystemState.tryGetConcreteTypeInfo state argument with
-                | Some (concrete, _) when concrete.Identity = baseClassTypes.TypedReference.Identity ->
-                    Some (index, MalformedArgument.TypedReference)
-                | Some (concrete, _) when concrete.Identity = baseClassTypes.Void.Identity ->
-                    Some (index, MalformedArgument.Void)
-                | _ -> None
-        )
 
     /// Whether a nominal handle names a value type, and whether an instantiation of `Nullable`.
     let private valueTypeShape

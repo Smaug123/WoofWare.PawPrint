@@ -101,7 +101,7 @@ public static class Entry
 
         state, method
 
-    /// Concretize a class of corelib by name. The prepared guest has only concretized what its own
+    /// Concretize a type of corelib by name. The prepared guest has only concretized what its own
     /// startup touched, so nothing here may assume a handle already exists.
     let private concretizeCorelibClass
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -120,7 +120,7 @@ public static class Entry
             baseClassTypes.Corelib.DefinitionFullName
             ImmutableArray.Empty
             ImmutableArray.Empty
-            (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+            (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Unknown))
 
     /// Allocate an instance of a corelib class with every field zeroed, as `newobj` does before
     /// running a constructor. No constructor is run: these tests are about what the QCall writes,

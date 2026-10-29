@@ -107,12 +107,15 @@ module TestTypeSystemBindingFailure =
         concretize f (spelled f f.Shapes.ModuleScoped)
         |> unmodelledSaying "ModuleRef type resolution is not yet supported for type N.Inner"
 
+    let private refusedAs (expected : TypeLoadRefusal -> bool) (result : Result<'a, TypeBindingFailure>) : unit =
+        match result with
+        | Error (TypeBindingFailure.Refused refusal) when expected refusal -> ()
+        | other -> failwith $"expected a particular refusal, got %A{other}"
+
     [<Test>]
     let ``shapes concretisation does not implement are unmodelled`` () : unit =
         let f = UnmodelledImage.fixture ()
         let list = spelled f f.Shapes.List
-
-        concretize f list |> unmodelledSaying "open generic type"
 
         concretize f genericFunctionPointer
         |> unmodelledSaying "GENERIC calling convention"
@@ -135,19 +138,35 @@ module TestTypeSystemBindingFailure =
             | _, Ok (_, info) -> info.Identity
             | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
-        concretize f (TypeDefn.FromDefinition (listDefinition, SignatureTypeKind.Class))
-        |> unmodelledSaying "open generic type"
-
         concretize f (TypeDefn.GenericInstantiation (int32, ImmutableArray.Create int32))
         |> unmodelledSaying "Generic instantiation of"
 
-        // A non-generic definition given arguments is the wrong arity too.
-        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Create int32))
-        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 1 argument(s)"
-
         // No signature can spell an instantiation with no arguments, even of a non-generic definition.
         concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Empty))
-        |> unmodelledSaying "declares 0 generic parameter(s), but an instantiation names 0 argument(s)"
+        |> unmodelledSaying "names no arguments"
+
+        // A generic definition named bare is refused, by reference and by definition alike.
+        concretize f list
+        |> refusedAs (
+            function
+            | TypeLoadRefusal.UninstantiatedDefinition definition -> definition = listDefinition
+            | _ -> false
+        )
+
+        concretize f (TypeDefn.FromDefinition (listDefinition, SignatureTypeKind.Class))
+        |> refusedAs (
+            function
+            | TypeLoadRefusal.UninstantiatedDefinition definition -> definition = listDefinition
+            | _ -> false
+        )
+
+        // A non-generic definition given arguments is the wrong arity too.
+        concretize f (TypeDefn.GenericInstantiation (spelled f f.Shapes.Object, ImmutableArray.Create int32))
+        |> refusedAs (
+            function
+            | TypeLoadRefusal.WrongArity (_, 0, 1) -> true
+            | _ -> false
+        )
 
     [<Test>]
     let ``comparing signatures fails where a type it must bind does not`` () : unit =
@@ -588,9 +607,42 @@ module TestTypeSystemBindingFailure =
             )
             parameter
 
+    /// Whether `failure` is how the Loader reports `spelling` out of an environment of `size`: as
+    /// unmodelled, naming the parameter.
+    let private loaderOutOfRange (spelling : ParameterSpelling) (size : int) (failure : TypeBindingFailure) : bool =
+        let name =
+            if spelling.IsMethod then
+                $"!!%d{spelling.Index}"
+            else
+                $"!%d{spelling.Index}"
+
+        match failure with
+        | TypeBindingFailure.Unmodelled unmodelled ->
+            unmodelled.Diagnostic.Contains
+                $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
+        | _ -> false
+
+    /// Whether `failure` is how concretisation reports `spelling` out of an environment of `size`: as
+    /// CoreCLR's refusal of the signature.
+    let private concretisationOutOfRange
+        (spelling : ParameterSpelling)
+        (size : int)
+        (failure : TypeBindingFailure)
+        : bool
+        =
+        let expected =
+            if spelling.IsMethod then
+                TypeLoadRefusal.MethodParameterOutOfScope (spelling.Index, size)
+            else
+                TypeLoadRefusal.TypeParameterOutOfScope (spelling.Index, size)
+
+        failure = TypeBindingFailure.Refused expected
+
     /// Classify `result` as binding or out of range, failing unless that is what an environment of
-    /// `typeArgs` and `methodArgs` arguments makes of `spelling`.
+    /// `typeArgs` and `methodArgs` arguments makes of `spelling`; `outOfRange` says how the side
+    /// under test reports a parameter out of range.
     let private checkInRange
+        (outOfRange : ParameterSpelling -> int -> TypeBindingFailure -> bool)
         (spelling : ParameterSpelling)
         (typeArgs : int)
         (methodArgs : int)
@@ -601,17 +653,7 @@ module TestTypeSystemBindingFailure =
 
         match result with
         | Ok _ when spelling.Index < size -> InRange.Binds
-        | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
-            let name =
-                if spelling.IsMethod then
-                    $"!!%d{spelling.Index}"
-                else
-                    $"!%d{spelling.Index}"
-
-            unmodelled.Diagnostic
-            |> shouldContainText $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
-
-            InRange.OutOfRange
+        | Error failure when spelling.Index >= size && outOfRange spelling size failure -> InRange.OutOfRange
         | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
 
     [<Test>]
@@ -629,7 +671,7 @@ module TestTypeSystemBindingFailure =
                 f.Analysed
                 f.Assemblies
             |> snd
-            |> checkInRange spelling typeArgs methodArgs
+            |> checkInRange loaderOutOfRange spelling typeArgs methodArgs
             |> cover
 
             true
@@ -669,22 +711,20 @@ module TestTypeSystemBindingFailure =
             |> fst
 
     [<Test>]
-    let ``concretising a TypeSpec's generic parameter outside its environment is unmodelled`` () : unit =
+    let ``concretising a TypeSpec's generic parameter outside its environment is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
 
-        for handle, parameter in
+        for handle, parameter, refusal in
             [
-                f.Shapes.TypeParameter, "!0"
-                f.Shapes.ListOfTypeParameter, "!0"
-                f.Shapes.MethodParameter, "!!0"
-                f.Shapes.ListOfMethodParameter, "!!0"
+                f.Shapes.TypeParameter, "!0", TypeLoadRefusal.TypeParameterOutOfScope (0, 0)
+                f.Shapes.ListOfTypeParameter, "!0", TypeLoadRefusal.TypeParameterOutOfScope (0, 0)
+                f.Shapes.MethodParameter, "!!0", TypeLoadRefusal.MethodParameterOutOfScope (0, 0)
+                f.Shapes.ListOfMethodParameter, "!!0", TypeLoadRefusal.MethodParameterOutOfScope (0, 0)
             ] do
             let signature = f.Analysed.TypeSpecs.[handle].Signature
 
             concretizeIn f 0 0 signature
-            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
-
-            concretizeIn f 0 0 signature |> unmodelledSaying "BadImageFormatException"
+            |> shouldEqual (Error (TypeBindingFailure.Refused refusal))
 
             match concretizeIn f 1 1 signature with
             | Ok _ -> ()
@@ -697,7 +737,7 @@ module TestTypeSystemBindingFailure =
 
         let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
             concretizeIn f typeArgs methodArgs (spellParameter f spelling)
-            |> checkInRange spelling typeArgs methodArgs
+            |> checkInRange concretisationOutOfRange spelling typeArgs methodArgs
             |> cover
 
             true
@@ -727,6 +767,9 @@ module TestTypeSystemBindingFailure =
         | Absent
         | Unavailable
         | Unmodelled
+        | RefusedBare
+        | RefusedArity
+        | RefusedArgument
 
     /// A leaf of a generated spelling: what it is, and how it fails to concretise if it does.
     type private Leaf =
@@ -772,7 +815,7 @@ module TestTypeSystemBindingFailure =
             {
                 // `List`1` named without an instantiation.
                 Spelling = fun f -> spelled f f.Shapes.List
-                Fails = Some Expected.Unmodelled
+                Fails = Some Expected.RefusedBare
             }
             {
                 Spelling = fun _ -> genericFunctionPointer
@@ -817,11 +860,25 @@ module TestTypeSystemBindingFailure =
             (returns |> Option.exists carriesModifier)
             || (parameters |> List.exists carriesModifier)
 
+    /// Whether an argument concretises to a byref, pointer or function pointer, which no
+    /// instantiation may have.
+    let rec private isMalformedArgument (spelling : Spelling) : bool =
+        match spelling with
+        | Spelling.Byref _
+        | Spelling.Pointer _
+        | Spelling.FunctionPointer _ -> true
+        | Spelling.Pinned element -> isMalformedArgument element
+        | Spelling.Leaf _
+        | Spelling.Array _
+        | Spelling.Vector _
+        | Spelling.Modified _
+        | Spelling.ListOf _ -> false
+
     /// The reference implementation: the first part of the spelling, in the order a runtime type is
     /// built from it, that does not bind. An instantiation is refused outright where an argument
-    /// carries a custom modifier, before any argument is bound; otherwise its arguments come first,
-    /// in order, and then the generic definition, which here always binds but refuses any number of
-    /// arguments other than its one generic parameter.
+    /// carries a custom modifier, before any argument is bound; otherwise the generic definition,
+    /// which here always binds and is spelled as the class it is, comes first, then its arguments
+    /// in order, then the arity (its one generic parameter), then the kinds of the arguments.
     let rec private expected (spelling : Spelling) : Expected option =
         let firstOf (parts : Spelling list) : Expected option = parts |> List.tryPick expected
 
@@ -839,7 +896,9 @@ module TestTypeSystemBindingFailure =
             else
                 match firstOf arguments with
                 | Some failure -> Some failure
-                | None when arguments.Length <> 1 -> Some Expected.Unmodelled
+                | None when arguments.IsEmpty -> Some Expected.Unmodelled
+                | None when arguments.Length <> 1 -> Some Expected.RefusedArity
+                | None when arguments |> List.exists isMalformedArgument -> Some Expected.RefusedArgument
                 | None -> None
         | Spelling.FunctionPointer (returns, parameters) -> firstOf (Option.toList returns @ parameters)
 
@@ -882,6 +941,27 @@ module TestTypeSystemBindingFailure =
 
         Gen.sized (fun size -> go (min size 16))
 
+    /// `genSpelling`, now and then an instantiation at an argument no instantiation may have, which
+    /// is refused only once everything else binds, and which arbitrary spellings rarely reach.
+    let private genSpellingWithMalformedArguments : Gen<Spelling> =
+        let malformedArgument =
+            leaves
+            |> List.filter (fun leaf -> leaf.Fails.IsNone)
+            |> Gen.elements
+            |> Gen.map Spelling.Leaf
+            |> Gen.bind (fun leaf ->
+                Gen.elements
+                    [
+                        Spelling.Byref leaf
+                        Spelling.Pointer leaf
+                        Spelling.Pinned (Spelling.Pointer leaf)
+                        Spelling.FunctionPointer (Some leaf, [])
+                    ]
+            )
+            |> Gen.map (fun argument -> Spelling.ListOf [ argument ])
+
+        Gen.frequency [ 12, genSpelling ; 1, malformedArgument ]
+
     [<RequireQualifiedAccess>]
     type private Shown =
         | Binds
@@ -890,6 +970,8 @@ module TestTypeSystemBindingFailure =
         | FailsUnmodelled
         | RefusedForAModifier
         | RefusedForArity
+        | RefusedBare
+        | RefusedArgument
 
     [<Test>]
     let ``concretisation fails exactly where the first part that does not bind is`` () : unit =
@@ -907,16 +989,22 @@ module TestTypeSystemBindingFailure =
                 if unmodelled.Diagnostic.Contains "custom modifier" then
                     cover Shown.RefusedForAModifier
 
-                if unmodelled.Diagnostic.Contains "declares 1 generic parameter(s)" then
-                    cover Shown.RefusedForArity
-
                 cover Shown.FailsUnmodelled
+            | Some Expected.RefusedArity, Error (TypeBindingFailure.Refused (TypeLoadRefusal.WrongArity (_, 1, _))) ->
+                cover Shown.RefusedForArity
+            | Some Expected.RefusedBare, Error (TypeBindingFailure.Refused (TypeLoadRefusal.UninstantiatedDefinition _)) ->
+                cover Shown.RefusedBare
+            | Some Expected.RefusedArgument, Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation _)) ->
+                cover Shown.RefusedArgument
             | expected, actual -> failwith $"expected %A{expected}, got %A{actual}"
 
             true
 
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1200)
+                (Arb.fromGen genSpellingWithMalformedArguments)
+                property
 
         coverage.Count Shown.Binds |> shouldBeGreaterThan 100
         coverage.Count Shown.FailsAbsent |> shouldBeGreaterThan 100
@@ -924,6 +1012,8 @@ module TestTypeSystemBindingFailure =
         coverage.Count Shown.FailsUnmodelled |> shouldBeGreaterThan 100
         coverage.Count Shown.RefusedForAModifier |> shouldBeGreaterThan 20
         coverage.Count Shown.RefusedForArity |> shouldBeGreaterThan 20
+        coverage.Count Shown.RefusedBare |> shouldBeGreaterThan 20
+        coverage.Count Shown.RefusedArgument |> shouldBeGreaterThan 20
 
     [<RequireQualifiedAccess>]
     type private Resolved =
@@ -1034,6 +1124,7 @@ module TestTypeSystemBindingFailure =
         | Absent
         | Unavailable
         | Unmodelled
+        | Refused
 
     /// Concretisation loads an array's element type before the array, as CoreCLR does; the Loader,
     /// which answers only with `System.Array`, must still fail where the element does.
@@ -1048,6 +1139,7 @@ module TestTypeSystemBindingFailure =
             | Error (TypeBindingFailure.AssemblyUnavailable _) -> ArrayAgreement.Unavailable
             | Error (TypeBindingFailure.BaseTypeAbsent _)
             | Error (TypeBindingFailure.Unmodelled _) -> ArrayAgreement.Unmodelled
+            | Error (TypeBindingFailure.Refused _) -> ArrayAgreement.Refused
             | Error (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
                 failwith
                     $"Neither concretisation nor the Loader binds a MethodImpl's declaration, but one reported %O{miss}"
@@ -1077,9 +1169,12 @@ module TestTypeSystemBindingFailure =
                 |> kind
 
             match concretised, loaded with
-            // Each refuses shapes the other models, so an unmodelled answer constrains nothing.
+            // Each refuses shapes the other models, so an unmodelled answer constrains nothing; nor
+            // does a type CoreCLR refuses to load, whose rules the Loader does not check.
             | ArrayAgreement.Unmodelled, _
             | _, ArrayAgreement.Unmodelled -> cover ArrayAgreement.Unmodelled
+            | ArrayAgreement.Refused, _
+            | _, ArrayAgreement.Refused -> cover ArrayAgreement.Refused
             | concretised, loaded when concretised = loaded -> cover concretised
             | concretised, loaded ->
                 failwith $"concretisation says %A{concretised} and the Loader %A{loaded} for %A{ty}"

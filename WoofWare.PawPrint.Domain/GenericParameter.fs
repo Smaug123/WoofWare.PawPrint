@@ -76,9 +76,10 @@ module GenericParameter =
     /// e.g. <c>where T : IEnumerable&lt;int&gt;</c> becomes a
     /// <see cref="TypeDefn.GenericInstantiation"/>. TypeDef and TypeRef targets
     /// are top-level entity handles that are not embedded in a signature blob, so
-    /// we construct the TypeDefn directly. Constraint targets are restricted by
-    /// the metadata model (ECMA-335 §II.10.1.7) to non-final classes and
-    /// interfaces, so SignatureTypeKind.Class is always the correct kind.
+    /// we construct the TypeDefn directly, with the kind <c>Unknown</c>: a token
+    /// spells no CLASS/VALUETYPE, and CoreCLR loads a constraint naming a value
+    /// type (<c>System.Int32</c>, say) without complaint, though ECMA-335
+    /// §II.10.1.7 restricts constraints to non-final classes and interfaces.
     let private decodeConstraintType
         (assemblyName : AssemblyName)
         (metadata : MetadataReader)
@@ -91,12 +92,12 @@ module GenericParameter =
 
             TypeDefn.FromDefinition (
                 ResolvedTypeIdentity.ofTypeDefinition assemblyName typeDefHandle,
-                SignatureTypeKind.Class
+                SignatureTypeKind.Unknown
             )
         | HandleKind.TypeReference ->
             let typeRefHandle = TypeReferenceHandle.op_Explicit handle
             let typeRef = TypeRef.make metadata typeRefHandle
-            TypeDefn.FromReference (typeRef, SignatureTypeKind.Class)
+            TypeDefn.FromReference (typeRef, SignatureTypeKind.Unknown)
         | HandleKind.TypeSpecification ->
             let typeSpecHandle = TypeSpecificationHandle.op_Explicit handle
             let typeSpec = metadata.GetTypeSpecification typeSpecHandle
