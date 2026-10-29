@@ -784,7 +784,7 @@ module TypeResolution =
     /// <summary>
     /// A generic definition named bare by <paramref name="ty" />, which resolved to
     /// <paramref name="resolved" />, as CoreCLR refuses one where a type is required: as an
-    /// instantiation's argument or an array's element.
+    /// instantiation's argument, an array's element, or a whole signature.
     /// </summary>
     /// <remarks>
     /// CoreCLR's <c>SigPointer::GetTypeHandleThrowing</c> loads such a type with
@@ -1207,8 +1207,9 @@ module TypeResolution =
                 match ty with
                 // A type named directly has its spelling checked once loaded, except in an image whose
                 // table stream is version 1.0. A generic definition named bare is not checked: where
-                // a type is required it is refused before its spelling is read (see
-                // `refuseBareDefinition`), and elsewhere it is the open definition a token names.
+                // a type is required, a signature among them, it is refused before its spelling is
+                // read (see `refuseBareDefinition`), and elsewhere it is the open definition a token
+                // names.
                 | TypeDefn.FromDefinition (_, spelled)
                 | TypeDefn.FromReference (_, spelled) when
                     resolvedIn.TypeDefs.[resolved.TypeDefHandle].Generics.IsEmpty
@@ -1424,8 +1425,9 @@ module TypeResolution =
     /// <c>signatureTypeKind</c>, <c>typeInfoToTypeDefn</c>) over it.
     /// </para>
     /// <para>
-    /// A bare <c>FromDefinition</c> or <c>FromReference</c> names the definition itself, so a
-    /// generic one comes back open, at its own parameters, whatever the environment.
+    /// A bare <c>FromDefinition</c> or <c>FromReference</c> names the definition itself, as a token
+    /// does, so a generic one comes back open, at its own parameters, whatever the environment. A
+    /// signature cannot name a type that way; <c>resolveTypeFromSpec</c> refuses one that does.
     /// </para>
     /// <para>
     /// A type CoreCLR's class loader refuses is <c>TypeBindingFailure.Refused</c>, at the first part
@@ -1484,7 +1486,9 @@ module TypeResolution =
             assemblies
 
     /// <c>resolveTypeFromDefn</c> of the signature of <paramref name="ty" />, a TypeSpec of
-    /// <paramref name="assy" />.
+    /// <paramref name="assy" />, except that a signature naming a generic definition bare is
+    /// <c>TypeLoadRefusal.UninstantiatedDefinition</c>: CoreCLR loads a signature as a type, which
+    /// such a definition is not.
     let resolveTypeFromSpec
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1498,12 +1502,19 @@ module TypeResolution =
         =
         let sign = assy.TypeSpecs.[ty].Signature
 
-        resolveTypeFromDefn
-            loggerFactory
-            dotnetRuntimeDirs
-            baseClassTypes
-            sign
-            typeGenericArgs
-            methodGenericArgs
-            assy
-            assemblies
+        match
+            resolveTypeFromDefn
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                sign
+                typeGenericArgs
+                methodGenericArgs
+                assy
+                assemblies
+        with
+        | assemblies, Error failure -> assemblies, Error failure
+        | assemblies, Ok (resolvedIn, resolved) ->
+            match refuseBareDefinition sign resolvedIn resolved with
+            | Error failure -> assemblies, Error failure
+            | Ok () -> assemblies, Ok (resolvedIn, resolved)
