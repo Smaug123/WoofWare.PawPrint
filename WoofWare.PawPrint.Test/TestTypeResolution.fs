@@ -888,7 +888,7 @@ public class Outer
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
-                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                TypeConcretization.ConcretizationContext.BaseTypes = TypeIdentityTestHelpers.baseClassTypes [ defining ]
             }
 
         let first, ctx =
@@ -937,7 +937,7 @@ public class Y
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
-                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                TypeConcretization.ConcretizationContext.BaseTypes = TypeIdentityTestHelpers.baseClassTypes [ defining ]
             }
 
         let xHandle, ctx =
@@ -997,7 +997,7 @@ public class Outer
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
-                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                TypeConcretization.ConcretizationContext.BaseTypes = TypeIdentityTestHelpers.baseClassTypes [ defining ]
             }
 
         let first, ctx =
@@ -1205,7 +1205,7 @@ public class Outer<T>
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies [ defining ]
-                TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+                TypeConcretization.ConcretizationContext.BaseTypes = TypeIdentityTestHelpers.baseClassTypes [ defining ]
             }
 
         let firstArgumentHandle, ctx =

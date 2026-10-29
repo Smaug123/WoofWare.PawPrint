@@ -97,8 +97,9 @@ public static class Program
             (NativeIntSource.TypeHandlePtr target)
 
     /// A closed non-generic type is `NonGeneric`, with the kind its base chain decides. The kind
-    /// given to concretisation is deliberately `Class` throughout, so an answer that echoed the
-    /// handle's own construction rather than reading the type would be caught on the value types.
+    /// given to concretisation is deliberately `Unknown` throughout, the kind of a type named by its
+    /// definition rather than spelled, so an answer that echoed the handle's own construction
+    /// rather than reading the type would be caught.
     [<Test>]
     let ``a closed non-generic type resolves to its identity and kind`` () : unit =
         let prepared, guest = prepare ()
@@ -121,7 +122,7 @@ public static class Program
 
         for typeInfo, expectedKind in cases do
             let newState, handle =
-                concretise prepared state (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Class))
+                concretise prepared state (TypeDefn.FromDefinition (typeInfo.Identity, SignatureTypeKind.Unknown))
 
             state <- newState
 

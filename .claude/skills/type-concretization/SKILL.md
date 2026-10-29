@@ -1,6 +1,6 @@
 ---
 name: type-concretization
-description: Converting TypeDefn to ConcreteTypeHandle, resolving generics, and debugging type resolution. Use when hitting 'Generic type/method parameter X out of range', or when threading a generic context through the emulated CLR type system.
+description: Converting TypeDefn to ConcreteTypeHandle, resolving generics, and debugging type resolution. Use when concretization refuses a type parameter or method parameter as out of scope ('names the type parameter !n, and its context instantiates k'), when it refuses a type with TypeBindingFailure.Refused, or when threading a generic context through the emulated CLR type system.
 ---
 
 # Type Concretization System
@@ -14,7 +14,10 @@ Type concretization converts abstract type definitions (`TypeDefn`) to concrete 
 ## Key Concepts
 
 ### Generic Parameters
-- **Common error**: "Generic type/method parameter X out of range" probably means you're missing the proper generic context: some caller has passed the wrong list of generics through somewhere.
+- **Common error**: a `TypeLoadRefusal.TypeParameterOutOfScope` or `MethodParameterOutOfScope` ("CoreCLR refuses a signature with BadImageFormatException: it names the type parameter !n, and its context instantiates k") probably means you're missing the proper generic context: some caller has passed the wrong list of generics through somewhere. Guest metadata can name a parameter out of scope, and CoreCLR does refuse that, but a PawPrint caller passing the wrong context is far more common, and the refusal cannot tell the two apart.
+
+### Type-load refusals
+`concretizeType` refuses, as `TypeBindingFailure.Refused`, the types CoreCLR's class loader refuses whatever kind of type they are: an instantiation with a byref, `TypedReference`, `void`, pointer or function-pointer argument; a `CLASS`/`VALUETYPE` spelling the definition does not match; the wrong number of type arguments; a generic definition named bare; and a type variable out of scope. `AllConcreteTypes.add` checks the first as a handle is interned, so it is checked once per instantiation and every `Concrete` handle passes it; the rest are facts about a signature, which a handle does not record, so the walk checks them. A refusal says CoreCLR refuses to load the type, not that it throws where PawPrint concretized it: CoreCLR loads some positions lazily. `TestTypeLoadValidity` checks all of this against the host, and its docstring says how.
 
 ### Assembly Context
 TypeRefs must be resolved in the context of the assembly where they're defined, not where they're used. When resolving a TypeRef, always use the assembly that contains the TypeRef in its metadata.

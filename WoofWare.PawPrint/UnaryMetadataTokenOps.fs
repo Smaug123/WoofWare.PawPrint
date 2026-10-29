@@ -128,9 +128,9 @@ module internal UnaryMetadataTokenOps =
             // instantiation arrives as a MethodSpec *wrapping* this row, which is the only spelling
             // any compiler emits, and which `resolveMethodSpecificationToken` handles.
             //
-            // Refused rather than concretized: `concretizeMethodForExecution` has no method
-            // generics to substitute and would fail deep inside with "Generic method parameter 0",
-            // naming neither the token nor the shape.
+            // Refused here rather than concretized: `concretizeMethodForExecution` has no method
+            // generics to substitute, and concretization would refuse `!!0` as out of scope, which
+            // is CoreCLR's answer to a signature, not to this token, and names neither.
             failwith
                 $"TODO: ldtoken/ldftn of a bare MemberReference to generic method %s{method.Name} names the typical instantiation, which needs open generic RuntimeMethodHandle support; got %O{method}"
         | Choice1Of2 method ->

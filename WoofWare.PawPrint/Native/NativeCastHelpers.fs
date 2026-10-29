@@ -87,7 +87,8 @@ module NativeCastHelpers =
             let ct =
                 ConcreteType.makeFromIdentity typeInfo.Identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
-            let handle, concreteTypes = AllConcreteTypes.add ct state.TypeSystem.ConcreteTypes
+            let handle, concreteTypes =
+                AllConcreteTypes.addNonGeneric ct state.TypeSystem.ConcreteTypes
 
             { state with
                 TypeSystem =

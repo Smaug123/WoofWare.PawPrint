@@ -830,22 +830,9 @@ module ConcreteVirtualDispatch =
                     failwith
                         $"TODO: interface dispatch to synthesised method %s{methodToCall.Name} on %O{methodToCall.RequiredDeclaringType.Name}, which has no MethodDef row to key the dispatch map on"
 
-            let state, targetHandle =
-                match
-                    AllConcreteTypes.findExistingConcreteType
-                        state.ConcreteTypes
-                        methodToCall.RequiredDeclaringType.Identity
-                        methodToCall.DeclaringTypeGenerics
-                with
-                | Some handle -> state, handle
-                | None ->
-                    let handle, newConcreteTypes =
-                        AllConcreteTypes.add methodToCall.RequiredDeclaringType state.ConcreteTypes
-
-                    { state with
-                        ConcreteTypes = newConcreteTypes
-                    },
-                    handle
+            match TypeSystemState.internConcreteType baseClassTypes state methodToCall.RequiredDeclaringType with
+            | state, Error failure -> state, Error failure
+            | state, Ok targetHandle ->
 
             match
                 ConcreteInterfaceDispatch.tryFindImplementationSlot
