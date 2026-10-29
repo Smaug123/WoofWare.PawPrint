@@ -459,15 +459,17 @@ These checks are exact where the instantiation is closed, but some are left open
   instantiation, whose arguments are its own type parameters. Where the method's constraints, or
   a type of its signature the JIT loads, mention type variables, the check is undecided
   (`Opacity.UndecidedConstraint`).
-- **Order within one load:** a load that misses is reported as the miss, which is exact for the
+- **Order of failures:** a load that misses is reported as the miss, which is exact for the
   instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
   one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
   it reaches a later part that misses, it raises that check's `TypeLoadException`, where the
   analysis reports the miss.
-  Across one instruction it keeps CoreCLR's order where it checks: a method specification's
+  Across one instruction it keeps CoreCLR's order among its checks: a method specification's
   arguments load before its method is bound, a member reference's parent before its member is
-  looked up, and a method's instantiation is checked before its signature loads; the first that
-  fails is what the instruction raises.
+  looked up, and a method's instantiation is checked before its signature's constraints; the
+  first check that fails is what the instruction raises. A miss is reported where the load is
+  spelled, though: a signature type that misses is reported even where CoreCLR rejects the
+  method's instantiation first and never loads it.
 - **A generic definition spelled bare:** this is its typical instantiation, which CoreCLR checks
   against its own type parameters; the analysis does not check it.
 - **Run-time lookups:** where shared code looks a type up as it runs, as `ldtoken` does, a violation
