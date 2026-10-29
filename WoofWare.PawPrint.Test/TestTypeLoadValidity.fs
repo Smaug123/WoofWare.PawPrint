@@ -381,17 +381,15 @@ module TestTypeLoadValidity =
         | Error failure -> failwith $"expected a binding or a refusal, got %s{TypeBindingFailure.describe failure}"
 
     /// Whether the Loader's walk answers `signature` with the type it names. It has no `TypeInfo` for
-    /// a pointer, a byref or a function pointer, and it binds a generic definition named bare as the
-    /// open definition, which a token naming one denotes.
+    /// a pointer, a byref or a function pointer.
     let private loaderAnswers (signature : Signature) : bool =
         match signature with
         | Signature.Pointer _
         | Signature.Byref _
         | Signature.FunctionReturning _
-        | Signature.FunctionTaking _
-        | Signature.Nominal (_, Target.Head _) -> false
+        | Signature.FunctionTaking _ -> false
         | Signature.Primitive _
-        | Signature.Nominal (_, Target.Named _)
+        | Signature.Nominal _
         | Signature.Generic _
         | Signature.Vector _
         | Signature.TypeParameter _
@@ -471,8 +469,8 @@ module TestTypeLoadValidity =
                 for signatureSpelled, token in List.zip signatures tokens do
                     let expected = hostOutcome host token typeArgs methodArgs
 
-                    let signature =
-                        dumped.TypeSpecs.[MetadataTokens.TypeSpecificationHandle (token &&& 0xffffff)].Signature
+                    let handle = MetadataTokens.TypeSpecificationHandle (token &&& 0xffffff)
+                    let signature = dumped.TypeSpecs.[handle].Signature
 
                     let next, result =
                         TypeSystemState.concretizeType
@@ -490,14 +488,14 @@ module TestTypeLoadValidity =
                     let loaded =
                         if loaderAnswers signatureSpelled then
                             let next, result =
-                                TypeResolution.resolveTypeFromDefn
+                                TypeResolution.resolveTypeFromSpec
                                     loggerFactory
                                     HostImage.runtimeDirs
                                     bct
-                                    signature
+                                    handle
+                                    dumped
                                     loaderTypeGenerics
                                     loaderMethodGenerics
-                                    dumped
                                     assemblies
 
                             assemblies <- next
@@ -576,6 +574,10 @@ module TestTypeLoadValidity =
             klass (Signature.MethodParameter 0), Outcome.Loads
             klass (Signature.MethodParameter 5), Outcome.BadImageFormat
             Signature.TypeParameter 5, Outcome.BadImageFormat
+            Signature.Nominal (false, Target.Head Head.Klass),
+            Outcome.TypeLoad (Rule.UninstantiatedDefinition, "Klass`1")
+            Signature.Nominal (true, Target.Head Head.Klass),
+            Outcome.TypeLoad (Rule.UninstantiatedDefinition, "Klass`1")
             klass (Signature.Nominal (false, Target.Head Head.Klass)),
             Outcome.TypeLoad (Rule.UninstantiatedDefinition, "Klass`1")
             klass (Signature.Nominal (true, Target.Head Head.Klass)),

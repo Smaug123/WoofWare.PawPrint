@@ -77,6 +77,11 @@ module internal UnmodelledImage =
             ListOfBareList : TypeSpecificationHandle
             /// `List`1<List`1>::Clear()`, whose parent is <c>ListOfBareList</c>.
             ListOfBareListClear : MemberReferenceHandle
+            /// `class System.Collections.Generic.List`1`: a signature that is the generic definition
+            /// alone, with no instantiation.
+            BareList : TypeSpecificationHandle
+            /// `List`1::Clear()`, whose parent is <c>BareList</c>.
+            BareListClear : MemberReferenceHandle
             /// `!0`, the first type parameter of whatever environment reads it.
             TypeParameter : TypeSpecificationHandle
             /// `!!0`, the first method parameter of whatever environment reads it.
@@ -394,6 +399,16 @@ module internal UnmodelledImage =
             BlobEncoder(blob).TypeSpecificationSignature () |> encode
             metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
 
+        let bareList =
+            parameterSpec (fun spec -> spec.Type (TypeReferenceHandle.op_Implicit list, false))
+
+        let bareListClear =
+            metadata.AddMemberReference (
+                TypeSpecificationHandle.op_Implicit bareList,
+                metadata.GetOrAddString "Clear",
+                instanceVoidSignature
+            )
+
         let listOfSpec (encode : SignatureTypeEncoder -> unit) : TypeSpecificationHandle =
             parameterSpec (fun spec ->
                 spec.GenericInstantiation(TypeReferenceHandle.op_Implicit list, 1, false).AddArgument ()
@@ -548,6 +563,8 @@ module internal UnmodelledImage =
             FacadeToString = facadeToString
             ListOfBareList = listOfBareList
             ListOfBareListClear = listOfBareListClear
+            BareList = bareList
+            BareListClear = bareListClear
             TypeParameter = typeParameter
             MethodParameter = methodParameter
             ListOfTypeParameter = listOfTypeParameter
