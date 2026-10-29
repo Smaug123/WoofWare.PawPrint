@@ -10945,21 +10945,49 @@ public static unsafe class Calls
     /// P/Invokes whose `[SuppressGCTransition]`, `[UnmanagedCallConv]` and import differ, each called
     /// in a branch never taken. Where CoreCLR has the JIT suppress the GC transition of a call, the
     /// JIT binds the native library as it compiles the call, which raises `DllNotFoundException`
-    /// for one that is not there; so the host says where it suppresses the transition, which
+    /// for one that is not there; so the real runtime says where it suppresses the transition, which
     /// `UnmanagedCallingConvention.ofPInvoke` must say too, as the GC-transition modifier of the
     /// convention it reads. The attribute's modifier counts wherever CoreCLR reads the attribute,
     /// though it names no base convention, and not where the attribute names a second one, nor
     /// where the import names a convention.
+    ///
+    /// Each caller compiles in a process of its own: CoreCLR 10 leaves the JIT's lock on a caller
+    /// held when that bind raises, so a later method allocated at the caller's address, once its
+    /// context unloads, would never compile on any other thread of the test host.
     [<Test>]
     let ``UnmanagedCallingConvention reads where CoreCLR suppresses a P/Invoke's GC transition`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let client =
             """
+using System;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Client;
+
+public static class Program
+{
+    // Exits 1 where compiling the caller named by the argument binds the missing library, 2 where
+    // the VM refuses its convention before that, and 0 where it compiles and runs.
+    public static int Main(string[] args)
+    {
+        try
+        {
+            typeof(Calls).GetMethod(args[0]).Invoke(null, null);
+            return 0;
+        }
+        catch (TargetInvocationException e) when (e.InnerException is DllNotFoundException)
+        {
+            return 1;
+        }
+        catch (TargetInvocationException e) when (e.InnerException is TypeLoadException)
+        {
+            return 2;
+        }
+    }
+}
 
 public static class Natives
 {
@@ -10988,7 +11016,7 @@ public static class Calls
 """
 
         let image =
-            Roslyn.compileOptimizedAssemblyWithReferences "Client" OutputKind.DynamicallyLinkedLibrary [] [ client ]
+            Roslyn.compileOptimizedAssemblyWithReferences "Client" OutputKind.ConsoleApplication [] [ client ]
 
         let suppress = UnmanagedCallConvModifier.SuppressGcTransition
         let cdecl = UnmanagedCallConvBase.Cdecl
@@ -11006,28 +11034,20 @@ public static class Calls
                 "Plain", UnmanagedConventionRead.Reads (cdecl, Set.empty)
             ]
 
-        // Whether compiling each caller on the host binds the native library.
+        // Whether compiling each caller on the real runtime binds the native library.
         let hostSuppresses : Map<string, bool> =
-            let context =
-                Runtime.Loader.AssemblyLoadContext ("SuppressedTransitions", isCollectible = true)
+            expected
+            |> List.map (fun (name, _) ->
+                let suppressed =
+                    match RealRuntime.executeWithRealRuntime [| name |] image with
+                    | RealRuntimeResult.NormalExit 0
+                    | RealRuntimeResult.NormalExit 2 -> false
+                    | RealRuntimeResult.NormalExit 1 -> true
+                    | other -> failwith $"Compiling %s{name} on the real runtime ends %A{other}"
 
-            try
-                let calls = context.LoadFromStream(new MemoryStream (image)).GetType "Client.Calls"
-
-                expected
-                |> List.map (fun (name, _) ->
-                    let suppressed =
-                        try
-                            calls.GetMethod(name).Invoke ((null : obj), [||]) |> ignore
-                            false
-                        with :? TargetInvocationException as e ->
-                            e.InnerException :? DllNotFoundException
-
-                    name, suppressed
-                )
-                |> Map.ofList
-            finally
-                context.Unload ()
+                name, suppressed
+            )
+            |> Map.ofList
 
         let assembly =
             Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
