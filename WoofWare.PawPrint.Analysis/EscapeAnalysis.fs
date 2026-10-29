@@ -2535,7 +2535,12 @@ module EscapeAnalysis =
         | ConcreteTypeHandle.Array (element, _)
         | ConcreteTypeHandle.Byref element
         | ConcreteTypeHandle.Pointer element -> containsCanon state canon element
-        | ConcreteTypeHandle.FunctionPointer _ -> false
+        // `FnPtrTypeDesc::IsSharedByGenericInstantiations` looks through the signature.
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            (match signature.ReturnType with
+             | MethodReturnType.Returns returned -> containsCanon state canon returned
+             | MethodReturnType.Void -> false)
+            || signature.ParameterTypes |> List.exists (containsCanon state canon)
 
     /// What code shared between instantiations sees of an instance's type argument
     /// (`ClassLoader::CanonicalizeGenericArg`): `System.__Canon` for a reference type, and a value
@@ -3886,7 +3891,7 @@ module EscapeAnalysis =
         // A member reference's parent resolving the reference loads, and reports what fails to bind
         // (`callTarget`, `FieldReferenceResolution`); once it binds, what checking its full load's
         // constraints raises.
-        let parentConstraints (state : EscapeAnalysisState) (handle : MemberReferenceHandle) =
+        let parentLoad (state : EscapeAnalysisState) (handle : MemberReferenceHandle) =
             let spelling =
                 match assembly.Members.[handle].Parent with
                 | MetadataToken.TypeSpecification parent -> Some assembly.TypeSpecs.[parent].Signature
@@ -3897,10 +3902,26 @@ module EscapeAnalysis =
                 | _ -> None
 
             match spelling with
-            | None -> state, [], []
-            | Some spelling ->
-                let state, failure, checks = fullLoadConstraints state assembly spelling
-                state, raisesOf failure, checks
+            | None -> state, None, []
+            | Some spelling -> fullLoadConstraints state assembly spelling
+
+        let parentConstraints (state : EscapeAnalysisState) (handle : MemberReferenceHandle) =
+            let state, failure, checks = parentLoad state handle
+            state, raisesOf failure, checks
+
+        // CoreCLR loads a member reference's parent, checking its constraints, before it looks the
+        // member up: where that fails, the member's absence is not what is raised.
+        let unlessParentFails
+            (state : EscapeAnalysisState)
+            (handle : MemberReferenceHandle)
+            (missing : OutsideBodyFact list)
+            =
+            let state, failure, checks = parentLoad state handle
+
+            match failure with
+            | None -> state, missing, checks
+            | Some BindFailure.UndecidedConstraint -> state, raisesOf failure @ missing, checks
+            | Some _ -> state, raisesOf failure, checks
 
         match token with
         | MetadataToken.MethodDef _ ->
@@ -4009,9 +4030,12 @@ module EscapeAnalysis =
                     | _ -> []
 
                 let state, failures, checks =
-                    match ownerFailure, failures with
-                    | (None | Some BindFailure.UndecidedConstraint), [] ->
+                    match ownerFailure, failures, target with
+                    | (None | Some BindFailure.UndecidedConstraint), [], _ ->
                         let state, failures, checks = parentConstraints state handle
+                        state, failures, ownerChecks @ checks
+                    | (None | Some BindFailure.UndecidedConstraint), _, CallTarget.Missing ->
+                        let state, failures, checks = unlessParentFails state handle failures
                         state, failures, ownerChecks @ checks
                     | _ -> state, failures, ownerChecks
 
@@ -4031,7 +4055,14 @@ module EscapeAnalysis =
                 match target with
                 | FieldReferenceTarget.Missing ->
                     let thrown, made = constructedRaise state "System.MissingFieldException"
-                    state, TokenReferent.Other, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ], []
+
+                    let state, failures, checks =
+                        unlessParentFails
+                            state
+                            handle
+                            [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
+                    state, TokenReferent.Other, failures, checks
                 | FieldReferenceTarget.ParentTypeMissing _ ->
                     state, TokenReferent.Other, raisesOf (Some BindFailure.TypeAbsent), []
                 | FieldReferenceTarget.ParentAssemblyUnavailable _
@@ -9303,8 +9334,14 @@ module EscapeAnalysis =
 
             ((state, none), checks)
             ||> List.fold (fun (state, found) (check, reach) ->
-                let state, failure = checkIn state typeArguments methodArguments check
-                state, add found reach (raisesOf state failure) (definite failure)
+                match reach with
+                // CoreCLR makes no further check binding an instruction once one fails.
+                | CheckReach.Made (Some offset) when found.Unreached.Contains offset -> state, found
+                | CheckReach.Made _
+                | CheckReach.Possible
+                | CheckReach.PossibleWhereInlined ->
+                    let state, failure = checkIn state typeArguments methodArguments check
+                    state, add found reach (raisesOf state failure) (definite failure)
             )
         | Instantiation.Open ->
             ((state, none), checks)
