@@ -255,9 +255,21 @@
           name = "WoofWare.PawPrint";
           src = ./.;
           projectFile = "./WoofWare.PawPrint/WoofWare.PawPrint.fsproj";
-          # Restore/build the whole solution so fetch-deps also captures development-only
-          # dependencies (including BenchmarkDotNet) for the offline devshell.
+          # Restore the whole solution so fetch-deps (which only restores) also captures
+          # development-only dependencies (including BenchmarkDotNet) for the offline devshell.
           testProjectFile = "./WoofWare.PawPrint.slnx";
+          # Build only the packaged project. The hook would also build the solution, passing it
+          # `-p:SelfContained=false`; the solution then builds each library with that global
+          # property while each executable referencing the library builds it without (MSBuild
+          # strips SelfContained from references to RID-agnostic projects), and the two instances
+          # race on the same obj/ directory, so a reader can see a half-written reference assembly.
+          buildPhase = ''
+            buildPackagedProjectOnly() {
+              local -a dotnetTestProjectFiles=()
+              dotnetBuildPhase
+            }
+            buildPackagedProjectOnly
+          '';
           nugetDeps = ./nix/deps.json; # `nix build .#default.fetch-deps && ./result nix/deps.json`
           # CI's `build` job runs this suite on every supported runtime, and running it here as
           # well would cost a CI runner another 10-20 minutes.
