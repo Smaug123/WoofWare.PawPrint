@@ -520,28 +520,238 @@ module TestTypeSystemBindingFailure =
             | Ok _ -> ()
             | Error failure -> failwith $"expected %O{element}[] to bind, got %s{TypeBindingFailure.describe failure}"
 
-        // An array of an instantiation binds exactly where the instantiation does. Substitution
-        // does not yet walk into a function pointer, so an instantiation whose argument contains
-        // one is unmodelled, alone or as an array's element.
-        let listOfFunctionPointers =
+        // An array of an instantiation binds exactly where the instantiation does, through a
+        // function pointer in its argument too.
+        let listOfFunctionPointers (parameter : TypeDefn) =
             TypeDefn.GenericInstantiation (
                 spelled f f.Shapes.List,
                 ImmutableArray.Create (
-                    TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ int32 ]))
+                    TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ parameter ]))
                 )
             )
 
-        resolve listOfFunctionPointers
-        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+        for ty in
+            [
+                listOfFunctionPointers int32
+                TypeDefn.OneDimensionalArrayLowerBoundZero (listOfFunctionPointers int32)
+            ] do
+            match resolve ty with
+            | Ok _ -> ()
+            | Error failure -> failwith $"expected %O{ty} to bind, got %s{TypeBindingFailure.describe failure}"
 
-        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero listOfFunctionPointers)
-        |> unmodelledSaying "resolveTypeFromDefn unimplemented for *(int32 -> void)"
+        resolve (listOfFunctionPointers (spelled f f.Shapes.Absent)) |> isAbsentGone
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero (listOfFunctionPointers (spelled f f.Shapes.Absent)))
+        |> isAbsentGone
 
         match bindMember f f.Shapes.TypeParameterVectorToString with
         | Error (MemberBindingFailure.TypeUnbound failure) ->
             (Error failure : Result<unit, TypeBindingFailure>)
             |> unmodelledSaying "BadImageFormatException"
         | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+    let private resolveIn
+        (f : UnmodelledImage.Fixture)
+        (environment : TypeDefn list)
+        (ty : TypeDefn)
+        : LoadedAssemblies * Result<DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
+        =
+        TypeResolution.resolveTypeFromDefn
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            ty
+            (ImmutableArray.CreateRange environment)
+            ImmutableArray.Empty
+            f.Analysed
+            f.Assemblies
+
+    /// `List<ty>`, as an instantiation spells it.
+    let private listOf (f : UnmodelledImage.Fixture) (ty : TypeDefn) : TypeDefn =
+        TypeDefn.GenericInstantiation (spelled f f.Shapes.List, ImmutableArray.Create ty)
+
+    /// The argument `List<ty>` is instantiated at, once substituted.
+    let private substitutedArgument
+        (f : UnmodelledImage.Fixture)
+        (environment : TypeDefn list)
+        (ty : TypeDefn)
+        : TypeDefn
+        =
+        match resolveIn f environment (listOf f ty) with
+        | _, Ok (_, info) -> info.Generics |> Seq.exactlyOne
+        | _, Error failure -> failwith $"expected List<%O{ty}> to bind, got %s{TypeBindingFailure.describe failure}"
+
+    [<Test>]
+    let ``substitution walks a function pointer, keeping its modifiers and its void return`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let bct = f.BaseClassTypes
+
+        let named (info : TypeInfo<GenericParamFromMetadata, TypeDefn>) =
+            LoadedTypeInfo.typeInfoToTypeDefn' bct f.Assemblies info
+
+        let objectRef = spelled f f.Shapes.Object
+        let typedref = TypeDefn.PrimitiveType PrimitiveType.TypedReference
+
+        // The modifier comes back naming its definition, as every other type in the argument does.
+        let boundModified (ty : TypeDefn) =
+            TypeDefn.Modified
+                {
+                    Unmodified = ty
+                    Modifier = named bct.Object
+                    IsRequired = true
+                }
+
+        let spelledPointer =
+            TypeDefn.FunctionPointer
+                { signature [ modified int32 objectRef ; typedref ; TypeDefn.Pinned int32 ] with
+                    ReturnType = MethodReturnType.Returns (modified TypeDefn.Void objectRef)
+                }
+
+        let substitutedPointer =
+            TypeDefn.FunctionPointer
+                { signature
+                      [
+                          boundModified (named bct.Int32)
+                          named bct.TypedReference
+                          TypeDefn.Pinned (named bct.Int32)
+                      ] with
+                    ReturnType = MethodReturnType.Returns (boundModified TypeDefn.Void)
+                }
+
+        substitutedArgument f [] (TypeDefn.OneDimensionalArrayLowerBoundZero spelledPointer)
+        |> shouldEqual (TypeDefn.OneDimensionalArrayLowerBoundZero substitutedPointer)
+
+        // A parameter is substituted inside one, as anywhere else.
+        substitutedArgument
+            f
+            [ int32 ]
+            (TypeDefn.OneDimensionalArrayLowerBoundZero (
+                TypeDefn.FunctionPointer (signature [ TypeDefn.GenericTypeParameter 0 ])
+            ))
+        |> shouldEqual (
+            TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ named bct.Int32 ]))
+        )
+
+        // A modifier on the argument itself is kept, and does not stop it binding.
+        substitutedArgument f [] (modified int32 objectRef)
+        |> shouldEqual (boundModified (named bct.Int32))
+
+        // `typedref` names CoreLib's `System.TypedReference`, as every other primitive names its type.
+        match resolveIn f [] typedref with
+        | _, Ok (_, info) -> info.Identity |> shouldEqual bct.TypedReference.Identity
+        | _, Error failure -> failwith $"expected typedref to bind, got %s{TypeBindingFailure.describe failure}"
+
+    [<Test>]
+    let ``substitution fails where the first part of a function pointer that does not bind is`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let absent = spelled f f.Shapes.Absent
+        let unbound = spelled f f.Shapes.Unbound
+
+        let vectorOfPointer (returns : TypeDefn) (parameters : TypeDefn list) =
+            TypeDefn.OneDimensionalArrayLowerBoundZero (
+                TypeDefn.FunctionPointer
+                    { signature parameters with
+                        ReturnType = MethodReturnType.Returns returns
+                    }
+            )
+
+        let resolve (ty : TypeDefn) = resolveIn f [] (listOf f ty) |> snd
+
+        // CoreCLR loads the return type first, then each parameter in turn.
+        resolve (vectorOfPointer absent [ unbound ]) |> isAbsentGone
+        resolve (vectorOfPointer unbound [ absent ]) |> isNowhere
+        resolve (vectorOfPointer int32 [ int32 ; absent ; unbound ]) |> isAbsentGone
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero genericFunctionPointer)
+        |> unmodelledSaying "BadImageFormatException"
+
+        // CoreCLR never loads a custom modifier, so one that does not bind is unmodelled, not
+        // absent; and the type it modifies is loaded, and fails, first.
+        for modifier in [ absent ; unbound ] do
+            resolve (TypeDefn.OneDimensionalArrayLowerBoundZero (modified int32 modifier))
+            |> unmodelledSaying "custom modifier"
+
+        resolve (TypeDefn.OneDimensionalArrayLowerBoundZero (modified unbound absent))
+        |> isNowhere
+
+    [<Test>]
+    let ``an instantiation at a byref, pointer, function pointer, typedref or void is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let bct = f.BaseClassTypes
+        let functionPointer = TypeDefn.FunctionPointer (signature [ int32 ])
+
+        let malformed =
+            [
+                TypeDefn.Byref int32
+                TypeDefn.Pointer int32
+                functionPointer
+                TypeDefn.PrimitiveType PrimitiveType.TypedReference
+                TypeDefn.Void
+                TypeDefn.FromDefinition (bct.TypedReference.Identity, SignatureTypeKind.ValueType)
+                TypeDefn.FromDefinition (bct.Void.Identity, SignatureTypeKind.ValueType)
+                // CoreCLR reads the argument's element type past its modifiers and `pinned`.
+                modified (TypeDefn.Pointer int32) (spelled f f.Shapes.Object)
+                TypeDefn.Pinned (TypeDefn.Byref int32)
+            ]
+
+        for argument in malformed do
+            resolveIn f [] (listOf f argument)
+            |> snd
+            |> unmodelledSaying "IDS_CLASSLOAD_INVALIDINSTANTIATION"
+
+        // The argument is checked once substituted.
+        resolveIn f [ TypeDefn.Pointer int32 ] (listOf f (TypeDefn.GenericTypeParameter 0))
+        |> snd
+        |> unmodelledSaying "IDS_CLASSLOAD_INVALIDINSTANTIATION"
+
+        // Only the argument's own element type counts.
+        for argument in
+            [
+                TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.Pointer int32)
+                TypeDefn.Array (functionPointer, 2)
+                listOf f (TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.Byref int32))
+                modified int32 (spelled f f.Shapes.Object)
+            ] do
+            match resolveIn f [] (listOf f argument) |> snd with
+            | Ok _ -> ()
+            | Error failure ->
+                failwith $"expected List<%O{argument}> to bind, got %s{TypeBindingFailure.describe failure}"
+
+    /// A refusal costs the size of the refused type as a DAG, as resolving it does: its diagnostic
+    /// does not spell the type out as a tree.
+    [<Test>]
+    let ``refusing a type whose parts are shared costs its size as a DAG`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        // `shared d` is d nodes as a DAG and 2^d as a tree.
+        let rec shared (depth : int) : TypeDefn =
+            if depth = 0 then
+                int32
+            else
+                let inner = shared (depth - 1)
+                TypeDefn.OneDimensionalArrayLowerBoundZero (TypeDefn.FunctionPointer (signature [ inner ; inner ]))
+
+        let inner = shared 20
+
+        let generic =
+            match genericFunctionPointer with
+            | TypeDefn.FunctionPointer genericSignature ->
+                TypeDefn.FunctionPointer
+                    { genericSignature with
+                        ParameterTypes = [ inner ; inner ]
+                    }
+            | other -> failwith $"unreachable: %O{other}"
+
+        for refused in
+            [
+                listOf f (TypeDefn.FunctionPointer (signature [ inner ; inner ]))
+                listOf f (TypeDefn.OneDimensionalArrayLowerBoundZero generic)
+                TypeDefn.OneDimensionalArrayLowerBoundZero generic
+            ] do
+            match resolveIn f [] refused |> snd with
+            | Error (TypeBindingFailure.Unmodelled unmodelled) ->
+                unmodelled.Diagnostic.Length |> shouldBeSmallerThan 1000
+            | other -> failwith $"expected Unmodelled, got %A{other}"
 
     /// One layer a generated generic parameter is spelled inside.
     [<RequireQualifiedAccess>]
@@ -776,6 +986,9 @@ module TestTypeSystemBindingFailure =
         {
             Spelling : UnmodelledImage.Fixture -> TypeDefn
             Fails : Expected option
+            /// A generic definition named without an instantiation, which the Loader binds as the open
+            /// definition except as an instantiation's argument or inside one.
+            BareDefinition : bool
         }
 
     [<RequireQualifiedAccess>]
@@ -795,31 +1008,48 @@ module TestTypeSystemBindingFailure =
             {
                 Spelling = fun _ -> int32
                 Fails = None
+                BareDefinition = false
             }
             {
                 Spelling = fun f -> spelled f f.Shapes.Object
                 Fails = None
+                BareDefinition = false
             }
             {
                 Spelling = fun f -> spelled f f.Shapes.Absent
                 Fails = Some Expected.Absent
+                BareDefinition = false
             }
             {
                 Spelling = fun f -> spelled f f.Shapes.Unbound
                 Fails = Some Expected.Unavailable
+                BareDefinition = false
             }
             {
                 Spelling = fun f -> spelled f f.Shapes.ModuleScoped
                 Fails = Some Expected.Unmodelled
+                BareDefinition = false
             }
             {
                 // `List`1` named without an instantiation.
                 Spelling = fun f -> spelled f f.Shapes.List
                 Fails = Some Expected.RefusedBare
+                BareDefinition = true
             }
             {
                 Spelling = fun _ -> genericFunctionPointer
                 Fails = Some Expected.Unmodelled
+                BareDefinition = false
+            }
+            {
+                Spelling = fun _ -> TypeDefn.PrimitiveType PrimitiveType.TypedReference
+                Fails = None
+                BareDefinition = false
+            }
+            {
+                Spelling = fun _ -> TypeDefn.Void
+                Fails = None
+                BareDefinition = false
             }
         ]
 
@@ -860,18 +1090,22 @@ module TestTypeSystemBindingFailure =
             (returns |> Option.exists carriesModifier)
             || (parameters |> List.exists carriesModifier)
 
-    /// Whether an argument concretises to a byref, pointer or function pointer, which no
-    /// instantiation may have.
-    let rec private isMalformedArgument (spelling : Spelling) : bool =
+    /// Whether CoreCLR's `Generics::CheckInstantiation` refuses this spelling as an instantiation's
+    /// argument: by its element type, read past custom modifiers and `pinned`.
+    let rec private malformedArgument (f : UnmodelledImage.Fixture) (spelling : Spelling) : bool =
         match spelling with
+        | Spelling.Leaf leaf ->
+            match leaf.Spelling f with
+            | TypeDefn.PrimitiveType PrimitiveType.TypedReference
+            | TypeDefn.Void -> true
+            | _ -> false
         | Spelling.Byref _
         | Spelling.Pointer _
         | Spelling.FunctionPointer _ -> true
-        | Spelling.Pinned element -> isMalformedArgument element
-        | Spelling.Leaf _
+        | Spelling.Pinned element
+        | Spelling.Modified element -> malformedArgument f element
         | Spelling.Array _
         | Spelling.Vector _
-        | Spelling.Modified _
         | Spelling.ListOf _ -> false
 
     /// The reference implementation: the first part of the spelling, in the order a runtime type is
@@ -879,8 +1113,8 @@ module TestTypeSystemBindingFailure =
     /// carries a custom modifier, before any argument is bound; otherwise the generic definition,
     /// which here always binds and is spelled as the class it is, comes first, then its arguments
     /// in order, then the arity (its one generic parameter), then the kinds of the arguments.
-    let rec private expected (spelling : Spelling) : Expected option =
-        let firstOf (parts : Spelling list) : Expected option = parts |> List.tryPick expected
+    let rec private expected (f : UnmodelledImage.Fixture) (spelling : Spelling) : Expected option =
+        let firstOf (parts : Spelling list) : Expected option = parts |> List.tryPick (expected f)
 
         match spelling with
         | Spelling.Leaf leaf -> leaf.Fails
@@ -889,7 +1123,7 @@ module TestTypeSystemBindingFailure =
         | Spelling.Byref element
         | Spelling.Pointer element
         | Spelling.Pinned element
-        | Spelling.Modified element -> expected element
+        | Spelling.Modified element -> expected f element
         | Spelling.ListOf arguments ->
             if arguments |> List.exists carriesModifier then
                 Some Expected.Unmodelled
@@ -898,11 +1132,12 @@ module TestTypeSystemBindingFailure =
                 | Some failure -> Some failure
                 | None when arguments.IsEmpty -> Some Expected.Unmodelled
                 | None when arguments.Length <> 1 -> Some Expected.RefusedArity
-                | None when arguments |> List.exists isMalformedArgument -> Some Expected.RefusedArgument
+                | None when arguments |> List.exists (malformedArgument f) -> Some Expected.RefusedArgument
                 | None -> None
         | Spelling.FunctionPointer (returns, parameters) -> firstOf (Option.toList returns @ parameters)
 
-    let private genSpelling : Gen<Spelling> =
+    /// Spellings built over these leaves.
+    let private genSpellingOver (leaves : Leaf list) : Gen<Spelling> =
         let leaf = Gen.elements leaves |> Gen.map Spelling.Leaf
 
         // An instantiation at the wrong arity is refused only once every argument binds, which
@@ -940,6 +1175,13 @@ module TestTypeSystemBindingFailure =
                     ]
 
         Gen.sized (fun size -> go (min size 16))
+
+    let private genSpelling : Gen<Spelling> = genSpellingOver leaves
+
+    /// Spellings every part of which binds as a type on its own, though not necessarily in the
+    /// position it is spelled in.
+    let private genBindingParts : Gen<Spelling> =
+        genSpellingOver (leaves |> List.filter (fun leaf -> leaf.Fails.IsNone))
 
     /// `genSpelling`, now and then an instantiation at an argument no instantiation may have, which
     /// is refused only once everything else binds, and which arbitrary spellings rarely reach.
@@ -980,7 +1222,7 @@ module TestTypeSystemBindingFailure =
         let property (cover : Shown -> unit) (spelling : Spelling) : bool =
             let actual = concretize f (toTypeDefn f spelling)
 
-            match expected spelling, actual with
+            match expected f spelling, actual with
             | None, Ok _ -> cover Shown.Binds
             | Some Expected.Absent, Error (TypeBindingFailure.TypeAbsent _) -> cover Shown.FailsAbsent
             | Some Expected.Unavailable, Error (TypeBindingFailure.AssemblyUnavailable _) ->
@@ -1015,44 +1257,269 @@ module TestTypeSystemBindingFailure =
         coverage.Count Shown.RefusedBare |> shouldBeGreaterThan 20
         coverage.Count Shown.RefusedArgument |> shouldBeGreaterThan 20
 
+    /// Where in a spelling the Loader reads a part, which decides how it binds that part.
+    [<RequireQualifiedAccess>]
+    type private Position =
+        /// The spelling itself, which the Loader must answer with one `TypeInfo`.
+        | Whole
+        /// Inside an array the spelling names, which the Loader walks only to load what it names.
+        | ArrayElement
+        /// Inside an instantiation's argument, which the Loader substitutes and keeps.
+        | Argument
+
+    /// The reference implementation of the Loader: the first part of the spelling that does not
+    /// bind, as CoreCLR loads the parts: an array's element before the array, a function pointer's
+    /// return type before its parameters, and an instantiation's arguments, in order, before the
+    /// generic definition, which here always binds but refuses any number of arguments other than its
+    /// one generic parameter, and then refuses an argument `Generics::CheckInstantiation` does.
+    let rec private loaderExpected
+        (f : UnmodelledImage.Fixture)
+        (position : Position)
+        (spelling : Spelling)
+        : Expected option
+        =
+        let firstOf (position : Position) (parts : Spelling list) : Expected option =
+            parts |> List.tryPick (loaderExpected f position)
+
+        match spelling with
+        | Spelling.Leaf leaf when leaf.BareDefinition ->
+            match position with
+            | Position.Argument -> Some Expected.Unmodelled
+            | Position.Whole
+            | Position.ArrayElement -> None
+        | Spelling.Leaf leaf -> leaf.Fails
+        | Spelling.Array (element, _)
+        | Spelling.Vector element ->
+            match position with
+            | Position.Whole -> loaderExpected f Position.ArrayElement element
+            | Position.ArrayElement
+            | Position.Argument -> loaderExpected f position element
+        // A `TypeInfo` cannot say what any of these is.
+        | Spelling.Byref _
+        | Spelling.Pointer _
+        | Spelling.Pinned _
+        | Spelling.Modified _
+        | Spelling.FunctionPointer _ when position = Position.Whole -> Some Expected.Unmodelled
+        | Spelling.Byref element
+        | Spelling.Pointer element
+        | Spelling.Pinned element
+        | Spelling.Modified element -> loaderExpected f position element
+        | Spelling.FunctionPointer (returns, parameters) -> firstOf position (Option.toList returns @ parameters)
+        | Spelling.ListOf arguments ->
+            match firstOf Position.Argument arguments with
+            | Some failure -> Some failure
+            | None when arguments.Length <> 1 -> Some Expected.Unmodelled
+            | None when malformedArgument f arguments.Head -> Some Expected.Unmodelled
+            | None -> None
+
+    let rec private mentionsFunctionPointer (spelling : Spelling) : bool =
+        match spelling with
+        | Spelling.Leaf _ -> false
+        | Spelling.FunctionPointer _ -> true
+        | Spelling.Array (element, _)
+        | Spelling.Vector element
+        | Spelling.Byref element
+        | Spelling.Pointer element
+        | Spelling.Pinned element
+        | Spelling.Modified element -> mentionsFunctionPointer element
+        | Spelling.ListOf arguments -> arguments |> List.exists mentionsFunctionPointer
+
+    let rec private instantiatesOverFunctionPointer (spelling : Spelling) : bool =
+        match spelling with
+        | Spelling.Leaf _ -> false
+        | Spelling.Array (element, _)
+        | Spelling.Vector element
+        | Spelling.Byref element
+        | Spelling.Pointer element
+        | Spelling.Pinned element
+        | Spelling.Modified element -> instantiatesOverFunctionPointer element
+        | Spelling.FunctionPointer (returns, parameters) ->
+            Option.toList returns @ parameters
+            |> List.exists instantiatesOverFunctionPointer
+        | Spelling.ListOf arguments ->
+            arguments
+            |> List.exists (fun argument ->
+                mentionsFunctionPointer argument || instantiatesOverFunctionPointer argument
+            )
+
     [<RequireQualifiedAccess>]
     type private Resolved =
         | Binds
-        | Fails
+        | BindsAnInstantiationOverAFunctionPointer
+        | FailsAbsent
+        | FailsUnavailable
+        | FailsUnmodelled
         | RefusedForABareArgument
+        | RefusedForAMalformedArgument
 
     [<Test>]
-    let ``the Loader resolves every spelling to a result rather than throwing`` () : unit =
+    let ``the Loader fails exactly where the first part that does not bind is`` () : unit =
         let f = UnmodelledImage.fixture ()
 
         let property (cover : Resolved -> unit) (spelling : Spelling) : bool =
-            match
-                TypeResolution.resolveTypeFromDefn
-                    f.LoggerFactory
-                    HostImage.runtimeDirs
-                    f.BaseClassTypes
-                    (toTypeDefn f spelling)
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
-                    f.Analysed
-                    f.Assemblies
-                |> snd
-            with
-            | Ok _ -> cover Resolved.Binds
-            | Error (TypeBindingFailure.Unmodelled unmodelled) when
-                unmodelled.Diagnostic.Contains "names the generic definition"
-                ->
-                cover Resolved.RefusedForABareArgument
-            | Error _ -> cover Resolved.Fails
+            match loaderExpected f Position.Whole spelling, resolveIn f [] (toTypeDefn f spelling) |> snd with
+            | None, Ok _ ->
+                if instantiatesOverFunctionPointer spelling then
+                    cover Resolved.BindsAnInstantiationOverAFunctionPointer
+
+                cover Resolved.Binds
+            | Some Expected.Absent, Error (TypeBindingFailure.TypeAbsent _) -> cover Resolved.FailsAbsent
+            | Some Expected.Unavailable, Error (TypeBindingFailure.AssemblyUnavailable _) ->
+                cover Resolved.FailsUnavailable
+            | Some Expected.Unmodelled, Error (TypeBindingFailure.Unmodelled unmodelled) ->
+                if unmodelled.Diagnostic.Contains "names the generic definition" then
+                    cover Resolved.RefusedForABareArgument
+
+                if unmodelled.Diagnostic.Contains "IDS_CLASSLOAD_INVALIDINSTANTIATION" then
+                    cover Resolved.RefusedForAMalformedArgument
+
+                cover Resolved.FailsUnmodelled
+            | expected, actual -> failwith $"expected %A{expected}, got %A{actual}"
 
             true
 
+        // An instantiation over a function pointer binds only where every part of it does, which
+        // arbitrary spellings rarely all do.
+        let gen =
+            Gen.frequency
+                [
+                    2, genSpelling
+                    1, Gen.map (fun argument -> Spelling.ListOf [ argument ]) genSpelling
+                    1, Gen.map (fun element -> Spelling.ListOf [ Spelling.Vector element ]) genBindingParts
+                ]
+
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genSpelling) property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen gen) property
 
         coverage.Count Resolved.Binds |> shouldBeGreaterThan 100
-        coverage.Count Resolved.Fails |> shouldBeGreaterThan 100
+
+        coverage.Count Resolved.BindsAnInstantiationOverAFunctionPointer
+        |> shouldBeGreaterThan 20
+
+        coverage.Count Resolved.FailsAbsent |> shouldBeGreaterThan 100
+        coverage.Count Resolved.FailsUnavailable |> shouldBeGreaterThan 100
+        coverage.Count Resolved.FailsUnmodelled |> shouldBeGreaterThan 100
         coverage.Count Resolved.RefusedForABareArgument |> shouldBeGreaterThan 5
+        coverage.Count Resolved.RefusedForAMalformedArgument |> shouldBeGreaterThan 20
+
+    /// The type with every custom modifier inside it deleted.
+    let rec private withoutModifiers (ty : TypeDefn) : TypeDefn =
+        match ty with
+        | TypeDefn.Modified modified -> withoutModifiers modified.Unmodified
+        | TypeDefn.Array (element, rank) -> TypeDefn.Array (withoutModifiers element, rank)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
+            TypeDefn.OneDimensionalArrayLowerBoundZero (withoutModifiers element)
+        | TypeDefn.Pinned element -> TypeDefn.Pinned (withoutModifiers element)
+        | TypeDefn.Pointer element -> TypeDefn.Pointer (withoutModifiers element)
+        | TypeDefn.Byref element -> TypeDefn.Byref (withoutModifiers element)
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            TypeDefn.GenericInstantiation (
+                withoutModifiers generic,
+                args |> Seq.map withoutModifiers |> ImmutableArray.CreateRange
+            )
+        | TypeDefn.FunctionPointer signature ->
+            TypeDefn.FunctionPointer (
+                TypeMethodSignature.map () (fun () ty -> (), withoutModifiers ty) signature
+                |> snd
+            )
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> ty
+
+    [<RequireQualifiedAccess>]
+    type private ArgumentVerdict =
+        | Admitted
+        | AdmittedOverAFunctionPointer
+        | Refused
+        | NotAnArgument
+
+    /// The Loader refuses an instantiation's argument exactly where the type system's
+    /// `AllConcreteTypes.malformedArgument` finds it malformed, and an argument it admits it
+    /// substitutes to one that concretises as the argument spelled does.
+    [<Test>]
+    let ``the Loader refuses an argument exactly where the type system finds it malformed`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let bct = f.BaseClassTypes
+
+        let concretizeIn (state : TypeSystemState) (ty : TypeDefn) =
+            TypeSystemState.concretizeType
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                bct
+                state
+                f.Analysed.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                ty
+
+        let property (cover : ArgumentVerdict -> unit) (spelling : Spelling) : bool =
+            if loaderExpected f Position.Argument spelling <> None then
+                cover ArgumentVerdict.NotAnArgument
+                true
+            else
+
+            let argument = toTypeDefn f spelling
+            let assemblies, loaded = resolveIn f [] (listOf f argument)
+
+            let state =
+                { TypeSystemState.Empty with
+                    _LoadedAssemblies = assemblies
+                }
+
+            // Concretisation refuses an instantiation whose argument carries a modifier, which has
+            // nothing to do with whether the argument is well formed.
+            let state, malformed =
+                match concretizeIn state (withoutModifiers argument) with
+                | state, Ok handle -> state, AllConcreteTypes.malformedArgument bct state.ConcreteTypes [ handle ]
+                | _, Error failure ->
+                    failwith $"expected %O{argument} to concretise, got %s{TypeBindingFailure.describe failure}"
+
+            match loaded, malformed with
+            | Ok (_, info), None ->
+                let substituted = info.Generics |> Seq.exactlyOne
+
+                match concretizeIn state argument with
+                | state, Ok spelledHandle ->
+                    match concretizeIn state substituted with
+                    | _, Ok substitutedHandle -> substitutedHandle |> shouldEqual spelledHandle
+                    | _, Error failure ->
+                        failwith
+                            $"%O{argument} concretises, and %O{substituted}, its substitution, does not: %s{TypeBindingFailure.describe failure}"
+                | state, Error _ ->
+                    match concretizeIn state substituted with
+                    | _, Error _ -> ()
+                    | _, Ok handle ->
+                        failwith
+                            $"%O{argument} does not concretise, and %O{substituted}, its substitution, does: %O{handle}"
+
+                if mentionsFunctionPointer spelling then
+                    cover ArgumentVerdict.AdmittedOverAFunctionPointer
+
+                cover ArgumentVerdict.Admitted
+            | Error (TypeBindingFailure.Unmodelled unmodelled), Some _ when
+                unmodelled.Diagnostic.Contains "IDS_CLASSLOAD_INVALIDINSTANTIATION"
+                ->
+                cover ArgumentVerdict.Refused
+            | loaded, malformed ->
+                failwith $"for List<%O{argument}> the Loader says %A{loaded} and the type system %A{malformed}"
+
+            true
+
+        let gen =
+            Gen.frequency [ 2, genBindingParts ; 1, Gen.map Spelling.Vector genBindingParts ]
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
+
+        coverage.Count ArgumentVerdict.Admitted |> shouldBeGreaterThan 100
+
+        coverage.Count ArgumentVerdict.AdmittedOverAFunctionPointer
+        |> shouldBeGreaterThan 20
+
+        coverage.Count ArgumentVerdict.Refused |> shouldBeGreaterThan 100
 
     [<RequireQualifiedAccess>]
     type private Agreement =
@@ -1182,7 +1649,7 @@ module TestTypeSystemBindingFailure =
             true
 
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genArray) property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1500) (Arb.fromGen genArray) property
 
         coverage.Count ArrayAgreement.Binds |> shouldBeGreaterThan 100
         coverage.Count ArrayAgreement.Absent |> shouldBeGreaterThan 100
