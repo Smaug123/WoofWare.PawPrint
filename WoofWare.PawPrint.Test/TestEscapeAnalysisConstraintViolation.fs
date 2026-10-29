@@ -1599,8 +1599,8 @@ public static class Cases
     /// an argument constrained to it does not satisfy, and whose own parameter a signature names.
     /// And a generic method instantiates another, or a generic type, with a pointer to its type
     /// variable, which CoreCLR admits in no instantiation, rejecting it compiling the caller even in
-    /// code shared between instantiations; or with `TypedReference`, which no instantiation admits
-    /// either, though its parameter allows a byref-like argument. The library is emitted, the client
+    /// code shared between instantiations; or with `TypedReference`, for a parameter allowing a
+    /// byref-like argument, which .NET 10 rejects there and .NET 11 admits. The library is emitted, the client
     /// compiled against it.
     [<Test>]
     let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
@@ -1851,7 +1851,7 @@ public static class Cases
                         "CallsRunMake", "Holder`1", "RunMake", false
                         "CallsPointing", "Plain", "G", true
                         "CallsPointingType", "Plain", "H", true
-                        "CallsTypedReference", "Plain", "G2", true
+                        "CallsTypedReference", "Plain", "G2", false
                     ] do
                     let raised =
                         match hostOutcomes.[case] with

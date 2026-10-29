@@ -93,8 +93,9 @@ type Opacity =
     /// (`ConstraintVerdict.Undecided`), or the types the load reaches nest deeper than the analysis
     /// follows, or a method token names a generic type's method on the type's typical
     /// instantiation, and the method's constraints, or a type of its signature the JIT loads,
-    /// mention type variables, or a load TypeSystem does not instantiate may break a constraint. Where the check fails, CoreCLR raises `TypeLoadException` or
-    /// `VerificationException` before the method runs.
+    /// mention type variables, or a load TypeSystem does not instantiate may break a constraint, or
+    /// an argument is `TypedReference`, which .NET 11 admits where .NET 10 does not. Where the check
+    /// fails, CoreCLR raises `TypeLoadException` or `VerificationException` before the method runs.
     | UndecidedConstraint
     /// A token naming a type in an assembly the analysis does not find. Before raising
     /// <c>FileNotFoundException</c>, the runtime runs the program's <c>AssemblyLoadContext.Resolving</c>
@@ -2749,6 +2750,9 @@ module EscapeAnalysis =
                 let arguments = List.ofSeq concrete.Generics
 
                 match ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem arguments with
+                // .NET 11 admits a `TypedReference` argument where .NET 10 rejects it (measured of a
+                // method's, in shared code, for a parameter allowing a byref-like argument).
+                | Some (_, MalformedArgument.TypedReference) -> (state, visited), Some BindFailure.UndecidedConstraint
                 | Some _ -> (state, visited), Some BindFailure.MalformedTypeInstantiation
                 | None ->
 
@@ -3054,12 +3058,21 @@ module EscapeAnalysis =
         let state, failure =
             let calleeAssembly, calleeMethod = methodOf state callee
 
-            if
-                calleeMethod.Generics.Length <> methodArguments.Length
-                || (ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments).IsSome
-            then
+            let malformed =
+                ConstraintSatisfaction.malformedArgument state.BaseTypes state.TypeSystem methodArguments
+
+            if calleeMethod.Generics.Length <> methodArguments.Length then
                 state, Some BindFailure.MalformedMethodInstantiation
-            elif typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
+            else
+
+            match malformed with
+            // .NET 11 admits a `TypedReference` argument where .NET 10 rejects it (measured in
+            // shared code, for a parameter allowing a byref-like argument).
+            | Some (_, MalformedArgument.TypedReference) -> state, Some BindFailure.UndecidedConstraint
+            | Some _ -> state, Some BindFailure.MalformedMethodInstantiation
+            | None ->
+
+            if typeArguments @ methodArguments |> List.exists (containsCanon state canon) then
                 state, None
             else
 

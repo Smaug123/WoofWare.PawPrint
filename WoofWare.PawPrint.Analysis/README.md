@@ -414,8 +414,10 @@ it, before the method runs:
   arguments.
 - **Methods:** a method specification whose arguments break the method's constraints raises
   `VerificationException`.
-- **Malformed arguments:** a byref, pointer, `TypedReference` or `void` argument raises
-  `TypeLoadException` for a type and `BadImageFormatException` for a method.
+- **Malformed arguments:** a byref, pointer, function pointer or `void` argument raises
+  `TypeLoadException` for a type and `BadImageFormatException` for a method. A `TypedReference`
+  argument is undecided (`Opacity.UndecidedConstraint`): .NET 11 admits one where .NET 10 does
+  not.
 
 What code shared between instantiations names through its type variables, the JIT sees in its
 canonical form (`System.__Canon` for a reference type). CoreCLR does not check an instantiation
