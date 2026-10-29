@@ -2583,7 +2583,7 @@ module EscapeAnalysis =
             | _, Error failure -> failwith $"BUG: the canonical form of %O{handle} does not bind: %O{failure}"
         | _ -> state, handle
 
-    /// How deeply a type's arguments and elements nest.
+    /// How deeply a type's arguments, elements and function pointers' signatures nest.
     let rec private nestingOf (state : EscapeAnalysisState) (handle : ConcreteTypeHandle) : int =
         match handle with
         | ConcreteTypeHandle.Concrete _ ->
@@ -2594,7 +2594,16 @@ module EscapeAnalysis =
         | ConcreteTypeHandle.Array (element, _)
         | ConcreteTypeHandle.Byref element
         | ConcreteTypeHandle.Pointer element -> 1 + nestingOf state element
-        | ConcreteTypeHandle.FunctionPointer _ -> 1
+        | ConcreteTypeHandle.FunctionPointer signature ->
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Returns returned -> [ returned ]
+                | MethodReturnType.Void -> []
+
+            1
+            + (returned @ signature.ParameterTypes
+               |> List.map (nestingOf state)
+               |> List.fold max 0)
 
     /// Whether TypeSystem instantiates every constraint of `generics`, type parameters of
     /// `assembly` (`concretizable`), as `ConstraintSatisfaction` needs to decide them.
@@ -4331,6 +4340,11 @@ module EscapeAnalysis =
                 | _ when mentionsTypeVariable loaded ->
                     let state, failure = closedPartsFailure state assembly loaded
                     state, failure, [ InstanceCheck.LoadsInMember (assembly.DefinitionFullName, loaded, token) ]
+                // CoreCLR instantiates the method a specification names, checking its constraints,
+                // before it loads the signature, so where an instance makes that check, it makes this
+                // one after it.
+                | MetadataToken.MethodSpecification _ ->
+                    state, None, [ InstanceCheck.LoadsInFull (assembly.DefinitionFullName, loaded) ]
                 | _ -> fullLoadConstraints state assembly loaded
 
             match load with
@@ -9346,10 +9360,17 @@ module EscapeAnalysis =
         | Instantiation.Open ->
             ((state, none), checks)
             ||> List.fold (fun (state, found) (check, reach) ->
+                match reach with
+                // CoreCLR makes no further check binding an instruction once one fails.
+                | CheckReach.Made (Some offset) when found.Unreached.Contains offset -> state, found
+                | CheckReach.Made _
+                | CheckReach.Possible
+                | CheckReach.PossibleWhereInlined ->
+
                 let overVariables, mayBreak =
                     match check with
                     | InstanceCheck.LoadsInFull (spelledIn, spelling) ->
-                        true,
+                        mentionsTypeVariable spelling,
                         fun state -> spellingMayBreakConstraint state (assemblyOf state spelledIn) method spelling
                     // A member definition of the body's own type, whose variables are the body's.
                     | InstanceCheck.LoadsInMember (spelledIn,
