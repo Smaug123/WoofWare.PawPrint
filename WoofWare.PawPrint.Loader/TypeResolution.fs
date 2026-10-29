@@ -567,6 +567,40 @@ module TypeResolution =
         resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy target genericArgs assemblies
 
     /// <summary>
+    /// Whether a signature's <c>CLASS</c>/<c>VALUETYPE</c> spelling of the definition
+    /// <paramref name="identity" /> is not what the definition is, which CoreCLR's
+    /// <c>SigPointer::GetTypeHandleThrowing</c> checks once it has loaded the type
+    /// (<c>BFA_CLASSLOAD_VALUETYPEMISMATCH</c>). A kind no signature spelled (<c>Unknown</c>, from a
+    /// bare token) never mismatches.
+    /// </summary>
+    /// <remarks>
+    /// The definition's base-chain assemblies must be loaded in <paramref name="assemblies" />.
+    /// </remarks>
+    let spellingMismatches
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assemblies : LoadedAssemblies)
+        (identity : ResolvedTypeIdentity)
+        (spelled : SignatureTypeKind)
+        : bool
+        =
+        match spelled with
+        | SignatureTypeKind.Unknown -> false
+        | SignatureTypeKind.Class
+        | SignatureTypeKind.ValueType ->
+            let definition =
+                Assembly.resolveTypeIdentityDefinition (assemblies.ByDefinitionName identity.AssemblyFullName) identity
+
+            LoadedTypeInfo.signatureTypeKind baseClassTypes assemblies definition <> spelled
+        | other -> failwith $"BUG: a signature's nominal type has the kind %O{other}"
+
+    /// Whether CoreCLR overlooks a mismatched spelling of a type named directly (not as a
+    /// `GENERICINST` head) in a signature of `image`: it does where the image's metadata table
+    /// stream is version 1.0 (`MD_STREAM_VER_1X`, siginfo.cpp).
+    let overlooksNominalSpelling (image : DumpedAssembly) : bool =
+        let version = image.MetadataTableStreamVersion
+        version.Major = 1 && version.Minor = 0
+
+    /// <summary>
     /// One generic parameter whose argument we are part-way through expanding.
     /// </summary>
     /// <remarks>
@@ -604,17 +638,18 @@ module TypeResolution =
     let rec private malformedArgument
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (argument : TypeDefn)
-        : string option
+        : MalformedArgument option
         =
         match argument with
         | TypeDefn.Modified modified -> malformedArgument baseClassTypes modified.Unmodified
         | TypeDefn.Pinned element -> malformedArgument baseClassTypes element
-        | TypeDefn.Byref _ -> Some "a byref"
-        | TypeDefn.Pointer _ -> Some "a pointer"
-        | TypeDefn.FunctionPointer _ -> Some "a function pointer"
+        | TypeDefn.Byref _ -> Some MalformedArgument.Byref
+        | TypeDefn.Pointer _ -> Some MalformedArgument.Pointer
+        | TypeDefn.FunctionPointer _ -> Some MalformedArgument.FunctionPointer
         | TypeDefn.FromDefinition (identity, _) when identity = baseClassTypes.TypedReference.Identity ->
-            Some "System.TypedReference"
-        | TypeDefn.FromDefinition (identity, _) when identity = baseClassTypes.Void.Identity -> Some "System.Void"
+            Some MalformedArgument.TypedReference
+        | TypeDefn.FromDefinition (identity, _) when identity = baseClassTypes.Void.Identity ->
+            Some MalformedArgument.Void
         | TypeDefn.FromDefinition _
         | TypeDefn.GenericInstantiation _
         | TypeDefn.OneDimensionalArrayLowerBoundZero _
@@ -636,9 +671,7 @@ module TypeResolution =
     /// There must be exactly as many arguments as the definition declares generic parameters (for
     /// a nested type, counting those it inherits from its declaring types), and none of them may be
     /// a byref, a pointer, a function pointer, <c>TypedReference</c> or <c>void</c>. Otherwise
-    /// CoreCLR's class loader throws <c>TypeLoadException</c>
-    /// (<c>IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS</c>, or <c>IDS_CLASSLOAD_INVALIDINSTANTIATION</c>
-    /// from <c>Generics::CheckInstantiation</c>), which is unmodelled here.
+    /// CoreCLR's class loader refuses the instantiation, checking the arity first.
     /// </remarks>
     let private instantiateDefinition
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -646,71 +679,129 @@ module TypeResolution =
         (definition : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : Result<WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let unmodelled (diagnostic : string) =
-            {
-                Diagnostic = diagnostic
-            }
-            |> TypeBindingFailure.Unmodelled
+        if args.Length <> definition.Generics.Length then
+            TypeLoadRefusal.WrongArity (definition.Identity, definition.Generics.Length, args.Length)
+            |> TypeBindingFailure.Refused
             |> Error
-
-        if args.IsEmpty || args.Length <> definition.Generics.Length then
-            unmodelled
-                $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} declares %d{definition.Generics.Length} generic parameter(s), but an instantiation names %d{args.Length} argument(s); CoreCLR refuses that with TypeLoadException, which is not modelled"
         else
 
         match
             args
             |> Seq.indexed
             |> Seq.tryPick (fun (index, arg) ->
-                malformedArgument baseClassTypes arg |> Option.map (fun what -> index, what)
+                malformedArgument baseClassTypes arg
+                |> Option.map (fun malformed -> index, malformed)
             )
         with
-        | Some (index, what) ->
-            unmodelled
-                $"An instantiation of %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} has %s{what} as its argument %d{index}; CoreCLR refuses that with TypeLoadException (IDS_CLASSLOAD_INVALIDINSTANTIATION), which is not modelled"
+        | Some (index, malformed) ->
+            TypeLoadRefusal.InvalidInstantiation (definition.Identity, index, malformed)
+            |> TypeBindingFailure.Refused
+            |> Error
         | None -> Ok (TypeInfo.applyGenericArgs args definition)
 
     /// <summary>
-    /// The head of an instantiation instantiated at <paramref name="args" />, the instantiation's
-    /// arguments with any parameters already substituted, without the base-chain priming
-    /// <c>resolveTypeFromDefn</c> promises.
+    /// An instantiation of the generic definition <paramref name="head" /> names, at
+    /// <paramref name="args" />, each put through <paramref name="substitute" />, without the
+    /// base-chain priming <c>resolveTypeFromDefn</c> promises for the instantiation.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// The parts are loaded in the order CoreCLR's <c>SigPointer::GetTypeHandleThrowing</c> loads a
+    /// <c>GENERICINST</c>: the head, with its base chain, and then its <c>CLASS</c>/<c>VALUETYPE</c>
+    /// spelling checked (<c>GetGenericInstType</c>, which, unlike a type named directly, makes no
+    /// exception for a version-1.0 table stream); then each argument in turn; then the arity and
+    /// the arguments' kinds, as <c>instantiateDefinition</c> checks them.
+    /// </para>
+    /// <para>
     /// Metadata can only spell the head as the TypeDef or TypeRef of a generic definition, and any
-    /// other head is unmodelled. <paramref name="assy" /> is the assembly a TypeRef head is a
-    /// reference of.
+    /// other head is unmodelled; so is an instantiation with no arguments, which a signature cannot
+    /// spell. <paramref name="assy" /> is the assembly a TypeRef head is a reference of.
+    /// </para>
     /// </remarks>
     let private instantiateHead
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (substitute : LoadedAssemblies -> TypeDefn -> LoadedAssemblies * Result<TypeDefn, TypeBindingFailure>)
         (head : TypeDefn)
         (args : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * Result<DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>, TypeBindingFailure>
         =
-        let instantiateIn (definedIn : DumpedAssembly) (handle : TypeDefinitionHandle) (assemblies : LoadedAssemblies) =
-            match instantiateDefinition baseClassTypes args definedIn.TypeDefs.[handle] with
-            | Ok instantiated -> assemblies, Ok (definedIn, instantiated)
-            | Error failure -> assemblies, Error failure
-
-        match head with
-        | TypeDefn.FromDefinition (identity, _typeKind) ->
-            instantiateIn (assemblies.ByDefinitionName identity.AssemblyFullName) identity.TypeDefinition.Get assemblies
-        | TypeDefn.FromReference (ref, _typeKind) ->
-            match resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies with
-            | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok (resolvedIn, resolved) -> instantiateIn resolvedIn resolved.TypeDefHandle assemblies
-        | head ->
+        let unmodelled (diagnostic : string) =
             assemblies,
             Error (
                 TypeBindingFailure.Unmodelled
                     {
-                        Diagnostic =
-                            $"An instantiation's head %O{head} is not a generic type definition named by a TypeDef or TypeRef, which is the only head a signature can spell"
+                        Diagnostic = diagnostic
                     }
             )
+
+        let instantiateIn
+            (definedIn : DumpedAssembly)
+            (handle : TypeDefinitionHandle)
+            (spelled : SignatureTypeKind)
+            (assemblies : LoadedAssemblies)
+            =
+            let definition = definedIn.TypeDefs.[handle]
+
+            match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies definedIn definition with
+            | assemblies, Some failure -> assemblies, Error (TypeBindingFailure.ofBaseChain failure)
+            | assemblies, None ->
+                if spellingMismatches baseClassTypes assemblies definition.Identity spelled then
+                    assemblies,
+                    Error (TypeBindingFailure.Refused (TypeLoadRefusal.KindMismatch (definition.Identity, spelled)))
+                else
+
+                match traverseLoaded substitute assemblies args with
+                | assemblies, Error failure -> assemblies, Error failure
+                | assemblies, Ok args ->
+                    match instantiateDefinition baseClassTypes args definition with
+                    | Ok instantiated -> assemblies, Ok (definedIn, instantiated)
+                    | Error failure -> assemblies, Error failure
+
+        if args.IsEmpty then
+            unmodelled $"TODO: an instantiation of %O{head} names no arguments, which a signature cannot spell"
+        else
+
+        match head with
+        | TypeDefn.FromDefinition (identity, spelled) ->
+            instantiateIn
+                (assemblies.ByDefinitionName identity.AssemblyFullName)
+                identity.TypeDefinition.Get
+                spelled
+                assemblies
+        | TypeDefn.FromReference (ref, spelled) ->
+            match resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (resolvedIn, resolved) ->
+                instantiateIn resolvedIn resolved.TypeDefHandle spelled assemblies
+        | head ->
+            unmodelled
+                $"An instantiation's head %O{head} is not a generic type definition named by a TypeDef or TypeRef, which is the only head a signature can spell"
+
+    /// <summary>
+    /// A generic definition named bare by <paramref name="ty" />, which resolved to
+    /// <paramref name="resolved" />, as CoreCLR refuses one where a type is required: as an
+    /// instantiation's argument or an array's element.
+    /// </summary>
+    /// <remarks>
+    /// CoreCLR's <c>SigPointer::GetTypeHandleThrowing</c> loads such a type with
+    /// <c>FailIfUninstDefOrRef</c>, and so refuses it whatever the environment, before it reads the
+    /// spelling.
+    /// </remarks>
+    let private refuseBareDefinition
+        (ty : TypeDefn)
+        (resolvedIn : DumpedAssembly)
+        (resolved : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        : Result<unit, TypeBindingFailure>
+        =
+        match ty with
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _ when not resolvedIn.TypeDefs.[resolved.TypeDefHandle].Generics.IsEmpty ->
+            Error (TypeBindingFailure.Refused (TypeLoadRefusal.UninstantiatedDefinition resolved.Identity))
+        | _ -> Ok ()
 
     /// CoreCLR's `SigPointer::GetTypeHandleThrowing` refuses a function pointer type whose signature
     /// carries the GENERIC calling convention (`BFA_FNPTR_CANNOT_BE_GENERIC`).
@@ -737,7 +828,7 @@ module TypeResolution =
     /// The argument the environment binds <paramref name="param" /> to. Guest metadata can name a
     /// parameter the environment does not hold (`List`1<!0>` read from a non-generic method, say),
     /// and CoreCLR's `SigPointer::GetTypeVariableThrowing` refuses that with
-    /// <c>BadImageFormatException</c>, which here is unmodelled.
+    /// <c>BadImageFormatException</c>.
     let private argumentOf
         (typeGenericArgs : ImmutableArray<TypeDefn>)
         (methodGenericArgs : ImmutableArray<TypeDefn>)
@@ -752,11 +843,10 @@ module TypeResolution =
         if 0 <= index && index < environment.Length then
             Ok environment.[index]
         else
-            {
-                Diagnostic =
-                    $"The generic parameter %O{param} is out of range of an environment of %d{environment.Length} argument(s); CoreCLR refuses that with BadImageFormatException, which is not modelled"
-            }
-            |> TypeBindingFailure.Unmodelled
+            match param with
+            | ExpandingParam.Type _ -> TypeLoadRefusal.TypeParameterOutOfScope (index, environment.Length)
+            | ExpandingParam.Method _ -> TypeLoadRefusal.MethodParameterOutOfScope (index, environment.Length)
+            |> TypeBindingFailure.Refused
             |> Error
 
     /// <summary>
@@ -1037,36 +1127,47 @@ module TypeResolution =
                             }
                     )
         | TypeDefn.GenericInstantiation (generic, args) ->
-            match traverseLoaded (substitute expanding) assemblies args with
+            match
+                instantiateHead
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    (substitute expanding)
+                    generic
+                    args
+                    assy
+                    assemblies
+            with
             | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok args' ->
-                match instantiateHead loggerFactory dotnetRuntimeDirs baseClassTypes generic args' assy assemblies with
+            | assemblies, Ok (resolvedIn, instantiated) ->
+                match primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn instantiated with
                 | assemblies, Error failure -> assemblies, Error failure
-                | assemblies, Ok (resolvedIn, instantiated) ->
-                    match primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn instantiated with
-                    | assemblies, Error failure -> assemblies, Error failure
-                    | assemblies, Ok (_, primed) ->
-                        assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies primed)
+                | assemblies, Ok (_, primed) ->
+                    assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies primed)
         | TypeDefn.FromReference _
         | TypeDefn.FromDefinition _
         | TypeDefn.PrimitiveType _
         | TypeDefn.Void ->
-            match preserved ty assemblies with
-            | assemblies, Ok (TypeDefn.GenericInstantiation (head, _)) ->
+            match
+                resolveTypeFromDefnTracked
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    ty
+                    typeGenericArgs
+                    methodGenericArgs
+                    expanding
+                    memo
+                    assy
+                    assemblies
+            with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (resolvedIn, resolved) ->
                 // A generic definition spelled bare names itself, open (see `resolveTypeFromDefn`),
-                // and an open definition is not a type an instantiation can be at. CoreCLR's
-                // `SigPointer::GetTypeHandleThrowing` loads such an argument with
-                // `FailIfUninstDefOrRef`, and so throws `TypeLoadException`, whatever the
-                // environment.
-                assemblies,
-                Error (
-                    TypeBindingFailure.Unmodelled
-                        {
-                            Diagnostic =
-                                $"An instantiation's argument %O{ty} names the generic definition %O{head} without instantiating it; CoreCLR refuses that with TypeLoadException, which is not modelled"
-                        }
-                )
-            | resolved -> resolved
+                // and an open definition is not a type an instantiation can be at.
+                match refuseBareDefinition ty resolvedIn resolved with
+                | Error failure -> assemblies, Error failure
+                | Ok () -> assemblies, Ok (LoadedTypeInfo.typeInfoToTypeDefn baseClassTypes assemblies resolved)
 
     /// The body of <c>resolveTypeFromDefn</c>, carrying the chain of parameter expansions
     /// currently in flight. The public entry point starts that chain empty; everything inside
@@ -1100,7 +1201,23 @@ module TypeResolution =
         with
         | assemblies, Error failure -> assemblies, Error failure
         | assemblies, Ok (resolvedIn, resolved) ->
-            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved
+            match primeBaseChain loggerFactory dotnetRuntimeDirs assemblies resolvedIn resolved with
+            | assemblies, Error failure -> assemblies, Error failure
+            | assemblies, Ok (resolvedIn, resolved) ->
+                match ty with
+                // A type named directly has its spelling checked once loaded, except in an image whose
+                // table stream is version 1.0. A generic definition named bare is not checked: where
+                // a type is required it is refused before its spelling is read (see
+                // `refuseBareDefinition`), and elsewhere it is the open definition a token names.
+                | TypeDefn.FromDefinition (_, spelled)
+                | TypeDefn.FromReference (_, spelled) when
+                    resolvedIn.TypeDefs.[resolved.TypeDefHandle].Generics.IsEmpty
+                    && spellingMismatches baseClassTypes assemblies resolved.Identity spelled
+                    && not (overlooksNominalSpelling assy)
+                    ->
+                    assemblies,
+                    Error (TypeBindingFailure.Refused (TypeLoadRefusal.KindMismatch (resolved.Identity, spelled)))
+                | _ -> assemblies, Ok (resolvedIn, resolved)
 
     /// The body of <c>resolveTypeFromDefn</c>, without the base-chain priming its contract
     /// promises. Only <c>resolveTypeFromDefnTracked</c> may call this.
@@ -1162,10 +1279,7 @@ module TypeResolution =
                     assy
                     assemblies
 
-            match traverseLoaded substitute assemblies args with
-            | assemblies, Error failure -> assemblies, Error failure
-            | assemblies, Ok args' ->
-                instantiateHead loggerFactory dotnetRuntimeDirs baseClassTypes generic args' assy assemblies
+            instantiateHead loggerFactory dotnetRuntimeDirs baseClassTypes substitute generic args assy assemblies
         | TypeDefn.FromDefinition (identity, _typeKind) ->
             let definedIn = assemblies.ByDefinitionName identity.AssemblyFullName
 
@@ -1278,7 +1392,8 @@ module TypeResolution =
                             assemblies
                     with
                     | assemblies, Error failure -> assemblies, Error failure
-                    | assemblies, Ok _ -> assemblies, Ok ()
+                    | assemblies, Ok (resolvedIn, resolved) ->
+                        assemblies, refuseBareDefinition element resolvedIn resolved
 
             match elementBinds assemblies element with
             | assemblies, Error failure -> assemblies, Error failure
@@ -1310,13 +1425,18 @@ module TypeResolution =
     /// </para>
     /// <para>
     /// A bare <c>FromDefinition</c> or <c>FromReference</c> names the definition itself, so a
-    /// generic one comes back open, at its own parameters, whatever the environment. An
-    /// instantiation names exactly as many arguments as its definition declares parameters, none
-    /// of them a generic definition spelled bare nor, once substituted, a byref, a pointer, a
-    /// function pointer, <c>TypedReference</c> or <c>void</c>; CoreCLR refuses any of these with
-    /// <c>TypeLoadException</c>, and here each is unmodelled. So is a generic parameter that
-    /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold,
-    /// which CoreCLR refuses with <c>BadImageFormatException</c>.
+    /// generic one comes back open, at its own parameters, whatever the environment.
+    /// </para>
+    /// <para>
+    /// A type CoreCLR's class loader refuses is <c>TypeBindingFailure.Refused</c>, at the first part
+    /// that CoreCLR would refuse, in the order it loads them: a generic parameter that
+    /// <paramref name="typeGenericArgs" /> or <paramref name="methodGenericArgs" /> does not hold;
+    /// a <c>CLASS</c>/<c>VALUETYPE</c> spelling the definition does not match (overlooked for a type
+    /// named directly in an image whose table stream is version 1.0, as CoreCLR overlooks it); an
+    /// instantiation naming other than as many arguments as its definition declares parameters, or,
+    /// once substituted, a byref, a pointer, a function pointer, <c>TypedReference</c> or
+    /// <c>void</c>; a generic definition spelled bare as an instantiation's argument or an array's
+    /// element.
     /// </para>
     /// <para>
     /// An array resolves to <c>System.Array</c>, whatever its element type, but only where that
