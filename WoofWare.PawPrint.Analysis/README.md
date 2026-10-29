@@ -403,9 +403,77 @@ That holds for a set of assemblies that agree with each other. When one has chan
 was compiled against it, a missing member or type is reported as above, and says that the set
 needs rebuilding (or, for a package, a different version). A member made inaccessible to a
 caller is "unknown" wherever its visibility does not settle the check, unless the caller allows
-`MembersAccessible`. A generic instantiation the caller spells that a constraint added since now
-rejects is not checked, and is not reported (a constraint naming a type that is not there is
-reported, as above).
+`MembersAccessible`.
+
+A generic instantiation that a constraint added since now rejects is reported where the JIT checks
+it, before the method runs:
+- **Types:** every instantiation the full load of a type the JIT loads in full reaches, where that
+  load meets no missing type, raises `TypeLoadException` if an argument breaks its constraints
+  (`ConstraintSatisfaction`). The parts the load reaches are the base, the interfaces and the
+  value-type fields that `TypeLoad.fullLoadParts` lists, each instantiated, and the generic
+  arguments.
+- **Methods:** a method specification whose arguments break the method's constraints raises
+  `VerificationException`.
+- **Malformed arguments:** a byref, pointer, function pointer or `void` argument raises
+  `TypeLoadException` for a type and `BadImageFormatException` for a method. A `TypedReference`
+  argument is undecided (`Opacity.UndecidedConstraint`): .NET 11 admits one where .NET 10 does
+  not.
+
+What code shared between instantiations names through its type variables, the JIT sees in its
+canonical form (`System.__Canon` for a reference type). CoreCLR does not check an instantiation
+containing `__Canon`, though it checks what the load of one brings that does not contain it.
+
+These checks are exact where the instantiation is closed, but some are left open:
+- **Instantiations over a generic method's own type variables:** CoreCLR also checks an
+  instruction it checks access of, in a generic method or a method of a generic type, with the
+  method's own type variables as the arguments. The analysis does not model that check, and is
+  "unknown" there (`Opacity.ConstraintsOverTypeVariables`) wherever the instruction's token
+  instantiates, over those variables, something whose constraints, or whose full load's, could
+  reject them.
+- **A definition analysed for every instantiation at once:** it is "unknown"
+  (`Opacity.DependsOnInstantiation`) wherever some instantiation of its type variables may break a
+  constraint the JIT checks.
+
+  In both, the analysis takes an argument over the variables as satisfying a constraint, for
+  every instantiation, only where that follows from its shape. A bare variable satisfies it where
+  the variable's own constraints already demand at least as much: `class`, `struct` and `new()`
+  where its own say as much (`struct` gives `new()`, and a constraint to a class other than
+  `Object`, `ValueType` and `Enum` gives `class`); a byref-like argument only where the variable
+  allows none, or the parameter allows one; and each type constraint where it is among the bases
+  and interfaces of the variable's own constraints. Another argument satisfies it by what its
+  definition is, and by its own bases and interfaces, though an abstract class or an interface
+  does not satisfy an interface constraint that declares abstract static virtual methods. A
+  pointer, a byref, a function pointer or `TypedReference` satisfies nothing, even in code shared
+  between instantiations, where CoreCLR checks an argument's form though not its constraints.
+- **The static-virtual rule:** an abstract argument against an interface constraint that declares
+  abstract static virtual methods (`Opacity.UndecidedConstraint`).
+- **Types TypeSystem cannot instantiate:** a load reaching a type whose argument carries a custom
+  modifier or a function pointer naming a type that is not there, a constraint carrying a custom
+  modifier, or a token whose arguments the analysis does not resolve, leaves its checks undecided
+  (`Opacity.UndecidedConstraint`), unless no generic definition it names, nor any their loads
+  bring, has a constrained type parameter, or one not allowing a byref-like argument given one
+  that may be. Binding goes on past an undecided check as though it passed.
+- **A generic type's method instantiated by its definition token:** IL that C# does not write, a
+  method specification over a `MethodDef` of a generic type's method, or over a `MemberRef` whose
+  parent names the generic type without arguments, names the method on the type's typical
+  instantiation, whose arguments are its own type parameters. Where the method's constraints, or
+  a type of its signature the JIT loads, mention type variables, the check is undecided
+  (`Opacity.UndecidedConstraint`).
+- **Order of failures:** a load that misses is reported as the miss, which is exact for the
+  instantiation whose definition misses, as CoreCLR loads a definition's constraints first. Within
+  one load the analysis does not keep CoreCLR's order. Where CoreCLR checks an instantiation before
+  it reaches a later part that misses, it raises that check's `TypeLoadException`, where the
+  analysis reports the miss.
+  Across one instruction it keeps CoreCLR's order among its checks: a method specification's
+  arguments load before its method is bound, a member reference's parent before its member is
+  looked up, and a method's instantiation is checked before its signature's constraints; the
+  first check that fails is what the instruction raises. A miss is reported where the load is
+  spelled, though: a signature type that misses is reported even where CoreCLR rejects the
+  method's instantiation first and never loads it.
+- **A generic definition spelled bare:** this is its typical instantiation, which CoreCLR checks
+  against its own type parameters; the analysis does not check it.
+- **Run-time lookups:** where shared code looks a type up as it runs, as `ldtoken` does, a violation
+  is raised there, inside the method; the analysis does not report it.
 
 Each method is taken to be compiled by the JIT when it is first called. Code compiled ahead of time
 (ReadyToRun: the shared framework's, and a program's published that way) binds what it names as it

@@ -16560,6 +16560,9 @@ public static class Runners
             /// `Probe.Marked<int modopt(IsConst)>`, of a class carrying `IsByRefLikeAttribute`, which
             /// makes no class byref-like
             ModifiedMarked : EntityHandle
+            /// `MemoryExtensions.SpanSplitEnumerator<int modopt(IsConst)>`, a byref-like type whose
+            /// parameter is constrained (to `IEquatable<T>`), which the argument satisfies
+            ModifiedConstrained : EntityHandle
         }
 
     /// An image whose static `Probe.Runners` has a parameterless `void` method of each name in
@@ -16617,6 +16620,14 @@ public static class Runners
         let isConstRef = typeRef "System.Runtime.CompilerServices" "IsConst"
         let goneRef = typeRef "System" "Gone"
         let byRefLikeRef = typeRef "System.Runtime.CompilerServices" "IsByRefLikeAttribute"
+
+        let splitEnumeratorRef : EntityHandle =
+            metadata.AddTypeReference (
+                typeRef "System" "MemoryExtensions",
+                Unchecked.defaultof<StringHandle>,
+                metadata.GetOrAddString "SpanSplitEnumerator`1"
+            )
+            |> TypeReferenceHandle.op_Implicit
         // `<Module>`, `Probe.Runners`, then this.
         let marked = MetadataTokens.TypeDefinitionHandle 3
 
@@ -16655,6 +16666,7 @@ public static class Runners
                 ModifiedGoneSpan =
                     typeSpec (instance spanRef true true (fun argument -> argument.Type (goneRef, false)))
                 ModifiedMarked = typeSpec (instance (TypeDefinitionHandle.op_Implicit marked) false true int32)
+                ModifiedConstrained = typeSpec (instance splitEnumeratorRef true true int32)
             }
 
         let locals =
@@ -16836,6 +16848,8 @@ public static class Runners
             "BoxModifiedTuplePop", popped _.ModifiedTuple 1, Refusal.Compiles
             "NewarrModifiedTuple", newarr _.ModifiedTuple, Refusal.Compiles
             "NewarrModifiedMarked", newarr _.ModifiedMarked, Refusal.Compiles
+            // The analysis does not decide the constraint, but binding goes on as though it holds.
+            "BoxModifiedConstrainedPop", popped _.ModifiedConstrained 0, Refusal.Raises invalidProgram
             // A type that does not load raises what binding the token does, before the JIT can
             // refuse the box.
             "BoxModifiedGoneSpanPop", popped _.ModifiedGoneSpan 0, Refusal.Raises typeLoad
