@@ -545,87 +545,168 @@ module TestTypeSystemBindingFailure =
         | Binds
         | OutOfRange
 
+    let private parameterSpellingGen : Gen<ParameterSpelling * int * int> =
+        gen {
+            let! isMethod = Gen.elements [ true ; false ]
+            let! index = Gen.choose (0, 3)
+
+            let! wrappers =
+                Gen.choose (0, 2)
+                |> Gen.bind (fun n ->
+                    Gen.listOfLength n (Gen.elements [ Wrapper.InList ; Wrapper.InVector ; Wrapper.InMatrix ])
+                )
+
+            let! typeArgs = Gen.choose (0, 3)
+            let! methodArgs = Gen.choose (0, 3)
+
+            return
+                {
+                    IsMethod = isMethod
+                    Index = index
+                    Wrappers = wrappers
+                },
+                typeArgs,
+                methodArgs
+        }
+
+    /// The parameter `spelling` names, inside the wrappers it lists.
+    let private spellParameter (f : UnmodelledImage.Fixture) (spelling : ParameterSpelling) : TypeDefn =
+        let parameter =
+            if spelling.IsMethod then
+                TypeDefn.GenericMethodParameter spelling.Index
+            else
+                TypeDefn.GenericTypeParameter spelling.Index
+
+        spelling.Wrappers
+        |> List.fold
+            (fun inner wrapper ->
+                match wrapper with
+                | Wrapper.InList ->
+                    TypeDefn.GenericInstantiation (spelled f f.Shapes.List, ImmutableArray.Create inner)
+                | Wrapper.InVector -> TypeDefn.OneDimensionalArrayLowerBoundZero inner
+                | Wrapper.InMatrix -> TypeDefn.Array (inner, 2)
+            )
+            parameter
+
+    /// Classify `result` as binding or out of range, failing unless that is what an environment of
+    /// `typeArgs` and `methodArgs` arguments makes of `spelling`.
+    let private checkInRange
+        (spelling : ParameterSpelling)
+        (typeArgs : int)
+        (methodArgs : int)
+        (result : Result<'a, TypeBindingFailure>)
+        : InRange
+        =
+        let size = if spelling.IsMethod then methodArgs else typeArgs
+
+        match result with
+        | Ok _ when spelling.Index < size -> InRange.Binds
+        | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
+            let name =
+                if spelling.IsMethod then
+                    $"!!%d{spelling.Index}"
+                else
+                    $"!%d{spelling.Index}"
+
+            unmodelled.Diagnostic
+            |> shouldContainText $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
+
+            InRange.OutOfRange
+        | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
+
     [<Test>]
     let ``the Loader binds a generic parameter exactly when its environment holds it`` () : unit =
         let f = UnmodelledImage.fixture ()
-        let list = spelled f f.Shapes.List
-
-        let gen =
-            gen {
-                let! isMethod = Gen.elements [ true ; false ]
-                let! index = Gen.choose (0, 3)
-
-                let! wrappers =
-                    Gen.choose (0, 2)
-                    |> Gen.bind (fun n ->
-                        Gen.listOfLength n (Gen.elements [ Wrapper.InList ; Wrapper.InVector ; Wrapper.InMatrix ])
-                    )
-
-                let! typeArgs = Gen.choose (0, 3)
-                let! methodArgs = Gen.choose (0, 3)
-
-                return
-                    {
-                        IsMethod = isMethod
-                        Index = index
-                        Wrappers = wrappers
-                    },
-                    typeArgs,
-                    methodArgs
-            }
 
         let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
-            let parameter =
-                if spelling.IsMethod then
-                    TypeDefn.GenericMethodParameter spelling.Index
-                else
-                    TypeDefn.GenericTypeParameter spelling.Index
-
-            let ty =
-                spelling.Wrappers
-                |> List.fold
-                    (fun inner wrapper ->
-                        match wrapper with
-                        | Wrapper.InList -> TypeDefn.GenericInstantiation (list, ImmutableArray.Create inner)
-                        | Wrapper.InVector -> TypeDefn.OneDimensionalArrayLowerBoundZero inner
-                        | Wrapper.InMatrix -> TypeDefn.Array (inner, 2)
-                    )
-                    parameter
-
-            let result =
-                TypeResolution.resolveTypeFromDefn
-                    f.LoggerFactory
-                    HostImage.runtimeDirs
-                    f.BaseClassTypes
-                    ty
-                    (ImmutableArray.CreateRange (List.replicate typeArgs int32))
-                    (ImmutableArray.CreateRange (List.replicate methodArgs int32))
-                    f.Analysed
-                    f.Assemblies
-                |> snd
-
-            let size = if spelling.IsMethod then methodArgs else typeArgs
-
-            match result with
-            | Ok _ when spelling.Index < size -> cover InRange.Binds
-            | Error (TypeBindingFailure.Unmodelled unmodelled) when spelling.Index >= size ->
-                let name =
-                    if spelling.IsMethod then
-                        $"!!%d{spelling.Index}"
-                    else
-                        $"!%d{spelling.Index}"
-
-                unmodelled.Diagnostic
-                |> shouldContainText
-                    $"generic parameter %s{name} is out of range of an environment of %d{size} argument(s)"
-
-                cover InRange.OutOfRange
-            | other -> failwith $"%A{spelling} in (%d{typeArgs}, %d{methodArgs}): got %A{other}"
+            TypeResolution.resolveTypeFromDefn
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                (spellParameter f spelling)
+                (ImmutableArray.CreateRange (List.replicate typeArgs int32))
+                (ImmutableArray.CreateRange (List.replicate methodArgs int32))
+                f.Analysed
+                f.Assemblies
+            |> snd
+            |> checkInRange spelling typeArgs methodArgs
+            |> cover
 
             true
 
         let coverage =
-            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen gen) property
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 500)
+                (Arb.fromGen parameterSpellingGen)
+                property
+
+        coverage.Count InRange.Binds |> shouldBeGreaterThan 100
+        coverage.Count InRange.OutOfRange |> shouldBeGreaterThan 100
+
+    /// `ty` concretised in an environment of `typeArgs` and `methodArgs` copies of `int`.
+    let private concretizeIn
+        (f : UnmodelledImage.Fixture)
+        (typeArgs : int)
+        (methodArgs : int)
+        (ty : TypeDefn)
+        : Result<ConcreteTypeHandle, TypeBindingFailure>
+        =
+        let ctx = context f
+        let assembly = f.Analysed.DefinitionFullName
+
+        match
+            TypeConcretization.concretizeType ctx (loader f) assembly ImmutableArray.Empty ImmutableArray.Empty int32
+        with
+        | Error failure, _ -> failwith $"int did not concretise: %s{TypeBindingFailure.describe failure}"
+        | Ok intHandle, ctx ->
+            TypeConcretization.concretizeType
+                ctx
+                (loader f)
+                assembly
+                (ImmutableArray.CreateRange (List.replicate typeArgs intHandle))
+                (ImmutableArray.CreateRange (List.replicate methodArgs intHandle))
+                ty
+            |> fst
+
+    [<Test>]
+    let ``concretising a TypeSpec's generic parameter outside its environment is unmodelled`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        for handle, parameter in
+            [
+                f.Shapes.TypeParameter, "!0"
+                f.Shapes.ListOfTypeParameter, "!0"
+                f.Shapes.MethodParameter, "!!0"
+                f.Shapes.ListOfMethodParameter, "!!0"
+            ] do
+            let signature = f.Analysed.TypeSpecs.[handle].Signature
+
+            concretizeIn f 0 0 signature
+            |> unmodelledSaying $"generic parameter %s{parameter} is out of range of an environment of 0 argument(s)"
+
+            concretizeIn f 0 0 signature |> unmodelledSaying "BadImageFormatException"
+
+            match concretizeIn f 1 1 signature with
+            | Ok _ -> ()
+            | Error failure ->
+                failwith $"expected %s{parameter} to bind in [int32], got %s{TypeBindingFailure.describe failure}"
+
+    [<Test>]
+    let ``concretisation binds a generic parameter exactly when its environment holds it`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let property (cover : InRange -> unit) (spelling : ParameterSpelling, typeArgs : int, methodArgs : int) : bool =
+            concretizeIn f typeArgs methodArgs (spellParameter f spelling)
+            |> checkInRange spelling typeArgs methodArgs
+            |> cover
+
+            true
+
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 500)
+                (Arb.fromGen parameterSpellingGen)
+                property
 
         coverage.Count InRange.Binds |> shouldBeGreaterThan 100
         coverage.Count InRange.OutOfRange |> shouldBeGreaterThan 100

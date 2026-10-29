@@ -833,6 +833,23 @@ module TypeConcretization =
                 }
         )
 
+    /// The argument `environment` binds the generic parameter at `index` to, that parameter being
+    /// spelled `sigil` then its index (`!` for a type's, `!!` for a method's). Guest metadata can name
+    /// a parameter the environment does not hold (a TypeSpec `!0` read from a non-generic context,
+    /// say), and CoreCLR's `SigPointer::GetTypeVariableThrowing` refuses that with
+    /// <c>BadImageFormatException</c>, which here is unmodelled.
+    let private argumentOf
+        (environment : ImmutableArray<ConcreteTypeHandle>)
+        (sigil : string)
+        (index : int)
+        : Result<ConcreteTypeHandle, TypeBindingFailure>
+        =
+        if 0 <= index && index < environment.Length then
+            Ok environment.[index]
+        else
+            unmodelled
+                $"The generic parameter %s{sigil}%d{index} is out of range of an environment of %d{environment.Length} argument(s); CoreCLR refuses that with BadImageFormatException, which is not modelled"
+
     // Helper function for assembly loading with retry pattern
     let private loadAssemblyAndResolveTypeRef
         (loadAssembly : IAssemblyLoad)
@@ -987,7 +1004,8 @@ module TypeConcretization =
     /// bind is the result's failure, with what was loaded and registered before it in the context:
     /// a type or assembly the metadata names that is not there, or a shape PawPrint does not
     /// implement (a generic definition named without an instantiation or instantiated at the wrong
-    /// number of arguments, a generic function pointer, a type argument carrying a custom modifier).
+    /// number of arguments, a generic function pointer, a type argument carrying a custom modifier,
+    /// a generic parameter outside `typeGenerics` or `methodGenerics`).
     let rec concretizeType
         (ctx : ConcretizationContext<DumpedAssembly>)
         (loadAssembly : IAssemblyLoad)
@@ -1019,17 +1037,9 @@ module TypeConcretization =
                 Ok handle, ctx
             )
 
-        | TypeDefn.GenericTypeParameter index ->
-            if index < typeGenerics.Length then
-                Ok typeGenerics.[index], ctx
-            else
-                raise (IndexOutOfRangeException $"Generic type parameter %i{index}")
+        | TypeDefn.GenericTypeParameter index -> argumentOf typeGenerics "!" index, ctx
 
-        | TypeDefn.GenericMethodParameter index ->
-            if index < methodGenerics.Length then
-                Ok methodGenerics.[index], ctx
-            else
-                raise (IndexOutOfRangeException $"Generic method parameter %i{index}")
+        | TypeDefn.GenericMethodParameter index -> argumentOf methodGenerics "!!" index, ctx
 
         | TypeDefn.GenericInstantiation (genericDef, args) ->
             concretizeGenericInstantiation ctx loadAssembly assemblyFullName typeGenerics methodGenerics genericDef args
