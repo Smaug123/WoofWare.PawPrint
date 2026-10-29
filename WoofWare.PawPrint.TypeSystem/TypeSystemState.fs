@@ -217,6 +217,25 @@ type TypeSystemState =
 /// state it leaves behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
 [<RequireQualifiedAccess>]
 module TypeSystemState =
+    /// The handle of `concrete`, interning it if it is not yet interned, unless CoreCLR refuses the
+    /// instantiation (see `AllConcreteTypes.add`). Nothing it depends on is loaded.
+    let internConcreteType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : TypeSystemState)
+        (concrete : ConcreteType<ConcreteTypeHandle>)
+        : TypeSystemState * Result<ConcreteTypeHandle, TypeBindingFailure>
+        =
+        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes concrete.Identity concrete.Generics with
+        | Some handle -> state, Ok handle
+        | None ->
+            match AllConcreteTypes.add baseClassTypes concrete state.ConcreteTypes with
+            | Error refusal -> state, Error (TypeBindingFailure.Refused refusal)
+            | Ok (handle, concreteTypes) ->
+                { state with
+                    ConcreteTypes = concreteTypes
+                },
+                Ok handle
+
     let concretizeType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)

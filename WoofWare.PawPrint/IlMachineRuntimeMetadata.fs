@@ -21,7 +21,7 @@ module IlMachineRuntimeMetadata =
                 ResolvedTypeIdentity.ofDefinitionInAssembly
                     baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeType.TypeDefHandle,
-                SignatureTypeKind.Class
+                SignatureTypeKind.Unknown
             )
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory
@@ -70,7 +70,7 @@ module IlMachineRuntimeMetadata =
                 ResolvedTypeIdentity.ofDefinitionInAssembly
                     baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeFieldInfoStub.TypeDefHandle,
-                SignatureTypeKind.Class
+                SignatureTypeKind.Unknown
             )
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory
@@ -110,7 +110,7 @@ module IlMachineRuntimeMetadata =
                 ResolvedTypeIdentity.ofDefinitionInAssembly
                     baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeMethodInfoStub.TypeDefHandle,
-                SignatureTypeKind.Class
+                SignatureTypeKind.Unknown
             )
             |> IlMachineTypeResolution.concretizeType
                 loggerFactory

@@ -79,6 +79,17 @@ module TypeIdentityTestHelpers =
         else
             LoadedAssemblies.ofAssemblies (coreLib :: assemblies)
 
+    let private hostBaseClassTypes : Lazy<BaseClassTypes<DumpedAssembly>> =
+        lazy (BaseClassTypes.ofCorelib (hostCoreLib.Force ()))
+
+    /// The base class types of the CoreLib `loadedAssemblies` loads with `assemblies`.
+    let baseClassTypes (assemblies : DumpedAssembly list) : BaseClassTypes<DumpedAssembly> =
+        let coreLib = hostCoreLib.Force ()
+
+        match assemblies |> List.tryFind (fun a -> a.Name.Name = coreLib.Name.Name) with
+        | Some own -> BaseClassTypes.ofCorelib own
+        | None -> hostBaseClassTypes.Force ()
+
     let emptyConcretizationContext
         (assemblies : DumpedAssembly list)
         : TypeConcretization.ConcretizationContext<DumpedAssembly>
@@ -86,7 +97,7 @@ module TypeIdentityTestHelpers =
         {
             TypeConcretization.ConcretizationContext.ConcreteTypes = AllConcreteTypes.Empty
             TypeConcretization.ConcretizationContext.LoadedAssemblies = loadedAssemblies assemblies
-            TypeConcretization.ConcretizationContext.BaseTypes = Unchecked.defaultof<BaseClassTypes<DumpedAssembly>>
+            TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes assemblies
         }
 
     let getTopLevelTypeDef

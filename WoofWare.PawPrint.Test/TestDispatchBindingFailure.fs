@@ -969,7 +969,7 @@ module TestDispatchBindingFailure =
             ask
                 name
                 (fun () ->
-                    match tryConcretize f f.Analysed handle SignatureTypeKind.Class (typeSystem f) with
+                    match tryConcretize f f.Analysed handle SignatureTypeKind.Unknown (typeSystem f) with
                     | _, Error failure -> Error failure
                     | state, Ok receiver ->
                         let state, disposable, dispose = dispose f state

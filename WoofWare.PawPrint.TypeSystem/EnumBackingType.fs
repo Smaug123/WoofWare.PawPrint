@@ -158,9 +158,9 @@ module internal EnumBackingType =
     /// The exact primitive backing type of a concrete enum, stripping enum-typed backing fields;
     /// `None` for a handle whose immediate base is not CoreLib's System.Enum.
     /// Checks the rules CoreCLR applies to an enum as such: backing-field shape and spelling, enum
-    /// layout and generic arity. It does not check rules that every type load applies, such as
-    /// legal generic arguments, CLASS/VALUETYPE spellings inside them or generic parameters in
-    /// scope: an enum breaking only those is treated as concretization treats any other type.
+    /// layout and generic arity. The rules every type load applies (legal generic arguments,
+    /// CLASS/VALUETYPE spellings, generic parameters in scope) are concretization's, which refuses
+    /// a type breaking them, enum or not, with `TypeBindingFailure.Refused`.
     /// Binding failures and unsupported shapes retain the state reached before the failure.
     /// A cycle is refused; a chain beyond 64 enums reports a PawPrint limit rather than a CLR refusal.
     let tryResolve

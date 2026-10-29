@@ -344,22 +344,9 @@ module internal DefaultInterfaceImplementation =
         (state : TypeSystemState)
         : TypeSystemState * Result<Candidate list, TypeBindingFailure>
         =
-        let state, target =
-            match
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    method.RequiredDeclaringType.Identity
-                    method.DeclaringTypeGenerics
-            with
-            | Some target -> state, target
-            | None ->
-                let target, concreteTypes =
-                    AllConcreteTypes.add method.RequiredDeclaringType state.ConcreteTypes
-
-                { state with
-                    ConcreteTypes = concreteTypes
-                },
-                target
+        match TypeSystemState.internConcreteType baseClassTypes state method.RequiredDeclaringType with
+        | state, Error failure -> state, Error failure
+        | state, Ok target ->
 
         let consider
             (state : TypeSystemState)
