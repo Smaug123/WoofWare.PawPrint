@@ -290,6 +290,9 @@ def make_repo(directory, files):
     run(directory, "git", "config", "user.email", "t@example.invalid")
     run(directory, "git", "config", "user.name", "t")
     run(directory, "git", "config", "commit.gpgsign", "false")
+    # Otherwise each commit or merge leaves a detached `git maintenance run --auto`, which
+    # outlives the command and takes a lock in `.git` while the test deletes the repository.
+    run(directory, "git", "config", "maintenance.auto", "false")
     run(directory, "git", "remote", "add", "origin", "https://example.invalid/repo.git")
     write_files(directory, files)
     run(directory, "git", "add", "-A")
