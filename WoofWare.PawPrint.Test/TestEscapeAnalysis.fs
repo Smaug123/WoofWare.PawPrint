@@ -14897,7 +14897,9 @@ public static class Runners
         let analysis = analysisOver [ assembly ] id
 
         // CoreCLR allocates a `RuntimeWrappedException` and runs its `(object)` constructor on it
-        // (`WrapNonCompliantException`), and throws whatever either raises instead.
+        // (`WrapNonCompliantException`), and throws whatever either raises instead, where the VM
+        // throws that again preserving its stack trace (`ExceptionMaking.vmMakingRaise`), after
+        // preserving it.
         let wrapperConstructor =
             let corelib = hostCoreLib ()
 
@@ -14913,12 +14915,26 @@ public static class Runners
                 |> Seq.exactlyOne
                 |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
 
-        let analysis, wrapping = EscapeAnalysis.escapes analysis wrapperConstructor
+        let makers =
+            match ExceptionMaking.vmMakingRaise (FrameworkUnderTest.runtime ()) with
+            | VmMakingRaise.EscapesInPlace -> [ wrapperConstructor ]
+            | VmMakingRaise.ThrownAgainPreservingTrace ->
+                [ wrapperConstructor ; internalPreserveStackTrace (hostCoreLib ()) ]
 
-        let analysis, wrappingSources =
-            EscapeAnalysis.unknownSources analysis wrapperConstructor
+        let analysis, made =
+            (analysis, makers)
+            ||> List.mapFold (fun analysis maker ->
+                let analysis, escapes = EscapeAnalysis.escapes analysis maker
+                let analysis, sources = EscapeAnalysis.unknownSources analysis maker
+                (escapes, sources), analysis
+            )
+            |> fun (made, analysis) -> analysis, made
 
-        let wrapped = Set.add "=System.OutOfMemoryException" (render analysis wrapping)
+        let wrapped =
+            made
+            |> List.map (fun (escapes, _) -> render analysis escapes)
+            |> Set.unionMany
+            |> Set.add "=System.OutOfMemoryException"
 
         // `object`, which may be an exception or not; `object` exactly, which is not; and an object
         // the analysis cannot name.
@@ -14935,12 +14951,15 @@ public static class Runners
                 let analysis, sources = EscapeAnalysis.unknownSources analysis key
 
                 Set.difference wrapped (render analysis escapes) |> shouldEqual Set.empty
-                Set.isSubset wrapping.Assumes escapes.Assumes |> shouldEqual true
 
-                if wrapping.Unknown then
-                    escapes.Unknown |> shouldEqual true
+                for made, madeSources in made do
+                    Set.isSubset made.Assumes escapes.Assumes |> shouldEqual true
 
-                Set.isSubset wrappingSources sources |> shouldEqual true
+                    if made.Unknown then
+                        escapes.Unknown |> shouldEqual true
+
+                    Set.isSubset madeSources sources |> shouldEqual true
+
                 analysis
             )
 

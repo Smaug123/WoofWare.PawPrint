@@ -157,7 +157,9 @@ method) may add more:
   `RuntimeWrappedException` if its method's assembly wraps such throws (C# and Visual Basic
   assemblies do, F# ones do not), and as itself if not. Either way the runtime wraps it where it is
   thrown, allocating the `RuntimeWrappedException` and running its `(object)` constructor, and
-  throws in the wrapper's place what either raises, so the answer has that too;
+  throws in the wrapper's place what either raises, after preserving its stack trace where the
+  runtime preserves what the VM's making raises (`ExceptionMaking.vmMakingRaise`), so the answer
+  has that too;
 * a type initializer runs where CoreCLR's `CEEInfo::initClass` runs it: at an access to a static
   field of its type, other than from that type's own initializer, and at a call to a method of its
   type that is static, a constructor, or an instance method of a value type or an interface, unless

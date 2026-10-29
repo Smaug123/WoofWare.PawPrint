@@ -562,7 +562,7 @@ public static class Driver
         | EmulatedRuntime.Net11 ->
             // Real .NET 11 does not survive this culture, which throws on every read: preserving
             // the trace of each exception it raises raises another, until the stack overflows
-            // (`Net11Frontier.nonExceptionWrapping`).
+            // (`ExceptionMaking.vmMakingRaise`).
             let onHost, onPawPrint =
                 FabricatedGuest.runOnBoth
                     "Thrower"
