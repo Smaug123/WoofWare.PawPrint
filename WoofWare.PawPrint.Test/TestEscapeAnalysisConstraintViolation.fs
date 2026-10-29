@@ -1006,8 +1006,8 @@ public static class Cases
     /// address of a method of a generic type instantiated over function pointers; a member gone
     /// from a parent whose instantiation now violates a constraint, which CoreCLR loads first; a
     /// type token over a function pointer whose signature names a variable, in shared code, which
-    /// CoreCLR looks up as the method runs; and a method instantiation violating constraints both
-    /// of the method and of its return type, of which CoreCLR raises only the method's.
+    /// CoreCLR looks up as the method runs; and a method instantiation violating constraints both of the
+    /// method and of its return type, of which CoreCLR raises only the method's.
     [<Test>]
     let ``constraint checks of loads the analysis follows less directly agree with the host`` () : unit =
         let scenarios =
@@ -1670,7 +1670,9 @@ public static class Cases
     /// And a generic method instantiates another, or a generic type, with a pointer to its type
     /// variable, which CoreCLR admits in no instantiation, rejecting it compiling the caller even in
     /// code shared between instantiations; or with `TypedReference`, for a parameter allowing a
-    /// byref-like argument, which .NET 10 rejects there and .NET 11 admits. The library is emitted, the client
+    /// byref-like argument, which .NET 10 rejects there and .NET 11 admits. And a method instantiation
+    /// violating the method's constraint whose closed return type violates another, of which CoreCLR
+    /// raises only the method's. The library is emitted, the client
     /// compiled against it.
     [<Test>]
     let ``generic methods instantiated as C# does not write agree with the host`` () : unit =
@@ -1846,6 +1848,52 @@ public static class Cases
             )
 
             passingIl.Emit Reflection.Emit.OpCodes.Ret
+
+            // `struct S<X> where X : class`, and `static S<int> MR<T>() where T : class`, which C#
+            // does not write, called by `static void CallsMR() { MR<int>(); }`.
+            let constrainedStruct =
+                modul.DefineType (
+                    "S`1",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Sealed
+                    ||| Reflection.TypeAttributes.SequentialLayout,
+                    typeof<ValueType>
+                )
+
+            (constrainedStruct.DefineGenericParameters [| "X" |]).[0].SetGenericParameterAttributes
+                Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+
+            constrainedStruct.CreateType () |> ignore<Type>
+            let structOfInt = constrainedStruct.MakeGenericType [| typeof<int> |]
+
+            let closedReturn =
+                plain.DefineMethod (
+                    "MR",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    structOfInt,
+                    Type.EmptyTypes
+                )
+
+            (closedReturn.DefineGenericParameters [| "T" |]).[0].SetGenericParameterAttributes
+                Reflection.GenericParameterAttributes.ReferenceTypeConstraint
+
+            let closedReturnIl = closedReturn.GetILGenerator ()
+            let returned = closedReturnIl.DeclareLocal structOfInt
+            closedReturnIl.Emit (Reflection.Emit.OpCodes.Ldloc, returned)
+            closedReturnIl.Emit Reflection.Emit.OpCodes.Ret
+
+            let callsClosedReturn =
+                plain.DefineMethod (
+                    "CallsMR",
+                    Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                    typeof<Void>,
+                    Type.EmptyTypes
+                )
+
+            let callsClosedReturnIl = callsClosedReturn.GetILGenerator ()
+            callsClosedReturnIl.Emit (Reflection.Emit.OpCodes.Call, closedReturn.MakeGenericMethod [| typeof<int> |])
+            callsClosedReturnIl.Emit Reflection.Emit.OpCodes.Pop
+            callsClosedReturnIl.Emit Reflection.Emit.OpCodes.Ret
             plain.CreateType () |> ignore<Type>
 
             use stream = new MemoryStream ()
@@ -1864,6 +1912,7 @@ public static class Cases
     public static int CallsPointing() { Plain.G<string>(); return 0; }
     public static int CallsPointingType() { Plain.H<string>(); return 0; }
     public static int CallsTypedReference() { Plain.G2<string>(); return 0; }
+    public static int CallsClosedReturn() { Plain.CallsMR(); return 0; }
 }
 """
 
@@ -1874,6 +1923,7 @@ public static class Cases
                 "CallsPointing"
                 "CallsPointingType"
                 "CallsTypedReference"
+                "CallsClosedReturn"
             ]
 
         let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
@@ -1896,7 +1946,7 @@ public static class Cases
             )
             |> Seq.length
 
-        Assert.That (byDefinition, Is.EqualTo 4)
+        Assert.That (byDefinition, Is.EqualTo 5)
 
         let mutable analysis =
             analysisOver
@@ -1922,6 +1972,7 @@ public static class Cases
                         "CallsPointing", "Plain", "G", true
                         "CallsPointingType", "Plain", "H", true
                         "CallsTypedReference", "Plain", "G2", false
+                        "CallsClosedReturn", "Plain", "CallsMR", false
                     ] do
                     let raised =
                         match hostOutcomes.[case] with
@@ -1970,6 +2021,36 @@ public static class Cases
 
         if not failures.IsEmpty then
             failures |> String.concat "\n" |> failwith
+
+    /// A type whose interface's argument grows without end through a function pointer's signature,
+    /// named by a type token. CoreCLR overflows its stack loading it (measured), which nothing can
+    /// catch, so there is no outcome to compare with; the analysis must answer, and not know it.
+    [<Test>]
+    let ``a load growing through a function pointer's signature is undecided`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let clientImage =
+            compileClient
+                []
+                """
+namespace Client;
+public interface I<X> { }
+public unsafe struct S<T> : I<S<delegate*<T, void>[]>> { }
+public static class Cases
+{
+    public static int LoadsToken() { System.Type t = typeof(S<int>); return t == null ? 1 : 0; }
+}
+"""
+
+        let clientAssembly =
+            Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (clientImage))
+
+        let analysis = analysisOver [ clientAssembly ] id
+
+        let _, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Cases" "LoadsToken")
+
+        Assert.That (escapes.Unknown, Is.True)
 
     /// A generic method calling a method that a generic type inherits from its generic base, by a
     /// member reference whose parent is the derived type over the method's type variable, which IL
