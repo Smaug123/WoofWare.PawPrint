@@ -89,8 +89,7 @@ module MemberReferenceInstantiation =
             )
 
     /// The row, as a diagnostic names it.
-    /// The MemberRef row `m` of `assy`, described for a run that stops on it.
-    let rowDescription (assy : DumpedAssembly) (m : MemberReferenceHandle) : string =
+    let private rowDescription (assy : DumpedAssembly) (m : MemberReferenceHandle) : string =
         let memberName = assy.Strings assy.Members.[m].Name
 
         let row =

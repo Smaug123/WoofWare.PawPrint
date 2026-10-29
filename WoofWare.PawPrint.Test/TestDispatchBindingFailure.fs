@@ -29,6 +29,9 @@ module TestDispatchBindingFailure =
         /// One of the type's own MethodImpls declares an override of `<method>`, by a MemberRef that
         /// names no method.
         | DeclarationAbsent of method : string
+        /// A MethodImpl shape PawPrint does not model, reported with a diagnostic containing
+        /// `<fragment>`.
+        | Unmodelled of fragment : string
 
     type private Image =
         {
@@ -148,6 +151,7 @@ module TestDispatchBindingFailure =
         let takesException = signature true returnsVoid [ exceptionType ]
         let takesUnboundException = signature true returnsVoid [ nowhereException ]
         let voidOfObject = signature true returnsVoid [ object ]
+        let returnsString = signature true (fun returns -> returns.Type().String ()) []
 
         let body =
             let il = InstructionEncoder (BlobBuilder ())
@@ -554,6 +558,221 @@ module TestDispatchBindingFailure =
                         (memberRef exceptionType "Take" voidOfObject)
                 )
 
+        // Implements `ITakes`, with a MethodImpl declaring `ITakes::Take(object)`, which `ITakes` does not
+        // declare.
+        let declaresAbsentInterfaceMethod =
+            declareType
+                "DeclaresAbsentInterfaceMethod"
+                object
+                1
+                (fun owner ->
+                    implements owner takes
+
+                    method (publicVirtual ||| MethodAttributes.Final) "Take" takesException
+                    |> ignore<MethodDefinitionHandle>
+
+                    let impl = method privateOverride "TakeImpl" voidOfObject
+
+                    methodImpl owner (MethodDefinitionHandle.op_Implicit impl) (memberRef takes "Take" voidOfObject)
+                )
+
+        // Derives from `Base`, with a MethodImpl declaring `Base::Missing(object)`, a name neither `Base`
+        // nor `System.Object` declares.
+        let declaresAbsentOverride =
+            declareType
+                "DeclaresAbsentOverride"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "MissingImpl" voidOfObject
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef baseType "Missing" voidOfObject)
+                )
+
+        // Derives from `Base`, with a MethodImpl declaring `Base::Take(object)`: `Base` declares `Take`
+        // only with an `Exception` parameter, and `System.Object` declares no `Take`.
+        let declaresAbsentOverload =
+            declareType
+                "DeclaresAbsentOverload"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" voidOfObject
+
+                    methodImpl owner (MethodDefinitionHandle.op_Implicit impl) (memberRef baseType "Take" voidOfObject)
+                )
+
+        // `class N.HelperBase { void Help(object); }`, whose one method is not virtual.
+        let helperBase : EntityHandle =
+            declareType
+                "HelperBase"
+                object
+                1
+                (fun _ ->
+                    method (MethodAttributes.Public ||| MethodAttributes.HideBySig) "Help" voidOfObject
+                    |> ignore<MethodDefinitionHandle>
+                )
+            |> TypeDefinitionHandle.op_Implicit
+
+        // Derives from `HelperBase`, with a MethodImpl declaring its non-virtual `Help(object)`.
+        let declaresNonVirtual =
+            declareType
+                "DeclaresNonVirtual"
+                helperBase
+                1
+                (fun owner ->
+                    let impl = method privateOverride "HelpImpl" voidOfObject
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef helperBase "Help" voidOfObject)
+                )
+
+        // Derives from `Base`, with a MethodImpl declaring `Base::ToString()`, which `Base` inherits from
+        // `System.Object` rather than declaring.
+        let declaresInheritedOverride =
+            declareType
+                "DeclaresInheritedOverride"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "ToStringImpl" returnsString
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef baseType "ToString" returnsString)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is a MemberRef naming
+        // the type's own `TakeImpl`.
+        let bodyByMemberRef =
+            declareType
+                "BodyByMemberRef"
+                baseType
+                1
+                (fun owner ->
+                    method privateOverride "TakeImpl" takesException
+                    |> ignore<MethodDefinitionHandle>
+
+                    methodImpl
+                        owner
+                        (memberRef (TypeDefinitionHandle.op_Implicit owner) "TakeImpl" takesException)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is `Base.Take` itself,
+        // a method of another type.
+        let bodyOnAncestor =
+            declareType
+                "BodyOnAncestor"
+                baseType
+                1
+                (fun owner ->
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Implements `IDisposable` by a MethodImpl whose body is `Base.Take`, a method of another type.
+        let implementsByForeignBody =
+            declareType
+                "ImplementsByForeignBody"
+                object
+                1
+                (fun owner ->
+                    implements owner disposable
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                        (memberRef disposable "Dispose" instanceVoid)
+                )
+
+        // The type's one type parameter, named `T`.
+        let genericOver (owner : TypeDefinitionHandle) : unit =
+            metadata.AddGenericParameter (
+                TypeDefinitionHandle.op_Implicit owner,
+                GenericParameterAttributes.None,
+                metadata.GetOrAddString "T",
+                0
+            )
+            |> ignore<GenericParameterHandle>
+
+        let mutable genericBaseTake = Unchecked.defaultof<MethodDefinitionHandle>
+
+        // `class N.GenericBase<T> { virtual void Take(System.Exception); }`.
+        declareType
+            "GenericBase`1"
+            object
+            1
+            (fun owner ->
+                genericOver owner
+                genericBaseTake <- method publicVirtual "Take" takesException
+            )
+        |> ignore<TypeDefinitionHandle>
+
+        let mutable genericInterfaceTake = Unchecked.defaultof<MethodDefinitionHandle>
+
+        // `interface N.IGeneric<T> { void Take(System.Exception); }`.
+        declareKind
+            (TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract)
+            "IGeneric`1"
+            Unchecked.defaultof<EntityHandle>
+            1
+            (fun owner ->
+                genericOver owner
+
+                genericInterfaceTake <-
+                    methodWithBody
+                        -1
+                        (MethodAttributes.Public
+                         ||| MethodAttributes.Virtual
+                         ||| MethodAttributes.Abstract
+                         ||| MethodAttributes.HideBySig
+                         ||| MethodAttributes.NewSlot)
+                        "Take"
+                        takesException
+            )
+        |> ignore<TypeDefinitionHandle>
+
+        // Derives from `Base`, with a MethodImpl declaring `GenericBase<T>.Take` by its MethodDef, which
+        // carries no instantiation of `GenericBase`.
+        let declaresGenericClassByDef =
+            declareType
+                "DeclaresGenericClassByDef"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (MethodDefinitionHandle.op_Implicit genericBaseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl declaring `IGeneric<T>.Take` by its MethodDef, which
+        // carries no instantiation of `IGeneric`.
+        let declaresGenericInterfaceByDef =
+            declareType
+                "DeclaresGenericInterfaceByDef"
+                baseType
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (MethodDefinitionHandle.op_Implicit genericInterfaceTake)
+                )
+
         // A value type with a field of a type CoreLib does not declare, the only type owning a field
         // but the one after it.
         let holdsGone =
@@ -662,6 +881,20 @@ module TestDispatchBindingFailure =
                 "DeclaresOnAbsent", declaresOnAbsent, Expected.Absent "Gone"
                 "BodyOnAbsentInstantiation", bodyOnAbsentInstantiation, Expected.Absent "Gone`1"
                 "DeclaresAbsentMethod", declaresAbsentMethod, Expected.DeclarationAbsent "Take"
+                "DeclaresAbsentInterfaceMethod", declaresAbsentInterfaceMethod, Expected.DeclarationAbsent "Take"
+                "DeclaresAbsentOverride", declaresAbsentOverride, Expected.DeclarationAbsent "Missing"
+                "DeclaresAbsentOverload", declaresAbsentOverload, Expected.DeclarationAbsent "Take"
+                "DeclaresNonVirtual", declaresNonVirtual, Expected.Unmodelled "MI_MUSTBEVIRTUAL"
+                "DeclaresInheritedOverride",
+                declaresInheritedOverride,
+                Expected.Unmodelled "FindDeclMethodOnClassInHierarchy"
+                "BodyByMemberRef", bodyByMemberRef, Expected.Unmodelled "names its body by a MemberRef"
+                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "another type declares it"
+                "ImplementsByForeignBody", implementsByForeignBody, Expected.Unmodelled "a method of another type"
+                "DeclaresGenericClassByDef", declaresGenericClassByDef, Expected.Unmodelled "carries no instantiation"
+                "DeclaresGenericInterfaceByDef",
+                declaresGenericInterfaceByDef,
+                Expected.Unmodelled "carries no instantiation"
                 "HoldsGone", holdsGone, Expected.Absent "Gone"
                 "HoldsHoldsGone", holdsHoldsGone, Expected.Absent "Gone"
                 "DerivesOverridesUnbound", derivesOverridesUnbound, Expected.Unavailable
@@ -862,6 +1095,9 @@ module TestDispatchBindingFailure =
             && f.Analysed.TypeDefs.[miss.Type.TypeDefinition.Get].MethodImpls.Values
                |> Seq.exists (fun impl -> impl.Declaration = MetadataToken.MemberReference miss.Declaration)
             && f.Analysed.Members.[miss.Declaration].PrettyName = name
+            && miss.Name = name
+        | Expected.Unmodelled fragment, Error (TypeBindingFailure.Unmodelled unmodelled) ->
+            unmodelled.Diagnostic.Contains fragment
         | _ -> false
 
     let private describe (result : Result<'a, TypeBindingFailure>) : string =
@@ -1359,6 +1595,21 @@ module TestDispatchBindingFailure =
             "ExtendsUnboundInstantiation", "ConstrainedType.resolve of Object.GetHashCode on the receiver"
             "DeclaresUnboundOverride", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresAbsentMethod", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresAbsentInterfaceMethod", "ownDispatchMapOf"
+            "DeclaresAbsentInterfaceMethod", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresAbsentOverride", "contentVtableOfDefinition"
+            "DeclaresAbsentOverride", "dispatchTableOfClosed"
+            "DeclaresAbsentOverload", "contentVtableOfDefinition"
+            "DeclaresAbsentOverload", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresNonVirtual", "contentVtableOfDefinition"
+            "DeclaresInheritedOverride", "contentVtableOfDefinition"
+            "BodyByMemberRef", "contentVtableOfDefinition"
+            "BodyByMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyOnAncestor", "contentVtableOfDefinition"
+            "ImplementsByForeignBody", "ownDispatchMapOf"
+            "DeclaresGenericClassByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "DeclaresGenericInterfaceByDef", "ownDispatchMapOf"
+            "DeclaresGenericInterfaceByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
         ]
 
     [<Test>]

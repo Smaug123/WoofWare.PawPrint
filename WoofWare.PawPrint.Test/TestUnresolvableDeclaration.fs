@@ -10,25 +10,22 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// A MethodImpl declaration that does not resolve at the ancestor it names is refused loudly, at
-/// table-build time, rather than answered approximately.
+/// A MethodImpl declaration that does not resolve to a virtual at the ancestor it names fails at
+/// table-build time, rather than being answered approximately.
 ///
-/// Upstream would resolve such a row by searching the named ancestor's own bases
-/// (`MethodTableBuilder::FindDeclMethodOnClassInHierarchy`) and by retrying under COM type
-/// equivalence; PawPrint implements neither. Refusal is exact about which claim it can make: names
-/// are untouched by substitution and equivalence alike, so when nothing at or above the named
-/// ancestor even bears the name, the image is one CoreCLR rejects at load, and the message says so;
-/// a name match whose signatures do not resolve may be an image CoreCLR loads, and the message says
-/// that instead.
+/// Upstream's `MethodTableBuilder::FindDeclMethodOnClassInHierarchy` compares the named ancestor's
+/// methods, non-virtual ones included, and then only the virtuals of its own bases. A non-virtual
+/// match at the named ancestor is `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL`, which PawPrint reports as
+/// unmodelled, naming that error.
 ///
-/// The refusal costs no program that runs. The shape that would make it matter on a *valid* image --
-/// a MemberRef to an ancestor that merely inherits the named method -- cannot be fabricated here
-/// (`DefineMethodOverride` takes a `MethodInfo`, whose `DeclaringType` is where the method is
-/// declared, so the row always names the declaring type; measured, not assumed), and a census over
-/// every assembly of the host shared framework and the pinned linux-x64 pack found no MethodImpl row
-/// of that shape at all. What *is* fabricable reaches the same code path from the invalid side: a
-/// MemberRef on a TypeSpec naming a method that holds no slot, which CoreCLR rejects with
-/// `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` -- checked against the real runtime below rather than assumed.
+/// The shape that would reach the bases on a *valid* image -- a MemberRef to an ancestor that merely
+/// inherits the named method -- cannot be fabricated here (`DefineMethodOverride` takes a
+/// `MethodInfo`, whose `DeclaringType` is where the method is declared, so the row always names the
+/// declaring type; measured, not assumed), and a census over every assembly of the host shared
+/// framework and the pinned linux-x64 pack found no MethodImpl row of that shape at all. What *is*
+/// fabricable is a MemberRef on a TypeSpec naming a method that holds no slot, which CoreCLR rejects
+/// with `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` -- checked against the real runtime below rather than
+/// assumed.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnresolvableDeclaration =
@@ -39,9 +36,8 @@ module TestUnresolvableDeclaration =
     /// `Plain` carries no MethodImpl at all, as a control.
     ///
     /// With `withOverloads`, `AG<T>` additionally declares a virtual `M (Other)`, which does take a
-    /// slot: the row still resolves to nothing -- its `!0` parameter matches no overload -- but the
-    /// name it declares is now borne by a slot at the named ancestor, which is what selects between
-    /// the two refusal messages.
+    /// slot: the row's `!0` parameter matches no virtual overload, so a virtual of the declared name at
+    /// the named ancestor must not hide the non-virtual match.
     let private image (withOverloads : bool) : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Unresolvable", typeof<obj>.Assembly)
@@ -257,31 +253,18 @@ module TestUnresolvableDeclaration =
             check typeName
 
     [<Test>]
-    let ``a declaration whose name no slot in reach bears is refused as an invalid image`` () : unit =
-        // Nothing at or above `AG<int>` places a virtual method called `M` (BG's own `M` is below the
-        // named ancestor), so upstream's search matches no name at any level it visits and no method
-        // table exists for `BG` at all; the refusal claims as much.
-        forBothCarriers
-            noOverloads
-            (fun typeName ->
-                let thrown = Assert.Throws (fun () -> noOverloads.Table typeName |> ignore<_>)
+    let ``a declaration naming a non-virtual method is refused as the real runtime refuses it`` () : unit =
+        // Nothing above `AG<int>` places a virtual method called `M` (BG's own `M` is below the named
+        // ancestor), and `AG<T>` declares `M (!0)` non-virtually, which upstream finds and rejects.
+        for fixture in fixtures do
+            forBothCarriers
+                fixture
+                (fun typeName ->
+                    let thrown = Assert.Throws (fun () -> fixture.Table typeName |> ignore<_>)
 
-                thrown.Message |> shouldContainText "places a virtual method of that name"
-                thrown.Message |> shouldContainText "MI_DECLARATIONNOTFOUND"
-            )
-
-    [<Test>]
-    let ``a declaration that does not resolve at the named ancestor is refused as unimplemented`` () : unit =
-        // `AG<T>`'s virtual `M (Other)` bears the name, so upstream's search would compare signatures
-        // and climb -- the search PawPrint does not implement -- and the refusal must not claim the
-        // image is invalid, because on this evidence a valid image is possible.
-        forBothCarriers
-            withOverloads
-            (fun typeName ->
-                let thrown = Assert.Throws (fun () -> withOverloads.Table typeName |> ignore<_>)
-
-                thrown.Message |> shouldContainText "FindDeclMethodOnClassInHierarchy"
-            )
+                    thrown.Message |> shouldContainText "declares only non-virtually"
+                    thrown.Message |> shouldContainText "MI_MUSTBEVIRTUAL"
+                )
 
     [<Test>]
     let ``a type carrying no such row is unaffected`` () : unit =

@@ -10,7 +10,8 @@ open Microsoft.Extensions.Logging
 ///
 /// A type that laying out a table must bind and that does not -- a base type, the parent of a MethodImpl
 /// declaration, or one a compared signature or constraint names -- is the failure, returned with the
-/// assemblies loaded before it. A table CoreCLR would refuse to build from types that do bind is still
+/// assemblies loaded before it. So is a MethodImpl whose declaration names no method, or whose shape
+/// is not modelled. Any other table CoreCLR would refuse to build from types that do bind is still
 /// refused with `failwith`.
 [<RequireQualifiedAccess>]
 module MethodTableLayout =
@@ -808,10 +809,10 @@ module MethodTableLayout =
     /// What a MethodImpl declaration turned out to name.
     ///
     /// `NoSlot` is the common case rather than a failure: the row writes the dispatch map, not the
-    /// vtable. A declaration this rule cannot resolve to a slot is refused with `failwith` inside
-    /// `declarationSlot` rather than represented here: dispatch reads the slot the row may or may not
-    /// have written, so an unresolved row would make both answering and declining wrong, and the
-    /// shapes that reach the refusal are ones no framework assembly carries (measured over the host
+    /// vtable. A declaration this rule cannot resolve to a slot is a failure of `declarationSlot`
+    /// rather than represented here: dispatch reads the slot the row may or may not have written, so
+    /// an unresolved row would make both answering and declining wrong, and the shapes that reach the
+    /// failure are ones no framework assembly carries (measured over the host
     /// shared framework and the pinned linux pack: every class-parent MemberRef declaration in all 485
     /// assemblies resolves at the type it names).
     type private DeclarationTarget =
@@ -840,14 +841,13 @@ module MethodTableLayout =
     ///
     /// Three departures from upstream, each of which a caller can observe.
     ///
-    /// It **refuses** a declaration the named ancestor declares nothing matching. Upstream would go
-    /// on to search that ancestor's own bases -- so a MemberRef naming `B` can legally resolve to a
-    /// method `A` introduced -- and would then retry permitting COM type equivalence. PawPrint models
-    /// neither, and no framework assembly needs either (measured: see `DeclarationTarget`), so it
-    /// refuses loudly rather than guess which slot the row wrote. Where no slot at or above the named
-    /// ancestor even bears the name, upstream's own search fails at every level it visits
-    /// (`strcmp(declSig.GetName(), pCurMD->GetName())`, methodtablebuilder.cpp:6068) and the image is
-    /// one CoreCLR rejects at class load, so that refusal costs no program CoreCLR would run.
+    /// It **reports as unmodelled** a declaration the named ancestor declares no virtual match for,
+    /// where an ancestor above it declares a virtual method of the same name. Upstream would go on to
+    /// search that ancestor's own bases, so a MemberRef naming `B` can legally resolve to a method `A`
+    /// introduced; PawPrint does not, and no framework assembly needs it (measured: see
+    /// `DeclarationTarget`). Where no virtual above the named ancestor bears the name, the outcome is
+    /// upstream's: `MethodImplDeclarationAbsent` when the named ancestor declares nothing matching
+    /// either, and unmodelled `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` when it declares a match non-virtually.
     ///
     /// It **refuses** when more than one declaration matches. Comparing in the open vocabulary means
     /// that can only be one type declaring the same name and signature twice, which ECMA-335 II.22.26
@@ -1043,45 +1043,92 @@ module MethodTableLayout =
             match matches with
             | [ single ] -> ctx, Ok (DeclarationTarget.Names single)
             | [] ->
-                // Upstream would search the named ancestor's own bases, so a MemberRef naming `B`
-                // legally resolves to a method `A` introduced, and would then retry permitting COM type
-                // equivalence. PawPrint models neither, and cannot say which slot the row wrote without
-                // them, so it refuses loudly -- crucially *not* treating the row as absent, which would
-                // hand its slot whatever placement had put there.
-                //
-                // Which refusal is exact. Upstream matches the name before any signature
-                // (`strcmp(declSig.GetName(), pCurMD->GetName())`, methodtablebuilder.cpp:6068), and
-                // names are untouched by substitution and type equivalence alike -- so when no slot at
-                // or above the named ancestor bears the name, upstream's search fails at every level it
-                // visits and the image is one CoreCLR rejects at load, whereas a name match this rule
-                // could not resolve may be an image CoreCLR loads.
-                let anyOfNameInReach =
-                    let atOrAbove =
-                        // `Chain` runs derived-first, so the named ancestor and its own bases are the
-                        // suffix beginning at it.
+                // Upstream's search (`FindDeclMethodOnClassInHierarchy`, methodtablebuilder.cpp:6033-6110)
+                // goes on from the named ancestor to its own bases, so a MemberRef naming `B` can
+                // legally resolve to a method `A` introduced. Above the named ancestor it compares only
+                // virtual methods, by name first (`strcmp`, :6066) and then by signature under a
+                // substitution PawPrint does not build. So the row names nothing exactly when no virtual
+                // above the named ancestor bears the name; `Placed` holds every such virtual.
+                let virtualOfNameAbove =
+                    let above =
+                        // `Chain` runs derived-first, so the named ancestor's own bases are the suffix
+                        // after it.
                         table.Chain
                         |> List.skipWhile (fun (identity, _) -> identity <> parentIdentity)
+                        |> List.skip 1
                         |> List.map fst
                         |> Set.ofList
 
                     table.Placed
                     |> List.exists (fun (slot, _) ->
                         slot.Method.Name = memberRef.PrettyName
-                        && Set.contains slot.DeclaredBy.Identity atOrAbove
+                        && Set.contains slot.DeclaredBy.Identity above
                     )
 
-                if not anyOfNameInReach then
-                    // Nothing upstream's search compares by name is satisfied by a virtual the chain
-                    // placed, and `Placed` holds every one of those. So its search fails at every level
-                    // it visits, which is `IDS_CLASSLOAD_MI_DECLARATIONNOTFOUND` -- unless some level
-                    // declares a matching method non-virtually, in which case it finds that and throws
-                    // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:5977-5980). Either way no method table exists
-                    // for this type at all, so refusing loudly costs no program that CoreCLR would run.
-                    failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, and no ancestor at or above %s{namedDescription} places a virtual method of that name; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_DECLARATIONNOTFOUND, or MI_MUSTBEVIRTUAL if a method of that name is declared non-virtually there)"
+                if virtualOfNameAbove then
+                    ctx,
+                    Error (
+                        TypeBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares %i{List.length candidates} virtual method(s) of that name, none with an equivalent signature, and an ancestor above it declares a virtual method of that name; resolving it needs the search MethodTableBuilder::FindDeclMethodOnClassInHierarchy makes of the named ancestor's own bases, which PawPrint does not implement"
+                            }
+                    )
                 else
-                    failwith
-                        $"TODO: %s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares %i{List.length candidates} virtual method(s) of that name, none with an equivalent signature; resolving it needs the search MethodTableBuilder::FindDeclMethodOnClassInHierarchy makes of the named ancestor's own bases, or COM type equivalence, neither of which PawPrint implements -- or, if the method it names is declared non-virtually, this image is one CoreCLR rejects at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL)"
+
+                // At the named ancestor itself upstream compares non-virtual methods too, and finding
+                // one is `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:5977-5980). Its second pass, permitting COM
+                // type equivalence, can match nothing here, because PawPrint models no type as
+                // equivalent to another.
+                let nonVirtuals =
+                    namedTypeInfo.Methods
+                    |> List.filter (fun method -> not method.IsVirtual && method.Name = memberRef.PrettyName)
+
+                let ctx, nonVirtualMatch =
+                    (false, nonVirtuals)
+                    ||> StateResult.fold
+                            (fun ctx found method ->
+                                if found then
+                                    ctx, Ok true
+                                else
+                                    signaturesEquivalent
+                                        loggerFactory
+                                        dotnetRuntimeDirs
+                                        ctx
+                                        false
+                                        {
+                                            Signature = signature
+                                            AssemblyFullName = table.Owner.AssemblyFullName
+                                            DeclaringTypeGenerics = openContext
+                                        }
+                                        {
+                                            Signature = method.Signature
+                                            AssemblyFullName = namedIdentity.AssemblyFullName
+                                            DeclaringTypeGenerics = openContext
+                                        }
+                            )
+                            ctx
+
+                match nonVirtualMatch with
+                | Error failure -> ctx, Error failure
+                | Ok true ->
+                    ctx,
+                    Error (
+                        TypeBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares only non-virtually; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL), which is not modelled"
+                            }
+                    )
+                | Ok false ->
+                    let miss : MethodImplDeclarationMiss =
+                        {
+                            Type = table.Owner.Identity
+                            Declaration = handle
+                            Name = memberRef.PrettyName
+                        }
+
+                    ctx, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
             | several ->
                 // Comparing in the open vocabulary means two candidates can only tie by declaring the
                 // same name and the same signature, which ECMA-335 II.22.26 forbids. Upstream would
@@ -1208,15 +1255,27 @@ module MethodTableLayout =
             | Ok DeclarationTarget.NoSlot -> ctx, Ok (content, writtenHere)
             | Ok (DeclarationTarget.Names (declaration, declaredSlot)) ->
 
-            // "The body shall be a MethodDef of this type" -- upstream throws
-            // `IDS_CLASSLOAD_MI_ILLEGAL_BODY` (methodtablebuilder.cpp:2415-2421) otherwise, so a
-            // MemberRef body is an invalid image rather than a shape to resolve.
             let bodyHandle =
                 match impl.Body with
-                | MetadataToken.MethodDef handle -> handle
+                | MetadataToken.MethodDef handle -> Ok handle
+                | MetadataToken.MemberReference _ ->
+                    // Upstream resolves a MemberRef body to a method of the type itself
+                    // (`FindMethodDeclarationForMethodImpl`, methodtablebuilder.cpp:2337-2350), and
+                    // rejects the type only when it names anything else.
+                    Error (
+                        TypeBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body by a MemberRef, which CoreCLR resolves to a method of the type itself; that is not modelled"
+                            }
+                    )
                 | other ->
                     failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}; ECMA-335 requires a MethodDef of the type carrying the row, and CoreCLR rejects anything else at load time"
+                        $"BUG: %s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
+
+            match bodyHandle with
+            | Error failure -> ctx, Error failure
+            | Ok bodyHandle ->
 
             let body =
                 table.Placed
@@ -1232,29 +1291,43 @@ module MethodTableLayout =
 
             match body with
             | None ->
-                // A static body is diverted before `PlaceMethodImpls` (:6445-6446) and never
-                // reaches a vtable slot; a non-virtual instance body is the load error
-                // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). Either way this row does not
-                // write the vtable, and refusing distinguishes the two badly, so skip the
-                // static case by construction: `Placed` holds only instance virtuals.
+                // A body another type declares is the load error `IDS_CLASSLOAD_MI_ILLEGAL_BODY`
+                // (:2418-2421), whatever else it is. A static body of the type itself is diverted
+                // before `PlaceMethodImpls` (:6445-6446) and never reaches a vtable slot, so this row
+                // does not write the vtable; a non-virtual instance body is the load error
+                // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). `Placed` holds only instance
+                // virtuals, so each of those three arrives here.
                 let bodyMethod = assembly.Methods.[bodyHandle]
 
-                if bodyMethod.IsStatic then
+                let refused (why : string) =
+                    ctx,
+                    Error (
+                        TypeBindingFailure.Unmodelled
+                            {
+                                Diagnostic =
+                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} names %s{bodyMethod.Name} as its body, which is not a virtual method of the type itself: %s{why}; that is not modelled"
+                            }
+                    )
+
+                if bodyMethod.RequiredDeclaringType.Identity <> table.Owner.Identity then
+                    refused
+                        "another type declares it, so CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_ILLEGAL_BODY)"
+                elif bodyMethod.IsStatic then
                     ctx, Ok (content, writtenHere)
                 else
-                    failwith
-                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} names the non-static, non-virtual method %s{bodyMethod.Name} as its body; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL) rather than laying out a method table for it"
+                    refused
+                        "it is not virtual, so CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL)"
             | Some (bodySlot, bodyHome) ->
 
             // `MethodImplCompareSignatures` (:6371-6403): the declaration and the body must have
             // equivalent signatures, and equivalent generic constraints when the declaration is
             // generic.
             //
-            // This guard and the body-locality one above are both unexercised by any test, because
-            // both fire only on metadata CoreCLR refuses to load and `PersistedAssemblyBuilder`
-            // validates its own `DefineMethodOverride` arguments before writing the row. Reaching
-            // them needs an image assembled by hand rather than by the builder. Without this a body of an entirely different shape installs into the slot
-            // and PawPrint lays out a method table for a type CoreCLR refuses to load.
+            // This guard is unexercised by any test, because it fires only on metadata CoreCLR
+            // refuses to load and `PersistedAssemblyBuilder` validates its own `DefineMethodOverride`
+            // arguments before writing the row. Reaching it needs an image assembled by hand rather
+            // than by the builder. Without this a body of an entirely different shape installs into
+            // the slot and PawPrint lays out a method table for a type CoreCLR refuses to load.
             //
             // The return column is compared only when the declaration is on *this* type. Upstream
             // passes `allowCovariantReturn = FALSE` for a local declaration (:6641, the
