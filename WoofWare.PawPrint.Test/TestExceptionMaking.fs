@@ -17,7 +17,8 @@ module TestExceptionMaking =
     /// Triggers the fault its first argument names, under a current UI culture whose name, as its
     /// second argument says, can always be read ("named"), can never be read ("nameless"), or can be
     /// read only as often as making the exception its third argument names by its parameterless
-    /// constructor reads it ("after-constructor"). Looking up a CoreLib exception's message reads
+    /// constructor reads it ("after-constructor"). With "-once" after either of the last two, the
+    /// first read that fails is the only one. Looking up a CoreLib exception's message reads
     /// that name, so where the runtime looks one up, the culture's exception is raised in the fault's
     /// place. Exits 1 if the exception its third argument names escaped the fault, 2 if the culture's
     /// did, 3 if another did, and 0 if none did. Given "twice" instead, triggers the fault twice and
@@ -38,7 +39,8 @@ sealed class CountingCulture : CultureInfo
     public CountingCulture() : base("") { }
     public int Reads;
     public int ThrowFrom = int.MaxValue;
-    public override string Name => ++Reads >= ThrowFrom ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
+    public int ThrowUntil = int.MaxValue;
+    public override string Name => ++Reads >= ThrowFrom && Reads <= ThrowUntil ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
 }
 
 sealed class Cell { public int Value; }
@@ -56,6 +58,12 @@ static class Program
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static string Cast(object value) => (string)value;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Cell(int[,] grid, int index) => grid[index, 0];
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void CellStore(object[,] grid) => grid[0, 0] = new object();
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Sum(int x, int y) => checked(x + y);
@@ -154,12 +162,15 @@ static class Program
             case "Element": Element(new int[1], 1); break;
             case "Store": Store(new string[1]); break;
             case "Cast": Cast(1); break;
+            case "Cell": Cell(new int[1, 1], 1); break;
+            case "CellStore": CellStore(new string[1, 1]); break;
             case "Sum": Sum(int.MaxValue, 1); break;
             case "Quotient": Quotient(1, 0); break;
             case "Exchange": Exchange(); break;
             case "Load": Load(); break;
             case "Repeat": Repeat(int.MaxValue); break;
             case "Length": Length(0x7FFFFFF0); break;
+            case "NegativeLength": Length(-1); break;
             case "Extent": Extent(0x10000); break;
             case "Negative": Negative(-1); break;
             case "Bounds": bounds(int.MaxValue, 2, 0, 1); break;
@@ -199,6 +210,9 @@ static class Program
             return ReferenceEquals(first, second) ? 1 : 4;
         }
 
+        bool once = mode.EndsWith("-once");
+        if (once) mode = mode.Substring(0, mode.Length - "-once".Length);
+
         var culture = new CountingCulture();
         if (mode != "named")
         {
@@ -219,6 +233,7 @@ static class Program
             {
                 culture.ThrowFrom = 1;
             }
+            if (once) culture.ThrowUntil = culture.ThrowFrom;
             culture.Reads = 0;
         }
 
@@ -330,6 +345,26 @@ static class Program
                     Exception = "System.InvalidCastException"
                     MayEndProcess = false
                 }
+                "Cell",
+                {
+                    Making =
+                        ofArrayMethod
+                            (TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Int32, 2))
+                            ArrayAccessor.Get
+                            "System.IndexOutOfRangeException"
+                    Exception = "System.IndexOutOfRangeException"
+                    MayEndProcess = false
+                }
+                "CellStore",
+                {
+                    Making =
+                        ofArrayMethod
+                            (TypeDefn.Array (TypeDefn.PrimitiveType PrimitiveType.Object, 2))
+                            ArrayAccessor.Set
+                            "System.ArrayTypeMismatchException"
+                    Exception = "System.ArrayTypeMismatchException"
+                    MayEndProcess = false
+                }
                 "Sum",
                 {
                     Making = atInstruction "Sum" OpcodeFault.Overflow
@@ -364,6 +399,12 @@ static class Program
                 {
                     Making = atInstruction "Length" OpcodeFault.OutOfMemory
                     Exception = "System.OutOfMemoryException"
+                    MayEndProcess = false
+                }
+                "NegativeLength",
+                {
+                    Making = atInstruction "Length" OpcodeFault.Overflow
+                    Exception = "System.OverflowException"
                     MayEndProcess = false
                 }
                 "Extent",
@@ -407,6 +448,21 @@ static class Program
 
     let faults : string list = cases |> Map.keys |> List.ofSeq
 
+    /// How the guest ends where what the VM runs from native code to make an exception raises the
+    /// culture's exception, on the runtime under test (`ExceptionMaking.vmMakingRaise`), given that
+    /// the culture fails on every read after.
+    let private vmMakingRaised () : RealRuntimeResult =
+        match ExceptionMaking.vmMakingRaise (FrameworkUnderTest.runtime ()) with
+        | VmMakingRaise.EscapesInPlace -> RealRuntimeResult.NormalExit 2
+        // Preserving its stack trace reads the culture, which raises again, without end, until the
+        // stack overflows and the runtime aborts.
+        | VmMakingRaise.ThrownAgainPreservingTrace -> RealRuntimeResult.NormalExit 134
+
+    /// How the guest ends where what the VM runs from native code to make an exception raises the
+    /// culture's exception, given that the culture fails only that once: the culture's exception
+    /// escapes, on every runtime, whatever `ExceptionMaking.vmMakingRaise` says the VM runs first.
+    let private vmMakingRaisedOnce : RealRuntimeResult = RealRuntimeResult.NormalExit 2
+
     /// The contract table's row for `String.FastAllocateString`.
     let private fastAllocateString : NativeContractRow =
         NativeContractTable.rows.Force ()
@@ -414,8 +470,6 @@ static class Program
 
     [<Test>]
     let ``a native raises an exception its row names, made by running its parameterless constructor`` () : unit =
-        Net11Frontier.park Net11Frontier.exceptionMaking
-
         // Which of the row's exceptions the native raises for a string too long to allocate depends
         // on the target's allocator.
         let raised =
@@ -434,15 +488,17 @@ static class Program
             // Its constructor reads its message from the runtime's native resources, not the
             // culture's.
             | "System.OutOfMemoryException" -> nameless |> shouldEqual (RealRuntimeResult.NormalExit 1)
-            | _ -> nameless |> shouldEqual (RealRuntimeResult.NormalExit 2)
+            | _ ->
+                nameless |> shouldEqual (vmMakingRaised ())
+
+                RealRuntime.executeWithRealRuntime [| "Repeat" ; "nameless-once" ; name.FullName |] image.Value
+                |> shouldEqual vmMakingRaisedOnce
         | raised ->
             failwith
                 $"FastAllocateString of a string too long to allocate: expected exactly one of %A{fastAllocateString.Contract.Raises} to escape, got %A{raised}"
 
     [<TestCaseSource(nameof faults)>]
     let ``what the runtime runs to make a fault's exception is what ExceptionMaking says`` (fault : string) : unit =
-        if List.contains fault [ "Bounds" ; "Cast" ; "Negative" ; "Vararg" ] then
-            Net11Frontier.park Net11Frontier.exceptionMaking
 
         let case = cases.[fault]
 
@@ -459,8 +515,13 @@ static class Program
         // The guest does raise this fault.
         expect "named" "its own exception" (RealRuntimeResult.NormalExit 1)
 
-        match case.Making.Force () with
-        | ExceptionMaking.ParameterlessConstructor ->
+        // Where the CPU may report the fault, a constructor that raises once may end the process
+        // too, so only a failure that recurs is told apart from that.
+        let expectOnce (mode : string) (what : string) : unit =
+            if not case.MayEndProcess then
+                expect (mode + "-once") what vmMakingRaisedOnce
+
+        let byConstructor (raised : RealRuntimeResult) : unit =
             expect "twice" "a new exception each time" (RealRuntimeResult.NormalExit 4)
 
             expect
@@ -473,11 +534,19 @@ static class Program
             // culture's.
             | "System.OutOfMemoryException" ->
                 expect "nameless" "a constructor that reads no culture" (RealRuntimeResult.NormalExit 1)
-            | _ -> expect "nameless" "the culture's exception" (RealRuntimeResult.NormalExit 2)
+            | _ ->
+                expect "nameless" "the culture's exception to do as the making says" raised
+                expectOnce "nameless" "the culture's exception"
+
+        match case.Making.Force () with
+        | ExceptionMaking.ThrownByIl -> byConstructor (RealRuntimeResult.NormalExit 2)
+        | ExceptionMaking.VmConstructor -> byConstructor (vmMakingRaised ())
         | ExceptionMaking.ResourceMessage ->
             expect "twice" "a new exception each time" (RealRuntimeResult.NormalExit 4)
-            expect "after-constructor" "the message lookup to read the culture" (RealRuntimeResult.NormalExit 2)
-            expect "nameless" "the culture's exception" (RealRuntimeResult.NormalExit 2)
+            expect "after-constructor" "the message lookup's raise to do as the making says" (vmMakingRaised ())
+            expectOnce "after-constructor" "the message lookup's exception"
+            expect "nameless" "the culture's exception to do as the making says" (vmMakingRaised ())
+            expectOnce "nameless" "the culture's exception"
         // Running no managed code, the runtime never reads the culture.
         | ExceptionMaking.Preallocated ->
             expect "twice" "the same exception each time" (RealRuntimeResult.NormalExit 1)
@@ -503,8 +572,10 @@ static class Program
             making |> shouldEqual ExceptionMaking.ResourceMessage
             run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
             run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
-            run "after-constructor" |> shouldEqual (RealRuntimeResult.NormalExit 2)
-            run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+            run "after-constructor" |> shouldEqual (vmMakingRaised ())
+            run "after-constructor-once" |> shouldEqual vmMakingRaisedOnce
+            run "nameless" |> shouldEqual (vmMakingRaised ())
+            run "nameless-once" |> shouldEqual vmMakingRaisedOnce
         else
             run "named" |> shouldEqual (RealRuntimeResult.NormalExit 0)
 
@@ -525,10 +596,10 @@ static class Program
         run "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
         run "twice" |> shouldEqual (RealRuntimeResult.NormalExit 4)
 
-        Net11Frontier.park Net11Frontier.exceptionMaking
-
-        run "after-constructor" |> shouldEqual (RealRuntimeResult.NormalExit 2)
-        run "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)
+        run "after-constructor" |> shouldEqual (vmMakingRaised ())
+        run "after-constructor-once" |> shouldEqual vmMakingRaisedOnce
+        run "nameless" |> shouldEqual (vmMakingRaised ())
+        run "nameless-once" |> shouldEqual vmMakingRaisedOnce
 
     [<Test>]
     let ``a thrown object that is not an exception is wrapped by running RuntimeWrappedException's constructor``
@@ -615,7 +686,16 @@ sealed class NamelessCulture : CultureInfo
 {
     public NamelessCulture() : base("") { }
     public bool Nameless;
-    public override string Name => Nameless ? throw new TimeZoneNotFoundException("a culture's name") : base.Name;
+    public bool Once;
+    public override string Name
+    {
+        get
+        {
+            if (!Nameless) return base.Name;
+            Nameless = !Once;
+            throw new TimeZoneNotFoundException("a culture's name");
+        }
+    }
 }
 
 sealed class Both : IL, IR { }
@@ -676,10 +756,11 @@ static class Program
         }
 
         var culture = new NamelessCulture();
-        if (args[1] == "nameless")
+        if (args[1] == "nameless" || args[1] == "nameless-once")
         {
             CultureInfo.CurrentUICulture = culture;
             culture.Nameless = true;
+            culture.Once = args[1] == "nameless-once";
         }
 
         try
@@ -743,14 +824,13 @@ static class Program
         (exceptionName : string)
         : unit
         =
-        Net11Frontier.park Net11Frontier.exceptionMaking
-
-        runBinding failure exceptionName [ "named" ; "twice" ; "nameless" ]
+        runBinding failure exceptionName [ "named" ; "twice" ; "nameless" ; "nameless-once" ]
         |> shouldEqual
             [
                 RealRuntimeResult.NormalExit 1
                 RealRuntimeResult.NormalExit 4
-                RealRuntimeResult.NormalExit 2
+                vmMakingRaised ()
+                vmMakingRaisedOnce
             ]
 
     /// The escape analysis takes the runtime to make the `TypeLoadException` of a type that fails to
