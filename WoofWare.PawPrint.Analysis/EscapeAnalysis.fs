@@ -554,9 +554,9 @@ type internal DispatchOutcome =
     /// (`Opacity.MistypedReceiver`), whose body the analysis follows without knowing what it does
     /// with that receiver, or returns.
     | ReachesMistyped of MethodInstance
-    /// It throws this instead of calling anything, which the runtime makes by running this
-    /// constructor, whose own raises escape in its place.
-    | Raises of ThrownType * made : MethodKey
+    /// It throws this instead of calling anything, which the runtime makes by running `made`,
+    /// whose own raises escape in its place.
+    | Raises of ThrownType * made : MethodKey list
     /// The receiver's type does not decide what runs.
     | Undecided
 
@@ -1092,46 +1092,85 @@ module EscapeAnalysis =
         | PrimitiveType.Object
         | PrimitiveType.TypedReference -> None
 
+    /// What CoreCLR runs on an exception it throws again, to keep the stack trace it was thrown with
+    /// (`ExceptionPreserveStackTrace`): `Exception.InternalPreserveStackTrace`.
+    let private preserveStackTrace (state : EscapeAnalysisState) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System" "Exception"
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = "InternalPreserveStackTrace"
+                && not m.IsStatic
+                && m.Signature.ParameterTypes.IsEmpty
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Exception.InternalPreserveStackTrace(), found %d{found.Length}"
+
+    /// What the runtime raises where it raises the CoreLib exception `name` by itself, making it as
+    /// `making` says: the exception, and the methods it runs to make it whose own raises escape
+    /// there too.
+    let private runtimeRaisesNamed
+        (state : EscapeAnalysisState)
+        (name : ExceptionName)
+        (making : ExceptionMaking)
+        : ThrownType * MethodKey list
+        =
+        let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
+
+        // What the VM does with what a method it runs from native code raises.
+        let vmRuns (made : MethodKey list) : MethodKey list =
+            match ExceptionMaking.vmMakingRaise state.Runtime with
+            | VmMakingRaise.EscapesInPlace -> made
+            | VmMakingRaise.ThrownAgainPreservingTrace -> made @ [ preserveStackTrace state ]
+
+        match making with
+        | ExceptionMaking.ThrownByIl -> thrown, [ parameterlessConstructor state name ]
+        | ExceptionMaking.VmConstructor -> thrown, vmRuns [ parameterlessConstructor state name ]
+        | ExceptionMaking.ResourceMessage ->
+            thrown, vmRuns [ parameterlessConstructor state name ; resourceMessageLookup state ]
+        | ExceptionMaking.TypeLoadConstructor -> thrown, vmRuns [ typeLoadConstructor state name ]
+        | ExceptionMaking.Preallocated -> thrown, []
+        | ExceptionMaking.InitializerFailure ->
+            failwith
+                $"BUG: %s{name.Namespace}.%s{name.Name} is raised for a type initializer, which the site running it accounts for (`initializerFailure`)"
+
     /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
-    /// making it as `making` says: the exception, and the methods it runs to make it, whose own
-    /// raises escape there too.
+    /// making it as `making` says (`runtimeRaisesNamed`).
     let private runtimeRaises
         (state : EscapeAnalysisState)
         (fullName : string)
         (making : ExceptionMaking)
         : ThrownType * MethodKey list
         =
-        let name =
-            match ExceptionName.parse fullName with
-            | Some name -> name
-            | None -> failwith $"EscapeAnalysis: %s{fullName} is not an exception type's full name"
+        match ExceptionName.parse fullName with
+        | Some name -> runtimeRaisesNamed state name making
+        | None -> failwith $"EscapeAnalysis: %s{fullName} is not an exception type's full name"
 
-        let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
+    /// The methods the VM runs to make the CoreLib exception `name` by running its parameterless
+    /// constructor from native code (`ExceptionMaking.VmConstructor`) whose raises escape, each
+    /// passed nothing the analysis follows.
+    let private vmConstructs
+        (state : EscapeAnalysisState)
+        (name : ExceptionName)
+        : (MethodKey * SpelledArgument list) list
+        =
+        runtimeRaisesNamed state name ExceptionMaking.VmConstructor
+        |> snd
+        |> List.map (fun made -> made, [])
 
-        match making with
-        | ExceptionMaking.ParameterlessConstructor -> thrown, [ parameterlessConstructor state name ]
-        | ExceptionMaking.ResourceMessage ->
-            match state.Runtime with
-            | EmulatedRuntime.Net10 -> thrown, [ parameterlessConstructor state name ; resourceMessageLookup state ]
-            // .NET 11 looks the message up through an `[UnmanagedCallersOnly]` method of CoreLib's
-            // (`Environment.GetResourceString`), and ends the process where the constructor or the
-            // lookup raises (`TestExceptionMaking`, parked on .NET 11). The analysis takes the
-            // constructor's raises to escape, as it does for a making by the constructor alone.
-            | EmulatedRuntime.Net11 -> thrown, [ parameterlessConstructor state name ]
-        | ExceptionMaking.TypeLoadConstructor -> thrown, [ typeLoadConstructor state name ]
-        | ExceptionMaking.Preallocated -> thrown, []
-        | ExceptionMaking.InitializerFailure ->
-            failwith
-                $"BUG: %s{fullName} is raised for a type initializer, which the site running it accounts for (`initializerFailure`)"
-
-    /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
-    /// making it by running its parameterless constructor (`EEException::CreateThrowable`): the
-    /// exception, and that constructor.
-    let private constructedRaise (state : EscapeAnalysisState) (fullName : string) : ThrownType * MethodKey =
-        match runtimeRaises state fullName ExceptionMaking.ParameterlessConstructor with
-        | thrown, [ made ] -> thrown, made
-        | thrown, made ->
-            failwith $"BUG: making %O{thrown} by its parameterless constructor runs %d{made.Length} methods"
+    /// What the runtime raises where the VM raises the CoreLib exception of this full name by
+    /// itself, making it by running its parameterless constructor (`EEException::CreateThrowable`):
+    /// the exception, and what that making runs whose raises escape (`runtimeRaises`).
+    let private constructedRaise (state : EscapeAnalysisState) (fullName : string) : ThrownType * MethodKey list =
+        runtimeRaises state fullName ExceptionMaking.VmConstructor
 
     /// What the JIT's own call of `RuntimeTypeHandle.GetRuntimeTypeFromHandle` raises, which the
     /// analysis takes in place of the method's IL: the `OutOfMemoryException` of allocating the
@@ -1185,28 +1224,6 @@ module EscapeAnalysis =
             |> List.collect (fun (_, made) -> made |> List.map (fun method -> offset, runtimeRuns method, []))
 
         raises, calls
-
-    /// What CoreCLR runs on an exception it throws again, to keep the stack trace it was thrown with
-    /// (`ExceptionPreserveStackTrace`): `Exception.InternalPreserveStackTrace`.
-    let private preserveStackTrace (state : EscapeAnalysisState) : MethodKey =
-        let corelib = state.BaseTypes.Corelib
-
-        let found =
-            corelib.TryGetTopLevelTypeDef "System" "Exception"
-            |> Option.toList
-            |> List.collect (fun ty -> List.ofSeq ty.Methods)
-            |> List.filter (fun m ->
-                m.Name = "InternalPreserveStackTrace"
-                && not m.IsStatic
-                && m.Signature.ParameterTypes.IsEmpty
-            )
-            |> List.choose (fun m -> m.TryMetadata)
-
-        match found with
-        | [ facts ] -> MethodKey.make corelib facts.Handle
-        | found ->
-            failwith
-                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Exception.InternalPreserveStackTrace(), found %d{found.Length}"
 
     /// What a site running a type initializer raises besides what the initializer itself does
     /// (`ExceptionMaking.InitializerFailure`): the `TypeInitializationException` wrapping that, and,
@@ -2338,7 +2355,9 @@ module EscapeAnalysis =
                     match target with
                     | CallTarget.Missing ->
                         let thrown, made = constructedRaise state "System.MissingMethodException"
-                        [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
+                        OutsideBodyFact.Raises thrown
+                        :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
                     | CallTarget.TypeMissing -> raisesOf (Some BindFailure.TypeAbsent)
                     | CallTarget.AssemblyMissing -> raisesOf (Some BindFailure.AssemblyUnavailable)
                     | CallTarget.DependsOnInstantiation -> [ dependsOnInstantiation ]
@@ -2360,7 +2379,11 @@ module EscapeAnalysis =
                 match target with
                 | FieldReferenceTarget.Missing ->
                     let thrown, made = constructedRaise state "System.MissingFieldException"
-                    state, TokenReferent.Other, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
+                    state,
+                    TokenReferent.Other,
+                    OutsideBodyFact.Raises thrown
+                    :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
                 | FieldReferenceTarget.ParentTypeMissing _ ->
                     state, TokenReferent.Other, raisesOf (Some BindFailure.TypeAbsent)
                 | FieldReferenceTarget.ParentAssemblyUnavailable _
@@ -2419,7 +2442,9 @@ module EscapeAnalysis =
         // `COMPlusThrow(kInvalidProgramException)` makes it as `EEException::CreateThrowable` does.
         | Ok (Some _) ->
             let thrown, made = constructedRaise state "System.InvalidProgramException"
-            [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
+            OutsideBodyFact.Raises thrown
+            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
         | Error typeRef ->
             failwith
                 $"BUG: %O{typeRef} in %s{assembly.DefinitionFullName} bound, loading what it names, but does not resolve against the loaded assemblies"
@@ -3979,8 +4004,7 @@ module EscapeAnalysis =
             // CoreCLR makes each exception a native raises by running its parameterless constructor
             // (`EEException::CreateThrowable`).
             let constructors =
-                contract.Raises
-                |> List.map (fun name -> parameterlessConstructor state name, [])
+                contract.Raises |> List.collect (fun name -> vmConstructs state name)
 
             state,
             contracted
@@ -3994,7 +4018,7 @@ module EscapeAnalysis =
         | Runs.ObjectGetType ->
             let constructors =
                 ObjectGetType.constructs state.Runtime
-                |> List.map (fun name -> parameterlessConstructor state name, [])
+                |> List.collect (fun name -> vmConstructs state name)
 
             // It returns the object's `RuntimeType`, never null.
             let runtimeType = corelibType state "System" "RuntimeType"
@@ -4018,7 +4042,7 @@ module EscapeAnalysis =
                 (exactly (Assumption.raises assumption))
                 [ assumption ]
                 (Assumption.constructs assumption
-                 |> List.map (fun name -> parameterlessConstructor state name, []))
+                 |> List.collect (fun name -> vmConstructs state name))
         | Runs.Il (body, selfCall) ->
 
         // CoreCLR converts the method's own signature for the JIT before anything else of it
@@ -5414,9 +5438,10 @@ module EscapeAnalysis =
                 // `COMPlusThrowHR` makes it as `EEException::CreateThrowable` does.
                 let thrown, made = constructedRaise state "System.BadImageFormatException"
 
-                outsideBody
-                |> Set.add (OutsideBodyFact.Raises thrown)
-                |> Set.add (OutsideBodyFact.Runs (made, []))
+                made
+                |> List.map (fun made -> OutsideBodyFact.Runs (made, []))
+                |> Set.ofList
+                |> Set.union (Set.add (OutsideBodyFact.Raises thrown) outsideBody)
 
         // Each instruction the JIT compiles at which CoreCLR refuses the compilation
         // (`CompilationRefusal`), wherever a run would reach it. None of them runs.
@@ -7181,7 +7206,10 @@ module EscapeAnalysis =
         // `EEException::CreateThrowable` does.
         | RefusalSite.Box _ ->
             let thrown, made = constructedRaise state "System.InvalidProgramException"
-            state, [ OutsideBodyFact.Raises thrown ; OutsideBodyFact.Runs (made, []) ]
+
+            state,
+            OutsideBodyFact.Raises thrown
+            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
         // `ThrowTypeLoadException`, for the array type, makes it as `EETypeLoadException` does.
         | RefusalSite.Newarr _ ->
             let thrown, made =
@@ -7984,7 +8012,10 @@ module EscapeAnalysis =
                              raised @ raises,
                              (offset, Opacity.MistypedReceiver, Some callee.Callee) :: undecided)
                     | DispatchOutcome.Raises (thrown, made) ->
-                        state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
+                        state,
+                        (made |> List.map (fun made -> offset, instanceOf state made [] [])) @ callees,
+                        (offset, thrown) :: raises,
+                        undecided
                     | DispatchOutcome.Undecided ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
                 )
@@ -8036,7 +8067,10 @@ module EscapeAnalysis =
                 | state, DispatchOutcome.Reaches _
                 | state, DispatchOutcome.ReachesMistyped _ -> state, callees, raises, undecided
                 | state, DispatchOutcome.Raises (thrown, made) ->
-                    state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
+                    state,
+                    (made |> List.map (fun made -> offset, instanceOf state made [] [])) @ callees,
+                    (offset, thrown) :: raises,
+                    undecided
                 | state, DispatchOutcome.Undecided ->
                     state, callees, raises, (offset, Opacity.ConstrainedMethodPointer, Some callee.Callee) :: undecided
             )
