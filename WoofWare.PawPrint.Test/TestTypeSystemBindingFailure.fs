@@ -423,6 +423,58 @@ module TestTypeSystemBindingFailure =
         | other -> failwith $"expected TypeUnbound, got %A{other}"
 
     [<Test>]
+    let ``a TypeSpec naming a generic definition with no instantiation is refused`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let bare = TypeLoadRefusal.UninstantiatedDefinition (listIdentity f)
+
+        let refused (result : Result<'a, TypeBindingFailure>) : unit = refusedWith bare result
+
+        TypeResolution.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.BareList
+            f.Analysed
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            f.Assemblies
+        |> snd
+        |> refused
+
+        // An environment does not instantiate it.
+        TypeSystemState.resolveTypeFromSpec
+            f.LoggerFactory
+            HostImage.runtimeDirs
+            f.BaseClassTypes
+            f.Shapes.BareList
+            f.Analysed
+            (ImmutableArray.Create int32)
+            ImmutableArray.Empty
+            (typeSystem f)
+        |> snd
+        |> refused
+
+        match bindMember f f.Shapes.BareListClear with
+        | Error (MemberBindingFailure.TypeUnbound failure) ->
+            (Error failure : Result<unit, TypeBindingFailure>) |> refused
+        | other -> failwith $"expected TypeUnbound, got %A{other}"
+
+        // The same definition named by a token is the open definition.
+        match
+            TypeResolution.resolveTypeFromDefn
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                f.Analysed.TypeSpecs.[f.Shapes.BareList].Signature
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                f.Analysed
+                f.Assemblies
+        with
+        | _, Ok (_, info) -> info.Generics.Length |> shouldEqual 1
+        | _, Error failure -> failwith $"expected List`1 to bind open, got %s{TypeBindingFailure.describe failure}"
+
+    [<Test>]
     let ``a generic parameter outside its environment is refused`` () : unit =
         let f = UnmodelledImage.fixture ()
 
