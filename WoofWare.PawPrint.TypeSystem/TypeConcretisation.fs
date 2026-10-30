@@ -826,10 +826,35 @@ module TypeConcretization =
 
         handle, newCtx
 
-    /// Register the nominal type `identity` instantiated at `generics`, having first loaded every
-    /// assembly its base-type chain runs through: CoreCLR loads a type's parent before the type, so a
-    /// type whose base chain does not bind has no runtime type. The failure is the chain's, or an
-    /// instantiation `AllConcreteTypes.add` refuses, with what loaded before it in the context.
+    /// Load every assembly the base-type chain of the definition `identity` runs through, as CoreCLR
+    /// loads a type's parent before the type. The failure is the first part of the chain that does
+    /// not bind, with what loaded before it in the context.
+    let private loadBaseChain
+        (loadAssembly : IAssemblyLoad)
+        (ctx : ConcretizationContext<'corelib>)
+        (identity : ResolvedTypeIdentity)
+        : Result<unit, TypeBindingFailure> * ConcretizationContext<'corelib>
+        =
+        let assemblies, failure =
+            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
+                loadAssembly
+                ctx.LoadedAssemblies
+                (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
+                identity.TypeDefinition.Get
+
+        let ctx =
+            { ctx with
+                LoadedAssemblies = assemblies
+            }
+
+        match failure with
+        | Some failure -> Error (TypeBindingFailure.ofBaseChain failure), ctx
+        | None -> Ok (), ctx
+
+    /// Register the nominal type `identity` instantiated at `generics`, having first loaded its
+    /// base-type chain (`loadBaseChain`): a type whose base chain does not bind has no runtime type.
+    /// The failure is the chain's, or an instantiation `AllConcreteTypes.add` refuses, with what loaded
+    /// before it in the context.
     let private registerNominal
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<'corelib>)
@@ -839,24 +864,9 @@ module TypeConcretization =
         (generics : ConcreteTypeHandle ImmutableArray)
         : Result<ConcreteTypeHandle, TypeBindingFailure> * ConcretizationContext<'corelib>
         =
-        match
-            BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
-                loadAssembly
-                ctx.LoadedAssemblies
-                (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
-                identity.TypeDefinition.Get
-        with
-        | assemblies, Some failure ->
-            Error (TypeBindingFailure.ofBaseChain failure),
-            { ctx with
-                LoadedAssemblies = assemblies
-            }
-        | assemblies, None ->
-            let ctx =
-                { ctx with
-                    LoadedAssemblies = assemblies
-                }
-
+        match loadBaseChain loadAssembly ctx identity with
+        | Error failure, ctx -> Error failure, ctx
+        | Ok (), ctx ->
             match
                 AllConcreteTypes.add
                     ctx.BaseTypes
@@ -1009,9 +1019,10 @@ module TypeConcretization =
         | None -> registerNominal loadAssembly ctx identity typeInfo.Namespace typeInfo.Name ImmutableArray.Empty
 
     /// The non-generic type a signature of the image `signatureAssemblyFullName` names by the
-    /// definition `identity`, spelled `spelled`: a generic definition named without an instantiation
-    /// is refused (CoreCLR loads such a token with `FailIfUninstDefOrRef`), then the type is loaded,
-    /// then its spelling checked.
+    /// definition `identity`, spelled `spelled`: the type is loaded, its base chain first; then a
+    /// generic definition, named without an instantiation, is refused (CoreCLR loads such a token
+    /// with `FailIfUninstDefOrRef`, which refuses only once the definition has loaded); then the
+    /// spelling is checked.
     let private concretizeNamedDefinition
         (loadAssembly : IAssemblyLoad)
         (ctx : ConcretizationContext<DumpedAssembly>)
@@ -1026,7 +1037,8 @@ module TypeConcretization =
                 identity
 
         if not typeInfo.Generics.IsEmpty then
-            refused (TypeLoadRefusal.UninstantiatedDefinition identity), ctx
+            loadBaseChain loadAssembly ctx identity
+            |> andThen (fun ctx () -> refused (TypeLoadRefusal.UninstantiatedDefinition identity), ctx)
         else
 
         let loaded =
@@ -1342,29 +1354,14 @@ module TypeConcretization =
 
         head
         |> andThen (fun ctx (identity, spelled) ->
-            match
-                BaseChainLoading.tryEnsureTypeDefinitionBaseAssembliesLoaded
-                    loadAssembly
-                    ctx.LoadedAssemblies
-                    (ctx.LoadedAssemblies.ByDefinitionName identity.AssemblyFullName)
-                    identity.TypeDefinition.Get
-            with
-            | assemblies, Some failure ->
-                Error (TypeBindingFailure.ofBaseChain failure),
-                { ctx with
-                    LoadedAssemblies = assemblies
-                }
-            | assemblies, None ->
-                let ctx =
-                    { ctx with
-                        LoadedAssemblies = assemblies
-                    }
-
+            loadBaseChain loadAssembly ctx identity
+            |> andThen (fun ctx () ->
                 // `GetGenericInstType` makes no exception for a 1.0 table stream.
                 if TypeResolution.spellingMismatches ctx.BaseTypes ctx.LoadedAssemblies identity spelled then
                     refused (TypeLoadRefusal.KindMismatch (identity, spelled)), ctx
                 else
                     Ok identity, ctx
+            )
         )
         |> andThen (fun ctx identity ->
             args
