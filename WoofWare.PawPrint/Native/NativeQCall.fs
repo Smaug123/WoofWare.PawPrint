@@ -150,6 +150,8 @@ module NativeQCall =
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
             "AssemblyNative_InitializeAssemblyLoadContext",
             NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_InitializeAssemblyLoadContext"
+            "AssemblyNative_GetLoadContextForAssembly",
+            NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_GetLoadContextForAssembly"
             "AssemblyNative_GetCodeBase", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetCodeBase"
             "AssemblyNative_GetEntryAssembly", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetEntryAssembly"
             "AssemblyNative_GetExecutingAssembly",
