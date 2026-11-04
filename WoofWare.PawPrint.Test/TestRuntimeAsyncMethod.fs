@@ -58,7 +58,8 @@ public static class Program
     [<Test>]
     let ``PawPrint calls async exactly the methods real .NET 11 does`` () : unit =
         match FrameworkUnderTest.runtime () with
-        | EmulatedRuntime.Net10 -> Assert.Ignore ".NET 10's CoreLib does not declare `RuntimeMethodHandle.IsAsyncMethod`"
+        | EmulatedRuntime.Net10 ->
+            Assert.Ignore ".NET 10's CoreLib does not declare `RuntimeMethodHandle.IsAsyncMethod`"
         | EmulatedRuntime.Net11 -> ()
 
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -66,9 +67,7 @@ public static class Program
 
         let images =
             assemblyNames
-            |> List.map (fun name ->
-                Assembly.readFile loggerFactory (Path.Combine (frameworkDirectory, name + ".dll"))
-            )
+            |> List.map (fun name -> Assembly.readFile loggerFactory (Path.Combine (frameworkDirectory, name + ".dll")))
 
         let baseClassTypes = BaseClassTypes.ofCorelib images.Head
 
@@ -129,7 +128,11 @@ public static class Program
                                 facts.ImplAttributes.HasFlag RuntimeAsyncMethod.asyncImplAttribute
 
                             if isAsync || declaresAsync then
-                                let row = MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit facts.Handle : EntityHandle)
+                                let row =
+                                    MetadataTokens.GetRowNumber (
+                                        MethodDefinitionHandle.op_Implicit facts.Handle : EntityHandle
+                                    )
+
                                 let verdict = if isAsync then "async" else "not-async"
                                 assemblies, $"%s{name} %d{row} %s{verdict}" :: lines
                             else

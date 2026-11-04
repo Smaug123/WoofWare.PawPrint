@@ -32,7 +32,8 @@ public class Program
             return 10;
         }
 
-        MethodInfo readToFill = Type.GetType ("System.Net.Http.SocksHelper, System.Net.Http", true)
+        MethodInfo readToFill = typeof (System.Net.Http.HttpClient).Assembly
+            .GetType ("System.Net.Http.SocksHelper", true)
             .GetMethod ("ReadToFillAsync", BindingFlags.NonPublic | BindingFlags.Static);
 
         if ((readToFill.MethodImplementationFlags & (MethodImplAttributes) 0x2000) == 0)
