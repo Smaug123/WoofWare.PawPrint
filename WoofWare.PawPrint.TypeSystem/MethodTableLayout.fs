@@ -394,9 +394,7 @@ module MethodTableLayout =
 
             // `FindMethodDef` (mdinternalro.cpp:794-880) takes the first of the type's own methods
             // with the MemberRef's name whose signature blob is byte-for-byte the MemberRef's,
-            // skipping PrivateScope methods. Two signatures parsed from one module are equal exactly
-            // when their blobs are: a parsed TypeRef keeps its row, and a TypeSpec token inside a
-            // signature does not parse at all.
+            // skipping PrivateScope methods.
             if
                 signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
             then
@@ -417,7 +415,8 @@ module MethodTableLayout =
                     && match candidate.TryMetadata with
                        | None -> false
                        | Some facts ->
-                           facts.RawSignature = signature
+                           facts.SignatureBlob.Length = memberRef.SignatureBlob.Length
+                           && Seq.forall2 (=) facts.SignatureBlob memberRef.SignatureBlob
                            && facts.MethodAttributes &&& MethodAttributes.MemberAccessMask
                               <> MethodAttributes.PrivateScope
                 )
