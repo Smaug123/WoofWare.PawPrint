@@ -12,8 +12,8 @@ open NUnit.Framework
 ///
 /// CoreCLR resolves such a body with `FindMethodDef` (mdinternalro.cpp:794-880): the first of the
 /// type's own methods with that name whose signature blob is byte-for-byte the MemberRef's, skipping
-/// PrivateScope methods. Signatures that name the same type through different TypeRef rows are not
-/// the same blob.
+/// PrivateScope methods. Signatures that name the same type through different TypeRef rows, or that
+/// spell one count in different widths, are not the same blob.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFabricatedMethodImplBodyLookup =
@@ -27,6 +27,10 @@ module TestFabricatedMethodImplBodyLookup =
         /// `S` overrides `Object.ToString` by a MethodImpl. Its two `Impl` methods have the same
         /// signature, and the first is PrivateScope.
         | PrivateScope
+        /// `S` overrides `Object.ToString` by a MethodImpl. Its two `Impl` methods' signatures both say
+        /// `instance string ()`, the first as `20 00 0e` and the second as `20 80 00 0e`, spelling the
+        /// parameter count in two bytes; the MemberRef spells it as the second does.
+        | NonCanonicalCount
 
     /// `struct S` whose first `Impl` answers 7 and whose second answers 5: as an `int`, or as a string
     /// of that length.
@@ -108,7 +112,8 @@ module TestFabricatedMethodImplBodyLookup =
         let answering (value : int) : int =
             match shape with
             | Shape.TypeRefRows -> body (fun code -> code.LoadConstantI4 value)
-            | Shape.PrivateScope ->
+            | Shape.PrivateScope
+            | Shape.NonCanonicalCount ->
                 body (fun code -> code.LoadString (metadata.GetOrAddUserString (String ('!', value))))
 
         let implSignature, memberRefSignature =
@@ -117,10 +122,12 @@ module TestFabricatedMethodImplBodyLookup =
                 let first = takingException (corelibType "Exception")
                 first, takingException (corelibType "Exception")
             | Shape.PrivateScope -> returningString, returningString
+            | Shape.NonCanonicalCount -> returningString, metadata.GetOrAddBlob [| 0x20uy ; 0x80uy ; 0x00uy ; 0x0euy |]
 
         let firstAccess =
             match shape with
-            | Shape.TypeRefRows -> MethodAttributes.Private
+            | Shape.TypeRefRows
+            | Shape.NonCanonicalCount -> MethodAttributes.Private
             | Shape.PrivateScope -> MethodAttributes.PrivateScope
 
         let explicitImpl =
@@ -159,7 +166,8 @@ module TestFabricatedMethodImplBodyLookup =
                     (takingException (corelibType "Exception"))
                     -1
                 |> Some
-            | Shape.PrivateScope -> None
+            | Shape.PrivateScope
+            | Shape.NonCanonicalCount -> None
 
         let firstImpl =
             addMethod (firstAccess ||| explicitImpl) "Impl" implSignature (answering 7)
@@ -268,7 +276,8 @@ public static class Driver
     }
 }
 """
-        | Shape.PrivateScope, "constrained" ->
+        | Shape.PrivateScope, "constrained"
+        | Shape.NonCanonicalCount, "constrained" ->
             """
 public static class Driver
 {
@@ -277,7 +286,8 @@ public static class Driver
     public static int Main(string[] args) => Ask(new S());
 }
 """
-        | Shape.PrivateScope, "boxed" ->
+        | Shape.PrivateScope, "boxed"
+        | Shape.NonCanonicalCount, "boxed" ->
             """
 public static class Driver
 {
@@ -308,4 +318,14 @@ public static class Driver
             (fabricate Shape.PrivateScope)
             "BodyLookupDriver"
             (driver Shape.PrivateScope call)
+            5
+
+    [<TestCase "constrained">]
+    [<TestCase "boxed">]
+    let ``a MemberRef body is matched by its signature's bytes, not by what they decode to`` (call : string) : unit =
+        FabricatedGuest.run
+            "BodyLookup"
+            (fabricate Shape.NonCanonicalCount)
+            "BodyLookupDriver"
+            (driver Shape.NonCanonicalCount call)
             5
