@@ -88,6 +88,35 @@ module ConcreteMethodTable =
             state
             (fun ctx -> MethodTableLayout.baseOfDefinition loggerFactory dotnetRuntimeDirs operation ctx owner typeInfo)
 
+    /// `MethodTableLayout.methodImplBody` against a type system's load context.
+    let internal methodImplBody
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : TypeSystemState)
+        (owner : SlotOwner)
+        (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (assembly : DumpedAssembly)
+        (body : MetadataToken)
+        : TypeSystemState *
+          Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
+        =
+        inContext
+            baseClassTypes
+            state
+            (fun ctx ->
+                MethodTableLayout.methodImplBody
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    operation
+                    ctx
+                    owner
+                    ownerTypeInfo
+                    assembly
+                    body
+            )
+
     /// `MethodTableLayout.vtableOfDefinition` against a type system's load context.
     let vtableOfDefinition
         (loggerFactory : ILoggerFactory)
