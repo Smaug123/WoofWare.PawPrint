@@ -394,14 +394,21 @@ module MethodTableLayout =
 
             // `FindMethodDef` (mdinternalro.cpp:794-880) takes the first of the type's own methods
             // with the MemberRef's name whose signature blob is byte-for-byte the MemberRef's,
-            // skipping PrivateScope methods; a vararg MemberRef is compared by its fixed part
-            // (`_GetFixedSigOfVarArg`). Two signatures parsed from one module are equal exactly when
-            // their blobs are: a parsed TypeRef keeps its row, and a TypeSpec token inside a
+            // skipping PrivateScope methods. Two signatures parsed from one module are equal exactly
+            // when their blobs are: a parsed TypeRef keeps its row, and a TypeSpec token inside a
             // signature does not parse at all.
-            let fixedPart =
-                { signature with
-                    ParameterTypes = List.truncate signature.RequiredParameterCount signature.ParameterTypes
-                }
+            if
+                signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+            then
+                ctx,
+                Error (
+                    TypeBindingFailure.Unmodelled
+                        {
+                            Diagnostic =
+                                $"%s{operation}: a MethodImpl on %s{owner.Description} names its body by a MemberRef with a vararg signature, which CoreCLR compares by its fixed part (`_GetFixedSigOfVarArg`); that is not modelled"
+                        }
+                )
+            else
 
             let named =
                 ownerTypeInfo.Methods
@@ -410,7 +417,7 @@ module MethodTableLayout =
                     && match candidate.TryMetadata with
                        | None -> false
                        | Some facts ->
-                           facts.RawSignature = fixedPart
+                           facts.RawSignature = signature
                            && facts.MethodAttributes &&& MethodAttributes.MemberAccessMask
                               <> MethodAttributes.PrivateScope
                 )
