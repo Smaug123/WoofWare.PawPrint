@@ -649,19 +649,58 @@ module TestDispatchBindingFailure =
                 )
 
         // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is a MemberRef naming
-        // the type's own `TakeImpl`.
-        let bodyByMemberRef =
+        // `Base.Take` itself, a method of another type. The type declares a `Take` of the same
+        // signature, which the MemberRef does not name.
+        let bodyByForeignMemberRef =
             declareType
-                "BodyByMemberRef"
+                "BodyByForeignMemberRef"
                 baseType
                 1
                 (fun owner ->
-                    method privateOverride "TakeImpl" takesException
-                    |> ignore<MethodDefinitionHandle>
+                    method privateOverride "Take" takesException |> ignore<MethodDefinitionHandle>
 
                     methodImpl
                         owner
-                        (memberRef (TypeDefinitionHandle.op_Implicit owner) "TakeImpl" takesException)
+                        (memberRef baseType "Take" takesException)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is the type's own
+        // `TakePlain`, which is not virtual.
+        let bodyNonVirtual =
+            declareType
+                "BodyNonVirtual"
+                baseType
+                1
+                (fun owner ->
+                    let plain =
+                        method (MethodAttributes.Private ||| MethodAttributes.HideBySig) "TakePlain" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit plain)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is the type's own
+        // static `TakeStatic`.
+        let bodyStatic =
+            declareType
+                "BodyStatic"
+                baseType
+                1
+                (fun owner ->
+                    let takeStatic =
+                        method
+                            (MethodAttributes.Private
+                             ||| MethodAttributes.Static
+                             ||| MethodAttributes.HideBySig)
+                            "TakeStatic"
+                            (signature false returnsVoid [ exceptionType ])
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit takeStatic)
                         (MethodDefinitionHandle.op_Implicit baseTake)
                 )
 
@@ -888,8 +927,10 @@ module TestDispatchBindingFailure =
                 "DeclaresInheritedOverride",
                 declaresInheritedOverride,
                 Expected.Unmodelled "FindDeclMethodOnClassInHierarchy"
-                "BodyByMemberRef", bodyByMemberRef, Expected.Unmodelled "names its body by a MemberRef"
-                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "another type declares it"
+                "BodyByForeignMemberRef", bodyByForeignMemberRef, Expected.Unmodelled "MI_ILLEGAL_BODY"
+                "BodyNonVirtual", bodyNonVirtual, Expected.Unmodelled "MI_MUSTBEVIRTUAL"
+                "BodyStatic", bodyStatic, Expected.Unmodelled "MI_BODY_DECL_MISMATCH"
+                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "MI_ILLEGAL_BODY"
                 "ImplementsByForeignBody", implementsByForeignBody, Expected.Unmodelled "a method of another type"
                 "DeclaresGenericClassByDef", declaresGenericClassByDef, Expected.Unmodelled "carries no instantiation"
                 "DeclaresGenericInterfaceByDef",
@@ -1603,9 +1644,14 @@ module TestDispatchBindingFailure =
             "DeclaresAbsentOverload", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresNonVirtual", "contentVtableOfDefinition"
             "DeclaresInheritedOverride", "contentVtableOfDefinition"
-            "BodyByMemberRef", "contentVtableOfDefinition"
-            "BodyByMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyByForeignMemberRef", "contentVtableOfDefinition"
+            "BodyByForeignMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyNonVirtual", "contentVtableOfDefinition"
+            "BodyNonVirtual", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyStatic", "contentVtableOfDefinition"
+            "BodyStatic", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "BodyOnAncestor", "contentVtableOfDefinition"
+            "BodyOnAncestor", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "ImplementsByForeignBody", "ownDispatchMapOf"
             "DeclaresGenericClassByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresGenericInterfaceByDef", "ownDispatchMapOf"
@@ -1616,10 +1662,15 @@ module TestDispatchBindingFailure =
     let ``each shape fails the questions that reach it`` () : unit =
         let f = fixture ()
 
-        for name, question in reaches do
-            let _, handle, expected = f.Types |> List.find (fun (n, _, _) -> n = name)
-            let _, ask = questions f handle |> List.find (fun (q, _) -> q = question)
-            let outcome = ask ()
+        let mismatches =
+            [
+                for name, question in reaches do
+                    let _, handle, expected = f.Types |> List.find (fun (n, _, _) -> n = name)
+                    let _, ask = questions f handle |> List.find (fun (q, _) -> q = question)
+                    let outcome = ask ()
 
-            if not (isExpected f expected outcome) then
-                failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
+                    if not (isExpected f expected outcome) then
+                        yield $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
+            ]
+
+        mismatches |> shouldEqual []
