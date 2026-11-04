@@ -909,6 +909,13 @@ mutation-testing skill applies to each table/classifier they introduce.
      JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
      `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
      holds it to that runtime's `jithelpers.h` and `corelib.h`;
+   * **(landed)** the `RuntimeMethodHandle::IsAsyncMethod` FCall, which RC1's reflection asks
+     before it invokes a method and refuses one that is `AsyncCall`. The class loader decides
+     that from metadata alone (`RuntimeAsyncMethod.isAsyncCall`): a method declaring
+     `MethodImplAttributes.Async` is `AsyncCall` unless it returns CoreLib's `Task`, `ValueTask`,
+     `Task<T>` or `ValueTask<T>`, when only its async variant is, which reflection never lists.
+     A test holds the answer to real RC1's over every method of CoreLib and System.Net.Http.
+     Every case parked on it passes, the F# printf cases among them;
    * the guest cases whose real .NET 11 ending differs from .NET 10's, recorded in
      `TestPureCases.endingsOnNet11` (delegate equality, `Delegate.Method`'s declaring type,
      `GetCallingAssembly` from `Main`, and the private reflection several cases lean on);
