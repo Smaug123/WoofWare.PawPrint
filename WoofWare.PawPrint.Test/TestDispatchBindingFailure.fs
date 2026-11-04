@@ -352,6 +352,31 @@ module TestDispatchBindingFailure =
                         (memberRef disposable "Dispose" instanceVoid)
                 )
 
+        // A MethodImpl whose body is a MemberRef on the type itself with a vararg signature.
+        let bodyVarargMemberRef =
+            declareType
+                "BodyVarargMemberRef"
+                object
+                1
+                (fun owner ->
+                    implements owner disposable
+                    method privateOverride "Body" instanceVoid |> ignore<MethodDefinitionHandle>
+
+                    let varargVoid =
+                        let blob = BlobBuilder ()
+
+                        BlobEncoder(blob)
+                            .MethodSignature(SignatureCallingConvention.VarArgs, 0, true)
+                            .Parameters (0, returnsVoid, (fun (_ : ParametersEncoder) -> ()))
+
+                        metadata.GetOrAddBlob blob
+
+                    methodImpl
+                        owner
+                        (memberRef (TypeDefinitionHandle.op_Implicit owner) "Body" varargVoid)
+                        (memberRef disposable "Dispose" instanceVoid)
+                )
+
         // `interface N.IStatic { static abstract void M(System.Exception); }`.
         let staticInterface : EntityHandle =
             declareKind
@@ -913,6 +938,7 @@ module TestDispatchBindingFailure =
                 "DeclaresUnboundSignature", declaresUnboundSignature, Expected.Unavailable
                 "BodyOnAbsent", bodyOnAbsent, Expected.Absent "Gone"
                 "BodyUnboundSignature", bodyUnboundSignature, Expected.Unmodelled "MI_ILLEGAL_BODY"
+                "BodyVarargMemberRef", bodyVarargMemberRef, Expected.Unmodelled "vararg signature"
                 "StaticUnbound", staticUnbound, Expected.Unavailable
                 "OverridesUnbound", overridesUnbound, Expected.Unavailable
                 "ConstrainsUnbound", constrainsUnbound, Expected.Unavailable
@@ -1589,6 +1615,7 @@ module TestDispatchBindingFailure =
             "DeclaresUnboundSignature", "ownDispatchMapOf"
             "BodyOnAbsent", "ownDispatchMapOf"
             "BodyUnboundSignature", "ownDispatchMapOf"
+            "BodyVarargMemberRef", "ownDispatchMapOf"
             "StaticUnbound", "resolveConstrainedStaticInterfaceMethod"
             "HoldsGone", "containsReferences"
             "HoldsHoldsGone", "containsReferences"
