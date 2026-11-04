@@ -568,6 +568,15 @@ module internal IntrinsicHelpers =
         (state : IlMachineState)
         : ManagedPointerSource * ManagedPointerSource * int * IlMachineState
         =
+        // A pointer with no provenance is kept as the bit pattern it is, rather than refused
+        // here: the constructor stores it without reading through it, so only the length decides
+        // whether it is ever dereferenced, and `writePointerBackedSpanConstructor` refuses it
+        // over any but an empty span.
+        let sourcePointer (sourceArg : EvalStackValue) : ManagedPointerSource =
+            match sourceArg with
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim bits) -> ManagedPointerSource.ofBitPattern bits
+            | sourceArg -> managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+
         match wasConstructing with
         | ConstructionState.Constructing _ ->
             let thisArg, state = IlMachineState.popEvalStack currentThread state
@@ -584,7 +593,7 @@ module internal IntrinsicHelpers =
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
-            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+            let sourcePtr = sourcePointer sourceArg
 
             thisPtr, sourcePtr, length, state
         | ConstructionState.NotConstructing ->
@@ -602,7 +611,7 @@ module internal IntrinsicHelpers =
                 | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
                 | other -> failwith $"Span pointer constructor expected int length, got %O{other}"
 
-            let sourcePtr = managedPointerOfPointerArgument "Span pointer constructor" sourceArg
+            let sourcePtr = sourcePointer sourceArg
 
             thisPtr, sourcePtr, length, state
 

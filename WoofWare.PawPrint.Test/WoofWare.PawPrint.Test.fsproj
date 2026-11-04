@@ -66,6 +66,7 @@
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
     <Compile Include="TestUnsafeAccessorSharedGenericVirtual.fs" />
+    <Compile Include="TestGetReferencedAssemblies.fs" />
     <Compile Include="TestForegroundThreadsAtExit.fs" />
     <Compile Include="TestAbortChannel.fs" />
     <Compile Include="TestGuestLocation.fs" />

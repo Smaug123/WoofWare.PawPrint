@@ -934,6 +934,430 @@ module NativeRuntimeAssembly =
 
             NativeHandlerResult.completed state |> Some
 
+    /// The columns of one AssemblyRef row, as `BaseAssemblySpec::Init` reads them through
+    /// `GetAssemblyRefProps`.
+    type private AssemblyRefRow =
+        {
+            Name : string
+            Version : System.Version
+            /// Never absent: a row with no culture names the empty string at heap offset 0.
+            Culture : string
+            PublicKeyOrToken : byte[]
+            Flags : int
+        }
+
+    /// The AssemblyRef rows of `assembly`, in the order `EnumInit(mdtAssemblyRef)` yields them,
+    /// which is ascending row number.
+    let private assemblyRefRows (assembly : DumpedAssembly) : AssemblyRefRow[] =
+        let metadataReader =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
+
+        [|
+            for handle in metadataReader.AssemblyReferences do
+                let row = metadataReader.GetAssemblyReference handle
+
+                yield
+                    {
+                        Name = metadataReader.GetString row.Name
+                        Version = row.Version
+                        Culture = metadataReader.GetString row.Culture
+                        PublicKeyOrToken = metadataReader.GetBlobBytes row.PublicKeyOrToken
+                        Flags = int row.Flags
+                    }
+        |]
+
+    /// <summary>
+    /// <c>AssemblyNative_GetReferencedAssemblies</c> (vm/assemblynative.cpp): an <c>AssemblyName[]</c>
+    /// with one element per AssemblyRef row, none of them loaded. CoreCLR fills a
+    /// <c>NativeAssemblyNameParts</c> from each row and has CoreLib make the <c>AssemblyName</c> from
+    /// it (<c>AssemblySpec::AssemblyNameInit</c>), so the culture, version and key the guest sees are
+    /// whatever that managed code makes of the row. This does the same, one managed call per row,
+    /// re-entered after each.
+    /// </summary>
+    let private executeGetReferencedAssemblies (ctx : NativeCallContext) : NativeHandlerResult option =
+        let operation = "AssemblyNative_GetReferencedAssemblies"
+        let state = ctx.State
+        let instruction = ctx.Instruction
+        let runtime = EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib
+
+        if instruction.Arguments.Length <> 2 then
+            failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+        let assemblyFullName =
+            instruction.Arguments.[0]
+            |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+        let assembly =
+            state.LoadedAssembly assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+        let retReferencedAssemblies =
+            NativeCall.objectHandleOnStackTarget operation state "retReferencedAssemblies" instruction.Arguments.[1]
+
+        let rows = assemblyRefRows assembly
+
+        let state, assemblyNameType, assemblyNameHandle =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                "System.Reflection"
+                "AssemblyName"
+
+        let state, _, partsHandle =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                "System.Reflection"
+                "NativeAssemblyNameParts"
+
+        let complete (array : ManagedHeapAddress) (state : IlMachineState) : NativeHandlerResult option =
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed retReferencedAssemblies)
+                (CliType.ObjectRef (Some array))
+            |> NativeHandlerResult.completed
+            |> Some
+
+        let readReference (slot : ManagedPointerSource) (state : IlMachineState) : ManagedHeapAddress option =
+            match
+                IlMachineState.readManagedByref ctx.BaseClassTypes state (ManagedPointerSource.requireAddressed slot)
+            with
+            | CliType.ObjectRef stored -> stored
+            | other -> failwith $"%s{operation}: expected an object reference in %O{slot}, got %O{other}"
+
+        // Every local the VM passes the address of lives in this QCall's own frame, as
+        // `AssemblyNameInit`'s `StackSString`s, its `NativeAssemblyNameParts` and the GC-protected
+        // references do in the VM's: the callee runs above it, and they are released when the QCall
+        // returns or is unwound.
+        let stackBuffer (bytes : byte[]) (state : IlMachineState) : ManagedPointerSource * IlMachineState =
+            let ptr, state =
+                IlMachineState.allocateStackMemory
+                    ctx.Thread
+                    MemoryBlockInitialization.ZeroInitialized
+                    bytes.Length
+                    state
+
+            match ptr with
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.StackMemoryByte (thread, frame, block, 0)
+                                             Projections = []
+                                         } ->
+                let pool =
+                    IlMachineState.getStackMemoryPool thread frame state
+                    |> StackMemoryPool.writeBytes block 0 bytes
+
+                ptr, IlMachineState.setStackMemoryPool thread frame pool state
+            | other ->
+                failwith
+                    $"%s{operation}: allocateStackMemory returned an unexpected pointer shape (%O{other}); this is an interpreter bug"
+
+        // A null object reference, typed so that the callee's `stind.ref` replaces it and a read
+        // after the call finds what it stored.
+        let referenceSlot (state : IlMachineState) : ManagedPointerSource * IlMachineState =
+            let ptr, state =
+                IlMachineState.allocateStackMemory
+                    ctx.Thread
+                    MemoryBlockInitialization.ZeroInitialized
+                    NativeReferenceCell.PointerSize
+                    state
+
+            ptr,
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed ptr)
+                (CliType.ObjectRef None)
+
+        let pointerArgument (ptr : ManagedPointerSource) : CliType =
+            CliType.RuntimePointer (CliRuntimePointer.Managed ptr)
+
+        let int32Value (value : int) : EvalStackValue =
+            EvalStackValue.Int32 (Int32Source.Verbatim value)
+
+        let nulTerminatedUtf16 (s : string) : byte[] =
+            System.Text.Encoding.Unicode.GetBytes (s + "\000")
+
+        // `AssemblySpec::AssemblyNameInit`'s `NativeAssemblyNameParts`, over `BaseAssemblySpec::Init`'s
+        // reading of the row.
+        let nameParts (row : AssemblyRefRow) (state : IlMachineState) : ManagedPointerSource * IlMachineState =
+            let namePtr, state = stackBuffer (nulTerminatedUtf16 row.Name) state
+            let culturePtr, state = stackBuffer (nulTerminatedUtf16 row.Culture) state
+
+            // `BaseAssemblySpec::Init` replaces the pointer the metadata API reports for an empty
+            // key blob with `(PBYTE)1`, so the constructor sees a key of length zero rather than
+            // no key: an unsigned reference's token is an empty array, not null.
+            let keyPtr, state =
+                if row.PublicKeyOrToken.Length = 0 then
+                    NativeIntSource.Verbatim 1L, state
+                else
+                    let ptr, state = stackBuffer row.PublicKeyOrToken state
+                    NativeIntSource.ofManagedPointer ptr, state
+
+            let parts, state =
+                match IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes partsHandle with
+                | CliType.ValueType parts, state -> parts, state
+                | other, _ -> failwith $"%s{operation}: expected NativeAssemblyNameParts to be a struct, got %O{other}"
+
+            let set (fieldName : string) (value : EvalStackValue) (parts : CliValueType) : CliValueType =
+                let field = IlMachineState.requiredOwnInstanceFieldId state partsHandle fieldName
+                let current = CliValueType.DereferenceFieldById field parts
+                CliValueType.WithFieldSetById field (EvalStackValue.toCliTypeCoerced current value) parts
+
+            // The four `USHORT` version columns, which `AssemblyNameInit` copies across unwidened.
+            let version = row.Version
+
+            let parts =
+                parts
+                |> set "_pName" (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer namePtr))
+                |> set "_major" (int32Value version.Major)
+                |> set "_minor" (int32Value version.Minor)
+                |> set "_build" (int32Value version.Build)
+                |> set "_revision" (int32Value version.Revision)
+                |> set "_pCultureName" (EvalStackValue.NativeInt (NativeIntSource.ofManagedPointer culturePtr))
+                |> set "_pPublicKeyOrToken" (EvalStackValue.NativeInt keyPtr)
+                |> set "_cbPublicKeyOrToken" (int32Value row.PublicKeyOrToken.Length)
+                |> set "_flags" (int32Value row.Flags)
+
+            let partsPtr, state =
+                IlMachineState.allocateStackMemory
+                    ctx.Thread
+                    MemoryBlockInitialization.ZeroInitialized
+                    (CliType.sizeOf (CliType.ValueType parts))
+                    state
+
+            partsPtr,
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                (ManagedPointerSource.requireAddressed partsPtr)
+                (CliType.ValueType parts)
+
+        // Pushes the array and the index of the element being made, as re-entry markers, then has
+        // CoreLib make that element.
+        let makeElement (array : ManagedHeapAddress) (index : int) (state : IlMachineState) =
+            let partsPtr, state = nameParts rows.[index] state
+
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some array)) ctx.Thread
+                |> IlMachineState.pushToEvalStack' (int32Value index) ctx.Thread
+
+            match runtime with
+            | EmulatedRuntime.Net10 ->
+                // `AllocateObject`, then `METHOD__ASSEMBLY_NAME__CTOR` called on the result. The
+                // allocation runs no class constructor, and one would run before the constructor
+                // did, so this refuses rather than reorder the two should CoreLib ever declare one.
+                if assemblyNameType.Methods |> List.exists (fun m -> m.Name = ".cctor") then
+                    failwith
+                        $"TODO: %s{operation}: System.Reflection.AssemblyName declares a class constructor, which CoreCLR runs when its constructor is first called, after allocating the object; PawPrint does not model that order"
+
+                let ctor =
+                    assemblyNameType.Methods
+                    |> List.filter (fun m ->
+                        m.Name = ".ctor"
+                        && not m.IsStatic
+                        && (
+                            match m.Signature.ParameterTypes with
+                            | [ TypeDefn.Pointer _ ] -> true
+                            | _ -> false
+                        )
+                    )
+                    |> function
+                        | [ ctor ] -> ctor
+                        | ctors ->
+                            failwith
+                                $"%s{operation}: expected exactly one AssemblyName constructor taking a pointer, found %d{ctors.Length}"
+
+                let state, concretizedCtorResult =
+                    ExecutionConcretization.concretizeMethodWithAllGenerics
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ImmutableArray.Empty
+                        ctor
+                        ImmutableArray.Empty
+                        state
+
+                let concretizedCtor, _declaringTypeHandle = BindingStop.bound concretizedCtorResult
+
+                match concretizedCtor.Signature.ParameterTypes with
+                | [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                                 "NativeAssemblyNameParts",
+                                                                                 partsGenerics)) ] when
+                    partsGenerics.IsEmpty
+                    ->
+                    ()
+                | other ->
+                    failwith
+                        $"%s{operation}: AssemblyName's pointer constructor takes %O{other}, not NativeAssemblyNameParts*"
+
+                let instance, state =
+                    NativeRuntimeTypeHelpers.allocateManagedObjectOfConcreteType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        assemblyNameType
+                        assemblyNameHandle
+
+                // The instance twice: once as the third marker, and once as `this`.
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some instance)) ctx.Thread
+                    |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some instance)) ctx.Thread
+                    |> IlMachineState.pushToEvalStack (pointerArgument partsPtr) ctx.Thread
+
+                // Called as an instance method rather than through `newobj`, the instance being
+                // already allocated; the native frame has no IL to advance. An exception the
+                // constructor throws leaves the QCall, as `CALL_MANAGED_METHOD_NORET` lets it.
+                let state =
+                    IlMachineStateExecution.callMethod
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        None
+                        ConstructionState.NotConstructing
+                        IlMachineStateExecution.CallDispatch.Direct
+                        false
+                        false
+                        concretizedCtor.Generics
+                        concretizedCtor
+                        ctx.Thread
+                        state.ThreadState.[ctx.Thread]
+                        None
+                        ReturnValueDisposition.PushToCaller
+                        ExceptionEscape.Propagate
+                        state
+
+                NativeHandlerResult.pushedManagedCallee state |> Some
+            | EmulatedRuntime.Net11 ->
+                // `UnmanagedCallersOnlyCaller(METHOD__ASSEMBLY_NAME__CREATE_ASSEMBLY_SPEC)`: the
+                // static `[UnmanagedCallersOnly] CreateAssemblyName(AssemblyName*,
+                // NativeAssemblyNameParts*, Exception*)` allocates the element itself, and catches
+                // whatever its constructor throws into the last argument for the VM to rethrow.
+                let createAssemblyName =
+                    CorelibEntryPoint.findCorelibStaticMethod
+                        ctx.BaseClassTypes
+                        "System.Reflection"
+                        "AssemblyName"
+                        "CreateAssemblyName"
+                        3
+                        "make each AssemblyName of Assembly.GetReferencedAssemblies, as .NET 11's AssemblySpec::AssemblyNameInit does"
+
+                let state, concretizedResult =
+                    ExecutionConcretization.concretizeMethodWithTypeGenerics
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ImmutableArray.Empty
+                        createAssemblyName
+                        None
+                        ctx.BaseClassTypes.Corelib.DefinitionFullName
+                        ImmutableArray.Empty
+                        state
+
+                let concretized, _declaringType = BindingStop.bound concretizedResult
+
+                let result, state = referenceSlot state
+                let caught, state = referenceSlot state
+
+                // The two slots as the third and fourth markers, then the arguments.
+                let state =
+                    state
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer result) ctx.Thread
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer caught) ctx.Thread
+                    |> IlMachineState.pushToEvalStack (pointerArgument result) ctx.Thread
+                    |> IlMachineState.pushToEvalStack (pointerArgument partsPtr) ctx.Thread
+                    |> IlMachineState.pushToEvalStack (pointerArgument caught) ctx.Thread
+
+                let state, commitment =
+                    IlMachineStateExecution.callMethodWithCommitment
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        None
+                        ConstructionState.NotConstructing
+                        IlMachineStateExecution.CallDispatch.Direct
+                        false
+                        false
+                        IlMachineStateExecution.CallSiteTransition.EntersPreemptive
+                        concretized.Generics
+                        concretized
+                        ctx.Thread
+                        state.ThreadState.[ctx.Thread]
+                        None
+                        ReturnValueDisposition.PushToCaller
+                        (ExceptionEscape.UnhandledAtNativeCaller "AssemblySpec::AssemblyNameInit")
+                        state
+
+                match commitment with
+                | IlMachineStateExecution.CallCommitment.Committed ->
+                    NativeHandlerResult.pushedManagedCallee state |> Some
+                | IlMachineStateExecution.CallCommitment.Raised ->
+                    failwith
+                        $"TODO: %s{operation}: calling AssemblyName.CreateAssemblyName raised before it ran; CoreCLR would rethrow that from the QCall, which is not modelled"
+                | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+                    NativeHandlerResult.aborted ctx.Thread fatal state |> Some
+
+        // Store the element just made, and make the next or finish. A constructor that throws
+        // leaves `retReferencedAssemblies` unwritten, as on CoreCLR.
+        let storeElement
+            (array : ManagedHeapAddress)
+            (index : int)
+            (element : ManagedHeapAddress)
+            (state : IlMachineState)
+            =
+            let state =
+                IlMachineState.setArrayValue array (CliType.ObjectRef (Some element)) index state
+
+            if index + 1 = rows.Length then
+                complete array state
+            else
+                makeElement array (index + 1) state
+
+        let popMarkers (count : int) (state : IlMachineState) : IlMachineState =
+            (state, [ 1..count ])
+            ||> List.fold (fun state _ -> IlMachineState.popEvalStack ctx.Thread state |> snd)
+
+        // On re-entry the eval stack holds, from the top, what `makeElement` pushed beneath the
+        // call's arguments.
+        match runtime, instruction.EvaluationStack.Values with
+        | EmulatedRuntime.Net10,
+          [ EvalStackValue.ObjectRef element
+            EvalStackValue.Int32 (Int32Source.Verbatim index)
+            EvalStackValue.ObjectRef array ] -> storeElement array index element (popMarkers 3 state)
+        | EmulatedRuntime.Net11,
+          [ EvalStackValue.ManagedPointer caught
+            EvalStackValue.ManagedPointer result
+            EvalStackValue.Int32 (Int32Source.Verbatim index)
+            EvalStackValue.ObjectRef array ] ->
+            match readReference caught state with
+            | Some exn ->
+                // `InvokeThrowing` rethrows it from the QCall. Only `new CultureInfo` of a culture
+                // the row names and the runtime does not know can throw here.
+                failwith
+                    $"TODO: %s{operation}: AssemblyName.CreateAssemblyName caught %O{exn} making the AssemblyName of %s{assemblyFullName}'s reference to %s{rows.[index].Name}; rethrowing it from the QCall is not modelled"
+            | None ->
+
+            match readReference result state with
+            | Some element -> storeElement array index element (popMarkers 4 state)
+            | None ->
+                failwith
+                    $"%s{operation}: AssemblyName.CreateAssemblyName returned without storing a result or an exception"
+        | _, [] ->
+            let array, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero assemblyNameHandle)
+                    (fun () -> CliType.ObjectRef None)
+                    rows.Length
+                    state
+
+            if rows.Length = 0 then
+                complete array state
+            else
+                makeElement array 0 state
+        | _, other ->
+            failwith
+                $"%s{operation}: expected an empty eval stack or %O{runtime}'s re-entry markers, got %d{other.Length} value(s): %A{other}"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -946,6 +1370,18 @@ module NativeRuntimeAssembly =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
+        | "AssemblyNative_GetReferencedAssemblies",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        objectHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            executeGetReferencedAssemblies ctx
         | "AssemblyNative_GetResource",
           "System.Private.CoreLib",
           "System.Reflection",
