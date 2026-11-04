@@ -5,6 +5,7 @@ open System.Reflection
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open FsUnitTyped
+open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.PawPrint
 
@@ -13,9 +14,9 @@ open WoofWare.PawPrint
 [<TestFixture>]
 module TestRuntimeAsyncMethod =
 
-    /// CoreLib declares the methods that are `AsyncCall` without returning a promise type, which only
-    /// CoreLib may; System.Net.Http is compiled with runtime async, so it declares methods that carry
-    /// `MethodImplAttributes.Async` and return a `Task`, which are not.
+    /// Both are compiled with runtime async, so each declares methods that carry
+    /// `MethodImplAttributes.Async` and return a promise type, which are not `AsyncCall`. Only
+    /// CoreLib may declare one that returns anything else, which is.
     let private assemblyNames = [ "System.Private.CoreLib" ; "System.Net.Http" ]
 
     /// Takes `<assembly name>:<MethodDef row count>` arguments, and prints a line for each method that
@@ -149,3 +150,71 @@ public static class Program
 
         Set.difference expected actual |> shouldBeEmpty
         Set.difference actual expected |> shouldBeEmpty
+
+    /// A row names a promise type when it names `System.Threading.Tasks.Task`, `ValueTask`,
+    /// ``Task`1`` or ``ValueTask`1``, and only when the row binds to CoreLib's.
+    [<Test>]
+    let ``a method returns a promise type only when it returns CoreLib's`` () : unit =
+        let source =
+            """
+using System.Threading.Tasks;
+
+namespace System.Threading.Tasks
+{
+    public class Task { }
+}
+
+public static class Methods
+{
+    public static Task OwnTask() => null;
+    public static ValueTask NonGenericValueTask() => default;
+    public static Task<int> GenericTask() => null;
+    public static ValueTask<int> GenericValueTask() => default;
+    public static int Normal() => 0;
+    public static void Nothing() { }
+}
+"""
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let frameworkDirectory = FrameworkUnderTest.sharedFrameworkDirectory ()
+
+        let image =
+            Roslyn.compileAssembly "PromiseReturns" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+            |> fun bytes -> Assembly.read loggerFactory (Some "PromiseReturns.dll") (new MemoryStream (bytes))
+
+        let coreLib =
+            Assembly.readFile loggerFactory (Path.Combine (frameworkDirectory, "System.Private.CoreLib.dll"))
+
+        let methods =
+            image.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = "Methods") |> _.Methods
+
+        let _, kinds =
+            ((LoadedAssemblies.ofAssemblies [ coreLib ; image ], Map.empty), methods)
+            ||> List.fold (fun (assemblies, kinds) method ->
+                let facts = MethodInfo.requireMetadata "TestRuntimeAsyncMethod" method
+
+                match
+                    RuntimeAsyncMethod.classifyReturn
+                        loggerFactory
+                        [ frameworkDirectory ]
+                        coreLib
+                        image
+                        facts.RawSignature.ReturnType
+                        assemblies
+                with
+                | assemblies, Ok kind -> assemblies, Map.add method.Name kind kinds
+                | _, Error failure -> failwith (TypeBindingFailure.describe failure)
+            )
+
+        kinds
+        |> shouldEqual (
+            Map.ofList
+                [
+                    "OwnTask", MethodReturnKind.NormalMethod
+                    "NonGenericValueTask", MethodReturnKind.NonGenericTaskReturningMethod
+                    "GenericTask", MethodReturnKind.GenericTaskReturningMethod
+                    "GenericValueTask", MethodReturnKind.GenericTaskReturningMethod
+                    "Normal", MethodReturnKind.NormalMethod
+                    "Nothing", MethodReturnKind.NormalMethod
+                ]
+        )
