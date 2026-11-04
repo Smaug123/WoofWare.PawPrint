@@ -12,6 +12,7 @@ open WoofWare.PawPrint
 /// `RuntimeAsyncMethod.isAsyncCall`, which .NET 11's `RuntimeMethodHandle.IsAsyncMethod` FCall
 /// answers, checked against real .NET 11 over every method two framework assemblies declare.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestRuntimeAsyncMethod =
 
     /// Both are compiled with runtime async, so each declares methods that carry
