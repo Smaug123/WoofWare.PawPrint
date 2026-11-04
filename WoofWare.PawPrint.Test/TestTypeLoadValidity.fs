@@ -54,6 +54,8 @@ module TestTypeLoadValidity =
         | Pair
         /// CoreLib's `System.Tuple`1`, a class named by a TypeRef.
         | Tuple
+        /// `Orphan`1`, a class whose base type, CoreLib's `System.Absent`, does not exist.
+        | Orphan
 
     [<RequireQualifiedAccess>]
     type private Named =
@@ -87,7 +89,8 @@ module TestTypeLoadValidity =
         | Head.Holder
         | Head.Enum
         | Head.Klass
-        | Head.Tuple -> 1
+        | Head.Tuple
+        | Head.Orphan -> 1
         | Head.Pair -> 2
 
     let private isValueType (target : Target) : bool =
@@ -98,6 +101,7 @@ module TestTypeLoadValidity =
         | Target.Head Head.Klass
         | Target.Head Head.Pair
         | Target.Head Head.Tuple
+        | Target.Head Head.Orphan
         | Target.Named Named.Ref -> false
         | Target.Named (Named.Core name) ->
             match name with
@@ -112,8 +116,8 @@ module TestTypeLoadValidity =
 
     let private int32 : Signature = Signature.Primitive 0x08uy
 
-    /// The image: `Holder`1`, `Klass`1`, `Pair`2`, `Plain`, `Outer`1` (enclosing the enum `E`) and
-    /// `Ref`, then one TypeSpec per signature, whose tokens are returned in order. A `legacy` image's
+    /// The image: `Holder`1`, `Klass`1`, `Pair`2`, `Plain`, `Outer`1` (enclosing the enum `E`),
+    /// `Ref` and `Orphan`1`, then one TypeSpec per signature, whose tokens are returned in order. A `legacy` image's
     /// metadata table stream says it is version 1.0, for which CoreCLR overlooks a mismatched
     /// CLASS/VALUETYPE spelling of a type named directly. Version 1.0 has another schema for generic
     /// parameters, so a legacy image declares none: its own types are not generic, and its
@@ -218,6 +222,7 @@ module TestTypeLoadValidity =
 
         nextField <- 2
         addType "Ref" TypeAttributes.Public (core "Object") 0 |> ignore // row 8
+        addType "Orphan`1" TypeAttributes.Public (core "Absent") 1 |> ignore // row 9
 
         let target (target : Target) : EntityHandle =
             match target with
@@ -227,6 +232,7 @@ module TestTypeLoadValidity =
             | Target.Named Named.Plain -> typeDef 5
             | Target.Head Head.Enum -> typeDef 7
             | Target.Named Named.Ref -> typeDef 8
+            | Target.Head Head.Orphan -> typeDef 9
             | Target.Head Head.Tuple -> core "Tuple`1"
             | Target.Named (Named.Core name) -> core name
 
@@ -322,7 +328,9 @@ module TestTypeLoadValidity =
         | InvalidInstantiation
         | KindMismatch
         | WrongArity
-        | UninstantiatedDefinition
+        /// `IDS_CLASSLOAD_GENERAL`, which CoreCLR raises both for a generic definition named bare and
+        /// for a type not declared where the metadata says; the type it names tells them apart.
+        | General
 
     [<RequireQualifiedAccess>]
     type private Outcome =
@@ -347,7 +355,7 @@ module TestTypeLoadValidity =
                 | 0x1a59 -> Rule.InvalidInstantiation // IDS_CLASSLOAD_INVALIDINSTANTIATION
                 | 0x203f -> Rule.KindMismatch // BFA_CLASSLOAD_VALUETYPEMISMATCH
                 | 0x1a4b -> Rule.WrongArity // IDS_CLASSLOAD_TYPEWRONGNUMGENERICARGS
-                | 0x80131522 -> Rule.UninstantiatedDefinition // IDS_CLASSLOAD_GENERAL
+                | 0x80131522 -> Rule.General // IDS_CLASSLOAD_GENERAL
                 | other -> failwith $"host raised a TypeLoadException with unexpected resource 0x%x{other}: %O{e}"
 
             Outcome.TypeLoad (rule, e.TypeName)
@@ -363,7 +371,7 @@ module TestTypeLoadValidity =
             $"%s{definition.Namespace}.%s{definition.Name}"
 
     /// What PawPrint made of a signature, by concretization or the Loader's walk, in the load context
-    /// `assemblies` that walk left.
+    /// `assemblies` that walk left. The fixture's image names no nested type that is absent.
     let private pawPrintOutcome (assemblies : LoadedAssemblies) (result : Result<'a, TypeBindingFailure>) : Outcome =
         match result with
         | Ok _ -> Outcome.Loads
@@ -375,9 +383,14 @@ module TestTypeLoadValidity =
             | TypeLoadRefusal.WrongArity (definition, _, _) ->
                 Outcome.TypeLoad (Rule.WrongArity, typeName assemblies definition)
             | TypeLoadRefusal.UninstantiatedDefinition definition ->
-                Outcome.TypeLoad (Rule.UninstantiatedDefinition, typeName assemblies definition)
+                Outcome.TypeLoad (Rule.General, typeName assemblies definition)
             | TypeLoadRefusal.TypeParameterOutOfScope _
             | TypeLoadRefusal.MethodParameterOutOfScope _ -> Outcome.BadImageFormat
+        | Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, ns, name)))
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, ns, name))) ->
+            match ns with
+            | Some ns -> Outcome.TypeLoad (Rule.General, $"%s{ns}.%s{name}")
+            | None -> Outcome.TypeLoad (Rule.General, name)
         | Error failure -> failwith $"expected a binding or a refusal, got %s{TypeBindingFailure.describe failure}"
 
     /// Whether the Loader's walk answers `signature` with the type it names. It has no `TypeInfo` for
@@ -535,6 +548,8 @@ module TestTypeLoadValidity =
         let mismatch (name : string) =
             Outcome.TypeLoad (Rule.KindMismatch, name)
 
+        let absent = Outcome.TypeLoad (Rule.General, "System.Absent")
+
         let generic (head : Head) (args : Signature list) =
             Signature.Generic (isValueType (Target.Head head), head, args)
 
@@ -576,10 +591,14 @@ module TestTypeLoadValidity =
             klass (Signature.MethodParameter 0), Outcome.Loads
             klass (Signature.MethodParameter 5), Outcome.BadImageFormat
             Signature.TypeParameter 5, Outcome.BadImageFormat
-            klass (Signature.Nominal (false, Target.Head Head.Klass)),
-            Outcome.TypeLoad (Rule.UninstantiatedDefinition, "Klass`1")
-            klass (Signature.Nominal (true, Target.Head Head.Klass)),
-            Outcome.TypeLoad (Rule.UninstantiatedDefinition, "Klass`1")
+            klass (Signature.Nominal (false, Target.Head Head.Klass)), Outcome.TypeLoad (Rule.General, "Klass`1")
+            klass (Signature.Nominal (true, Target.Head Head.Klass)), Outcome.TypeLoad (Rule.General, "Klass`1")
+            // CoreCLR loads a generic definition named bare, base chain and all, before it refuses it.
+            Signature.Nominal (false, Target.Head Head.Orphan), absent
+            Signature.Nominal (true, Target.Head Head.Orphan), absent
+            klass (Signature.Nominal (false, Target.Head Head.Orphan)), absent
+            Signature.Vector (Signature.Nominal (false, Target.Head Head.Orphan)), absent
+            generic Head.Orphan [ int32 ], absent
             generic Head.Klass [ int32 ; int32 ], Outcome.TypeLoad (Rule.WrongArity, "Klass`1")
             generic Head.Pair [ Signature.Pointer int32 ], Outcome.TypeLoad (Rule.WrongArity, "Pair`2")
             generic Head.Klass [ Signature.Pointer int32 ; int32 ], Outcome.TypeLoad (Rule.WrongArity, "Klass`1")
