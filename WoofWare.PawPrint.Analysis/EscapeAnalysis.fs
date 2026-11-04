@@ -1114,6 +1114,14 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Exception.InternalPreserveStackTrace(), found %d{found.Length}"
 
+    /// Where the VM runs the methods `made` from native code to make an exception, the methods whose
+    /// raises escape there (`ExceptionMaking.vmMakingRaise`): `made`, and whatever the VM runs on
+    /// what they raise before throwing it again.
+    let private vmRuns (state : EscapeAnalysisState) (made : MethodKey list) : MethodKey list =
+        match ExceptionMaking.vmMakingRaise state.Runtime with
+        | VmMakingRaise.EscapesInPlace -> made
+        | VmMakingRaise.ThrownAgainPreservingTrace -> made @ [ preserveStackTrace state ]
+
     /// What the runtime raises where it raises the CoreLib exception `name` by itself, making it as
     /// `making` says: the exception, and the methods it runs to make it whose own raises escape
     /// there too.
@@ -1125,18 +1133,12 @@ module EscapeAnalysis =
         =
         let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
 
-        // What the VM does with what a method it runs from native code raises.
-        let vmRuns (made : MethodKey list) : MethodKey list =
-            match ExceptionMaking.vmMakingRaise state.Runtime with
-            | VmMakingRaise.EscapesInPlace -> made
-            | VmMakingRaise.ThrownAgainPreservingTrace -> made @ [ preserveStackTrace state ]
-
         match making with
         | ExceptionMaking.ThrownByIl -> thrown, [ parameterlessConstructor state name ]
-        | ExceptionMaking.VmConstructor -> thrown, vmRuns [ parameterlessConstructor state name ]
+        | ExceptionMaking.VmConstructor -> thrown, vmRuns state [ parameterlessConstructor state name ]
         | ExceptionMaking.ResourceMessage ->
-            thrown, vmRuns [ parameterlessConstructor state name ; resourceMessageLookup state ]
-        | ExceptionMaking.TypeLoadConstructor -> thrown, vmRuns [ typeLoadConstructor state name ]
+            thrown, vmRuns state [ parameterlessConstructor state name ; resourceMessageLookup state ]
+        | ExceptionMaking.TypeLoadConstructor -> thrown, vmRuns state [ typeLoadConstructor state name ]
         | ExceptionMaking.Preallocated -> thrown, []
         | ExceptionMaking.InitializerFailure ->
             failwith
@@ -4606,8 +4608,8 @@ module EscapeAnalysis =
             // 2. What the instruction throws explicitly: each object its operand may be. A null one
             // raises only the fault `OpcodeFaults` names for `throw`. One that may not be an
             // exception the runtime wraps, allocating a `RuntimeWrappedException` and running its
-            // constructor, and it throws what either raises in the wrapper's place
-            // (`WrapNonCompliantException`).
+            // constructor from native code, and it throws what either raises in the wrapper's place
+            // (`WrapNonCompliantException`), as `vmRuns` says.
             let state, raises, opaque, calls =
                 match op with
                 | IlOp.Nullary NullaryIlOp.Throw ->
@@ -4668,7 +4670,11 @@ module EscapeAnalysis =
                                         runtimeRaises state "System.OutOfMemoryException" ExceptionMaking.Preallocated
                                     ]
 
-                            raised @ raises, (offset, runtimeRuns (wrapperConstructor state), []) :: constructed @ calls
+                            let wrapping =
+                                vmRuns state [ wrapperConstructor state ]
+                                |> List.map (fun made -> offset, runtimeRuns made, [])
+
+                            raised @ raises, wrapping @ constructed @ calls
                         else
                             raises, calls
 

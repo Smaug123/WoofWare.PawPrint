@@ -21,10 +21,6 @@ module Net11Frontier =
     let spanHelpersMemoryQCalls : string =
         "On .NET 11, `SpanHelpers.Memmove` and `SpanHelpers.ClearWithoutReferences` hand a long copy or clear to QCalls whose entry points are `memmove` and `memset` (SpanHelpers.ByteMemOps.cs), where .NET 10 copies through the `Buffer_MemMove` QCall. `NativeContractTable.tsv` is .NET 10's (`nativeContractTable`), so it has no row for either, and the escape analysis cannot see through `CastHelpers.Box`, `Box_Nullable` or `Unbox_Nullable`, which copy a struct that way, nor so through any struct `box`, any `unbox` of a `Nullable<T>`, or `Unsafe.Unbox`. Un-park when the table is kept per runtime."
 
-    /// Real .NET 11 ends the process when wrapping a thrown non-exception raises.
-    let nonExceptionWrapping : string =
-        "Measured on real .NET 11: when `RuntimeWrappedException(object)`, which the runtime runs to wrap a thrown object that is not an exception, raises an exception of its own (here, from the culture's resource lookup), the process overflows its stack through `Exception.InternalPreserveStackTrace` and aborts (exit 134), where .NET 10 throws the constructor's exception in the wrapper's place, as the escape analysis describes. The analysis describes .NET 10's wrapping. Un-park when it describes each runtime's."
-
     /// Park the calling test on .NET 11 alone, for `reason`: `ParkedOn.check` on that runtime.
     let park (reason : string) : unit =
         ParkedOn.check [ EmulatedRuntime.Net11 ] reason
