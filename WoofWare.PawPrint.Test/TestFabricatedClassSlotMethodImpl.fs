@@ -27,7 +27,8 @@ module TestFabricatedClassSlotMethodImpl =
         | SameBodyTwice
         /// Two rows, naming `HashImpl` and `HashOther`.
         | DifferentBodies
-        /// One row, naming `HashImpl` by a MemberRef whose parent is `S`.
+        /// One row, naming `HashMember` by a MemberRef whose parent is `S`. `S` declares `HashImpl`, of
+        /// the same signature but another name, and the overload `HashMember(int)` before it.
         | MemberRefBody
         /// One row, naming `Helper.HashImpl` by its MethodDef.
         | ForeignBody
@@ -40,8 +41,8 @@ module TestFabricatedClassSlotMethodImpl =
         | StaticBody
 
     /// `struct S` overriding `Object.GetHashCode` with a private `HashImpl` returning 4 through the
-    /// MethodImpl rows `shape` describes. `HashOther` returns 6; `HashPlain`, `HashStatic` and
-    /// `class Helper`'s `HashImpl` return 4.
+    /// MethodImpl rows `shape` describes. `HashOther` returns 6, `HashMember()` 5 and `HashMember(int)`
+    /// 7; `HashPlain`, `HashStatic` and `class Helper`'s `HashImpl` return 4.
     let private fabricate (shape : Shape) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -106,6 +107,19 @@ module TestFabricatedClassSlotMethodImpl =
 
             metadata.GetOrAddBlob blob
 
+        let int32OfInt32 : BlobHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Type().Int32 ()),
+                    fun parameters -> parameters.AddParameter().Type().Int32 ()
+                )
+
+            metadata.GetOrAddBlob blob
+
         let getHashCode =
             metadata.AddMemberReference (
                 (TypeReferenceHandle.op_Implicit objectRef : EntityHandle),
@@ -153,6 +167,22 @@ module TestFabricatedClassSlotMethodImpl =
             match shape with
             | Shape.DifferentBodies -> Some (addOverride "HashOther" 6)
             | _ -> None
+
+        match shape with
+        | Shape.MemberRefBody ->
+            addMethod
+                (MethodAttributes.Private
+                 ||| MethodAttributes.Final
+                 ||| MethodAttributes.Virtual
+                 ||| MethodAttributes.NewSlot
+                 ||| MethodAttributes.HideBySig)
+                int32OfInt32
+                "HashMember"
+                7
+            |> ignore<MethodDefinitionHandle>
+
+            addOverride "HashMember" 5 |> ignore<MethodDefinitionHandle>
+        | _ -> ()
 
         let hashPlain =
             match shape with
@@ -242,7 +272,7 @@ module TestFabricatedClassSlotMethodImpl =
             match shape with
             | Shape.SameBodyTwice -> [ methodDef hashImpl ; methodDef hashImpl ]
             | Shape.DifferentBodies -> [ methodDef hashImpl ; methodDef hashOther.Value ]
-            | Shape.MemberRefBody -> [ memberRef s "HashImpl" ]
+            | Shape.MemberRefBody -> [ memberRef s "HashMember" ]
             | Shape.ForeignBody -> [ methodDef hashForeign.Value ]
             | Shape.ForeignMemberRefBody -> [ memberRef helper.Value "HashImpl" ]
             | Shape.NonVirtualBody -> [ methodDef hashPlain.Value ]
@@ -301,11 +331,11 @@ public static class Driver
 
     [<Test>]
     let ``a MethodImpl body named by a MemberRef is the type's own method`` () : unit =
-        FabricatedGuest.run "DupClassImpl" (fabricate Shape.MemberRefBody) "DupClassImplDriver" driver 4
+        FabricatedGuest.run "DupClassImpl" (fabricate Shape.MemberRefBody) "DupClassImplDriver" driver 5
 
     [<Test>]
     let ``a MethodImpl body named by a MemberRef fills the vtable slot`` () : unit =
-        FabricatedGuest.run "DupClassImpl" (fabricate Shape.MemberRefBody) "DupClassImplBoxedDriver" boxedDriver 4
+        FabricatedGuest.run "DupClassImpl" (fabricate Shape.MemberRefBody) "DupClassImplBoxedDriver" boxedDriver 5
 
     /// Each body CoreCLR refuses, with the load error PawPrint names for it.
     let private refusedBodies : (Shape * string) list =
