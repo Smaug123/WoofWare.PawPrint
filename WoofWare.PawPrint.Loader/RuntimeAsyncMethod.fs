@@ -127,78 +127,34 @@ module RuntimeAsyncMethod =
             | assemblies, Ok false -> assemblies, Ok MethodReturnKind.NormalMethod
             | assemblies, Error failure -> assemblies, Error failure
 
-    /// Whether `declaringType`, of `declaringAssembly`, is a delegate type: CoreCLR's
-    /// `MethodTable::IsDelegate`, whose immediate parent is `System.MulticastDelegate`.
-    let private isDelegate
-        (loggerFactory : ILoggerFactory)
-        (runtimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (declaringAssembly : DumpedAssembly)
-        (declaringType : TypeInfo<'generic, 'field>)
-        (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * Result<bool, TypeBindingFailure>
-        =
-        let multicastDelegate = baseClassTypes.MulticastDelegateType.Identity
-
-        match declaringType.BaseType with
-        | None
-        | Some (BaseTypeInfo.TypeSpec _) -> assemblies, Ok false
-        | Some (BaseTypeInfo.TypeDef handle) ->
-            assemblies,
-            Ok (
-                declaringAssembly.DefinitionFullName = multicastDelegate.AssemblyFullName
-                && handle = multicastDelegate.TypeDefinition.Get
-            )
-        | Some (BaseTypeInfo.TypeRef handle) ->
-            let typeRef = declaringAssembly.TypeRefs.[handle]
-
-            match
-                TypeResolution.tryResolveTypeRefIdentity loggerFactory runtimeDirs declaringAssembly typeRef assemblies
-            with
-            | assemblies, TypeReferenceIdentity.Resolved identity -> assemblies, Ok (identity = multicastDelegate)
-            | assemblies, TypeReferenceIdentity.AssemblyUnavailable reference ->
-                assemblies, Error (TypeBindingFailure.AssemblyUnavailable reference)
-            | assemblies, TypeReferenceIdentity.TypeAbsent miss ->
-                assemblies, Error (TypeBindingFailure.TypeAbsent miss)
-            | assemblies, TypeReferenceIdentity.Unmodelled unmodelled ->
-                assemblies, Error (TypeBindingFailure.Unmodelled unmodelled)
-
-    /// CoreCLR's `MethodDesc::IsAsyncMethod` for the method `method`, which `declaringType` of
-    /// `declaringAssembly` declares: whether the class loader gives it the `AsyncCall` flag.
-    /// This is the method a MethodDef row declares, never the async variant CoreCLR adds beside a
-    /// method returning a promise type, which reflection does not see.
+    /// CoreCLR's `MethodDesc::IsAsyncMethod` for the method `method`, which `declaringAssembly`
+    /// declares: whether the class loader gives it the `AsyncCall` flag. This is the method a
+    /// MethodDef row declares, never the async variant CoreCLR adds beside a method returning a
+    /// promise type, which reflection does not see.
     let isAsyncCall
         (loggerFactory : ILoggerFactory)
         (runtimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (coreLib : DumpedAssembly)
         (declaringAssembly : DumpedAssembly)
-        (declaringType : TypeInfo<'generic, 'field>)
         (method : MetadataMethodFacts)
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * Result<bool, TypeBindingFailure>
         =
         // `MethodTableBuilder::EnumerateClassMethods`: a method declaring `Async` is `AsyncCall`
-        // unless it returns a promise type, when its async variant is instead. It classifies every
-        // method of a delegate as returning normally. Without `Async`, a method is never
-        // `AsyncCall`, so nothing else need be read.
+        // unless it returns a promise type, when its async variant is instead. Without `Async`, a
+        // method is never `AsyncCall`, so nothing else need be read.
+        //
+        // The builder also takes every method of a delegate to return normally. That decides
+        // nothing here: outside CoreLib a method that declares `Async` and is `AsyncCall` fails its
+        // type's load, and CoreLib's delegates declare none.
         if not (method.ImplAttributes.HasFlag asyncImplAttribute) then
             assemblies, Ok false
         else
 
-        match isDelegate loggerFactory runtimeDirs baseClassTypes declaringAssembly declaringType assemblies with
+        match
+            classifyReturn loggerFactory runtimeDirs coreLib declaringAssembly method.RawSignature.ReturnType assemblies
+        with
+        | assemblies, Ok MethodReturnKind.NormalMethod -> assemblies, Ok true
+        | assemblies, Ok MethodReturnKind.NonGenericTaskReturningMethod
+        | assemblies, Ok MethodReturnKind.GenericTaskReturningMethod -> assemblies, Ok false
         | assemblies, Error failure -> assemblies, Error failure
-        | assemblies, Ok true -> assemblies, Ok true
-        | assemblies, Ok false ->
-            match
-                classifyReturn
-                    loggerFactory
-                    runtimeDirs
-                    baseClassTypes.Corelib
-                    declaringAssembly
-                    method.RawSignature.ReturnType
-                    assemblies
-            with
-            | assemblies, Ok MethodReturnKind.NormalMethod -> assemblies, Ok true
-            | assemblies, Ok MethodReturnKind.NonGenericTaskReturningMethod
-            | assemblies, Ok MethodReturnKind.GenericTaskReturningMethod -> assemblies, Ok false
-            | assemblies, Error failure -> assemblies, Error failure

@@ -2251,18 +2251,12 @@ module NativeRuntimeMethodHandle =
                             failwith $"%s{operation}: the assembly declaring %O{method} is not loaded"
                         )
 
-                    let declaringType =
-                        match method.TryDeclaringType with
-                        | Some declaringType -> declaringAssembly.TypeDefs.[declaringType.Definition.Get]
-                        | None -> failwith $"%s{operation}: %O{method} has a MethodDef row and no declaring type"
-
                     match
                         RuntimeAsyncMethod.isAsyncCall
                             ctx.LoggerFactory
                             state.DotnetRuntimeDirs
-                            ctx.BaseClassTypes
+                            ctx.BaseClassTypes.Corelib
                             declaringAssembly
-                            declaringType
                             (MethodInfo.requireMetadata operation method)
                             state.TypeSystem._LoadedAssemblies
                     with

@@ -70,8 +70,6 @@ public static class Program
             assemblyNames
             |> List.map (fun name -> Assembly.readFile loggerFactory (Path.Combine (frameworkDirectory, name + ".dll")))
 
-        let baseClassTypes = BaseClassTypes.ofCorelib images.Head
-
         let expected =
             let run =
                 RealRuntime.executeConcurrently
@@ -105,18 +103,12 @@ public static class Program
                         (fun (method : MethodInfo<_, _, _>) (assemblies, lines) ->
                             let facts = MethodInfo.requireMetadata "TestRuntimeAsyncMethod" method
 
-                            let declaringType =
-                                match method.TryDeclaringType with
-                                | Some declaringType -> image.TypeDefs.[declaringType.Identity.TypeDefinition.Get]
-                                | None -> failwith $"%O{method} has metadata and no declaring type"
-
                             let assemblies, isAsync =
                                 RuntimeAsyncMethod.isAsyncCall
                                     loggerFactory
                                     [ frameworkDirectory ]
-                                    baseClassTypes
+                                    images.Head
                                     image
-                                    declaringType
                                     facts
                                     assemblies
 
