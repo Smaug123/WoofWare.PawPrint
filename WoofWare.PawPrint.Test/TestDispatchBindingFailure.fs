@@ -335,6 +335,8 @@ module TestDispatchBindingFailure =
 
         // A MethodImpl whose body is a MemberRef on the type itself, whose signature names
         // `[Nowhere]System.Exception` where the method the type declares names `System.Exception`.
+        // CoreCLR compares the two signature blobs without resolving either, so the body names no
+        // method of the type and `Nowhere` is never needed.
         let bodyUnboundSignature =
             declareType
                 "BodyUnboundSignature"
@@ -910,7 +912,7 @@ module TestDispatchBindingFailure =
                 "DeclaresOnUnboundArgument", declaresOnUnboundArgument, Expected.Unavailable
                 "DeclaresUnboundSignature", declaresUnboundSignature, Expected.Unavailable
                 "BodyOnAbsent", bodyOnAbsent, Expected.Absent "Gone"
-                "BodyUnboundSignature", bodyUnboundSignature, Expected.Unavailable
+                "BodyUnboundSignature", bodyUnboundSignature, Expected.Unmodelled "MI_ILLEGAL_BODY"
                 "StaticUnbound", staticUnbound, Expected.Unavailable
                 "OverridesUnbound", overridesUnbound, Expected.Unavailable
                 "ConstrainsUnbound", constrainsUnbound, Expected.Unavailable

@@ -388,41 +388,36 @@ module MethodTableLayout =
             | Ok parentIdentity when parentIdentity <> owner.Identity -> refuse ctx "a method of another type"
             | Ok _ ->
 
-            let rec first
-                (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
-                candidates
-                : TypeConcretization.ConcretizationContext<DumpedAssembly> *
-                  Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
-                =
-                match candidates with
-                | [] -> refuse ctx "which names no method the type declares"
-                | (candidate : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) :: rest ->
-                    if candidate.Name <> memberRef.PrettyName then
-                        first ctx rest
-                    else
+            if assembly.DefinitionFullName <> owner.AssemblyFullName then
+                failwith
+                    $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body by a MemberRef of %s{assembly.DefinitionFullName}, but a MethodImpl row lives in its owner's assembly %s{owner.AssemblyFullName}"
 
-                    match
-                        signaturesEquivalent
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            ctx
-                            false
-                            {
-                                Signature = signature
-                                AssemblyFullName = assembly.DefinitionFullName
-                                DeclaringTypeGenerics = owner.Substitution
-                            }
-                            {
-                                Signature = candidate.Signature
-                                AssemblyFullName = owner.AssemblyFullName
-                                DeclaringTypeGenerics = owner.Substitution
-                            }
-                    with
-                    | ctx, Error failure -> ctx, Error failure
-                    | ctx, Ok true -> ctx, Ok candidate
-                    | ctx, Ok false -> first ctx rest
+            // `FindMethodDef` (mdinternalro.cpp:794-880) takes the first of the type's own methods
+            // with the MemberRef's name whose signature blob is byte-for-byte the MemberRef's,
+            // skipping PrivateScope methods; a vararg MemberRef is compared by its fixed part
+            // (`_GetFixedSigOfVarArg`). Two signatures parsed from one module are equal exactly when
+            // their blobs are: a parsed TypeRef keeps its row, and a TypeSpec token inside a
+            // signature does not parse at all.
+            let fixedPart =
+                { signature with
+                    ParameterTypes = List.truncate signature.RequiredParameterCount signature.ParameterTypes
+                }
 
-            first ctx ownerTypeInfo.Methods
+            let named =
+                ownerTypeInfo.Methods
+                |> List.tryFind (fun candidate ->
+                    candidate.Name = memberRef.PrettyName
+                    && match candidate.TryMetadata with
+                       | None -> false
+                       | Some facts ->
+                           facts.RawSignature = fixedPart
+                           && facts.MethodAttributes &&& MethodAttributes.MemberAccessMask
+                              <> MethodAttributes.PrivateScope
+                )
+
+            match named with
+            | Some candidate -> ctx, Ok candidate
+            | None -> refuse ctx "which names no method the type declares"
         | other ->
             failwith
                 $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
