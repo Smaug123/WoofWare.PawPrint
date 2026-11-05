@@ -105,7 +105,7 @@ module internal DefaultInterfaceImplementation =
                 match accepts state declaredOn with
                 | state, Error failure -> state, Error failure
                 | state, Ok true ->
-                    ConcreteInterfaceDispatch.methodImplBody
+                    ConcreteMethodTable.methodImplBody
                         loggerFactory
                         dotnetRuntimeDirs
                         baseClassTypes

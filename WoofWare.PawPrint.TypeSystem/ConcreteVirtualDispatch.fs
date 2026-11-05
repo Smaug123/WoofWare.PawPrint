@@ -641,20 +641,24 @@ module ConcreteVirtualDispatch =
                     | state, Error failure -> state, Error failure
                     | state, Ok false -> state, Ok acc
                     | state, Ok true ->
-                        match impl.Body with
-                        | MetadataToken.MethodDef body -> state, Ok (currentAssy.Methods.[body] :: acc)
-                        | MetadataToken.MemberReference _ ->
-                            state,
-                            Error (
-                                TypeBindingFailure.Unmodelled
-                                    {
-                                        Diagnostic =
-                                            $"MethodImpl on %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} names its body by a MemberRef, which CoreCLR resolves to a method of the type itself; that is not modelled"
-                                    }
-                            )
-                        | other ->
-                            failwith
-                                $"BUG: MethodImpl on %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
+                        let operation = $"virtual dispatch of %s{methodToCall.Name}"
+                        let owner = ConcreteMethodTable.ownerOfDefinition operation state currentTy.Identity
+
+                        let state, body =
+                            ConcreteMethodTable.methodImplBody
+                                loggerFactory
+                                dotnetRuntimeDirs
+                                baseClassTypes
+                                operation
+                                state
+                                owner
+                                currentTypeInfo
+                                currentAssy
+                                impl.Body
+
+                        match body |> Result.bind (MethodTableLayout.instanceOverrideBody operation owner) with
+                        | Error failure -> state, Error failure
+                        | Ok body -> state, Ok (body :: acc)
             )
 
         let dispatchedOn

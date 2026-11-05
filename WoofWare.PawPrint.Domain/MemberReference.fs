@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System
+open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
 
@@ -16,6 +17,10 @@ type MemberReference<'parent> =
         PrettyName : string
         Parent : 'parent
         Signature : MemberSignature
+        /// The signature blob's bytes, exactly as the image encodes them, which `Signature` parses.
+        /// Different encodings of one signature parse alike; CoreCLR tells them apart where it
+        /// compares blobs, as `FindMethodDef` does.
+        SignatureBlob : ImmutableArray<byte>
     }
 
 [<RequireQualifiedAccess>]
@@ -52,4 +57,7 @@ module MemberReference =
             PrettyName = getString mr.Name
             Parent = makeParent mr.Parent
             Signature = signature
+            SignatureBlob =
+                let blob = blobReader mr.Signature
+                blob.ReadBytes blob.Length |> ImmutableArray.Create<byte>
         }

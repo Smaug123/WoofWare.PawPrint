@@ -335,6 +335,8 @@ module TestDispatchBindingFailure =
 
         // A MethodImpl whose body is a MemberRef on the type itself, whose signature names
         // `[Nowhere]System.Exception` where the method the type declares names `System.Exception`.
+        // CoreCLR compares the two signature blobs without resolving either, so the body names no
+        // method of the type and `Nowhere` is never needed.
         let bodyUnboundSignature =
             declareType
                 "BodyUnboundSignature"
@@ -347,6 +349,31 @@ module TestDispatchBindingFailure =
                     methodImpl
                         owner
                         (memberRef (TypeDefinitionHandle.op_Implicit owner) "Body" takesUnboundException)
+                        (memberRef disposable "Dispose" instanceVoid)
+                )
+
+        // A MethodImpl whose body is a MemberRef on the type itself with a vararg signature.
+        let bodyVarargMemberRef =
+            declareType
+                "BodyVarargMemberRef"
+                object
+                1
+                (fun owner ->
+                    implements owner disposable
+                    method privateOverride "Body" instanceVoid |> ignore<MethodDefinitionHandle>
+
+                    let varargVoid =
+                        let blob = BlobBuilder ()
+
+                        BlobEncoder(blob)
+                            .MethodSignature(SignatureCallingConvention.VarArgs, 0, true)
+                            .Parameters (0, returnsVoid, (fun (_ : ParametersEncoder) -> ()))
+
+                        metadata.GetOrAddBlob blob
+
+                    methodImpl
+                        owner
+                        (memberRef (TypeDefinitionHandle.op_Implicit owner) "Body" varargVoid)
                         (memberRef disposable "Dispose" instanceVoid)
                 )
 
@@ -649,19 +676,58 @@ module TestDispatchBindingFailure =
                 )
 
         // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is a MemberRef naming
-        // the type's own `TakeImpl`.
-        let bodyByMemberRef =
+        // `Base.Take` itself, a method of another type. The type declares a `Take` of the same
+        // signature, which the MemberRef does not name.
+        let bodyByForeignMemberRef =
             declareType
-                "BodyByMemberRef"
+                "BodyByForeignMemberRef"
                 baseType
                 1
                 (fun owner ->
-                    method privateOverride "TakeImpl" takesException
-                    |> ignore<MethodDefinitionHandle>
+                    method privateOverride "Take" takesException |> ignore<MethodDefinitionHandle>
 
                     methodImpl
                         owner
-                        (memberRef (TypeDefinitionHandle.op_Implicit owner) "TakeImpl" takesException)
+                        (memberRef baseType "Take" takesException)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is the type's own
+        // `TakePlain`, which is not virtual.
+        let bodyNonVirtual =
+            declareType
+                "BodyNonVirtual"
+                baseType
+                1
+                (fun owner ->
+                    let plain =
+                        method (MethodAttributes.Private ||| MethodAttributes.HideBySig) "TakePlain" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit plain)
+                        (MethodDefinitionHandle.op_Implicit baseTake)
+                )
+
+        // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is the type's own
+        // static `TakeStatic`.
+        let bodyStatic =
+            declareType
+                "BodyStatic"
+                baseType
+                1
+                (fun owner ->
+                    let takeStatic =
+                        method
+                            (MethodAttributes.Private
+                             ||| MethodAttributes.Static
+                             ||| MethodAttributes.HideBySig)
+                            "TakeStatic"
+                            (signature false returnsVoid [ exceptionType ])
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit takeStatic)
                         (MethodDefinitionHandle.op_Implicit baseTake)
                 )
 
@@ -871,7 +937,8 @@ module TestDispatchBindingFailure =
                 "DeclaresOnUnboundArgument", declaresOnUnboundArgument, Expected.Unavailable
                 "DeclaresUnboundSignature", declaresUnboundSignature, Expected.Unavailable
                 "BodyOnAbsent", bodyOnAbsent, Expected.Absent "Gone"
-                "BodyUnboundSignature", bodyUnboundSignature, Expected.Unavailable
+                "BodyUnboundSignature", bodyUnboundSignature, Expected.Unmodelled "MI_ILLEGAL_BODY"
+                "BodyVarargMemberRef", bodyVarargMemberRef, Expected.Unmodelled "vararg signature"
                 "StaticUnbound", staticUnbound, Expected.Unavailable
                 "OverridesUnbound", overridesUnbound, Expected.Unavailable
                 "ConstrainsUnbound", constrainsUnbound, Expected.Unavailable
@@ -888,8 +955,10 @@ module TestDispatchBindingFailure =
                 "DeclaresInheritedOverride",
                 declaresInheritedOverride,
                 Expected.Unmodelled "FindDeclMethodOnClassInHierarchy"
-                "BodyByMemberRef", bodyByMemberRef, Expected.Unmodelled "names its body by a MemberRef"
-                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "another type declares it"
+                "BodyByForeignMemberRef", bodyByForeignMemberRef, Expected.Unmodelled "MI_ILLEGAL_BODY"
+                "BodyNonVirtual", bodyNonVirtual, Expected.Unmodelled "MI_MUSTBEVIRTUAL"
+                "BodyStatic", bodyStatic, Expected.Unmodelled "MI_BODY_DECL_MISMATCH"
+                "BodyOnAncestor", bodyOnAncestor, Expected.Unmodelled "MI_ILLEGAL_BODY"
                 "ImplementsByForeignBody", implementsByForeignBody, Expected.Unmodelled "a method of another type"
                 "DeclaresGenericClassByDef", declaresGenericClassByDef, Expected.Unmodelled "carries no instantiation"
                 "DeclaresGenericInterfaceByDef",
@@ -1546,6 +1615,7 @@ module TestDispatchBindingFailure =
             "DeclaresUnboundSignature", "ownDispatchMapOf"
             "BodyOnAbsent", "ownDispatchMapOf"
             "BodyUnboundSignature", "ownDispatchMapOf"
+            "BodyVarargMemberRef", "ownDispatchMapOf"
             "StaticUnbound", "resolveConstrainedStaticInterfaceMethod"
             "HoldsGone", "containsReferences"
             "HoldsHoldsGone", "containsReferences"
@@ -1603,9 +1673,14 @@ module TestDispatchBindingFailure =
             "DeclaresAbsentOverload", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresNonVirtual", "contentVtableOfDefinition"
             "DeclaresInheritedOverride", "contentVtableOfDefinition"
-            "BodyByMemberRef", "contentVtableOfDefinition"
-            "BodyByMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyByForeignMemberRef", "contentVtableOfDefinition"
+            "BodyByForeignMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyNonVirtual", "contentVtableOfDefinition"
+            "BodyNonVirtual", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
+            "BodyStatic", "contentVtableOfDefinition"
+            "BodyStatic", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "BodyOnAncestor", "contentVtableOfDefinition"
+            "BodyOnAncestor", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "ImplementsByForeignBody", "ownDispatchMapOf"
             "DeclaresGenericClassByDef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresGenericInterfaceByDef", "ownDispatchMapOf"
@@ -1616,10 +1691,15 @@ module TestDispatchBindingFailure =
     let ``each shape fails the questions that reach it`` () : unit =
         let f = fixture ()
 
-        for name, question in reaches do
-            let _, handle, expected = f.Types |> List.find (fun (n, _, _) -> n = name)
-            let _, ask = questions f handle |> List.find (fun (q, _) -> q = question)
-            let outcome = ask ()
+        let mismatches =
+            [
+                for name, question in reaches do
+                    let _, handle, expected = f.Types |> List.find (fun (n, _, _) -> n = name)
+                    let _, ask = questions f handle |> List.find (fun (q, _) -> q = question)
+                    let outcome = ask ()
 
-            if not (isExpected f expected outcome) then
-                failwith $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
+                    if not (isExpected f expected outcome) then
+                        yield $"%s{question} of %s{name}: expected %A{expected}, got %s{describe outcome}"
+            ]
+
+        mismatches |> shouldEqual []
