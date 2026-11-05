@@ -363,6 +363,42 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `HostNameConfigured.cs` on `platform`, with
+    /// `KernelConfig.HostName` set to `name` (or left at the kernel's default for
+    /// `None`). The guest prints `Dns.GetHostName()` and `Environment.MachineName`
+    /// a line each, so the assertion pins the whole chain
+    /// (`KernelConfig.HostName` -> `UnixBootImage.withHostName` ->
+    /// `SystemNative_GetHostName` -> CoreLib's 256-byte `stackalloc` -> both
+    /// properties) to exact bytes.
+    let private hostNameCase (platform : SimulatedUnixPlatform) (name : string option) : EndToEndTestCase =
+        let expected = defaultArg name "localhost"
+        let machine = expected.Split('.').[0]
+
+        {
+            FileName = "HostNameConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    HostName =
+                        name
+                        |> Option.map (fun name ->
+                            match UnixByteString.ofString name with
+                            | Ok name -> name
+                            | Error defect -> failwith $"test bug: %O{defect}"
+                        )
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.UTF8.GetBytes (expected + "\n" + machine + "\n"))
+                )
+        }
+
     /// A directory whose UTF-8 encoding exceeds the 256 bytes CoreLib's
     /// `Interop.Sys.GetCwd()` stackallocs, so that the first `SystemNative_GetCwd`
     /// must fail with ERANGE and the guest must take its ArrayPool
@@ -1741,6 +1777,15 @@ module TestImpureCases =
             // constant rather than reading `Kernel.ProcessPath` fails one of
             // them. An apphost-shaped path and a muxer-shaped one, which are the
             // two things a real `Environment.ProcessPath` actually reports.
+            // The kernel's default, which is part of the replay contract; then
+            // configured names on each flavour, among them the longest each
+            // flavour's kernel holds (64 bytes on Linux; 255 on Darwin, which
+            // with its terminator fills CoreLib's 256-byte buffer exactly).
+            hostNameCase SimulatedUnixPlatform.linuxX64 None
+            hostNameCase SimulatedUnixPlatform.linuxX64 (Some "pawprint-test.example.org")
+            hostNameCase SimulatedUnixPlatform.linuxX64 (Some (String.replicate 64 "h"))
+            hostNameCase SimulatedUnixPlatform.macOsArm64 (Some "pawprint-mac.local")
+            hostNameCase SimulatedUnixPlatform.macOsArm64 (Some (String.replicate 251 "h" + ".lan"))
             processPathCase "/home/pawprint/work/Guest"
             processPathCase "/usr/share/dotnet/dotnet"
             // A path whose UTF-8 encoding is longer than its character count, so
