@@ -463,57 +463,89 @@ module TestInterpreterBindingFailure =
                 (fun (method : WoofWare.PawPrint.MethodInfo<_, _, _>, declaring) -> $"%s{method.Name} on %O{declaring}")
                 result
 
+        let int32 = TypeDefn.PrimitiveType PrimitiveType.Int32
+
         [
             for method in f.Analysed.Methods.Values do
+                // A generic method is instantiated at `int32`s, and at pointers, which CoreCLR refuses.
+                for argument in [ int32 ; TypeDefn.Pointer int32 ] do
+                    let methodGenerics =
+                        if method.Generics.IsEmpty then
+                            None
+                        else
+                            Some (ImmutableArray.CreateRange (List.replicate method.Generics.Length argument))
+
+                    yield
+                        agrees
+                            state
+                            (fun state ->
+                                let state, result =
+                                    ExecutionConcretization.concretizeMethodWithTypeGenerics
+                                        f.LoggerFactory
+                                        f.BaseClassTypes
+                                        ImmutableArray.Empty
+                                        method
+                                        methodGenerics
+                                        f.Analysed.DefinitionFullName
+                                        ImmutableArray.Empty
+                                        state
+
+                                state, methodOutcome result
+                            )
+                            (fun typeSystem ->
+                                let typeSystem, result =
+                                    MethodConcretisation.concretizeMethodWithTypeGenerics
+                                        f.LoggerFactory
+                                        dirs
+                                        f.BaseClassTypes
+                                        ImmutableArray.Empty
+                                        method
+                                        methodGenerics
+                                        f.Analysed.DefinitionFullName
+                                        ImmutableArray.Empty
+                                        typeSystem
+
+                                typeSystem, methodOutcome result
+                            )
+
                 yield
                     agrees
                         state
                         (fun state ->
-                            let state, result =
-                                ExecutionConcretization.concretizeMethodWithTypeGenerics
+                            let state, handle =
+                                IlMachineState.concretizeType
                                     f.LoggerFactory
                                     f.BaseClassTypes
-                                    ImmutableArray.Empty
-                                    method
-                                    None
-                                    f.Analysed.DefinitionFullName
-                                    ImmutableArray.Empty
                                     state
-
-                            state, methodOutcome result
-                        )
-                        (fun typeSystem ->
-                            let typeSystem, result =
-                                MethodConcretisation.concretizeMethodWithTypeGenerics
-                                    f.LoggerFactory
-                                    dirs
-                                    f.BaseClassTypes
-                                    ImmutableArray.Empty
-                                    method
-                                    None
                                     f.Analysed.DefinitionFullName
                                     ImmutableArray.Empty
-                                    typeSystem
+                                    ImmutableArray.Empty
+                                    int32
 
-                            typeSystem, methodOutcome result
-                        )
-
-                yield
-                    agrees
-                        state
-                        (fun state ->
                             let state, result =
                                 ExecutionConcretization.concretizeMethodWithAllGenerics
                                     f.LoggerFactory
                                     f.BaseClassTypes
                                     ImmutableArray.Empty
                                     method
-                                    ImmutableArray.Empty
+                                    (ImmutableArray.CreateRange (List.replicate method.Generics.Length handle))
                                     state
 
                             state, methodOutcome result
                         )
                         (fun typeSystem ->
+                            let typeSystem, handle =
+                                TypeSystemState.concretizeType
+                                    f.LoggerFactory
+                                    dirs
+                                    f.BaseClassTypes
+                                    typeSystem
+                                    f.Analysed.DefinitionFullName
+                                    ImmutableArray.Empty
+                                    ImmutableArray.Empty
+                                    int32
+                                |> BindingResult.bound
+
                             let typeSystem, result =
                                 MethodConcretisation.concretizeMethodWithAllGenerics
                                     f.LoggerFactory
@@ -521,7 +553,7 @@ module TestInterpreterBindingFailure =
                                     f.BaseClassTypes
                                     ImmutableArray.Empty
                                     method
-                                    ImmutableArray.Empty
+                                    (ImmutableArray.CreateRange (List.replicate method.Generics.Length handle))
                                     typeSystem
 
                             typeSystem, methodOutcome result
