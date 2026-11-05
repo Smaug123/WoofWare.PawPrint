@@ -116,6 +116,9 @@ module TestMethodHandleRegistry =
 
         let concretizedMethod, _declaringType = BindingResult.value concretizedMethodResult
 
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretizedMethod state
+
         let methodState =
             match
                 MethodState.Empty
@@ -125,7 +128,7 @@ module TestMethodHandleRegistry =
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
-                    ImmutableArray.Empty
+                    localTypes
                     ImmutableArray.Empty
                     None
             with
@@ -303,6 +306,9 @@ public static class HasMethod
         let loggerFactory, baseClassTypes, assembly, targetMethod, concretizedMethod, state =
             loadFixture ()
 
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretizedMethod state
+
         let methodState =
             match
                 MethodState.Empty
@@ -312,7 +318,7 @@ public static class HasMethod
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
-                    ImmutableArray.Empty
+                    localTypes
                     ImmutableArray.Empty
                     None
             with
