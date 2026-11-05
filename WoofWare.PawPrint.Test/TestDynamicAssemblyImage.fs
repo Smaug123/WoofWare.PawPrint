@@ -50,6 +50,9 @@ module TestDynamicAssemblyImage =
             AssemblyFlags.EnableJitCompileTracking
             AssemblyFlags.DisableJitCompileOptimizer
             AssemblyFlags.PublicKey ||| AssemblyFlags.Retargetable
+            // Bits ECMA-335 does not define, which the column's four bytes hold all the same.
+            enum<AssemblyFlags> 0x10100
+            enum<AssemblyFlags> 0x40000000
         ]
 
     let private hashChoices : Configuration.Assemblies.AssemblyHashAlgorithm list =

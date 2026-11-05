@@ -50,8 +50,9 @@ type SignalInitState =
 /// (`g_signalPipe`), the managed callback installed by
 /// `SystemNative_SetPosixSignalHandler` (`g_posixSignalHandler`), which
 /// signals have a managed registration (`g_hasPosixSignalRegistrations`),
-/// and the disposition each signal had when the shim last looked, which it
-/// restores when it gives the signal up (`g_origSigHandler`).
+/// the disposition each signal had when the shim last looked, which it
+/// restores when it gives the signal up (`g_origSigHandler`), and the two
+/// SIGCHLD callbacks of System.Diagnostics.Process.
 ///
 /// The kernel's half of signal handling (each signal's disposition, what is
 /// pending, what each thread blocks) is `SignalState`, on the process; the
@@ -92,6 +93,13 @@ type PosixSignalShim =
             /// signals `saveConsoleSignals` records are not here, because their
             /// installation is not modelled.
             Installed : Set<Signal>
+            /// The process class's child-reaping callback, which
+            /// `SystemNative_RegisterForSigChld` installs (`g_sigChldCallback`).
+            SigChld : SignalHandler option
+            /// The process class's deferred terminal reconfiguration, which
+            /// `SystemNative_SetDelayedSigChildConsoleConfigurationHandler`
+            /// installs (`g_sigChldConsoleConfigurationCallback`).
+            DelayedSigChldConsoleConfiguration : SignalHandler option
         }
 
 [<RequireQualifiedAccess>]
@@ -106,6 +114,8 @@ module PosixSignalShim =
             Calling = None
             Originals = Map.empty
             Installed = Set.empty
+            SigChld = None
+            DelayedSigChldConsoleConfiguration = None
         }
 
     /// Whether `SystemNative_InitializeTerminalAndSignalHandling` has run.
@@ -375,8 +385,54 @@ module PosixSignalShim =
                 Registered = Set.remove signal state.Registered
             }
 
+    /// The process class's child-reaping callback, if
+    /// `SystemNative_RegisterForSigChld` has installed one.
+    let sigChldCallback (state : PosixSignalShim) : SignalHandler option = state.SigChld
+
+    /// `SystemNative_RegisterForSigChld`: record `callback` as the
+    /// child-reaping callback, and then `installHandler` for SIGCHLD, whose
+    /// failure is `Error` with the callback recorded all the same. Fails if a
+    /// callback is already recorded: the shim asserts that it is installed
+    /// once, which the process class's one-time initialisation ensures.
+    let registerForSigChld<'Task when 'Task : comparison>
+        (numbering : SignalNumbering)
+        (callback : SignalHandler)
+        (caller : Caller<'Task>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        (state : PosixSignalShim)
+        : Result<UnixSystem<'Task, NativeSignalHandler>, UnixError> * PosixSignalShim
+        =
+        match state.SigChld with
+        | Some existing ->
+            failwith
+                $"PosixSignalShim.registerForSigChld: a SIGCHLD callback (%O{SignalHandler.methodInfo existing}) is already registered, and System.Native asserts that it is registered once."
+        | None ->
+
+        let state =
+            { state with
+                SigChld = Some callback
+            }
+
+        match installHandler numbering Signal.SIGCHLD caller system state with
+        | Ok (system, state) -> Ok system, state
+        | Error errno -> Error errno, state
+
+    /// `SystemNative_SetDelayedSigChildConsoleConfigurationHandler`: record
+    /// `callback`. Fails if one is already recorded, as the shim asserts.
+    let setDelayedSigChldConsoleConfiguration (callback : SignalHandler) (state : PosixSignalShim) : PosixSignalShim =
+        match state.DelayedSigChldConsoleConfiguration with
+        | Some existing ->
+            failwith
+                $"PosixSignalShim.setDelayedSigChldConsoleConfiguration: a callback (%O{SignalHandler.methodInfo existing}) is already set, and System.Native asserts that it is set once."
+        | None ->
+            { state with
+                DelayedSigChldConsoleConfiguration = Some callback
+            }
+
     /// `SystemNative_DisablePosixSignalHandling`: the registration goes, and
-    /// then `restoreHandler`, whose unchecked failure this passes on.
+    /// then `restoreHandler`, whose unchecked failure this passes on, unless
+    /// the shim still needs its handler for the signal: SIGCHLD, once the
+    /// child-reaping callback is registered.
     let disable<'Task when 'Task : comparison>
         (numbering : SignalNumbering)
         (signal : Signal)
@@ -385,14 +441,14 @@ module PosixSignalShim =
         (state : PosixSignalShim)
         : UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim * UnixError option
         =
-        restoreHandler
-            numbering
-            signal
-            caller
-            system
+        let state =
             { state with
                 Registered = Set.remove signal state.Registered
             }
+
+        match signal, state.SigChld with
+        | Signal.SIGCHLD, Some _ -> system, state, None
+        | _ -> restoreHandler numbering signal caller system state
 
     /// Record that the dispatcher is calling the managed callback for
     /// `signo`. Fails if it already is: the loop calls it for one signal at a

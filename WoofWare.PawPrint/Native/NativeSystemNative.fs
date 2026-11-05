@@ -516,6 +516,20 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"
 
+    /// The managed method an unmanaged-function-pointer argument names, which
+    /// the BCL takes with `&Callback` (a `ldftn`) on an
+    /// `[UnmanagedCallersOnly]` method of its own. Fails on any other value:
+    /// it has no callable identity to record, and dropping it would let the
+    /// BCL register a callback that PawPrint could never call.
+    let private signalCallbackArgument (operation : string) (argument : CliType) : SignalHandler =
+        match CliType.unwrapPrimitiveLikeDeep argument with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
+            FunctionPointerTarget.requireManaged operation target
+            |> SignalHandler.ofMethodInfo
+        | other ->
+            failwith
+                $"%s{operation}: expected a FunctionPointer argument (from Ldftn on a managed callback), got %O{other}"
+
     /// The signal half of `SystemNative_InitializeTerminalAndSignalHandling`,
     /// issued by `thread`: on the first call, `InitializeSignalHandlingCore`
     /// makes the signal pipe with `pipe()` (`O_CLOEXEC`, blocking), starts the
@@ -8754,26 +8768,64 @@ module NativeSystemNative =
             // (`g_posixSignalHandler`) and the signal-handling thread later
             // invokes it after a signal is queued. PawPrint records the
             // managed identity of the target method on `PosixSignalShim`,
-            // and `SignalDispatch` reads it back at dispatch time. We refuse
-            // anything other than a real
-            // `NativeIntSource.FunctionPointer`: any other tag means the
-            // value didn't come from `Ldftn` on a managed method, so we
-            // have no callable identity to record and silently dropping it
-            // would let the BCL register handlers that the simulator can
-            // never invoke.
-            let operation = "SystemNative_SetPosixSignalHandler"
-
-            let mi =
-                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
-                    FunctionPointerTarget.requireManaged operation target
-                | other ->
-                    failwith
-                        $"%s{operation}: expected FunctionPointer argument (from Ldftn on the managed signal callback), got %O{other}"
+            // and `SignalDispatch` reads it back at dispatch time.
+            let handler =
+                signalCallbackArgument "SystemNative_SetPosixSignalHandler" instruction.Arguments.[0]
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    PosixSignalShim = PosixSignalShim.setHandler (SignalHandler.ofMethodInfo mi) kernel.PosixSignalShim
+                    PosixSignalShim = PosixSignalShim.setHandler handler kernel.PosixSignalShim
+                }
+            )
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_RegisterForSigChld", [ ConcreteFunctionPointer _ ], MethodReturnType.Void ->
+            // System.Diagnostics.Process's one-time initialisation, with
+            // `&OnSigChild`: the shim records the callback, which its
+            // dispatcher calls for each SIGCHLD to reap the children the
+            // class started, and installs its handler for SIGCHLD. PawPrint
+            // models no child process, and `SignalDispatch` refuses a SIGCHLD
+            // that reaches the dispatcher once the callback is recorded.
+            let operation = "SystemNative_RegisterForSigChld"
+            let callback = signalCallbackArgument operation instruction.Arguments.[0]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+            let installed, shim =
+                PosixSignalShim.registerForSigChld
+                    numbering
+                    callback
+                    (state.Kernel.Caller ctx.Thread)
+                    state.Kernel.System
+                    state.Kernel.PosixSignalShim
+
+            match installed with
+            // The shim only asserts that its handler is installed, and
+            // `sigaction` lets SIGCHLD be caught on every flavour.
+            | Error error ->
+                failwith $"%s{operation}: sigaction refused System.Native's handler for SIGCHLD with %O{error}"
+            | Ok system ->
+                state.MapKernel (fun kernel ->
+                    { EmulatedKernel.withUnix system kernel with
+                        PosixSignalShim = shim
+                    }
+                )
+                |> NativeHandlerResult.completed
+                |> Some
+        | Some "SystemNative_SetDelayedSigChildConsoleConfigurationHandler",
+          [ ConcreteFunctionPointer _ ],
+          MethodReturnType.Void ->
+            // The terminal reconfiguration that the shim runs on a SIGCHLD's
+            // non-cancelled handling when the child-reaping callback asked
+            // for it; it never runs here, because that callback never does.
+            let callback =
+                signalCallbackArgument
+                    "SystemNative_SetDelayedSigChildConsoleConfigurationHandler"
+                    instruction.Arguments.[0]
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    PosixSignalShim =
+                        PosixSignalShim.setDelayedSigChldConsoleConfiguration callback kernel.PosixSignalShim
                 }
             )
             |> NativeHandlerResult.completed
@@ -8801,8 +8853,10 @@ module NativeSystemNative =
             // Mirror image of `SystemNative_EnablePosixSignalHandling`: clear
             // the per-signo registration bit and `RestoreSignalHandler`, which
             // puts back the disposition the shim saved when it installed its
-            // handler (unless the console or terminal machinery still needs
-            // the signal, which PawPrint has neither of). The restore is
+            // handler, unless something else of the shim's still needs the
+            // signal: of what PawPrint models, that is SIGCHLD once
+            // System.Diagnostics.Process has registered its callback (see
+            // `PosixSignalShim.disable`). The restore is
             // unchecked, so where `sigaction` refuses it — a number the
             // kernel has no signal for, or a signal nobody may catch — the
             // shim carries on with EINVAL in errno, and that is what a guest

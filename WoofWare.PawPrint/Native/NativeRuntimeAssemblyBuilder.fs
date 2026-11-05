@@ -223,10 +223,6 @@ module NativeRuntimeAssemblyBuilder =
                     HashAlgorithm = enum<System.Reflection.AssemblyHashAlgorithm> hashAlgorithm
                 }
 
-            if uint32 name.Flags > 0xFFFFu then
-                failwith
-                    $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 requestedFlags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
-
             let moduleVersionId, state = freshModuleVersionId operation ctx.Thread state
 
             let assembly =
