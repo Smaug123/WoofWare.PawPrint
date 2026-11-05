@@ -228,7 +228,11 @@ module TestNativeContractTable =
 
                 let cited =
                     row.Sources
-                    |> List.exists (fun source -> binderIds |> List.exists (read source.Path).Contains)
+                    |> List.exists (fun source ->
+                        match source with
+                        | NativeSource.InCoreClr (path, _) -> binderIds |> List.exists (read path).Contains
+                        | NativeSource.CLibrary _ -> false
+                    )
 
                 if not cited then
                     failwith
@@ -271,7 +275,7 @@ module TestNativeContractTable =
         ]
 
     [<TestCaseSource(nameof everyRuntime)>]
-    let ``every row cites code the pinned runtime source defines, and binds the native to the first``
+    let ``every row cites code the pinned runtime source defines, or the C library's, and binds the native to the first``
         (runtime : EmulatedRuntime)
         : unit
         =
@@ -283,18 +287,52 @@ module TestNativeContractTable =
         let ecalls = read "vm/ecalllist.h"
         let qcallEntryPoints = read "vm/qcallentrypoints.cpp"
 
+        // A name that `vm/qcallentrypoints.cpp` lists is the C library's function exactly when no
+        // file of the trees that implement QCalls declares a QCall of that name (`QCALLTYPE`, as
+        // each the runtime implements is declared) or defines it as a macro.
+        let qcallTrees =
+            match runtime with
+            | EmulatedRuntime.Net10 -> [ "vm" ; "classlibnative" ]
+            | EmulatedRuntime.Net11 -> [ "vm" ]
+
+        let qcallFiles =
+            [
+                for tree in qcallTrees do
+                    for pattern in [ "*.h" ; "*.inl" ; "*.cpp" ] do
+                        for file in
+                            Directory.GetFiles (Path.Combine (coreclr, tree), pattern, SearchOption.AllDirectories) do
+                            yield Path.GetRelativePath (coreclr, file), File.ReadAllText file
+            ]
+
+        let definesQCall (symbol : string) : string list =
+            let symbol = Text.RegularExpressions.Regex.Escape symbol
+
+            let definition =
+                Text.RegularExpressions.Regex (
+                    $@"\bQCALLTYPE\s+%s{symbol}\s*\(|^\s*#define\s+%s{symbol}\b",
+                    Text.RegularExpressions.RegexOptions.Multiline
+                )
+
+            qcallFiles |> List.filter (snd >> definition.IsMatch) |> List.map fst
+
         for row in NativeContractTable.rows runtime do
             for source in row.Sources do
-                if not (File.Exists (Path.Combine (coreclr, source.Path))) then
-                    failwith $"%A{row.Native} cites %s{source.Path}, which the pinned source lacks"
+                match source with
+                | NativeSource.InCoreClr (path, symbol) ->
+                    if not (File.Exists (Path.Combine (coreclr, path))) then
+                        failwith $"%A{row.Native} cites %s{path}, which the pinned source lacks"
 
-                if
-                    not (
-                        routinesOf runtime source.Path
-                        |> List.exists (fun routine -> CppSource.names routine.Name source.Symbol)
-                    )
-                then
-                    failwith $"%A{row.Native} cites %s{source.Symbol} in %s{source.Path}, which does not define it"
+                    if
+                        not (
+                            routinesOf runtime path
+                            |> List.exists (fun routine -> CppSource.names routine.Name symbol)
+                        )
+                    then
+                        failwith $"%A{row.Native} cites %s{symbol} in %s{path}, which does not define it"
+                | NativeSource.CLibrary symbol ->
+                    match definesQCall symbol with
+                    | [] -> ()
+                    | defining -> failwith $"%A{row.Native} cites the C library's %s{symbol}, which %A{defining} define"
 
             let bound = (List.head row.Sources).Symbol
 
@@ -322,6 +360,13 @@ module TestNativeContractTable =
 
                 if not (qcallEntryPoints.Contains $"DllImportEntry(%s{entryPoint})") then
                     failwith $"vm/qcallentrypoints.cpp lists no %s{entryPoint}"
+
+                match List.head row.Sources with
+                | NativeSource.InCoreClr (path, _) when (definesQCall entryPoint).IsEmpty ->
+                    failwith
+                        $"%A{row.Native} cites %s{path} for %s{entryPoint}, which no file of %A{qcallTrees} declares a QCall"
+                | NativeSource.InCoreClr _
+                | NativeSource.CLibrary _ -> ()
 
     /// What a C++ function or macro that `NativeContractCallees.<runtime>.tsv` vouches for can run.
     [<RequireQualifiedAccess>]
@@ -451,22 +496,23 @@ module TestNativeContractTable =
     let private vouches (runtime : EmulatedRuntime) : Vouch list =
         vouchesByRuntime.GetOrAdd(runtime, fun runtime -> lazy (readVouches runtime)).Force ()
 
-    /// The routines a row of `runtime`'s table cites, each with the citation naming it.
-    let private citedRoutines
-        (runtime : EmulatedRuntime)
-        (row : NativeContractRow)
-        : (NativeSource * SourceRoutine) list
-        =
+    /// The routines of the runtime's source that a row of `runtime`'s table cites, each with the
+    /// file under `src/coreclr` that defines it. A function of the C library that a row cites has
+    /// no source here to read.
+    let private citedRoutines (runtime : EmulatedRuntime) (row : NativeContractRow) : (string * SourceRoutine) list =
         [
             for source in row.Sources do
-                match
-                    routinesOf runtime source.Path
-                    |> List.filter (fun routine -> CppSource.names routine.Name source.Symbol)
-                with
-                | [] -> failwith $"%A{row.Native} cites %s{source.Symbol}, which %s{source.Path} does not define"
-                | routines ->
-                    for routine in routines do
-                        yield source, routine
+                match source with
+                | NativeSource.CLibrary _ -> ()
+                | NativeSource.InCoreClr (path, symbol) ->
+                    match
+                        routinesOf runtime path
+                        |> List.filter (fun routine -> CppSource.names routine.Name symbol)
+                    with
+                    | [] -> failwith $"%A{row.Native} cites %s{symbol}, which %s{path} does not define"
+                    | routines ->
+                        for routine in routines do
+                            yield path, routine
         ]
 
     /// Whether `vouch` covers the call of `called` that the routine `routine` of the file `path`
@@ -598,17 +644,16 @@ module TestNativeContractTable =
                 for row in NativeContractTable.rows runtime do
                     let cited = row.Sources |> List.map (fun source -> source.Symbol)
 
-                    for source, routine in citedRoutines runtime row do
+                    for path, routine in citedRoutines runtime row do
                         for called in routine.Calls do
                             // The next test holds each managed call to the methods the row runs.
                             let covered =
                                 (managedCall.IsMatch routine.Text && managedCallNames.IsMatch called)
                                 || cited |> List.exists (fun symbol -> CppSource.names symbol called)
-                                || vouches
-                                   |> List.exists (fun vouch -> covers vouch source.Path routine.Name called)
+                                || vouches |> List.exists (fun vouch -> covers vouch path routine.Name called)
 
                             if not covered then
-                                yield $"%A{row.Native}: %s{source.Path}:%s{routine.Name} calls %s{called}"
+                                yield $"%A{row.Native}: %s{path}:%s{routine.Name} calls %s{called}"
             ]
             |> List.distinct
 
@@ -630,7 +675,7 @@ module TestNativeContractTable =
                 |> List.collect (binderIds runtime)
                 |> Set.ofList
 
-            for source, routine in citedRoutines runtime row do
+            for path, routine in citedRoutines runtime row do
                 for site in managedCall.Matches routine.Text do
                     let arguments =
                         let start = site.Index + site.Length
@@ -648,7 +693,7 @@ module TestNativeContractTable =
 
                     if ids.IsEmpty || ids |> List.exists (fun id -> not (runs.Contains id)) then
                         failwith
-                            $"%A{row.Native} cites %s{source.Path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}"
+                            $"%A{row.Native} cites %s{path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}"
 
     [<TestCaseSource(nameof everyRuntime)>]
     let ``every vouch names code the pinned source defines, which makes no managed call itself``
@@ -719,9 +764,9 @@ module TestNativeContractTable =
         let called =
             NativeContractTable.rows runtime
             |> List.collect (citedRoutines runtime)
-            |> List.collect (fun (source, routine) ->
+            |> List.collect (fun (path, routine) ->
                 routine.Calls
-                |> Seq.map (fun called -> source.Path, routine.Name, called)
+                |> Seq.map (fun called -> path, routine.Name, called)
                 |> List.ofSeq
             )
             |> List.distinct
@@ -882,11 +927,10 @@ module TestNativeContractTable =
         NativeContractTable.rows runtime
         |> List.filter (fun row ->
             citedRoutines runtime row
-            |> List.exists (fun (source, routine) ->
+            |> List.exists (fun (path, routine) ->
                 routine.Calls
                 |> Seq.exists (fun called ->
-                    reaching
-                    |> List.exists (fun vouch -> covers vouch source.Path routine.Name called)
+                    reaching |> List.exists (fun vouch -> covers vouch path routine.Name called)
                 )
             )
         )
@@ -968,6 +1012,7 @@ module TestNativeContractTable =
                 replacing 6 "NamedTypesLoad|-"
                 replacing 7 "vm/file.cpp"
                 replacing 7 ":Entry"
+                replacing 7 "-:"
                 replacing 1 "Entry Point"
                 replacing 8 " "
             ]
@@ -1076,6 +1121,75 @@ module TestNativeContractTable =
             Gen.frequency [ 4, call ; 1, Gen.constant NativeCall.ResourceMessage ]
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen (Gen.listOf run)) property)
+
+    /// `vm/qcallentrypoints.cpp` can bind a QCall to the C library's function of its name, which
+    /// is what a C library source names; nothing else binds to one.
+    [<Test>]
+    let ``the table's reader reads back a row's sources, the C library's only as the function a QCall is bound to``
+        ()
+        : unit
+        =
+        let symbol : Gen<string> =
+            Gen.elements [ "Entry" ; "memmove" ; "Thread::GetExposedObject" ; "~Holder" ]
+
+        let source : Gen<NativeSource> =
+            Gen.oneof
+                [
+                    gen {
+                        let! path = Gen.elements [ "vm/file.cpp" ; "runtime/amd64/AllocFast.S" ; "gc/interface.cpp" ]
+                        let! symbol = symbol
+                        return NativeSource.InCoreClr (path, symbol)
+                    }
+                    Gen.map NativeSource.CLibrary symbol
+                ]
+
+        let spell (source : NativeSource) : string =
+            match source with
+            | NativeSource.InCoreClr (path, symbol) -> $"%s{path}:%s{symbol}"
+            | NativeSource.CLibrary symbol -> $"-:%s{symbol}"
+
+        let property (kind : string, sources : NativeSource list) : unit =
+            let line =
+                String.concat
+                    "\t"
+                    [
+                        kind
+                        (if kind = "QCall" then "Entry" else "System.Ty::Method")
+                        "-"
+                        "returns"
+                        "none"
+                        "-"
+                        "-"
+                        sources |> List.map spell |> String.concat "|"
+                        "Because."
+                    ]
+
+            let wellPlaced =
+                sources
+                |> List.indexed
+                |> List.forall (fun (index, source) ->
+                    match source with
+                    | NativeSource.InCoreClr _ -> true
+                    | NativeSource.CLibrary _ -> index = 0 && kind = "QCall"
+                )
+
+            if wellPlaced then
+                match NativeContractTable.ofText line with
+                | [ read ] -> read.Sources |> shouldEqual sources
+                | read -> failwith $"%s{line} read as %d{read.Length} rows"
+            else
+                Assert.Throws<exn> (fun () -> NativeContractTable.ofText line |> ignore<NativeContractRow list>)
+                |> ignore<exn>
+
+        let row =
+            gen {
+                let! kind = Gen.elements [ "FCall" ; "InstanceFCall" ; "QCall" ]
+                let! count = Gen.choose (1, 4)
+                let! sources = Gen.listOfLength count source
+                return kind, sources
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen row) property)
 
     /// CoreCLR's `ResMgrGetString` (excep.cpp) calls .NET 10's `Environment.GetResourceStringLocal`
     /// through the binder, and .NET 11's `Environment.GetResourceString` as an
