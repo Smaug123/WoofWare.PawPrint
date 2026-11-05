@@ -41,6 +41,9 @@ module internal UnmodelledImage =
             UnboundObject : TypeReferenceHandle
             /// `static void N.Holder.Takes(class System.Gone)`, naming the absent type.
             Takes : MethodDefinitionHandle
+            /// `static void N.Holder.Pair<T, U>()`, a generic method whose signature and body name
+            /// neither parameter.
+            Pair : MethodDefinitionHandle
             /// `void N.Derived.Run()`, declared on the type whose base type is absent.
             DerivedRun : MethodDefinitionHandle
             /// `N.Derived::Run()`, whose parent's base type is absent.
@@ -231,6 +234,15 @@ module internal UnmodelledImage =
 
             metadata.GetOrAddBlob blob
 
+        let pairSignature =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(genericParameterCount = 2)
+                .Parameters (0, (fun returnType -> returnType.Void ()), (fun _ -> ()))
+
+            metadata.GetOrAddBlob blob
+
         let instanceVoidSignature =
             let blob = BlobBuilder ()
 
@@ -260,9 +272,9 @@ module internal UnmodelledImage =
             il.OpCode ILOpCode.Ret
             MethodBodyStreamEncoder(ilStream).AddMethodBody il
 
-        // `<Module>` is row 1, `Holder` row 2, which declares `M` and `Takes`, MethodDef rows 1 and
-        // 2, `Derived` row 3, which declares `Run`, MethodDef row 3, and `Count`, FieldDef row 1, and
-        // `Facaded` row 4, which declares nothing.
+        // `<Module>` is row 1, `Holder` row 2, which declares `M`, `Takes` and `Pair`, MethodDef rows
+        // 1 to 3, `Derived` row 3, which declares `Run`, MethodDef row 4, and `Count`, FieldDef row 1,
+        // and `Facaded` row 4, which declares nothing.
         metadata.AddTypeDefinition (
             TypeAttributes.NotPublic,
             Unchecked.defaultof<StringHandle>,
@@ -290,7 +302,7 @@ module internal UnmodelledImage =
                 metadata.GetOrAddString "Derived",
                 TypeReferenceHandle.op_Implicit absent,
                 MetadataTokens.FieldDefinitionHandle 1,
-                MetadataTokens.MethodDefinitionHandle 3
+                MetadataTokens.MethodDefinitionHandle 4
             )
 
         let facaded =
@@ -300,7 +312,7 @@ module internal UnmodelledImage =
                 metadata.GetOrAddString "Facaded",
                 TypeReferenceHandle.op_Implicit facadeObject,
                 MetadataTokens.FieldDefinitionHandle 2,
-                MetadataTokens.MethodDefinitionHandle 4
+                MetadataTokens.MethodDefinitionHandle 5
             )
 
         let derivedCount =
@@ -325,6 +337,25 @@ module internal UnmodelledImage =
                 body,
                 MetadataTokens.ParameterHandle 1
             )
+
+        let pair =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "Pair",
+                pairSignature,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+
+        for index, name in [ 0, "T" ; 1, "U" ] do
+            metadata.AddGenericParameter (
+                MethodDefinitionHandle.op_Implicit pair,
+                GenericParameterAttributes.None,
+                metadata.GetOrAddString name,
+                index
+            )
+            |> ignore<GenericParameterHandle>
 
         let derivedRun =
             metadata.AddMethodDefinition (
@@ -532,6 +563,7 @@ module internal UnmodelledImage =
             Object = objectRef
             UnboundObject = unboundObject
             Takes = takes
+            Pair = pair
             DerivedRun = derivedRun
             DerivedRunReference = derivedRunReference
             ModuleMethod = moduleMethod
