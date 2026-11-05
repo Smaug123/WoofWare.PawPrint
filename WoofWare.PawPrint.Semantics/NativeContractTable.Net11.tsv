@@ -1,6 +1,6 @@
-# What CoreLib's native methods can do to their callers, read from the pinned runtime source.
+# What .NET 11's CoreLib's native methods can do to their callers, read from .NET 11's pinned runtime source.
 # Every native a row names runs no managed code but the methods its row says it calls, and the parameterless constructor of each exception it raises, which CoreCLR runs to make it.
-# TestNativeContractTable holds that to the C++: every call that a function a row cites makes is to one the row cites too, or to one NativeContractCallees.tsv vouches for.
+# TestNativeContractTable holds that to the C++: every call that a function a row cites makes is to one the row cites too, or to one NativeContractCallees.Net11.tsv vouches for.
 # Nine tab-separated fields:
 #   kind     FCall (a static InternalCall, named Namespace.Type::Method), InstanceFCall (an instance one, named alike) or QCall (named by its entry point)
 #   name

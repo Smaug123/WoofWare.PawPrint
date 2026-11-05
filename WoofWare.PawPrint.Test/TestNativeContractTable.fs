@@ -12,34 +12,47 @@ open Microsoft.FSharp.NativeInterop
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `NativeContractTable` holds what CoreLib's native methods can do, read from the runtime's C++.
-/// These tests hold each row to the CoreLibs' metadata, which must declare and recognise the native
-/// it names, and to the pinned runtime source, which must define what it cites; every call that
-/// cited code makes must be to code the row cites too, or to code `NativeContractCallees.tsv`
-/// vouches for.
+/// `NativeContractTable` holds what each runtime's CoreLib's native methods can do, read from that
+/// runtime's C++. These tests hold each row of the runtime under test's table to its CoreLibs'
+/// metadata, which must declare and recognise the native it names, and each runtime's table to its
+/// pinned source, which must define what it cites; every call that cited code makes must be to code
+/// the row cites too, or to code that runtime's `NativeContractCallees.<runtime>.tsv` vouches for.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeContractTable =
 
     let coreLibs : TestCaseData list = TestIntrinsicBody.coreLibs
 
-    let private rows : NativeContractRow list = NativeContractTable.rows.Force ()
+    let everyRuntime : TestCaseData list = FrameworkUnderTest.everyRuntime
 
-    [<Test>]
-    let ``the table has rows of every kind, each native once`` () : unit =
-        let fcalls = NativeContractTable.fcalls.Force ()
-        let instanceFCalls = NativeContractTable.instanceFCalls.Force ()
-        let qcalls = NativeContractTable.qcalls.Force ()
+    /// The rows of the runtime under test's table, which a leg holds to its own CoreLibs.
+    let private rowsUnderTest () : NativeContractRow list =
+        NativeContractTable.rows (FrameworkUnderTest.runtime ())
+
+    /// The runtime of the test host's own CoreLib, which the tests running a native on the real
+    /// runtime run it on.
+    let private hostRuntime : EmulatedRuntime =
+        match EmulatedRuntime.ofCoreLibMajor (typeof<obj>.Assembly.GetName().Version.Major) with
+        | Some runtime -> runtime
+        | None -> failwith $"The test host's CoreLib %s{typeof<obj>.Assembly.FullName} is no supported runtime's"
+
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``the table has rows of every kind, each native once`` (runtime : EmulatedRuntime) : unit =
+        let fcalls = NativeContractTable.fcalls runtime
+        let instanceFCalls = NativeContractTable.instanceFCalls runtime
+        let qcalls = NativeContractTable.qcalls runtime
         fcalls.Count |> shouldBeGreaterThan 0
         instanceFCalls.Count |> shouldBeGreaterThan 0
         qcalls.Count |> shouldBeGreaterThan 0
-        fcalls.Count + instanceFCalls.Count + qcalls.Count |> shouldEqual rows.Length
+
+        fcalls.Count + instanceFCalls.Count + qcalls.Count
+        |> shouldEqual (NativeContractTable.rows runtime).Length
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every exception a row raises is a CoreLib exception type`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
-        for row in rows do
+        for row in rowsUnderTest () do
             for name in row.Contract.Raises do
                 match corelib.TryGetTopLevelTypeDef name.Namespace name.Name with
                 | Some _ -> ()
@@ -53,8 +66,6 @@ module TestNativeContractTable =
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every row names a native of the CoreLib, which is recognised as that row`` (which : AuditedCoreLib) : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
         let corelib = TestIntrinsicBody.coreLib which
 
         let natives =
@@ -75,7 +86,7 @@ module TestNativeContractTable =
                     | _ -> ()
             ]
 
-        for row in rows do
+        for row in rowsUnderTest () do
             let handles =
                 natives |> List.filter (fun (native, _) -> native = row.Native) |> List.map snd
 
@@ -101,11 +112,9 @@ module TestNativeContractTable =
         (which : AuditedCoreLib)
         : unit
         =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
         let corelib = TestIntrinsicBody.coreLib which
 
-        for row in rows do
+        for row in rowsUnderTest () do
             for call in
                 row.Contract.Runs
                 |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
@@ -155,14 +164,14 @@ module TestNativeContractTable =
 
         definitions |> Map.map (fun name _ -> expand name)
 
-    /// The pinned runtime source's `src/coreclr`.
-    let private coreclr () : string =
-        Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
+    /// `runtime`'s pinned source's `src/coreclr`.
+    let private coreclr (runtime : EmulatedRuntime) : string =
+        Path.Combine (FrameworkUnderTest.requireRuntimeSourceOf runtime, "src", "coreclr")
 
-    /// The IDs by which the runtime's binder, in `vm/corelib.h`, names the method a row runs.
-    let private binderIds (call : ManagedCall) : string list =
+    /// The IDs by which `runtime`'s binder, in `vm/corelib.h`, names the method a row runs.
+    let private binderIds (runtime : EmulatedRuntime) (call : ManagedCall) : string list =
         let read (path : string) : string =
-            File.ReadAllText (Path.Combine (coreclr (), path))
+            File.ReadAllText (Path.Combine (coreclr runtime, path))
 
         let corelibHeader = read "vm/corelib.h"
         let namespaces = bindersNamespaces (read "vm/namespace.h")
@@ -201,18 +210,17 @@ module TestNativeContractTable =
 
     /// CoreCLR calls a CoreLib method from native code through its binder, which names the methods
     /// it can call in `vm/corelib.h`, each by an ID `METHOD__<class>__<method>`.
-    [<Test>]
-    let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every method a row runs is one the runtime's binder names, and the row cites code that calls it``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
         let read (path : string) : string =
-            File.ReadAllText (Path.Combine (coreclr (), path))
+            File.ReadAllText (Path.Combine (coreclr runtime, path))
 
-        for row in rows do
-            for call in
-                row.Contract.Runs
-                |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
-                let binderIds = binderIds call
+        for row in NativeContractTable.rows runtime do
+            for call in row.Contract.Runs |> List.map (NativeCall.resolve runtime) do
+                let binderIds = binderIds runtime call
 
                 if binderIds.IsEmpty then
                     failwith
@@ -227,16 +235,16 @@ module TestNativeContractTable =
                         $"%A{row.Native} cites no source that calls %s{call.DeclaringType}::%s{call.Method} by %A{binderIds}"
 
     let private routinesByPath =
-        Collections.Concurrent.ConcurrentDictionary<string, Lazy<SourceRoutine list>> ()
+        Collections.Concurrent.ConcurrentDictionary<EmulatedRuntime * string, Lazy<SourceRoutine list>> ()
 
-    /// Each routine the file at `path` under `src/coreclr` defines.
-    let private routinesOf (path : string) : SourceRoutine list =
+    /// Each routine the file at `path` under `runtime`'s `src/coreclr` defines.
+    let private routinesOf (runtime : EmulatedRuntime) (path : string) : SourceRoutine list =
         routinesByPath
             .GetOrAdd(
-                path,
-                fun path ->
+                (runtime, path),
+                fun (runtime, path) ->
                     lazy
-                        (let text = File.ReadAllText (Path.Combine (coreclr (), path))
+                        (let text = File.ReadAllText (Path.Combine (coreclr runtime, path))
 
                          if
                              path.EndsWith (".S", StringComparison.Ordinal)
@@ -248,8 +256,8 @@ module TestNativeContractTable =
             )
             .Force ()
 
-    /// The macros that a header of the pinned source's `vm` defines as exactly `name`.
-    let private aliasesOf (name : string) : string list =
+    /// The macros that a header of `runtime`'s pinned source's `vm` defines as exactly `name`.
+    let private aliasesOf (runtime : EmulatedRuntime) (name : string) : string list =
         let definition =
             Text.RegularExpressions.Regex (
                 $@"^\s*#define\s+(\w+)\s+%s{Text.RegularExpressions.Regex.Escape name}\s*$",
@@ -257,17 +265,17 @@ module TestNativeContractTable =
             )
 
         [
-            for header in Directory.GetFiles (Path.Combine (coreclr (), "vm"), "*.h") do
+            for header in Directory.GetFiles (Path.Combine (coreclr runtime, "vm"), "*.h") do
                 for m in definition.Matches (File.ReadAllText header) do
                     yield m.Groups.[1].Value
         ]
 
-    [<Test>]
-    let ``every row cites code the pinned runtime source defines, and binds the native to the first`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
-        let coreclr =
-            Path.Combine (FrameworkUnderTest.requireRuntimeSource (), "src", "coreclr")
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every row cites code the pinned runtime source defines, and binds the native to the first``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        let coreclr = coreclr runtime
 
         let read (path : string) : string =
             File.ReadAllText (Path.Combine (coreclr, path))
@@ -275,14 +283,14 @@ module TestNativeContractTable =
         let ecalls = read "vm/ecalllist.h"
         let qcallEntryPoints = read "vm/qcallentrypoints.cpp"
 
-        for row in rows do
+        for row in NativeContractTable.rows runtime do
             for source in row.Sources do
                 if not (File.Exists (Path.Combine (coreclr, source.Path))) then
                     failwith $"%A{row.Native} cites %s{source.Path}, which the pinned source lacks"
 
                 if
                     not (
-                        routinesOf source.Path
+                        routinesOf runtime source.Path
                         |> List.exists (fun routine -> CppSource.names routine.Name source.Symbol)
                     )
                 then
@@ -297,7 +305,7 @@ module TestNativeContractTable =
                 // name, as `WriteBarrier_Helper` is `JIT_WriteBarrier_Callable`, and in the global
                 // namespace by `::`.
                 let byName =
-                    bound :: aliasesOf bound
+                    bound :: aliasesOf runtime bound
                     |> List.exists (fun name ->
                         ecalls.Contains $"FCFuncElement(\"%s{method}\", %s{name})"
                         || ecalls.Contains $"FCFuncElement(\"%s{method}\", ::%s{name})"
@@ -416,27 +424,43 @@ module TestNativeContractTable =
             }
         | _ -> failwith $"Malformed vouch: %s{line}"
 
-    let private vouches : Lazy<Vouch list> =
-        lazy
-            (let assembly = typeof<Vouch>.Assembly
+    /// The vouches of `runtime`'s `NativeContractCallees.<runtime>.tsv`.
+    let private readVouches (runtime : EmulatedRuntime) : Vouch list =
+        let assembly = typeof<Vouch>.Assembly
 
-             use stream =
-                 assembly.GetManifestResourceStream "WoofWare.PawPrint.Test.NativeContractCallees.tsv"
+        let name =
+            $"WoofWare.PawPrint.Test.NativeContractCallees.%s{FrameworkUnderTest.name runtime}.tsv"
 
-             use reader = new StreamReader (stream)
+        use stream =
+            match assembly.GetManifestResourceStream name with
+            | null -> failwith $"%s{assembly.FullName} embeds no %s{name}"
+            | stream -> stream
 
-             [
-                 for line in reader.ReadToEnd().Split '\n' do
-                     if line.Trim () <> "" && not (line.StartsWith '#') then
-                         yield parseVouch line
-             ])
+        use reader = new StreamReader (stream)
 
-    /// The routines a row cites, each with the citation naming it.
-    let private citedRoutines (row : NativeContractRow) : (NativeSource * SourceRoutine) list =
+        [
+            for line in reader.ReadToEnd().Split '\n' do
+                if line.Trim () <> "" && not (line.StartsWith '#') then
+                    yield parseVouch line
+        ]
+
+    let private vouchesByRuntime =
+        Collections.Concurrent.ConcurrentDictionary<EmulatedRuntime, Lazy<Vouch list>> ()
+
+    /// The vouches of `runtime`'s `NativeContractCallees.<runtime>.tsv`, read once.
+    let private vouches (runtime : EmulatedRuntime) : Vouch list =
+        vouchesByRuntime.GetOrAdd(runtime, fun runtime -> lazy (readVouches runtime)).Force ()
+
+    /// The routines a row of `runtime`'s table cites, each with the citation naming it.
+    let private citedRoutines
+        (runtime : EmulatedRuntime)
+        (row : NativeContractRow)
+        : (NativeSource * SourceRoutine) list
+        =
         [
             for source in row.Sources do
                 match
-                    routinesOf source.Path
+                    routinesOf runtime source.Path
                     |> List.filter (fun routine -> CppSource.names routine.Name source.Symbol)
                 with
                 | [] -> failwith $"%A{row.Native} cites %s{source.Symbol}, which %s{source.Path} does not define"
@@ -562,18 +586,19 @@ module TestNativeContractTable =
         Text.RegularExpressions.Regex
             @"^(?:MethodDescCallSite|UnmanagedCallersOnlyCaller|PREPARE_\w*CALLSITE\w*|CALL_MANAGED_METHOD\w*|Call(?:_Ret\w+)?)$"
 
-    [<Test>]
-    let ``every call a routine a row cites makes is to one the row cites or one vouched for`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
-        let vouches = vouches.Force ()
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every call a routine a row cites makes is to one the row cites or one vouched for``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        let vouches = vouches runtime
 
         let uncovered =
             [
-                for row in rows do
+                for row in NativeContractTable.rows runtime do
                     let cited = row.Sources |> List.map (fun source -> source.Symbol)
 
-                    for source, routine in citedRoutines row do
+                    for source, routine in citedRoutines runtime row do
                         for called in routine.Calls do
                             // The next test holds each managed call to the methods the row runs.
                             let covered =
@@ -593,18 +618,19 @@ module TestNativeContractTable =
                 + String.concat "\n" uncovered
             )
 
-    [<Test>]
-    let ``every managed call a routine a row cites makes is of a method the row runs`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
-        for row in rows do
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every managed call a routine a row cites makes is of a method the row runs``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        for row in NativeContractTable.rows runtime do
             let runs =
                 row.Contract.Runs
-                |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ()))
-                |> List.collect binderIds
+                |> List.map (NativeCall.resolve runtime)
+                |> List.collect (binderIds runtime)
                 |> Set.ofList
 
-            for source, routine in citedRoutines row do
+            for source, routine in citedRoutines runtime row do
                 for site in managedCall.Matches routine.Text do
                     let arguments =
                         let start = site.Index + site.Length
@@ -624,21 +650,25 @@ module TestNativeContractTable =
                         failwith
                             $"%A{row.Native} cites %s{source.Path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}"
 
-    [<Test>]
-    let ``every vouch names code the pinned source defines, which makes no managed call itself`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every vouch names code the pinned source defines, which makes no managed call itself``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
+        let coreclr = coreclr runtime
+        let routinesOf = routinesOf runtime
 
         let problems =
             [
-                for vouch in vouches.Force () do
+                for vouch in vouches runtime do
                     match vouch.Vouched with
                     | Vouched.Callee (None, _, _) -> ()
                     | Vouched.Callee (Some path, symbol, _)
                     | Vouched.IndirectBranchesOf (path, symbol)
-                    | Vouched.CallsIn (path, symbol, _) when not (File.Exists (Path.Combine (coreclr (), path))) ->
+                    | Vouched.CallsIn (path, symbol, _) when not (File.Exists (Path.Combine (coreclr, path))) ->
                         yield $"%s{symbol} is vouched for in %s{path}, which the pinned source lacks"
                     | Vouched.Callee (Some path, symbol, spelledAs) ->
-                        let text = File.ReadAllText (Path.Combine (coreclr (), path))
+                        let text = File.ReadAllText (Path.Combine (coreclr, path))
 
                         let mentioned =
                             match spelledAs with
@@ -684,13 +714,11 @@ module TestNativeContractTable =
         if not problems.IsEmpty then
             failwith (String.concat "\n" problems)
 
-    [<Test>]
-    let ``every vouch is for a call that a routine a row cites makes`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``every vouch is for a call that a routine a row cites makes`` (runtime : EmulatedRuntime) : unit =
         let called =
-            rows
-            |> List.collect citedRoutines
+            NativeContractTable.rows runtime
+            |> List.collect (citedRoutines runtime)
             |> List.collect (fun (source, routine) ->
                 routine.Calls
                 |> Seq.map (fun called -> source.Path, routine.Name, called)
@@ -699,7 +727,7 @@ module TestNativeContractTable =
             |> List.distinct
 
         let unused =
-            vouches.Force ()
+            vouches runtime
             |> List.filter (fun vouch ->
                 not (
                     called
@@ -739,7 +767,7 @@ module TestNativeContractTable =
 
     [<Test>]
     let ``what the cast helpers' fallback raises on the real runtime is in its row`` () : unit =
-        let row = (NativeContractTable.qcalls.Force ()).["IsInstanceOf_NoCacheLookup"]
+        let row = (NativeContractTable.qcalls hostRuntime).["IsInstanceOf_NoCacheLookup"]
 
         let raises =
             row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
@@ -752,7 +780,7 @@ module TestNativeContractTable =
 
     [<Test>]
     let ``what the unbox helpers' throw raises on the real runtime is in its row`` () : unit =
-        let row = (NativeContractTable.qcalls.Force ()).["ThrowInvalidCastException"]
+        let row = (NativeContractTable.qcalls hostRuntime).["ThrowInvalidCastException"]
 
         let raises =
             row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
@@ -798,7 +826,7 @@ module TestNativeContractTable =
     [<Test>]
     let ``what the cast helpers' write barrier raises on the real runtime is in its row`` () : unit =
         let row =
-            (NativeContractTable.fcalls.Force ()).[("System.Runtime.CompilerServices.CastHelpers", "WriteBarrier")]
+            (NativeContractTable.fcalls hostRuntime).[("System.Runtime.CompilerServices.CastHelpers", "WriteBarrier")]
 
         let raises =
             row.Contract.Raises |> List.map (fun name -> name.FullName) |> Set.ofList
@@ -846,13 +874,14 @@ module TestNativeContractTable =
         raised |> shouldEqual (Some "System.NullReferenceException")
         raises.Contains raised.Value |> shouldEqual true
 
-    /// The rows whose cited code makes a call that a vouch of this kind covers, by native.
-    let private rowsReaching (kind : VouchedRuns) : Set<string> =
-        let reaching = vouches.Force () |> List.filter (fun vouch -> vouch.Runs = kind)
+    /// The rows of `runtime`'s table whose cited code makes a call that a vouch of this kind
+    /// covers, by native.
+    let private rowsReaching (runtime : EmulatedRuntime) (kind : VouchedRuns) : Set<string> =
+        let reaching = vouches runtime |> List.filter (fun vouch -> vouch.Runs = kind)
 
-        rows
+        NativeContractTable.rows runtime
         |> List.filter (fun row ->
-            citedRoutines row
+            citedRoutines runtime row
             |> List.exists (fun (source, routine) ->
                 routine.Calls
                 |> Seq.exists (fun called ->
@@ -864,32 +893,28 @@ module TestNativeContractTable =
         |> List.map (fun row -> $"%A{row.Native}")
         |> Set.ofList
 
-    [<Test>]
-    let ``a row holds under named types loading exactly when its code loads types`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``a row holds under named types loading exactly when its code loads types`` (runtime : EmulatedRuntime) : unit =
         let assuming =
-            rows
+            NativeContractTable.rows runtime
             |> List.filter (fun row -> row.Contract.Assumes |> List.contains NativeAssumption.NamedTypesLoad)
             |> List.map (fun row -> $"%A{row.Native}")
             |> Set.ofList
 
-        assuming |> shouldEqual (rowsReaching VouchedRuns.Loads)
+        assuming |> shouldEqual (rowsReaching runtime VouchedRuns.Loads)
 
-    [<Test>]
+    [<TestCaseSource(nameof everyRuntime)>]
     let ``a row holds under well-formed metadata exactly when its code reaches a throw only a reader's failure makes``
-        ()
+        (runtime : EmulatedRuntime)
         : unit
         =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
         let assuming =
-            rows
+            NativeContractTable.rows runtime
             |> List.filter (fun row -> row.Contract.Assumes |> List.contains NativeAssumption.MetadataWellFormed)
             |> List.map (fun row -> $"%A{row.Native}")
             |> Set.ofList
 
-        assuming |> shouldEqual (rowsReaching VouchedRuns.Malformed)
+        assuming |> shouldEqual (rowsReaching runtime VouchedRuns.Malformed)
 
     [<Test>]
     let ``the table's reader refuses a malformed row`` () : unit =
@@ -1055,8 +1080,11 @@ module TestNativeContractTable =
     /// CoreCLR's `ResMgrGetString` (excep.cpp) calls .NET 10's `Environment.GetResourceStringLocal`
     /// through the binder, and .NET 11's `Environment.GetResourceString` as an
     /// `UnmanagedCallersOnly` method.
-    [<Test>]
-    let ``the resource lookup a row runs is the method the runtime's binder names for it`` () : unit =
+    [<TestCaseSource(nameof everyRuntime)>]
+    let ``the resource lookup a row runs is the method the runtime's binder names for it``
+        (runtime : EmulatedRuntime)
+        : unit
+        =
         NativeCall.resolve EmulatedRuntime.Net10 NativeCall.ResourceMessage
         |> shouldEqual
             {
@@ -1073,18 +1101,17 @@ module TestNativeContractTable =
                 Arguments = List.replicate 3 NativeArgument.Unnamed
             }
 
-        let resolved =
-            NativeCall.resolve (FrameworkUnderTest.runtime ()) NativeCall.ResourceMessage
+        let resolved = NativeCall.resolve runtime NativeCall.ResourceMessage
 
         let expected =
-            match FrameworkUnderTest.runtime () with
+            match runtime with
             | EmulatedRuntime.Net10 -> "METHOD__ENVIRONMENT__GET_RESOURCE_STRING_LOCAL"
             | EmulatedRuntime.Net11 -> "METHOD__ENVIRONMENT__GET_RESOURCE_STRING"
 
-        binderIds resolved |> shouldEqual [ expected ]
+        binderIds runtime resolved |> shouldEqual [ expected ]
 
         // That ID is the one `ResMgrGetString` calls.
-        let excep = File.ReadAllText (Path.Combine (coreclr (), "vm/excep.cpp"))
+        let excep = File.ReadAllText (Path.Combine (coreclr runtime, "vm/excep.cpp"))
 
         let resMgrGetString =
             CppSource.definitions excep
@@ -1131,13 +1158,16 @@ module TestNativeContractTable =
         read "NamedTypesLoad|MetadataWellFormed"
         |> shouldEqual [ NativeAssumption.NamedTypesLoad ; NativeAssumption.MetadataWellFormed ]
 
-    /// An image named `name` that disables runtime marshalling, declaring natives a row names and
-    /// others that differ from one in a single respect: FCalls on `System.Environment`,
-    /// `System.Runtime.InteropServices.Marshal`, `System.String` and
-    /// `System.Runtime.CompilerServices.MethodTable`, and P/Invokes into `QCall` on `Interop`.
-    let private fabricateNatives (name : string) : byte[] =
+    /// An image named `name`, of version `version`, that disables runtime marshalling, declaring
+    /// natives a row of .NET 10's table names and others that differ from one in a single respect:
+    /// FCalls on `System.Environment`, `System.Runtime.InteropServices.Marshal`, `System.String`
+    /// and `System.Runtime.CompilerServices.MethodTable`, and P/Invokes into `QCall` on `Interop`.
+    let private fabricateNatives (name : string) (version : Version) : byte[] =
         let builder =
-            System.Reflection.Emit.PersistedAssemblyBuilder (System.Reflection.AssemblyName name, typeof<obj>.Assembly)
+            System.Reflection.Emit.PersistedAssemblyBuilder (
+                System.Reflection.AssemblyName (name, Version = version),
+                typeof<obj>.Assembly
+            )
 
         builder.SetCustomAttribute (
             System.Reflection.Emit.CustomAttributeBuilder (
@@ -1236,8 +1266,8 @@ module TestNativeContractTable =
         =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let recognised (name : string) : (string * TabulatedNative option) list =
-            use stream = new MemoryStream (fabricateNatives name)
+        let recognised (name : string) (version : Version) : (string * TabulatedNative option) list =
+            use stream = new MemoryStream (fabricateNatives name version)
             let image = Assembly.read loggerFactory None stream
 
             [
@@ -1255,7 +1285,7 @@ module TestNativeContractTable =
             ]
             |> List.sort
 
-        recognised "System.Private.CoreLib"
+        recognised "System.Private.CoreLib" (Version (10, 0, 0, 0))
         |> shouldEqual
             [
                 "Environment::get_CurrentManagedThreadId/0",
@@ -1276,5 +1306,19 @@ module TestNativeContractTable =
                 "String::FastAllocateString/1", None
             ]
 
+        // A CoreLib's natives are those of its own runtime's table: .NET 11 has neither
+        // `get_CurrentManagedThreadId` nor `Buffer_Clear`.
+        recognised "System.Private.CoreLib" (Version (11, 0, 0, 0))
+        |> List.choose snd
+        |> shouldEqual
+            [
+                TabulatedNative.InstanceFCall (
+                    "System.Runtime.CompilerServices.MethodTable",
+                    "GetNumInstanceFieldBytes"
+                )
+            ]
+
         // Another assembly's natives are its own, whatever their names.
-        recognised "Elsewhere" |> List.choose snd |> shouldEqual []
+        recognised "Elsewhere" (Version (10, 0, 0, 0))
+        |> List.choose snd
+        |> shouldEqual []

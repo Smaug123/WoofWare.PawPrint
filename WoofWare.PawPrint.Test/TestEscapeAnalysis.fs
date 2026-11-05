@@ -2280,7 +2280,7 @@ public static class SR
         |> List.map snd
         |> List.distinct
         |> List.length
-        |> shouldEqual (NativeContractTable.rows.Force ()).Length
+        |> shouldEqual (NativeContractTable.rows (EmulatedRuntime.ofCoreLib corelib)).Length
 
         let analysis =
             analysisOf
