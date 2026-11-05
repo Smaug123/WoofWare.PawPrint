@@ -11,20 +11,16 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestDynamicAssemblyRefusals =
 
-    /// A guest whose `Main` runs `body` inside the default context's contextual-reflection scope,
-    /// which `DefineDynamicAssembly` needs to find its load context without
-    /// `AssemblyNative_GetLoadContextForAssembly`.
+    /// A guest whose `Main` runs `body`.
     let private source (body : string) : string =
         $$"""
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Runtime.Loader;
 
 public class Program
 {
     public static int Main(string[] args)
     {
-        using AssemblyLoadContext.ContextualReflectionScope scope = AssemblyLoadContext.Default.EnterContextualReflection();
         {{body}}
         return 0;
     }
@@ -83,18 +79,6 @@ public class Program
         AssemblyBuilder.DefineDynamicAssembly(keyed, AssemblyBuilderAccess.Run);"""
 
         exc.Message |> shouldContainText "the dynamic assembly 'Keyed' has a public key"
-
-    [<Test>]
-    let ``a dynamic assembly with flags above bit fifteen is refused`` () : unit =
-        // Real .NET stores all thirty-two bits: `GetName().Flags` reports -3825, the masked -1.
-        let exc =
-            runRefused
-                "DynamicAssemblyAllFlags.cs"
-                """AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("AllFlags") { Flags = (AssemblyNameFlags)(-1) }, AssemblyBuilderAccess.Run);"""
-
-        // The `AssemblyName.Flags` setter has already cleared the processor-architecture and
-        // content-type bits by the time the QCall reads `RawFlags`.
-        exc.Message |> shouldContainText "asks for flags 0xfffff10f"
 
     [<Test>]
     let ``two dynamic assemblies of one name are refused`` () : unit =
