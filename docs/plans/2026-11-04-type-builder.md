@@ -161,8 +161,8 @@ the scope's rows directly.
   `MethodPtr` and `ParamPtr`. Fields are included because `TypeDef` has a `FieldList` column whatever
   the guest defines, and their ranges are derived by the same function as methods'. Properties, events,
   generic parameters, custom attributes and type specs come in when a guest reaches them.
-* Heaps: `#Strings`, `#Blob` and `#GUID`, each interned as CoreCLR's pools intern. `#US` waits for
-  `ldstr`.
+* Heaps: `#Strings`, `#Blob` and `#GUID`, each interned as CoreCLR's pools intern. `#US` is written with
+  only its empty entry until `ldstr` needs more.
 * A method body is held as the bytes CoreCLR would store, header included. Encoding those bytes from
   `SetMethodIL`'s arguments is stage 3's job. The writer places each body 4-byte aligned in `.text`, and
   writes its RVA into the row.
@@ -184,3 +184,6 @@ the scope's rows directly.
   this.
 * Determinism: `write` is a function of the scope.
 * `DynamicAssemblyImage.build`'s existing tests pass unchanged over the new writer.
+* A list column cannot name the row one past the end of a table of exactly 65535 rows, because the column
+  is then two bytes and SRM reads 0 there as an empty range, which breaks the range before it. The
+  writer refuses such a scope rather than write an image that reads back wrong.
