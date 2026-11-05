@@ -85,12 +85,19 @@ module TestNativeMethod =
 
         List.sort recognised |> shouldEqual (List.sort every)
 
-    /// An image that calls itself System.Private.CoreLib, whose `System.Math` declares methods of
-    /// the maths functions' names: one with a maths function's signature, and others that differ
-    /// from one in a single respect each.
+    /// The version of the test host's CoreLib, which a fabricated CoreLib states so that it is a
+    /// supported runtime's.
+    let private hostCoreLibVersion : Version = typeof<obj>.Assembly.GetName().Version
+
+    /// An image that calls itself System.Private.CoreLib, of the host's CoreLib's version, whose
+    /// `System.Math` declares methods of the maths functions' names: one with a maths function's
+    /// signature, and others that differ from one in a single respect each.
     let private fabricateMath () : byte[] =
         let name = "System.Private.CoreLib"
-        let builder = PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName (name, Version = hostCoreLibVersion), typeof<obj>.Assembly)
+
         let modul = builder.DefineDynamicModule name
 
         let ty =
@@ -171,11 +178,13 @@ module TestNativeMethod =
         // names them otherwise, which would leave the loop above nothing to check.
         shimCalls |> shouldBeGreaterThan 100
 
-    /// An image named `name`, which disables runtime marshalling if `disablesMarshalling`, whose
-    /// `Interop` class declares P/Invokes into the shims: some whose stub copies every value as its
-    /// bytes and nothing more, and others that differ from one of those in a single respect each.
+    /// An image named `name`, of the host's CoreLib's version, which disables runtime marshalling if
+    /// `disablesMarshalling`, whose `Interop` class declares P/Invokes into the shims: some whose
+    /// stub copies every value as its bytes and nothing more, and others that differ from one of
+    /// those in a single respect each.
     let private fabricateShimCalls (name : string) (disablesMarshalling : bool) : byte[] =
-        let builder = PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName (name, Version = hostCoreLibVersion), typeof<obj>.Assembly)
 
         if disablesMarshalling then
             builder.SetCustomAttribute (
