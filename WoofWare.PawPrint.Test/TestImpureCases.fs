@@ -2596,6 +2596,19 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A callback installed with SystemNative_SetPosixSignalHandler
+                // names System.Collections only in a local, which is loaded,
+                // and announced to an AssemblyLoad handler, when the callback
+                // is compiled. Compared on every host.
+                FileName = "SignalCallbackLocalsAnnounced.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A signal interrupts a blocking read of an empty pipe, which
                 // SA_RESTART restarts on both kernels, so the read returns the
                 // byte the handler writes and errno is left at 0. Compared on
