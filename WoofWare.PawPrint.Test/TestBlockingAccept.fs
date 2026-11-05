@@ -206,7 +206,7 @@ class NeverConnected
                     {
                         Listener = SleepTarget.Waiting (OpenFileDescriptionId 3L, 4)
                         Destination = UserBuffer.Mapped
-                        DeclaredLength = 16u
+                        DeclaredLength = Some 16u
                         NewSocketNonBlocking = false
                         NewSocketCloseOnExec =
                             match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with

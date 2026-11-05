@@ -24,6 +24,13 @@ module KernelRefusal =
         let advice = if advice = "" then "" else " " + advice
         raise (System.Exception ($"%s{context}: %s{e.Message}%s{advice}", e))
 
+    /// `failAdvising` for a refusal the library answered as a value rather than
+    /// raised: `described` is the library's account of it (the refusal's
+    /// `describe`).
+    let failDescribed<'a> (context : string) (described : string) (advice : string) : 'a =
+        let advice = if advice = "" then "" else " " + advice
+        raise (System.Exception $"%s{context}: %s{described}%s{advice}")
+
     /// The pieces of advice that apply, each a sentence, joined; empty where
     /// none does.
     let advising (pieces : string list) : string =

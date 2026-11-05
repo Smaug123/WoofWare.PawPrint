@@ -160,6 +160,13 @@ prefixing which entry point or `KernelConfig` knob asked, and what would lift
 the refusal where that is PawPrint's to say. Keep that shape: a refusal a user
 can act on names the knob they set.
 
+Where an exception cannot say which knob it was, the kernel answers the refusal
+as a value instead, and PawPrint calls that form. A launch's settings are
+checked only when the process is launched, so `UnixBootImage.tryBoot` and
+`UnixSystem.tryLaunch` answer an opaque refusal whose `LaunchRefusal.setting`
+names the setting; `EmulatedKernel.failLaunch` maps it to the knob and fails
+through `KernelRefusal.failDescribed` with the refusal's `describe`.
+
 Before concluding a modelled constant has **no guest observer**, enumerate the
 interpreter's own limits that are *arithmetic in that constant*: a byte-offset
 bound, a block-count cap, `Int32.MaxValue / stride`. Each is a boundary a guest

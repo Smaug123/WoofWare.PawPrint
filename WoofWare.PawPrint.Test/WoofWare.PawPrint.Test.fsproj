@@ -297,6 +297,7 @@
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="TestNotifyEventsPal.fs" />
     <Compile Include="TestOpenFlagsPal.fs" />
+    <Compile Include="TestPipeFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestFileLockingPal.fs" />
     <Compile Include="TestFileStatusPal.fs" />
