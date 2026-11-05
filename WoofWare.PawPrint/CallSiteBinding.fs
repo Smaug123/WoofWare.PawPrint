@@ -216,7 +216,18 @@ module internal CallSiteBinding =
         (state : IlMachineState)
         : IlMachineState * CallSiteBinding
         =
-        match MethodTokenBinding.bind loggerFactory baseClassTypes thread use' opName assembly token state with
+        match
+            MethodTokenBinding.bind
+                loggerFactory
+                baseClassTypes
+                thread
+                use'
+                opName
+                GenericTypeMethodRow.Typical
+                assembly
+                token
+                state
+        with
         | state, MethodTokenBinding.Unbound unbound -> state, CallSiteBinding.Unbound unbound
         | state, MethodTokenBinding.RefusedParent refusal ->
             state, CallSiteBinding.CompilationFails (CompilationFailure.RefusesTypeOperand refusal)

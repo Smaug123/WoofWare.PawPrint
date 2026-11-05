@@ -54,6 +54,19 @@ type internal MethodTokenBinding =
     /// PawPrint cannot bind the token.
     | Unbound of UnboundToken
 
+/// How an instruction binds a MethodDef row naming a method of a generic type, which says nothing of
+/// the type's instantiation.
+[<RequireQualifiedAccess>]
+type internal GenericTypeMethodRow =
+    /// CoreCLR binds it to the typical instantiation (`MemberLoader::GetMethodDescFromMethodDef`),
+    /// which PawPrint does not model, so the row is unbound. For `call` and `ldftn`, which use the
+    /// method the row names.
+    | Typical
+    /// At the executing frame's instantiation of the declaring type. For `ldvirtftn`, which then
+    /// dispatches on its receiver: that agrees with CoreCLR where the receiver's instantiation is
+    /// the frame's, as when a method of the type loads its own virtual (measured on .NET 10).
+    | AtExecutingFrame
+
 /// Binds the method token of a `call`, `ldftn`, `ldvirtftn` or `ldtoken` against the executing
 /// frame's generic context. Each binding returns the state it leaves behind, having loaded
 /// assemblies and registered concrete types on the way.
@@ -307,17 +320,15 @@ module internal MethodTokenBinding =
                 UnboundToken.unmodelled $"Unrecognised MethodSpecification kind for %s{opName}: %O{other}"
             )
 
-    /// The method `token` of `assembly` names, as a `call`, `ldftn` or `ldvirtftn` names it.
-    ///
-    /// A MethodDef row of a method on a generic type names the typical instantiation
-    /// (`MemberLoader::GetMethodDescFromMethodDef`), which PawPrint does not model, so it is
-    /// unbound.
+    /// The method `token` of `assembly` names, as a `call`, `ldftn` or `ldvirtftn` names it, binding
+    /// a MethodDef row of a method on a generic type as `genericTypeRow` says.
     let bind
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (use' : MemberReferenceUse)
         (opName : string)
+        (genericTypeRow : GenericTypeMethodRow)
         (assembly : DumpedAssembly)
         (token : MetadataToken)
         (state : IlMachineState)
@@ -337,7 +348,8 @@ module internal MethodTokenBinding =
                 method
                 |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-            if not method.DeclaringTypeGenerics.IsEmpty then
+            match genericTypeRow with
+            | GenericTypeMethodRow.Typical when not method.DeclaringTypeGenerics.IsEmpty ->
                 // Measured on .NET 10: a `call` of such a row from `Gen<string>` raises
                 // `InvalidOperationException` from the callee's prestub ("not fully instantiated"),
                 // and an `ldftn` makes its pointer. Concretizing with no type arguments would fall
@@ -347,7 +359,8 @@ module internal MethodTokenBinding =
                     UnboundToken.unmodelled
                         $"TODO: %s{opName} of MethodDef %s{MethodOwner.describe method.Owner}::%s{method.Name}, declared on a generic type, names the typical instantiation, which CoreCLR binds and PawPrint does not model; compilers name such a method through a MemberReference whose TypeSpecification parent carries the instantiation"
                 )
-            else
+            | GenericTypeMethodRow.Typical
+            | GenericTypeMethodRow.AtExecutingFrame ->
 
             let state, concretized =
                 ExecutionConcretization.concretizeMethodForExecution

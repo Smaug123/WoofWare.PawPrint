@@ -233,6 +233,7 @@ module internal UnaryMetadataTokenOps =
                 thread
                 (memberReferenceUse ctx)
                 "Ldvirtftn"
+                GenericTypeMethodRow.AtExecutingFrame
                 ctx.ActiveAssembly
                 ctx.MetadataToken
                 state
