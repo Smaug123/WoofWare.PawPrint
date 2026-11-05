@@ -421,6 +421,7 @@
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
     <Compile Include="TestDescriptorBoundRefusal.fs" />
     <Compile Include="TestDynamicAssemblyImage.fs" />
+    <Compile Include="TestEmitScopeImage.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />

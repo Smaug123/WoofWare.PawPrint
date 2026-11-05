@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -95,6 +95,7 @@ Each is its own PR, and each re-runs the issue's guest to find the next stop rat
    `DefineType` at `ModuleBuilder_GetTypeRef`, resolving the parent type `object` (stage 3).
 1. **The writer**, under option A: the row log as immutable data, its serialiser, and the round-trip
    property, with no interpreter change. `DynamicAssemblyImage.build` becomes the log's first three rows.
+   Its own decisions are under "Stage 1 in detail" below.
 2. **The log in the machine state**: the dynamic assembly holds its log, and `LoadedAssemblies` gains the
    superset-replacement operation, with its invariant asserted.
 3. **The definition QCalls the issue reaches**, each appending what CoreCLR's emitter does, and each
@@ -104,3 +105,82 @@ Each is its own PR, and each re-runs the issue's guest to find the next stop rat
 4. **`TypeBuilder_TermCreateClass`**: load the type from the replaced image and hand back its
    `RuntimeType`; then whatever `Activator.CreateInstance` and the interface call reach. The issue's guest
    goes into `sourcesImpure` as the acceptance case.
+
+## Stage 1 in detail
+
+### What SRM's reader accepts
+
+Read from `System.Reflection.Metadata` at v10.0.0 (`MetadataReader.cs`, `Internal/Tables.cs`):
+
+* It reads a pointer table whenever that table has rows, in either kind of table stream, and inverts one
+  by linear search (`GetRowIdForMethodDefRow`). So an image whose `MethodDef` RIDs are in definition order
+  reads back with every method under its own type.
+* It refuses with `BadImageFormatException` (`TableNotSorted`) an `InterfaceImpl`, `MethodImpl`,
+  `Constant`, `FieldMarshal`, `DeclSecurity`, `ClassLayout`, `FieldLayout`, `MethodSemantics`, `ImplMap`,
+  `FieldRva`, `NestedClass`, `GenericParam` or `GenericParamConstraint` table that is out of key order.
+  It sorts `CustomAttribute` virtually instead.
+
+CoreCLR's read-write metadata leaves each of those tables in append order, and keeps a `VirtualSort` over
+it for lookups (`CMiniMdRW`, md/enc/metamodelrw.cpp). An image SRM can read must sort them, so their
+image RIDs can differ from the tokens CoreCLR assigns. Of those tables, only `GenericParam` hands a token
+to the guest (`GenericTypeParameterBuilder.MetadataToken`), and the issue's guest defines no generic
+parameter.
+
+**Chosen (2026-11-05): sort stably.** A stable sort by key keeps each owner's rows in append order, which
+is the order CoreCLR enumerates them in, so only the RIDs move, and only when the guest's appends were
+out of key order. Nothing hands out the RID of an `InterfaceImpl` or `MethodImpl` row, and PawPrint keeps
+neither handle outside the `DumpedAssembly` that a re-read rebuilds. `GenericParam` is decided when a guest
+first reaches it: either refuse an append that would put that table out of order, or carry the
+permutation. Stage 2's replacement compares the sorted-table rows of every created type and crashes if
+one moved.
+
+### The decision: what the log holds
+
+**1a. Tables as data.** An emit scope is an immutable record of append-only tables and heaps. Each
+child row holds its parent's RID as a column (a method holds its type, a parameter its method), never as
+a list range, and every reference is typed (`TypeDefRid`, a `TypeDefOrRef` union, a `StringOffset` into
+the scope's own string heap). Adding a row returns its RID at once, as CoreCLR's emitter returns a token,
+and interning a string or blob returns its offset at once. The heaps only grow, so offsets stay stable
+too. The writer is a pure function of the scope. It derives `FieldList`, `MethodList` and `ParamList`;
+it emits a pointer table for a child table exactly when that table's rows are not grouped by parent;
+and it sorts each sorted table stably by key.
+
+**1b. A log of operations.** The scope is a list of emit operations (`DefineType`, `DefineMethod`,
+`SetMethodBody`, ...). The writer replays it into tables. A QCall needs its token immediately, so it has
+to replay the log to learn it, or keep a second copy of 1a's counters beside the log. The meaning of each
+operation then lives in the replay, which is 1a's add functions under another name.
+
+**Chosen: 1a** (2026-11-05). It is CoreCLR's own model, where `CMiniMdRW` holds tables and pools and each define
+call appends to them. Every token is known when it is handed out. The round-trip property is stated over
+the scope's rows directly.
+
+### Scope of stage 1
+
+* Tables: `Module`, `TypeRef`, `TypeDef`, `Field`, `MethodDef`, `Param`, `InterfaceImpl`, `MemberRef`,
+  `StandAloneSig`, `MethodImpl`, `Assembly`, `AssemblyRef`, and the pointer tables `FieldPtr`,
+  `MethodPtr` and `ParamPtr`. Fields are included because `TypeDef` has a `FieldList` column whatever
+  the guest defines, and their ranges are derived by the same function as methods'. Properties, events,
+  generic parameters, custom attributes and type specs come in when a guest reaches them.
+* Heaps: `#Strings`, `#Blob` and `#GUID`, each interned as CoreCLR's pools intern. `#US` waits for
+  `ldstr`.
+* A method body is held as the bytes CoreCLR would store, header included. Encoding those bytes from
+  `SetMethodIL`'s arguments is stage 3's job. The writer places each body 4-byte aligned in `.text`, and
+  writes its RVA into the row.
+* The PE: a subclass of SRM's `PEBuilder` with one `.text` section, holding the CLI header, the bodies
+  and the metadata. `ManagedPEBuilder` cannot be used, because it takes only `MetadataBuilder`'s tables.
+* The table stream is always `#-`, so pointer tables are allowed in every image.
+* It lives in `WoofWare.PawPrint`, beside `DynamicAssemblyImage`, because only the emit QCalls build
+  scopes. It moves down to Domain if something outside the interpreter ever needs to write an image.
+
+### The oracle
+
+* Round trip, over generated scopes: read the image with SRM's `MetadataReader`, and every row reads
+  back with the same columns at the RID the scope assigned. Every child lies in its own parent's
+  range, through the pointer table when there is one. Sorted tables hold the same multiset of rows,
+  in key order.
+* Through `Assembly.read`: the `DumpedAssembly` lists each type's methods and fields as the scope does.
+* Prefix stability: for a scope `s` and any extension `s'` of it, every row and heap entry of `s` reads
+  back the same in `s'`'s image (sorted tables excepted, by content). Stage 2's replacement relies on
+  this.
+* Determinism: `write` is a function of the scope.
+* `DynamicAssemblyImage.build`'s existing tests pass unchanged over the new writer.
