@@ -425,8 +425,8 @@ type LoadedAssemblies =
     /// A row already recorded keeps its first target, as CoreCLR's does: the emitter can hand one row to
     /// two assemblies, since it does not compare the build and revision of <c>mscorlib</c>. Crashes
     /// unless <paramref name="target"/> is the loaded assembly with its identity and
-    /// <paramref name="assemblyRef"/> is the row that <c>EmitScopeReferences.tryFindAssemblyRef</c>
-    /// finds in the assembly's scope for a reference to <paramref name="target"/>.
+    /// <paramref name="assemblyRef"/> is a row that <c>EmitScopeReferences.defineAssemblyRef</c> could
+    /// have returned for a reference to <paramref name="target"/> (<c>isAssemblyRefFor</c>).
     /// </remarks>
     member this.WithAssemblyRefTarget
         (fullName : string)
@@ -445,11 +445,9 @@ type LoadedAssemblies =
 
         let request = AssemblyRefRequest.ofDefinition (target.PeReader.GetMetadataReader ())
 
-        match EmitScopeReferences.tryFindAssemblyRef request content.Scope with
-        | Some found when found = assemblyRef -> ()
-        | found ->
+        if not (EmitScopeReferences.isAssemblyRefFor request assemblyRef content.Scope) then
             failwith
-                $"%s{operation}: the AssemblyRef row of %s{fullName} that a reference to %s{target.DefinitionFullName} would find is %A{found}, not row %d{assemblyRef.Rid}"
+                $"%s{operation}: AssemblyRef row %d{assemblyRef.Rid} of %s{fullName} is not a row its emitter would find or add for a reference to %s{target.DefinitionFullName}"
 
         if content.AssemblyRefTargets.ContainsKey assemblyRef then
             this

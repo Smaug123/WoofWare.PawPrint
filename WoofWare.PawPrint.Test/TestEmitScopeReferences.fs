@@ -285,7 +285,12 @@ module TestEmitScopeReferences =
                         token [ 8uy ; 7uy ; 6uy ; 5uy ; 4uy ; 3uy ; 2uy ; 1uy ]
                     ]
 
-            let! flags = Gen.elements [ 0x000 ; 0x100 ; 0x010 ; 0x090 ; 0x0F0 ; 0x110 ]
+            // `EmitToken` passes `PublicKey` only for an assembly whose row has the flag but no key.
+            let! flags =
+                Gen.elements (
+                    [ 0x000 ; 0x100 ; 0x010 ; 0x090 ; 0x0F0 ; 0x110 ]
+                    @ (if publicKeyToken.IsEmpty then [ 0x001 ; 0x101 ] else [])
+                )
 
             return
                 {
@@ -321,6 +326,17 @@ module TestEmitScopeReferences =
                && row.Version.Revision = request.Version.Revision)
         && row.PublicKeyToken.AsSpan().SequenceEqual (request.PublicKeyToken.AsSpan ())
 
+    /// What a new row stores for the request's flags (`PrepareForSaving`).
+    let private saved (flags : AssemblyFlags) : AssemblyFlags =
+        let flags = int flags
+
+        enum<AssemblyFlags> (
+            if flags &&& 0x80 <> 0 then
+                flags &&& ~~~0x80
+            else
+                flags &&& ~~~0xF0
+        )
+
     [<Test>]
     let ``an assembly reference is found by name, culture, version and token, or added`` () : unit =
         let property (requests : AssemblyRefRequest list) : unit =
@@ -341,14 +357,6 @@ module TestEmitScopeReferences =
                     (EmitScope.strings next).Count |> shouldEqual (EmitScope.strings scope).Count
                     (EmitScope.blobs next).Count |> shouldEqual (EmitScope.blobs scope).Count
                 | None ->
-                    let flags = int request.Flags
-
-                    let saved =
-                        if flags &&& 0x80 <> 0 then
-                            flags &&& ~~~0x80
-                        else
-                            flags &&& ~~~0xF0
-
                     model <-
                         model
                         @ [
@@ -360,7 +368,7 @@ module TestEmitScopeReferences =
                                         Build = stored request.Version.Build
                                         Revision = stored request.Version.Revision
                                     }
-                                Flags = enum<AssemblyFlags> saved
+                                Flags = saved request.Flags
                             }
                         ]
 
@@ -371,6 +379,30 @@ module TestEmitScopeReferences =
                     List.tryFindIndex (matches request) model
                     |> Option.map (fun i -> AssemblyRefRid (i + 1))
                 )
+
+                // A row is for the request when it is found for it, or holds what defining it adds.
+                let added =
+                    { request with
+                        Version =
+                            {
+                                Major = stored request.Version.Major
+                                Minor = stored request.Version.Minor
+                                Build = stored request.Version.Build
+                                Revision = stored request.Version.Revision
+                            }
+                    }
+
+                for index, row in List.indexed model do
+                    let expected =
+                        List.tryFindIndex (matches request) model = Some index
+                        || row.Name = added.Name
+                           && row.Culture = added.Culture
+                           && row.Version = added.Version
+                           && row.PublicKeyToken.AsSpan().SequenceEqual (added.PublicKeyToken.AsSpan ())
+                           && row.Flags = saved request.Flags
+
+                    EmitScopeReferences.isAssemblyRefFor request (AssemblyRefRid (index + 1)) next
+                    |> shouldEqual expected
 
                 scope <- next
 
@@ -429,3 +461,6 @@ module TestEmitScopeReferences =
         let second, scope = EmitScopeReferences.defineAssemblyRef request scope
         (first, second) |> shouldEqual (AssemblyRefRid 1, AssemblyRefRid 2)
         (EmitScope.assemblyRefs scope).[0].Version.Build |> shouldEqual 0us
+        // Each is a row defining the request adds, so each may be recorded as naming its assembly.
+        EmitScopeReferences.isAssemblyRefFor request first scope |> shouldEqual true
+        EmitScopeReferences.isAssemblyRefFor request second scope |> shouldEqual true

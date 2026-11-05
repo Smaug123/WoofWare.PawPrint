@@ -131,13 +131,14 @@ module EmitScopeReferences =
     /// </summary>
     let tryFindAssemblyRef (request : AssemblyRefRequest) (scope : EmitScope) : AssemblyRefRid option =
         let matches (row : AssemblyRefRow) : bool =
-            // Every row this module writes holds a token. A row holding a full key is compared by the
-            // key's token, and nothing here writes one yet.
-            if row.Flags.HasFlag AssemblyFlags.PublicKey then
+            let name = EmitScope.stringAt row.Name scope
+            let key = EmitScope.blobAt row.PublicKeyOrToken scope
+
+            // `FindAssemblyRef` reads a row's `PublicKey` flag only when the row holds key bytes. A row
+            // holding a full key is compared by the key's token, and nothing here writes one yet.
+            if not key.IsEmpty && row.Flags.HasFlag AssemblyFlags.PublicKey then
                 failwith
                     "TODO: EmitScopeReferences.tryFindAssemblyRef: an AssemblyRef row holds a full public key, which ImportHelper::FindAssemblyRef compares by its token"
-
-            let name = EmitScope.stringAt row.Name scope
 
             let unified =
                 String.Equals (name, "mscorlib", StringComparison.OrdinalIgnoreCase)
@@ -150,11 +151,32 @@ module EmitScopeReferences =
             && (unified
                 || row.Version.Build = request.Version.Build
                    && row.Version.Revision = request.Version.Revision)
-            && (EmitScope.blobAt row.PublicKeyOrToken scope).AsSpan().SequenceEqual (request.PublicKeyToken.AsSpan ())
+            && key.AsSpan().SequenceEqual (request.PublicKeyToken.AsSpan ())
 
         EmitScope.assemblyRefs scope
         |> Seq.tryFindIndex matches
         |> Option.map (fun index -> AssemblyRefRid (index + 1))
+
+    let private storedVersion (version : MetadataVersion) : MetadataVersion =
+        let given (part : uint16) : uint16 =
+            if part = UInt16.MaxValue then 0us else part
+
+        {
+            Major = given version.Major
+            Minor = given version.Minor
+            Build = given version.Build
+            Revision = given version.Revision
+        }
+
+    let private storedFlags (flags : AssemblyFlags) : AssemblyFlags =
+        // `afPA_Specified` and `afPA_FullMask`, which `PrepareForSaving` reads.
+        let architectureSpecified = enum<AssemblyFlags> 0x0080
+        let architecture = enum<AssemblyFlags> 0x00F0
+
+        if flags.HasFlag architectureSpecified then
+            flags &&& ~~~architectureSpecified
+        else
+            flags &&& ~~~architecture
 
     /// <summary>
     /// The <c>AssemblyRef</c> row for <paramref name="request"/>: the one <c>tryFindAssemblyRef</c>
@@ -173,35 +195,40 @@ module EmitScopeReferences =
             let culture, scope = EmitScope.internString request.Culture scope
             let hash, scope = EmitScope.internBlob ImmutableArray.Empty scope
 
-            let given (part : uint16) : uint16 =
-                if part = UInt16.MaxValue then 0us else part
-
-            // `afPA_Specified` and `afPA_FullMask`, which `PrepareForSaving` reads.
-            let architectureSpecified = enum<AssemblyFlags> 0x0080
-            let architecture = enum<AssemblyFlags> 0x00F0
-
-            let flags =
-                if request.Flags.HasFlag architectureSpecified then
-                    request.Flags &&& ~~~architectureSpecified
-                else
-                    request.Flags &&& ~~~architecture
-
             EmitScope.addAssemblyRef
                 {
-                    Version =
-                        {
-                            Major = given request.Version.Major
-                            Minor = given request.Version.Minor
-                            Build = given request.Version.Build
-                            Revision = given request.Version.Revision
-                        }
-                    Flags = flags
+                    Version = storedVersion request.Version
+                    Flags = storedFlags request.Flags
                     PublicKeyOrToken = token
                     Name = name
                     Culture = culture
                     HashValue = hash
                 }
                 scope
+
+    /// <summary>
+    /// Whether <paramref name="row"/> is a row that <c>defineAssemblyRef</c> could have returned for
+    /// <paramref name="request"/>: the one <c>tryFindAssemblyRef</c> finds, or a row holding what it
+    /// adds. These differ for a version component of 65535, which a new row stores as 0, so that the
+    /// row it adds is never found again.
+    /// </summary>
+    let isAssemblyRefFor (request : AssemblyRefRequest) (row : AssemblyRefRid) (scope : EmitScope) : bool =
+        if tryFindAssemblyRef request scope = Some row then
+            true
+        else
+            match EmitScope.tryAssemblyRefRid row.Rid scope with
+            | None -> false
+            | Some _ ->
+                let held = (EmitScope.assemblyRefs scope).[row.Rid - 1]
+
+                String.Equals (EmitScope.stringAt held.Name scope, request.Name, StringComparison.Ordinal)
+                && String.Equals (EmitScope.stringAt held.Culture scope, request.Culture, StringComparison.Ordinal)
+                && held.Version = storedVersion request.Version
+                && held.Flags = storedFlags request.Flags
+                && (EmitScope.blobAt held.PublicKeyOrToken scope)
+                    .AsSpan()
+                    .SequenceEqual (request.PublicKeyToken.AsSpan ())
+                && (EmitScope.blobAt held.HashValue scope).IsEmpty
 
     /// <summary>
     /// The <c>TypeRef</c> row with this resolution scope, namespace and name, compared ordinally, as

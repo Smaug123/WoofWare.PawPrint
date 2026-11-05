@@ -881,6 +881,33 @@ module TestLoadedAssemblies =
         loaded.TryResolveReference (referenceAt loaded name toImage) |> resolvesTo image
 
     [<Test>]
+    let ``every AssemblyRef row emitted for an assembly with a version part of 65535 resolves to it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let target =
+            DynamicAssemblyImage.scope
+                { dynamicParts "Target" with
+                    Version = Version (1, 0, 65535, 0)
+                }
+                Guid.Empty
+
+        let loaded, target = registerDynamic target LoadedAssemblies.empty
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        // The emitter stores the 65535 as 0, so it never finds the row again and adds a second.
+        let first, scope = referencing target "N.T" referrerScope
+        let second, scope = referencing target "N.U" scope
+        second |> shouldNotEqual first
+
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+        let loaded = loaded.WithAssemblyRefTarget name first target
+        let loaded = loaded.WithAssemblyRefTarget name second target
+        loaded.TryResolveReference (referenceAt loaded name first) |> resolvesTo target
+        loaded.TryResolveReference (referenceAt loaded name second) |> resolvesTo target
+
+    [<Test>]
     let ``an AssemblyRef row recorded twice keeps its first target`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
