@@ -2,10 +2,11 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
-/// Identity of the managed callback the BCL installed via
-/// `SystemNative_SetPosixSignalHandler(&OnPosixSignal)`. Wraps the
-/// `MethodInfo` of the target so a later signal-delivery slice has the
-/// call site pre-resolved — no need to round-trip through raw pointer
+/// Identity of a managed callback the BCL handed System.Native's signal code
+/// as an unmanaged function pointer: `OnPosixSignal` through
+/// `SystemNative_SetPosixSignalHandler`, or one of System.Diagnostics.Process's
+/// SIGCHLD callbacks. Wraps the `MethodInfo` of the target so that a call of it
+/// has the call site pre-resolved — no need to round-trip through raw pointer
 /// bits.
 ///
 /// The wrapper exists purely so `PosixSignalShim` keeps clean structural
