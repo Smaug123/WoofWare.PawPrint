@@ -14,6 +14,17 @@ open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 /// <summary>
+/// What the load context holds for a dynamic assembly beyond its <c>DumpedAssembly</c>: the emit scope
+/// that assembly's image is written from, and which of its types the runtime has created.
+/// </summary>
+[<NoEquality ; NoComparison>]
+type private DynamicAssemblyContent =
+    {
+        Scope : EmitScope
+        Created : ImmutableHashSet<TypeDefRid>
+    }
+
+/// <summary>
 /// The assemblies the interpreter has loaded, together with the record of which
 /// AssemblyReferences have already been bound to which of them. This is the CLR's split
 /// between a *binder* (which reference identity resolves to which assembly) and a *load
@@ -52,8 +63,9 @@ type LoadedAssemblies =
             /// The keys of <c>ByDefinition</c>, in the order each was first registered.
             LoadOrder : ImmutableArray<string>
             /// The keys of <c>ByDefinition</c> that name a dynamic assembly: one created at run time
-            /// by <c>AssemblyBuilder</c> rather than read from an image on disk.
-            Dynamic : ImmutableHashSet<string>
+            /// by <c>AssemblyBuilder</c> rather than read from an image on disk. Each one's
+            /// <c>DumpedAssembly</c> is the image of its scope.
+            Dynamic : ImmutableDictionary<string, DynamicAssemblyContent>
         }
 
     /// <summary>
@@ -112,7 +124,25 @@ type LoadedAssemblies =
     /// True if the loaded assembly with this definition identity is a dynamic one, registered by
     /// <c>WithDynamicAssembly</c>. What <c>Assembly.IsDynamic</c> reports.
     /// </summary>
-    member this.IsDynamic (fullName : string) : bool = this.Dynamic.Contains fullName
+    member this.IsDynamic (fullName : string) : bool = this.Dynamic.ContainsKey fullName
+
+    /// <summary>
+    /// The emit scope of the dynamic assembly with this definition identity, from which its
+    /// <c>DumpedAssembly</c> was written; <c>None</c> if no dynamic assembly has that identity.
+    /// </summary>
+    member this.TryDynamicScope (fullName : string) : EmitScope option =
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> Some content.Scope
+        | false, _ -> None
+
+    /// <summary>
+    /// True if the runtime has created this type of the dynamic assembly with this definition
+    /// identity (<c>WithCreatedType</c>).
+    /// </summary>
+    member this.IsCreatedType (fullName : string) (typeDef : TypeDefRid) : bool =
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> content.Created.Contains typeDef
+        | false, _ -> false
 
     /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
@@ -134,7 +164,7 @@ type LoadedAssemblies =
         match this.Bindings.TryGetValue refFullName with
         | true, definitionName -> this.TryByDefinitionName definitionName
         | false, _ ->
-            if this.Dynamic.Contains refFullName then
+            if this.Dynamic.ContainsKey refFullName then
                 None
             else
                 this.TryByDefinitionName refFullName
@@ -212,7 +242,7 @@ type LoadedAssemblies =
         =
         let definitionName = assy.DefinitionFullName
 
-        if this.Dynamic.Contains definitionName then
+        if this.Dynamic.ContainsKey definitionName then
             failwithf
                 "Refusing to bind reference %s to the dynamic assembly %s: CoreCLR's binder never binds a reference to a dynamic assembly."
                 reference.FullName
@@ -229,28 +259,129 @@ type LoadedAssemblies =
 
         result, canonical
 
+    /// The assembly an emit scope's image holds.
+    static member private ReadScope (loggerFactory : ILoggerFactory) (scope : EmitScope) : DumpedAssembly =
+        use image = new MemoryStream (EmitScopeImage.write scope)
+        Assembly.read loggerFactory None image
+
+    /// What the load context holds for the dynamic assembly with this identity, crashing if it holds
+    /// none: the caller has mistaken some other assembly for one the runtime emitted.
+    member private this.DynamicContent (operation : string) (fullName : string) : DynamicAssemblyContent =
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> content
+        | false, _ -> failwith $"%s{operation}: %s{fullName} is not a dynamic assembly, so it has no emit scope"
+
     /// <summary>
     /// Register a dynamic assembly: one created at run time, whose identity no image on disk
-    /// supplied. Such an assembly is found by its definition identity like any other, and reported
-    /// by <c>IsDynamic</c>, but no assembly reference ever binds to it.
+    /// supplied. Its <c>DumpedAssembly</c> is read from the image of <paramref name="scope"/>, which
+    /// must define the <c>Assembly</c> row. Such an assembly is found by its definition identity like
+    /// any other, and reported by <c>IsDynamic</c>, but no assembly reference ever binds to it.
     /// </summary>
     /// <returns>
-    /// An error naming the assembly already loaded under <paramref name="assy"/>'s definition identity,
-    /// if there is one. CoreCLR admits a dynamic assembly whose identity another assembly already
-    /// has, but here that would make the two one assembly.
+    /// The load context and the dynamic assembly; or an error naming the assembly already loaded under
+    /// the scope's definition identity, if there is one. CoreCLR admits a dynamic assembly whose
+    /// identity another assembly already has, but here that would make the two one assembly.
     /// </returns>
-    member this.WithDynamicAssembly (assy : DumpedAssembly) : Result<LoadedAssemblies, DumpedAssembly> =
+    member this.WithDynamicAssembly
+        (loggerFactory : ILoggerFactory)
+        (scope : EmitScope)
+        : Result<LoadedAssemblies * DumpedAssembly, DumpedAssembly>
+        =
+        if (EmitScope.assembly scope).IsNone then
+            invalidArg (nameof scope) "a dynamic assembly's scope must define the Assembly row, which names it"
+
+        let assy = LoadedAssemblies.ReadScope loggerFactory scope
         let definitionName = assy.DefinitionFullName
 
         match this.ByDefinition.TryGetValue definitionName with
         | true, existing -> Error existing
         | false, _ ->
-            { this with
+            let content : DynamicAssemblyContent =
+                {
+                    Scope = scope
+                    Created = ImmutableHashSet.Empty
+                }
+
+            ({ this with
                 ByDefinition = this.ByDefinition.Add (definitionName, assy)
                 LoadOrder = this.LoadOrder.Add definitionName
-                Dynamic = this.Dynamic.Add definitionName
-            }
+                Dynamic = this.Dynamic.Add (definitionName, content)
+             },
+             assy)
             |> Ok
+
+    /// <summary>
+    /// Replace the dynamic assembly with this definition identity by the image of
+    /// <paramref name="scope"/>, under the same identity and in the same place in the load order.
+    /// </summary>
+    /// <remarks>
+    /// Crashes unless <paramref name="scope"/> extends the assembly's current scope
+    /// (<c>EmitScopeExtension.violations</c>), given the types created so far: every handle into the
+    /// old image then means the same in the new one, and every created type reads back the same, so
+    /// nothing the runtime has already read from the old image is invalidated. A scope that does not
+    /// extend it is a fault in whatever built the scope.
+    /// </remarks>
+    /// <returns>The load context and the replacement assembly.</returns>
+    member this.WithEmitScope
+        (loggerFactory : ILoggerFactory)
+        (fullName : string)
+        (scope : EmitScope)
+        : LoadedAssemblies * DumpedAssembly
+        =
+        let content = this.DynamicContent "WithEmitScope" fullName
+
+        match EmitScopeExtension.violations content.Created content.Scope scope with
+        | [] -> ()
+        | violations ->
+            let described = violations |> List.map string |> String.concat "; "
+
+            failwith
+                $"Refusing to replace the dynamic assembly %s{fullName} by the image of a scope that does not extend its own: %s{described}"
+
+        let assy = LoadedAssemblies.ReadScope loggerFactory scope
+
+        // The `Assembly` row is unchanged, so the identity is too.
+        if assy.DefinitionFullName <> fullName then
+            failwith
+                $"The image of an extension of %s{fullName}'s scope is named %s{assy.DefinitionFullName}; an unchanged Assembly row must name the same assembly"
+
+        { this with
+            ByDefinition = this.ByDefinition.SetItem (fullName, assy)
+            Dynamic =
+                this.Dynamic.SetItem (
+                    fullName,
+                    { content with
+                        Scope = scope
+                    }
+                )
+        },
+        assy
+
+    /// <summary>
+    /// Record that the runtime has created this type of the dynamic assembly with this definition
+    /// identity, as CoreCLR's <c>TypeBuilder_TermCreateClass</c> does: from now on its members are
+    /// fixed, and <c>WithEmitScope</c> refuses a scope that changes them.
+    /// </summary>
+    /// <remarks>Crashes if the type is not in the assembly's scope, or is already created.</remarks>
+    member this.WithCreatedType (fullName : string) (typeDef : TypeDefRid) : LoadedAssemblies =
+        let content = this.DynamicContent "WithCreatedType" fullName
+
+        if typeDef.Rid > (EmitScope.typeDefs content.Scope).Count then
+            failwith
+                $"Refusing to create TypeDef %d{typeDef.Rid} of %s{fullName}: it is not in the scope, which has %d{(EmitScope.typeDefs content.Scope).Count} types"
+
+        if content.Created.Contains typeDef then
+            failwith $"Refusing to create TypeDef %d{typeDef.Rid} of %s{fullName}: it is already created"
+
+        { this with
+            Dynamic =
+                this.Dynamic.SetItem (
+                    fullName,
+                    { content with
+                        Created = content.Created.Add typeDef
+                    }
+                )
+        }
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =
@@ -259,7 +390,7 @@ module LoadedAssemblies =
             ByDefinition = ImmutableDictionary.Empty
             Bindings = ImmutableDictionary.Empty
             LoadOrder = ImmutableArray<string>.Empty
-            Dynamic = ImmutableHashSet.Empty
+            Dynamic = ImmutableDictionary.Empty
         }
 
     /// Build a load context from assemblies indexed by their own definition identities, with no

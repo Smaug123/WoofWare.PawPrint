@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -169,8 +169,8 @@ the scope's rows directly.
 * The PE: a subclass of SRM's `PEBuilder` with one `.text` section, holding the CLI header, the bodies
   and the metadata. `ManagedPEBuilder` cannot be used, because it takes only `MetadataBuilder`'s tables.
 * The table stream is always `#-`, so pointer tables are allowed in every image.
-* It lives in `WoofWare.PawPrint`, beside `DynamicAssemblyImage`, because only the emit QCalls build
-  scopes. It moves down to Domain if something outside the interpreter ever needs to write an image.
+* It lives in Domain, because stage 2 has `LoadedAssemblies`, in the Loader, hold each dynamic assembly's
+  scope and write its image.
 
 ### The oracle
 
@@ -187,3 +187,53 @@ the scope's rows directly.
 * A list column cannot name the row one past the end of a table of exactly 65535 rows, because the column
   is then two bytes and SRM reads 0 there as an empty range, which breaks the range before it. The
   writer refuses such a scope rather than write an image that reads back wrong.
+
+## Stage 2 in detail
+
+### The decisions
+
+**Where the scope lives. Chosen (2026-11-05): in `LoadedAssemblies`.** Each dynamic assembly's entry holds
+its scope and the set of its types the runtime has created, beside the `DumpedAssembly` read from the
+scope's image. `WithDynamicAssembly` takes the scope and reads the image itself, and `WithEmitScope`
+checks, writes, reads and swaps in one call, so the scope and the image cannot disagree. The cost is that
+the model and writer moved to Domain, a published package. The alternative was a map from assembly to
+scope in `IlMachineState`, beside a `LoadedAssemblies` operation that replaces an image it cannot check.
+
+**What the replacement checks. Chosen (2026-11-05): the scopes.** `EmitScopeExtension.violations` compares
+the old scope with the new:
+
+* Every row and heap entry of the old one is unchanged in the new one.
+* No row the new one adds is a member of a created type: a field, a method, a parameter of one of its
+  methods, an interface implementation or a method impl.
+* No created type's `InterfaceImpl` or `MethodImpl` row has a different image RID, which happens when a
+  row is added for a type that sorts before it. Both scopes' RIDs come from the writer
+  (`EmitScopeImage.interfaceImplRids`, `methodImplRids`), so the check and the image cannot disagree
+  about the sort.
+
+The link to the image is stage 1's prefix-stability property. The alternative was comparing the
+read-back `TypeInfo`s of created types, which needs a structural comparison that `TypeInfo` does not
+have: its `MethodImpls` is an `ImmutableDictionary`, compared by reference.
+
+### The oracle
+
+The check is judged by the images of the two scopes, read back through SRM:
+
+* For a scope extended by appending, the created types it reports are exactly those whose methods,
+  parameters, fields, interface implementations or method impls read back differently.
+* For a rewritten history, every row, heap entry and sorted-table run that reads back differently is
+  reported as its own violation.
+
+All thirteen mutants of the check, the load-context members and the writer's RID function are caught.
+
+### Left to later stages
+
+* **Stage 3** fills columns of rows it has already added (`SetMethodIL` sets a method's body, for
+  instance). The check then has to admit a changed row whose type is not yet created. Filling an
+  earlier method's body moves the RVAs of the bodies after it in `.text`. That is harmless: `Assembly.read`
+  parses each body when it reads the image, and later reads through `PeReader` look the assembly up by
+  name, so they go to the current image.
+* **Stage 4** calls `WithCreatedType` from `TypeBuilder_TermCreateClass`. A guest that adds an
+  `InterfaceImpl` or `MethodImpl` to an earlier-defined type after creating a later one crashes on the
+  moved-row check. That is plausible (create `B`, then `DefineMethodOverride` on `A`), so if a guest
+  reaches it, we decide then whether PawPrint keeps those handles anywhere outside the `DumpedAssembly`
+  that a re-read rebuilds.

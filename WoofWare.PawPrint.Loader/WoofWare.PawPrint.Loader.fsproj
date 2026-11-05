@@ -23,6 +23,7 @@
         <Compile Include="..\WoofWare.PawPrint.Domain\ImmutableArray.fs" Link="ImmutableArray.fs" />
         <Compile Include="UnmodelledBinding.fs" />
         <Compile Include="TypeLoadRefusal.fs" />
+        <Compile Include="EmitScopeExtension.fs" />
         <Compile Include="LoadedAssemblies.fs" />
         <Compile Include="LoadedTypeResolution.fs" />
         <Compile Include="LoadedTypeInfo.fs" />

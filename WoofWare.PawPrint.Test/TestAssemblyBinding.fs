@@ -172,6 +172,35 @@ module TestAssemblyBinding =
 
     let private imageSimpleName = "WoofWare.PawPrint.Logging"
 
+    /// The scope of a dynamic assembly with the definition identity of the image at `path`.
+    let private dynamicScopeLike (path : string) : EmitScope =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            use stream = File.OpenRead path
+            AssemblyApi.read loggerFactory None stream
+
+        let scope =
+            DynamicAssemblyImage.scope
+                {
+                    SimpleName = image.Name.Name
+                    Version = image.Name.Version
+                    Culture = image.Name.CultureName
+                    PublicKey = image.PublicKey
+                    Flags = image.Flags
+                    HashAlgorithm = image.HashAlgorithm
+                }
+                Guid.Empty
+
+        let written =
+            use stream = new MemoryStream (EmitScopeImage.write scope)
+            AssemblyApi.read loggerFactory None stream
+
+        if written.DefinitionFullName <> image.DefinitionFullName then
+            failwith $"the dynamic scope is %s{written.DefinitionFullName}, not %s{image.DefinitionFullName}"
+
+        scope
+
     /// `TestCandidateRefMatchesDef`: the file was chosen by its name, and the manifest inside it
     /// must agree before it answers.
     [<Test>]
@@ -591,13 +620,9 @@ module TestAssemblyBinding =
     let ``a dynamic assembly does not answer a request for its name`` () : unit =
         let _messages, loggerFactory = LoggerFactory.makeTest ()
 
-        let dynamic =
-            use stream = File.OpenRead imagePath
-            AssemblyApi.read loggerFactory None stream
-
         let assemblies =
-            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
-            | Ok assemblies -> assemblies
+            match LoadedAssemblies.empty.WithDynamicAssembly loggerFactory (dynamicScopeLike imagePath) with
+            | Ok (assemblies, _) -> assemblies
             | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
 
         match AssemblyBinding.tryBind loggerFactory [] (plainRequest imageSimpleName) assemblies with
@@ -760,13 +785,9 @@ module TestAssemblyBinding =
             (fun root ->
                 let _messages, loggerFactory = LoggerFactory.makeTest ()
 
-                let dynamic =
-                    use stream = File.OpenRead imagePath
-                    AssemblyApi.read loggerFactory None stream
-
                 let assemblies =
-                    match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
-                    | Ok assemblies -> assemblies
+                    match LoadedAssemblies.empty.WithDynamicAssembly loggerFactory (dynamicScopeLike imagePath) with
+                    | Ok (assemblies, _) -> assemblies
                     | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
 
                 expectRefusal
