@@ -15,13 +15,17 @@ open Microsoft.FSharp.Core
 
 /// <summary>
 /// What the load context holds for a dynamic assembly beyond its <c>DumpedAssembly</c>: the emit scope
-/// that assembly's image is written from, and which of its types the runtime has created.
+/// that assembly's image is written from, which of its types the runtime has created, and which loaded
+/// assembly each of its <c>AssemblyRef</c> rows was emitted for.
 /// </summary>
 [<NoEquality ; NoComparison>]
 type private DynamicAssemblyContent =
     {
         Scope : EmitScope
         Created : ImmutableHashSet<TypeDefRid>
+        /// The definition identity of the assembly each recorded row names, as CoreCLR's module keeps
+        /// it in its rid map (<c>ForceStoreAssemblyRef</c>).
+        AssemblyRefTargets : ImmutableDictionary<AssemblyRefRid, string>
     }
 
 /// <summary>
@@ -300,6 +304,7 @@ type LoadedAssemblies =
                 {
                     Scope = scope
                     Created = ImmutableHashSet.Empty
+                    AssemblyRefTargets = ImmutableDictionary.Empty
                 }
 
             ({ this with
@@ -382,6 +387,28 @@ type LoadedAssemblies =
                     }
                 )
         }
+
+    /// <summary>
+    /// Record that the <c>AssemblyRef</c> row <paramref name="assemblyRef"/> of the dynamic assembly with
+    /// this definition identity was emitted for <paramref name="target"/>, as CoreCLR's
+    /// <c>ModuleBuilder_GetTypeRef</c> records it in the module's rid map. From then on
+    /// <c>TryResolveReference</c> resolves that row of that assembly to <paramref name="target"/>, a
+    /// dynamic assembly included, whatever the binder would do with its name.
+    /// </summary>
+    /// <remarks>
+    /// A row already recorded keeps its first target, as CoreCLR's does: the emitter can hand one row to
+    /// two assemblies, since it does not compare the build and revision of <c>mscorlib</c>. Crashes
+    /// unless <paramref name="target"/> is the loaded assembly with its identity and
+    /// <paramref name="assemblyRef"/> is the row that <c>EmitScopeReferences.tryFindAssemblyRef</c>
+    /// finds in the assembly's scope for a reference to <paramref name="target"/>.
+    /// </remarks>
+    member this.WithAssemblyRefTarget
+        (fullName : string)
+        (assemblyRef : AssemblyRefRid)
+        (target : DumpedAssembly)
+        : LoadedAssemblies
+        =
+        failwith "TODO: LoadedAssemblies.WithAssemblyRefTarget"
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =
