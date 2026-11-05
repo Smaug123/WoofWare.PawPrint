@@ -22,7 +22,8 @@ module TestFabricatedMethodImplAncestorSearch =
 
     [<RequireQualifiedAccess>]
     type private Shape =
-        /// `A { virtual int M() }`, `B : A {}`, `C : B` overriding `B::M()`.
+        /// `A { virtual int N(); virtual int M() }`, `B : A {}`, `C : B` overriding `B::M()`. `N` has
+        /// `M`'s signature under another name.
         | Inherited
         /// `A<T> { virtual int M(T) }`, `B : A<string> {}`, `C : B` overriding `B::M(string)`.
         | Substituted
@@ -34,7 +35,8 @@ module TestFabricatedMethodImplAncestorSearch =
         /// `P::M()`.
         | NearestAncestor
 
-    /// The image `shape` describes. `A`'s `M` answers 7, `B`'s 6, and `C`'s body `Impl` 5.
+    /// The image `shape` describes. `A`'s `M` answers 7 and its `N` 8, `B`'s `M` 6, and `C`'s body
+    /// `Impl` 5.
     let private fabricate (shape : Shape) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -175,6 +177,15 @@ module TestFabricatedMethodImplAncestorSearch =
         // MethodDef rows, in the order the TypeDef rows below claim them: A's, B's, P's, then C's.
         let aConstructor =
             addMethod constructorAttributes ".ctor" voidSignature (constructing objectConstructor)
+
+        match shape with
+        | Shape.Inherited ->
+            addMethod newVirtual "N" (signature []) (answering 8)
+            |> ignore<MethodDefinitionHandle>
+        | Shape.Substituted
+        | Shape.NoSubstitutedMatch
+        | Shape.NonVirtualAtNamedType
+        | Shape.NearestAncestor -> ()
 
         addMethod newVirtual "M" (signature declaredParameters) (answering 7)
         |> ignore<MethodDefinitionHandle>
@@ -361,7 +372,17 @@ module TestFabricatedMethodImplAncestorSearch =
     /// A call through the vtable slot of each `M` that `C` could have overridden.
     let private driver (shape : Shape) : string =
         match shape with
-        | Shape.Inherited
+        | Shape.Inherited ->
+            """
+public static class Driver
+{
+    public static int Main(string[] args)
+    {
+        A a = new C();
+        return a.N() * 10 + a.M();
+    }
+}
+"""
         | Shape.NonVirtualAtNamedType ->
             """
 public static class Driver
@@ -404,7 +425,8 @@ public static class Driver
 
     [<Test>]
     let ``a declaration naming a type that inherits the method overrides the ancestor's slot`` () : unit =
-        run Shape.Inherited 5
+        // `C`'s body takes `M`'s slot, and `N`'s keeps `A`'s 8.
+        run Shape.Inherited 85
 
     [<Test>]
     let ``an ancestor's method is compared in the named type's vocabulary`` () : unit = run Shape.Substituted 5
