@@ -1,13 +1,14 @@
 using System;
 using System.Runtime.InteropServices;
 
-// A pipe made through `SystemNative_Pipe` (pal_io.c:557), and what the other
+// A pipe made through `SystemNative_Pipe` (pal_io.c), and what the other
 // entry points answer of its two ends: the rows the kernel library's own tests
 // hold to a real kernel (TestPipeAgainstHost), seen here through the handlers'
 // wiring.
 //
-//   * `SystemNative_Pipe` takes 0 or PAL_O_CLOEXEC and answers EINVAL for
-//     anything else, before it looks at the array;
+//   * `SystemNative_Pipe` takes 0 or PAL_O_CLOEXEC, and answers EINVAL for
+//     a flag no runtime admits before it looks at the array
+//     (PipeNonBlockingEnds.cs has the flags only .NET 11 admits);
 //   * the read end is the lower descriptor, and `fstat` calls both ends FIFOs
 //     owned by the process;
 //   * bytes come out of the read end in the order they went into the write

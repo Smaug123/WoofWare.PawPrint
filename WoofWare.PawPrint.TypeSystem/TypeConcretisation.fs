@@ -2449,7 +2449,9 @@ module Concretization =
     /// Any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
     ///
     /// A type the method names that does not bind is the result's failure, with what was loaded
-    /// and registered before it.
+    /// and registered before it. So is an instantiation CoreCLR refuses to create, one with a byref,
+    /// `TypedReference`, `void`, pointer or function-pointer argument. Each of `methodArgs` must be
+    /// interned in `ctx`.
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly : IAssemblyLoad)
@@ -2554,6 +2556,18 @@ module Concretization =
         // Look up the concretized declaring type
         let concretizedDeclaringType =
             AllConcreteTypes.lookup declaringHandle concCtx.ConcreteTypes |> Option.get
+
+        // CoreCLR checks the method's instantiation once its arguments and declaring type are loaded,
+        // and before it reads the method's signature
+        // (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp).
+        match AllConcreteTypes.malformedArgument baseTypes concCtx.ConcreteTypes methodArgs with
+        | Some (index, malformed) ->
+            stopped
+                (TypeBindingFailure.Refused (
+                    TypeLoadRefusal.InvalidMethodInstantiation (declaringType.Identity, method.Name, index, malformed)
+                ))
+                concCtx
+        | None ->
 
         // Concretize signature
         match

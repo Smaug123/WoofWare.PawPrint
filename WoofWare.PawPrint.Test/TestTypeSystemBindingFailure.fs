@@ -1536,6 +1536,148 @@ module TestTypeSystemBindingFailure =
         coverage.Count ArgumentVerdict.Refused |> shouldBeGreaterThan 100
 
     [<RequireQualifiedAccess>]
+    type private MethodVerdict =
+        | Admitted
+        | RefusedAtFirst
+        | RefusedAtSecond
+        | RefusedAtBoth
+
+    /// The type system refuses a method instantiation, before reading the method's signature, at
+    /// the first argument at which the Loader refuses a type instantiation, and for the same reason
+    /// (`Generics::CheckInstantiation`, which CoreCLR applies to both); it admits one at which the
+    /// Loader refuses neither, and then fails on the absent type `Pair`'s signature names.
+    [<Test>]
+    let ``a method instantiation is refused exactly where a type instantiation at the same argument is`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let bct = f.BaseClassTypes
+        let pair = f.Analysed.Methods.[f.Shapes.Pair]
+
+        /// What the Loader makes of `List<argument>`, which binds `argument` as an instantiation's
+        /// argument: `Some (Some reason)` where it refuses the argument, `Some None` where it admits it,
+        /// and `None` where the argument fails to bind as an argument at all.
+        let loaderVerdict (argument : Spelling) : MalformedArgument option option =
+            if loaderExpected f Position.Argument argument <> None then
+                None
+            else
+
+            match resolveIn f [] (listOf f (toTypeDefn f argument)) |> snd with
+            | Ok _ -> Some None
+            | Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidInstantiation (_, 0, malformed))) ->
+                Some (Some malformed)
+            | Error failure ->
+                failwith
+                    $"the Loader binds %A{argument} as an argument, and List<it> fails otherwise than for it: %s{TypeBindingFailure.describe failure}"
+
+        let property (cover : MethodVerdict -> unit) (first : Spelling, second : Spelling) : bool =
+            match loaderVerdict first, loaderVerdict second with
+            | None, _
+            | _, None -> true
+            | Some firstVerdict, Some secondVerdict ->
+
+            // Concretisation refuses an argument that carries a modifier, which a handle no longer
+            // carries.
+            let state, handles =
+                ((typeSystem f, []), [ first ; second ])
+                ||> List.fold (fun (state, handles) argument ->
+                    match
+                        TypeSystemState.concretizeType
+                            f.LoggerFactory
+                            HostImage.runtimeDirs
+                            bct
+                            state
+                            f.Analysed.DefinitionFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            (withoutModifiers (toTypeDefn f argument))
+                    with
+                    | state, Ok handle -> state, handle :: handles
+                    | _, Error failure ->
+                        failwith $"expected %A{argument} to concretise, got %s{TypeBindingFailure.describe failure}"
+                )
+
+            let result, _, _ =
+                Concretization.concretizeMethod
+                    state.ConcreteTypes
+                    (loader f)
+                    state._LoadedAssemblies
+                    bct
+                    pair
+                    ImmutableArray.Empty
+                    (handles |> List.rev |> ImmutableArray.CreateRange)
+
+            let expected =
+                match firstVerdict, secondVerdict with
+                | Some malformed, _ -> Some (0, malformed)
+                | None, Some malformed -> Some (1, malformed)
+                | None, None -> None
+
+            match expected, result with
+            | None,
+              Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+                cover MethodVerdict.Admitted
+            | Some (index, malformed),
+              Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation (declaringType,
+                                                                                             "Pair",
+                                                                                             actualIndex,
+                                                                                             actualMalformed))) when
+                (index, malformed) = (actualIndex, actualMalformed)
+                && declaringType = pair.RequiredDeclaringType.Identity
+                ->
+                match firstVerdict, secondVerdict with
+                | Some _, Some _ -> cover MethodVerdict.RefusedAtBoth
+                | Some _, None -> cover MethodVerdict.RefusedAtFirst
+                | None, _ -> cover MethodVerdict.RefusedAtSecond
+            | expected, actual ->
+                failwith $"for Pair<%A{first}, %A{second}> expected a refusal at %A{expected}, got %A{actual}"
+
+            true
+
+        let argument =
+            Gen.frequency [ 2, genBindingParts ; 1, Gen.map Spelling.Vector genBindingParts ]
+
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1000)
+                (Arb.fromGen (Gen.zip argument argument))
+                property
+
+        coverage.Count MethodVerdict.Admitted |> shouldBeGreaterThan 100
+        coverage.Count MethodVerdict.RefusedAtFirst |> shouldBeGreaterThan 50
+        coverage.Count MethodVerdict.RefusedAtSecond |> shouldBeGreaterThan 50
+        coverage.Count MethodVerdict.RefusedAtBoth |> shouldBeGreaterThan 20
+
+    /// CoreCLR loads a method's declaring type before it checks the method's instantiation.
+    [<Test>]
+    let ``a method instantiation is checked once its declaring type loads`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let state, pointer =
+            TypeSystemState.concretizeType
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                (typeSystem f)
+                f.Analysed.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.Pointer int32)
+
+        let result, _, _ =
+            Concretization.concretizeMethod
+                state.ConcreteTypes
+                (loader f)
+                state._LoadedAssemblies
+                f.BaseClassTypes
+                f.Analysed.Methods.[f.Shapes.DerivedLift]
+                ImmutableArray.Empty
+                (ImmutableArray.Create (BindingResult.value pointer))
+
+        match result with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+            ()
+        | other -> failwith $"expected the declaring type's base type to be absent, got %A{other}"
+
+    [<RequireQualifiedAccess>]
     type private Agreement =
         | Binds
         | Fails

@@ -1256,7 +1256,7 @@ module TestSignalDispatch =
                     (LoneProcess.caller state.Kernel.Leader system)
                     listener
                     UserBuffer.Mapped
-                    16u
+                    (Some 16u)
                     0
                     system
             with

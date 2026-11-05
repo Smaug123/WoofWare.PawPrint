@@ -38,6 +38,78 @@ public static class Program
 """
 
     [<Test>]
+    let ``a refused launch setting names the knob of the program that set it`` () : unit =
+        let image = Roslyn.compile [ source ]
+        let machineConfig, processConfig = KernelConfig.split KernelConfig.Default
+        let platform = machineConfig.UnixPlatform
+
+        let launch (config : ProcessConfig) : ProgramLaunch =
+            {
+                Image = new MemoryStream (image)
+                OriginalPath = Some "MultiProgramRefusal.cs"
+                DotnetRuntimeDirs = FrameworkUnderTest.runtimeDirs ()
+                Process = config
+                Argv = []
+                AssemblyPath = None
+                AppContext = AppContextProperties.empty
+                PctSeed = None
+            }
+
+        // Each a setting the kernel refuses for this machine, and the knob that set it.
+        let refused : (string * (ProcessConfig -> ProcessConfig)) list =
+            [
+                "Umask",
+                fun config ->
+                    // Linux's umask(2) stores no bit above 0o777.
+                    { config with
+                        Umask = PermissionBits.parseOrFail "test" 0o7022
+                    }
+                "SupplementaryGroups",
+                fun config ->
+                    { config with
+                        SupplementaryGroups =
+                            List.init
+                                (SimulatedUnixPlatform.supplementaryGroupLimit platform + 1)
+                                (fun i -> uint32 (100 + i))
+                    }
+                "CurrentDirectory",
+                fun config ->
+                    { config with
+                        CurrentDirectory = AbsoluteUnixPath.parseOrFail "test" "/no-such-directory"
+                    }
+            ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "MultiProgramRefusal.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+
+        for knob, misconfigure in refused do
+            for index in [ 0 ; 1 ] do
+                let launches =
+                    List.init
+                        2
+                        (fun i ->
+                            launch (
+                                if i = index then
+                                    misconfigure processConfig
+                                else
+                                    processConfig
+                            )
+                        )
+
+                let message =
+                    (Assert.Throws<System.Exception> (fun () ->
+                        MultiProgram.start loggerFactory machineConfig launches |> ignore<MultiProgram>
+                    ))
+                        .Message
+
+                let expected = $"launches[%d{index}].Process.%s{knob}: "
+
+                if not (message.StartsWith (expected, System.StringComparison.Ordinal)) then
+                    failwith $"expected a refusal starting \"%s{expected}\", got: %s{message}"
+
+    [<Test>]
     let ``a program's end leaves the machine without its process, and the driver never idles the one program``
         ()
         : unit

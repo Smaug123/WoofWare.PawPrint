@@ -297,6 +297,7 @@
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="TestNotifyEventsPal.fs" />
     <Compile Include="TestOpenFlagsPal.fs" />
+    <Compile Include="TestPipeFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestFileLockingPal.fs" />
     <Compile Include="TestFileStatusPal.fs" />
@@ -313,6 +314,7 @@
     <Compile Include="TestUserBufferCheck.fs" />
     <Compile Include="TestUserBufferFault.fs" />
     <Compile Include="TestPlatformSocketSupport.fs" />
+    <Compile Include="TestPipeCreationSupport.fs" />
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestMinipalRandom.fs" />
@@ -427,6 +429,7 @@
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestEmitScopeImage.fs" />
     <Compile Include="TestEmitScopeExtension.fs" />
+    <Compile Include="TestEmitScopeReferences.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />

@@ -216,6 +216,34 @@ type TypeSystemState =
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
         this._LoadedAssemblies.TryByDefinitionName definitionFullName
 
+    /// Replace a dynamic assembly by the image of an extension of its scope; see
+    /// `LoadedAssemblies.WithEmitScope`.
+    member this.WithEmitScope
+        (loggerFactory : ILoggerFactory)
+        (fullName : string)
+        (scope : EmitScope)
+        : TypeSystemState * DumpedAssembly
+        =
+        let loaded, assembly =
+            this._LoadedAssemblies.WithEmitScope loggerFactory fullName scope
+
+        { this with
+            _LoadedAssemblies = loaded
+        },
+        assembly
+
+    /// Record which assembly a dynamic assembly's `AssemblyRef` row was emitted for; see
+    /// `LoadedAssemblies.WithAssemblyRefTarget`.
+    member this.WithAssemblyRefTarget
+        (fullName : string)
+        (assemblyRef : AssemblyRefRid)
+        (target : DumpedAssembly)
+        : TypeSystemState
+        =
+        { this with
+            _LoadedAssemblies = this._LoadedAssemblies.WithAssemblyRefTarget fullName assemblyRef target
+        }
+
 /// The type system's questions over a `TypeSystemState`: instantiating types and signatures, comparing
 /// signatures and instantiations as CoreCLR does, resolving type tokens and base types, and reading a
 /// concrete type's row. Whatever loads an assembly or registers a concrete type on the way returns the

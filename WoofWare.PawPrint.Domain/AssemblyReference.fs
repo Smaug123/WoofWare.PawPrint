@@ -8,6 +8,11 @@ type AssemblyReference =
     {
         /// A handle relative to the specified assembly.
         Handle : AssemblyReferenceHandle * AssemblyName
+        /// <summary>
+        /// The definition identity of the assembly whose row this is: <c>Handle</c>'s assembly name,
+        /// serialised as <c>AssemblyDefinition.FullName</c> is, and stored for the same reason.
+        /// </summary>
+        ReferencingAssemblyFullName : string
         Culture : StringToken
         Flags : AssemblyFlags
         Name : AssemblyName
@@ -26,15 +31,18 @@ type AssemblyReference =
 
 [<RequireQualifiedAccess>]
 module AssemblyReference =
+    /// The reference at <paramref name="handle"/> in the assembly <paramref name="referencing"/> defines.
     let make
-        (handle : AssemblyReferenceHandle * AssemblyName)
+        (handle : AssemblyReferenceHandle)
+        (referencing : WoofWare.PawPrint.AssemblyDefinition)
         (ref : System.Reflection.Metadata.AssemblyReference)
         : AssemblyReference
         =
         let name = ref.GetAssemblyName ()
 
         {
-            Handle = handle
+            Handle = handle, referencing.Name
+            ReferencingAssemblyFullName = referencing.FullName
             Culture = StringToken.String ref.Culture
             Flags = ref.Flags
             Name = name
