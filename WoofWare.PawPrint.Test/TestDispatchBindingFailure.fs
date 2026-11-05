@@ -151,7 +151,6 @@ module TestDispatchBindingFailure =
         let takesException = signature true returnsVoid [ exceptionType ]
         let takesUnboundException = signature true returnsVoid [ nowhereException ]
         let voidOfObject = signature true returnsVoid [ object ]
-        let returnsString = signature true (fun returns -> returns.Type().String ()) []
 
         let body =
             let il = InstructionEncoder (BlobBuilder ())
@@ -659,22 +658,6 @@ module TestDispatchBindingFailure =
                         (memberRef helperBase "Help" voidOfObject)
                 )
 
-        // Derives from `Base`, with a MethodImpl declaring `Base::ToString()`, which `Base` inherits from
-        // `System.Object` rather than declaring.
-        let declaresInheritedOverride =
-            declareType
-                "DeclaresInheritedOverride"
-                baseType
-                1
-                (fun owner ->
-                    let impl = method privateOverride "ToStringImpl" returnsString
-
-                    methodImpl
-                        owner
-                        (MethodDefinitionHandle.op_Implicit impl)
-                        (memberRef baseType "ToString" returnsString)
-                )
-
         // Derives from `Base`, with a MethodImpl overriding `Base.Take` whose body is a MemberRef naming
         // `Base.Take` itself, a method of another type. The type declares a `Take` of the same
         // signature, which the MemberRef does not name.
@@ -806,6 +789,67 @@ module TestDispatchBindingFailure =
                         takesException
             )
         |> ignore<TypeDefinitionHandle>
+
+        // `instance void (!0)`.
+        let takesTypeParameter =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    1,
+                    returnsVoid,
+                    (fun (parameters : ParametersEncoder) -> parameters.AddParameter().Type().GenericTypeParameter 0)
+                )
+
+            metadata.GetOrAddBlob blob
+
+        // `class N.GenericPair<T> { virtual void Take(T); virtual void Take(System.Exception); }`, whose
+        // two methods read alike once `T` is `System.Exception`.
+        let genericPair =
+            declareType
+                "GenericPair`1"
+                object
+                1
+                (fun owner ->
+                    genericOver owner
+                    method publicVirtual "Take" takesTypeParameter |> ignore<MethodDefinitionHandle>
+                    method publicVirtual "Take" takesException |> ignore<MethodDefinitionHandle>
+                )
+
+        // `class N.ClosedPair : GenericPair<System.Exception> {}`.
+        let closedPair : EntityHandle =
+            let instantiation : EntityHandle =
+                let blob = BlobBuilder ()
+
+                let arguments =
+                    BlobEncoder(blob)
+                        .TypeSpecificationSignature()
+                        .GenericInstantiation (TypeDefinitionHandle.op_Implicit genericPair, 1, false)
+
+                arguments.AddArgument().Type (exceptionType, false)
+
+                metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+                |> TypeSpecificationHandle.op_Implicit
+
+            declareType "ClosedPair" instantiation 1 ignore
+            |> TypeDefinitionHandle.op_Implicit
+
+        // Derives from `ClosedPair`, with a MethodImpl declaring `ClosedPair::Take(System.Exception)`,
+        // which both of `GenericPair`'s methods match once read in `ClosedPair`'s vocabulary.
+        let declaresCoincidingOverride =
+            declareType
+                "DeclaresCoincidingOverride"
+                closedPair
+                1
+                (fun owner ->
+                    let impl = method privateOverride "TakeImpl" takesException
+
+                    methodImpl
+                        owner
+                        (MethodDefinitionHandle.op_Implicit impl)
+                        (memberRef closedPair "Take" takesException)
+                )
 
         // Derives from `Base`, with a MethodImpl declaring `GenericBase<T>.Take` by its MethodDef, which
         // carries no instantiation of `GenericBase`.
@@ -952,9 +996,7 @@ module TestDispatchBindingFailure =
                 "DeclaresAbsentOverride", declaresAbsentOverride, Expected.DeclarationAbsent "Missing"
                 "DeclaresAbsentOverload", declaresAbsentOverload, Expected.DeclarationAbsent "Take"
                 "DeclaresNonVirtual", declaresNonVirtual, Expected.Unmodelled "MI_MUSTBEVIRTUAL"
-                "DeclaresInheritedOverride",
-                declaresInheritedOverride,
-                Expected.Unmodelled "FindDeclMethodOnClassInHierarchy"
+                "DeclaresCoincidingOverride", declaresCoincidingOverride, Expected.Unmodelled "IntroducedMethodIterator"
                 "BodyByForeignMemberRef", bodyByForeignMemberRef, Expected.Unmodelled "MI_ILLEGAL_BODY"
                 "BodyNonVirtual", bodyNonVirtual, Expected.Unmodelled "MI_MUSTBEVIRTUAL"
                 "BodyStatic", bodyStatic, Expected.Unmodelled "MI_BODY_DECL_MISMATCH"
@@ -1672,7 +1714,7 @@ module TestDispatchBindingFailure =
             "DeclaresAbsentOverload", "contentVtableOfDefinition"
             "DeclaresAbsentOverload", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "DeclaresNonVirtual", "contentVtableOfDefinition"
-            "DeclaresInheritedOverride", "contentVtableOfDefinition"
+            "DeclaresCoincidingOverride", "contentVtableOfDefinition"
             "BodyByForeignMemberRef", "contentVtableOfDefinition"
             "BodyByForeignMemberRef", "tryResolveVirtualImplementation of Base.Take on the receiver alone"
             "BodyNonVirtual", "contentVtableOfDefinition"
