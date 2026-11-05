@@ -41,11 +41,14 @@ module internal UnmodelledImage =
             UnboundObject : TypeReferenceHandle
             /// `static void N.Holder.Takes(class System.Gone)`, naming the absent type.
             Takes : MethodDefinitionHandle
-            /// `static void N.Holder.Pair<T, U>()`, a generic method whose signature and body name
-            /// neither parameter.
+            /// `static void N.Holder.Pair<T, U>(class System.Gone)`, a generic method whose signature
+            /// names the absent type and neither parameter.
             Pair : MethodDefinitionHandle
             /// `void N.Derived.Run()`, declared on the type whose base type is absent.
             DerivedRun : MethodDefinitionHandle
+            /// `static void N.Derived.Lift<T>()`, a generic method declared on the type whose base
+            /// type is absent.
+            DerivedLift : MethodDefinitionHandle
             /// `N.Derived::Run()`, whose parent's base type is absent.
             DerivedRunReference : MemberReferenceHandle
             /// A method reference whose parent is a module reference.
@@ -239,6 +242,21 @@ module internal UnmodelledImage =
 
             BlobEncoder(blob)
                 .MethodSignature(genericParameterCount = 2)
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters ->
+                        parameters.AddParameter().Type().Type (TypeReferenceHandle.op_Implicit absent, false)
+                    )
+                )
+
+            metadata.GetOrAddBlob blob
+
+        let liftSignature =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(genericParameterCount = 1)
                 .Parameters (0, (fun returnType -> returnType.Void ()), (fun _ -> ()))
 
             metadata.GetOrAddBlob blob
@@ -273,8 +291,8 @@ module internal UnmodelledImage =
             MethodBodyStreamEncoder(ilStream).AddMethodBody il
 
         // `<Module>` is row 1, `Holder` row 2, which declares `M`, `Takes` and `Pair`, MethodDef rows
-        // 1 to 3, `Derived` row 3, which declares `Run`, MethodDef row 4, and `Count`, FieldDef row 1,
-        // and `Facaded` row 4, which declares nothing.
+        // 1 to 3, `Derived` row 3, which declares `Run` and `Lift`, MethodDef rows 4 and 5, and
+        // `Count`, FieldDef row 1, and `Facaded` row 4, which declares nothing.
         metadata.AddTypeDefinition (
             TypeAttributes.NotPublic,
             Unchecked.defaultof<StringHandle>,
@@ -312,7 +330,7 @@ module internal UnmodelledImage =
                 metadata.GetOrAddString "Facaded",
                 TypeReferenceHandle.op_Implicit facadeObject,
                 MetadataTokens.FieldDefinitionHandle 2,
-                MetadataTokens.MethodDefinitionHandle 5
+                MetadataTokens.MethodDefinitionHandle 6
             )
 
         let derivedCount =
@@ -366,6 +384,24 @@ module internal UnmodelledImage =
                 body,
                 MetadataTokens.ParameterHandle 1
             )
+
+        let derivedLift =
+            metadata.AddMethodDefinition (
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                MethodImplAttributes.IL,
+                metadata.GetOrAddString "Lift",
+                liftSignature,
+                body,
+                MetadataTokens.ParameterHandle 1
+            )
+
+        metadata.AddGenericParameter (
+            MethodDefinitionHandle.op_Implicit derivedLift,
+            GenericParameterAttributes.None,
+            metadata.GetOrAddString "T",
+            0
+        )
+        |> ignore<GenericParameterHandle>
 
         let derivedRunReference =
             metadata.AddMemberReference (
@@ -565,6 +601,7 @@ module internal UnmodelledImage =
             Takes = takes
             Pair = pair
             DerivedRun = derivedRun
+            DerivedLift = derivedLift
             DerivedRunReference = derivedRunReference
             ModuleMethod = moduleMethod
             NoSuchMethod = noSuchMethod

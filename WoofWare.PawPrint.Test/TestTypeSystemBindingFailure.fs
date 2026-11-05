@@ -1545,7 +1545,7 @@ module TestTypeSystemBindingFailure =
     /// The type system refuses a method instantiation, before reading the method's signature, at
     /// the first argument at which the Loader refuses a type instantiation, and for the same reason
     /// (`Generics::CheckInstantiation`, which CoreCLR applies to both); it admits one at which the
-    /// Loader refuses neither.
+    /// Loader refuses neither, and then fails on the absent type `Pair`'s signature names.
     [<Test>]
     let ``a method instantiation is refused exactly where a type instantiation at the same argument is`` () : unit =
         let f = UnmodelledImage.fixture ()
@@ -1612,7 +1612,9 @@ module TestTypeSystemBindingFailure =
                 | None, None -> None
 
             match expected, result with
-            | None, Ok _ -> cover MethodVerdict.Admitted
+            | None,
+              Error (TypeBindingFailure.TypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+                cover MethodVerdict.Admitted
             | Some (index, malformed),
               Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation (declaringType,
                                                                                              "Pair",
@@ -1643,6 +1645,37 @@ module TestTypeSystemBindingFailure =
         coverage.Count MethodVerdict.RefusedAtFirst |> shouldBeGreaterThan 50
         coverage.Count MethodVerdict.RefusedAtSecond |> shouldBeGreaterThan 50
         coverage.Count MethodVerdict.RefusedAtBoth |> shouldBeGreaterThan 20
+
+    /// CoreCLR loads a method's declaring type before it checks the method's instantiation.
+    [<Test>]
+    let ``a method instantiation is checked once its declaring type loads`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let state, pointer =
+            TypeSystemState.concretizeType
+                f.LoggerFactory
+                HostImage.runtimeDirs
+                f.BaseClassTypes
+                (typeSystem f)
+                f.Analysed.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.Pointer int32)
+
+        let result, _, _ =
+            Concretization.concretizeMethod
+                state.ConcreteTypes
+                (loader f)
+                state._LoadedAssemblies
+                f.BaseClassTypes
+                f.Analysed.Methods.[f.Shapes.DerivedLift]
+                ImmutableArray.Empty
+                (ImmutableArray.Create (BindingResult.value pointer))
+
+        match result with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+            ()
+        | other -> failwith $"expected the declaring type's base type to be absent, got %A{other}"
 
     [<RequireQualifiedAccess>]
     type private Agreement =
