@@ -458,7 +458,8 @@ module TestKernelConfig =
 
                 match entry with
                 | SeedEntry.File (_, _, stated)
-                | SeedEntry.Symlink (_, stated) -> [ path, Option.defaultValue configured stated ]
+                | SeedEntry.Symlink (_, stated)
+                | SeedEntry.CharacterDevice (_, _, stated) -> [ path, Option.defaultValue configured stated ]
                 | SeedEntry.Directory (children, _, stated) ->
                     (path, Option.defaultValue configured stated) :: expected path children
             )

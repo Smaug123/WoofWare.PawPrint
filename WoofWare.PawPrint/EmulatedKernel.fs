@@ -1056,22 +1056,17 @@ module EmulatedKernel =
 
 
 
-    /// How PawPrint starts a process on a machine of the given platform: its
-    /// standard streams launched as `standardStreams` says (see
-    /// `StandardStreams.launch`), its one task the thread `Main` will run on,
-    /// `ThreadId 0`, on processor 0, and the environment `defaultEnvironment`.
-    /// `image` is this beside a machine of the platform; see it for why the
-    /// environment is stated.
-    let processLaunch
-        (platform : SimulatedUnixPlatform)
-        (standardStreams : StandardStreamsConfig)
-        : ProcessLaunch<ThreadId>
-        =
+    /// How PawPrint starts a process: its standard streams launched as
+    /// `standardStreams` says (see `StandardStreams.launch`), its one task the
+    /// thread `Main` will run on, `ThreadId 0`, on processor 0, and the
+    /// environment `defaultEnvironment`. `image` is this beside a machine; see
+    /// it for why the environment is stated.
+    let processLaunch (standardStreams : StandardStreamsConfig) : ProcessLaunch<ThreadId> =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let launch =
             try
-                ProcessLaunch.create platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
+                ProcessLaunch.create (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
             with
             | :? UnmodelledException
             | :? System.ArgumentException as e ->
@@ -1104,20 +1099,45 @@ module EmulatedKernel =
     let image (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : KernelImage =
         {
             Machine = UnixSystem.initial platform
-            Process = processLaunch platform standardStreams
+            Process = processLaunch standardStreams
         }
+
+    /// Fail for the kernel's refusal to launch a process as PawPrint launches
+    /// one (`ProcessConfig.toLaunch`), naming the knob `processKnobs.X` that
+    /// set the refused setting, where `processKnobs` (and `machineKnobs`, for
+    /// the machine's) names the configuration record that holds the knob, such
+    /// as `"KernelConfig"`. A refusal here is a host mistake with no honest
+    /// errno, and there is nothing for the run to go on and do.
+    let failLaunch<'a> (machineKnobs : string) (processKnobs : string) (refusal : LaunchRefusal) : 'a =
+        let knob, advice =
+            match LaunchRefusal.setting refusal with
+            | LaunchSetting.CurrentDirectory ->
+                // ENOENT would blame a guest path that does not exist yet.
+                $"%s{processKnobs}.CurrentDirectory",
+                $"%s{processKnobs}.CurrentDirectory must name a directory in %s{machineKnobs}.FileSystem."
+            // `Credentials.ofIds` gives the real, effective and saved IDs one
+            // value each, so the only credentials of PawPrint's the kernel
+            // refuses are more supplementary groups than the flavour holds.
+            | LaunchSetting.Credentials -> $"%s{processKnobs}.SupplementaryGroups", ""
+            | LaunchSetting.Umask -> $"%s{processKnobs}.Umask", ""
+            | LaunchSetting.Streams -> $"%s{processKnobs}.StandardStreams", ""
+            | LaunchSetting.Environment -> $"%s{processKnobs}.Environment", ""
+            | LaunchSetting.ProcessPath -> $"%s{processKnobs}.ProcessPath", ""
+            | LaunchSetting.CoreDumps -> $"%s{processKnobs}.CoreDumps", ""
+            | LaunchSetting.LeaderCpu ->
+                $"%s{processKnobs}: the leader's processor, 0, which every machine has (this is a bug in PawPrint)", ""
+            | LaunchSetting.PendingSignalLimit ->
+                $"%s{processKnobs}: the pending-signal limit, which PawPrint never sets (this is a bug in PawPrint)", ""
+
+        KernelRefusal.failDescribed knob (LaunchRefusal.describe refusal) advice
 
     /// Boot the machine `machine` describes with its first process, launched
     /// as `launch` describes it: the POSIX system that process's syscalls are
     /// made in.
     ///
-    /// Crashes rather than answering when the process cannot start in the
-    /// directory it was given, naming the two knobs that have to agree:
-    /// `machineKnobs`'s `FileSystem` and `processKnobs`'s `CurrentDirectory`
-    /// (each the name of the configuration record that holds the knob, such as
-    /// `"KernelConfig"`). A failure here is a host mistake with no honest errno
-    /// — ENOENT would blame a guest path that does not exist yet — and there is
-    /// nothing for the run to go on and do.
+    /// Crashes rather than answering when the kernel refuses the launch, naming
+    /// the knob that set the refused setting (`failLaunch`), or when it refuses
+    /// the machine, naming `machineKnobs`.
     let bootSystem
         (machineKnobs : string)
         (processKnobs : string)
@@ -1125,18 +1145,14 @@ module EmulatedKernel =
         (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
         : UnixSystem<ThreadId, NativeSignalHandler>
         =
-        // PawPrint describes the launch with its machine's platform and puts
-        // the leader on processor 0, which every machine has, so the one
-        // setting a host can make the boot refuse is where the process starts.
-        try
-            UnixBootImage.boot launch machine
-        with
-        | :? UnmodelledException
-        | :? System.ArgumentException as e ->
-            KernelRefusal.failAdvising
-                $"%s{processKnobs}.CurrentDirectory"
-                $"%s{processKnobs}.CurrentDirectory must name a directory in %s{machineKnobs}.FileSystem."
-                e
+        match UnixBootImage.tryBoot launch machine with
+        | Ok system -> system
+        | Error refusal ->
+
+        match BootRefusal.launch refusal with
+        | ValueSome refusal -> failLaunch machineKnobs processKnobs refusal
+        | ValueNone ->
+            KernelRefusal.failDescribed $"%s{machineKnobs}: the machine will not boot" (BootRefusal.describe refusal) ""
 
     /// The kernel of the PawPrint process `pid`, newly launched on `system`, as
     /// though its launcher had left `inheritedIgnores` ignored (read under the
@@ -2472,8 +2488,10 @@ module ProcessConfig =
              |> List.map (GroupId.parseOrFail $"%s{knobs}.SupplementaryGroups"))
 
     /// How the process `config` describes is launched on a machine of
-    /// `platform`. Each setter's refusal fails loudly, naming the knob
-    /// `knobs.X`, where `knobs` names the configuration record that holds it.
+    /// `platform`. A refusal here fails loudly, naming the knob `knobs.X`,
+    /// where `knobs` names the configuration record that holds it. The kernel
+    /// checks the credentials, umask and current directory only when it
+    /// launches the process, where `EmulatedKernel.failLaunch` names the knob.
     let toLaunch
         (knobs : string)
         (platform : SimulatedUnixPlatform)
@@ -2483,46 +2501,19 @@ module ProcessConfig =
         let flavour = SimulatedUnixPlatform.flavour platform
         let credentials = credentials knobs flavour config
 
-        let credentialsOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            try
-                ProcessLaunch.withCredentials credentials launch
-            with
-            | :? UnmodelledException
-            | :? System.ArgumentException as e ->
-                // `Credentials.ofIds` gives the real, effective and saved IDs
-                // one value each, so the only setting the library can refuse is
-                // a list of supplementary groups longer than the flavour holds.
-                let knob =
-                    if
-                        List.length credentials.SupplementaryGroups > SimulatedUnixPlatform.supplementaryGroupLimit
-                            platform
-                    then
-                        $"%s{knobs}.SupplementaryGroups"
-                    else
-                        $"%s{knobs}.UserId and %s{knobs}.GroupId (this is a bug in PawPrint)"
-
-                KernelRefusal.fail knob e
-
-        let umaskOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            try
-                ProcessLaunch.withUmask config.Umask launch
-            with
-            | :? UnmodelledException
-            | :? System.ArgumentException as e -> KernelRefusal.fail $"%s{knobs}.Umask" e
-
         // Named for this knob before the library sees it, so a host that forged
         // one is told which field it set rather than which library function
         // received it.
         let directory =
             AbsoluteUnixPath.assertValid $"%s{knobs}.CurrentDirectory" config.CurrentDirectory
 
-        EmulatedKernel.processLaunch platform config.StandardStreams
+        EmulatedKernel.processLaunch config.StandardStreams
         |> ProcessLaunch.withCoreDumps config.CoreDumps
         |> EmulatedKernel.launchWithEnvironment $"%s{knobs}.Environment" config.Environment
         |> ProcessLaunch.withProcessPath $"%s{knobs}.ProcessPath" config.ProcessPath
         |> ProcessLaunch.withCurrentDirectory directory
-        |> credentialsOrFail
-        |> umaskOrFail
+        |> ProcessLaunch.withCredentials credentials
+        |> ProcessLaunch.withUmask config.Umask
 
     /// The kernel of the process `config` describes, the process `pid` of
     /// `system`: the userspace a CoreCLR process has set up by `Main`
@@ -2854,6 +2845,8 @@ module KernelConfig =
                     SeedEntry.Symlink (target, Some (Option.defaultValue owner stated))
                 | SeedEntry.Directory (children, permissions, stated) ->
                     SeedEntry.Directory (go children, permissions, Some (Option.defaultValue owner stated))
+                | SeedEntry.CharacterDevice (number, permissions, stated) ->
+                    SeedEntry.CharacterDevice (number, permissions, Some (Option.defaultValue owner stated))
             )
 
         go entries

@@ -828,15 +828,17 @@ module MultiProgram =
                     ProcessConfig.toLaunch knobs machineConfig.UnixPlatform launch.Process
 
                 let pid, machine =
-                    try
-                        UnixSystem.launch processLaunch machine
-                    with
-                    | :? UnmodelledException
-                    | :? System.ArgumentException as e ->
-                        KernelRefusal.failAdvising
-                            $"%s{knobs}: the machine will not start the process"
-                            $"%s{knobs}.CurrentDirectory must name a directory in the machine's filesystem."
-                            e
+                    match UnixSystem.tryLaunch processLaunch machine with
+                    | Ok launched -> launched
+                    | Error refusal ->
+
+                    match ProcessCreationRefusal.launch refusal with
+                    | ValueSome refusal -> EmulatedKernel.failLaunch machineKnobs knobs refusal
+                    | ValueNone ->
+                        KernelRefusal.failDescribed
+                            $"%s{knobs}: the machine has no ID left to give the process"
+                            (ProcessCreationRefusal.describe refusal)
+                            ""
 
                 pid, (index + 1, machine)
             )

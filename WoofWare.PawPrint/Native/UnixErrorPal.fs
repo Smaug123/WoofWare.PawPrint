@@ -216,7 +216,7 @@ module UnixErrorPal =
             palSuccess
         else
 
-        match UnixError.ofRawErrno raw with
+        match UnixError.ofRawErrnoPortable raw with
         | Some error -> toPal error
         | None when UnixError.isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
         | None ->

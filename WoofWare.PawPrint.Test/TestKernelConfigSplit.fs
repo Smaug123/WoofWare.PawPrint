@@ -53,6 +53,8 @@ module TestKernelConfigSplit =
                     SeedEntry.File (contents, permissions, Some (Option.defaultValue owner stated))
                 | SeedEntry.Symlink (target, stated) ->
                     SeedEntry.Symlink (target, Some (Option.defaultValue owner stated))
+                | SeedEntry.CharacterDevice (number, permissions, stated) ->
+                    SeedEntry.CharacterDevice (number, permissions, Some (Option.defaultValue owner stated))
                 | SeedEntry.Directory (children, permissions, stated) ->
                     SeedEntry.Directory (
                         stateOwners owner children,
