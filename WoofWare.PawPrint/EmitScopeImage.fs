@@ -50,8 +50,8 @@ type private SingleTextSectionBuilder (content : SectionLocation -> BlobBuilder,
 ///
 /// Every RID in the image is the one the scope gave its row, except in the tables ECMA-335 requires to be
 /// sorted (`InterfaceImpl`, `MethodImpl`), which are sorted stably by class. A child table whose rows are
-/// not grouped by parent gets a pointer table (`FieldPtr`, `MethodPtr`, `ParamPtr`), as CoreCLR's
-/// read-write metadata starts one, so the table stream is always the uncompressed `#-` kind, the only one
+/// not grouped by parent, or whose parameters are not in sequence order within their method, gets a
+/// pointer table (`FieldPtr`, `MethodPtr`, `ParamPtr`), as CoreCLR's read-write metadata starts one, so the table stream is always the uncompressed `#-` kind, the only one
 /// that may hold pointer tables. Every heap offset is the one the scope handed out.
 [<RequireQualifiedAccess>]
 module EmitScopeImage =
@@ -80,17 +80,17 @@ module EmitScopeImage =
         else
             builder.WriteInt32 value
 
-    /// The children's RIDs, stably sorted by owner: the contents of the pointer table, if one is needed.
-    let private byOwner (owners : int[]) : int[] =
-        owners
-        |> Array.mapi (fun i owner -> owner, i + 1)
-        |> Array.sort
-        |> Array.map snd
+    /// The children's RIDs in the order their parents list them, which is by `keys`, ties kept in RID
+    /// order: the contents of the pointer table, or `[||]` when that order is the RIDs' own and none is
+    /// needed.
+    let private pointerTable<'key when 'key : comparison> (keys : 'key[]) : int[] =
+        let order =
+            keys |> Array.mapi (fun i key -> key, i + 1) |> Array.sort |> Array.map snd
 
-    /// Whether the children's owners never decrease in RID order, so that each owner's children are
-    /// already one contiguous run and no pointer table is needed.
-    let private isGrouped (owners : int[]) : bool =
-        owners |> Array.pairwise |> Array.forall (fun (a, b) -> a <= b)
+        if order |> Array.indexed |> Array.forall (fun (i, rid) -> rid = i + 1) then
+            [||]
+        else
+            order
 
     /// Each parent's list column: the position, in the children sorted by owner, where its run starts,
     /// or where it would start if it is empty.
@@ -177,15 +177,16 @@ module EmitScopeImage =
         let methodOwners = methods |> Seq.map _.Owner.Rid |> Array.ofSeq
         let paramOwners = parameters |> Seq.map _.Owner.Rid |> Array.ofSeq
 
-        let fieldPtr = if isGrouped fieldOwners then [||] else byOwner fieldOwners
+        let fieldPtr = pointerTable fieldOwners
+        let methodPtr = pointerTable methodOwners
 
-        let methodPtr =
-            if isGrouped methodOwners then
-                [||]
-            else
-                byOwner methodOwners
-
-        let paramPtr = if isGrouped paramOwners then [||] else byOwner paramOwners
+        // A method lists its parameters by sequence: `CMiniMdRW::FixParamSequence` slides each new one
+        // ahead of every earlier one with a greater sequence, starting a `ParamPtr` to do so.
+        let paramPtr =
+            parameters
+            |> Seq.map (fun p -> p.Owner.Rid, p.Sequence)
+            |> Array.ofSeq
+            |> pointerTable
 
         // ECMA-335 II.22.23 and II.22.27 require these sorted by class. Sorting by (class, position) is
         // the stable sort, which keeps each class's rows in the order they were added.
