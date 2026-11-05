@@ -103,8 +103,6 @@ module TestPureCases =
     /// and how it was verified to behave on real .NET 11.
     let parkedOnNet11 : Map<string, string> =
         [
-            "ProcessStartMissingExecutable.cs",
-            """On .NET 11, `Process.Start` with standard output redirected first asks System.Diagnostics.Process's `Interop.Sys.IsAtomicNonInheritablePipeCreationSupported`, ahead of System.Native's signal initialisation, and PawPrint stops there (measured): "Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_IsAtomicNonInheritablePipeCreationSupported)". .NET 11 makes the redirection's pipe in managed code before it starts the child, where .NET 10 leaves that to `SystemNative_ForkAndExecProcess`, which a missing executable never reaches. Un-park when that native, and whatever pipe creation follows it, is answered. Verified to exit 0 on real .NET 11 RC1."""
             "LockOnArray.cs",
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",

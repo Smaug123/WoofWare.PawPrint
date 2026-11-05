@@ -21,9 +21,10 @@ module PipeFlagsPal =
     /// `<fcntl.h>` numbering, or `None` for the `default` arm, which answers
     /// EINVAL without reaching the kernel.
     ///
-    /// Where the shim is built without `pipe2` (as it may be on Darwin), it calls
-    /// `pipe(2)` and then sets `FD_CLOEXEC` on each end with `fcntl`, which
-    /// leaves the kernel in the state `pipe2` with `O_CLOEXEC` does.
+    /// Where the shim is built without `pipe2` (as it is on Darwin; see
+    /// `atomicNonInheritableCreation`), it calls `pipe(2)` and then sets
+    /// `FD_CLOEXEC` on each end with `fcntl`, which leaves the kernel in the
+    /// state `pipe2` with `O_CLOEXEC` does.
     let decode (platform : SimulatedUnixPlatform) (flags : int) : int option =
         let closeOnExec =
             match SimulatedUnixPlatform.flavour platform with
@@ -34,3 +35,17 @@ module PipeFlagsPal =
         | 0 -> Some 0
         | CloseOnExec -> Some closeOnExec
         | _ -> None
+
+    /// Whether the shim was built with `pipe2(2)`, and so creates a close-on-exec
+    /// pipe in one system call. Reported to the guest by .NET 11's
+    /// `SystemNative_IsAtomicNonInheritablePipeCreationSupported`, whose whole
+    /// body is `#if HAVE_PIPE2 return 1; #else return 0;`.
+    ///
+    /// A compile-time property of the shim rather than of the running kernel.
+    /// Measured in .NET 11 RC1's shipped shims: the linux-x64
+    /// `libSystem.Native.so` imports `pipe2@GLIBC_2.9` and returns 1, and the
+    /// osx-arm64 `libSystem.Native.dylib` imports only `pipe` and returns 0.
+    let atomicNonInheritableCreation (platform : SimulatedUnixPlatform) : bool =
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> false
