@@ -5117,6 +5117,22 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        // `int32_t SystemNative_IsAtomicNonInheritablePipeCreationSupported(void)`
+        // (.NET 11's pal_io.c) is nothing but `return 1;` or `return 0;` under
+        // `#if HAVE_PIPE2`: no errno and no state. CoreLib's binding marshals it
+        // as a `bool`. `PipeFlagsPal.atomicNonInheritableCreation` records which
+        // flavour's shim has `pipe2`.
+        //
+        // Its one reader, `Process.Start`'s `PrepareStandardHandles`, takes
+        // `ProcessUtils.s_processStartLock` for writing around its pipe creation
+        // when this answers 0, so that no child started meanwhile inherits a
+        // pipe before `FD_CLOEXEC` is set on it.
+        | Some "SystemNative_IsAtomicNonInheritablePipeCreationSupported",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            let supported = PipeFlagsPal.atomicNonInheritableCreation state.Kernel.UnixPlatform
+
+            pushInt32 (if supported then 1 else 0) ctx |> Some
         // `int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)`
         // (pal_io.c:557). The flags parameter is matched loosely for the reason
         // `SystemNative_FLock`'s operation is: CoreLib declares it as the
