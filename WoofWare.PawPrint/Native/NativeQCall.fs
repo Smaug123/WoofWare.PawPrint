@@ -116,6 +116,7 @@ module NativeQCall =
             "StackTrace_GetStackFramesInternal", NativeStackTrace.tryExecuteQCall "StackTrace_GetStackFramesInternal"
             "DebugDebugger_IsManagedDebuggerAttached",
             NativeDebugger.tryExecuteQCall "DebugDebugger_IsManagedDebuggerAttached"
+            "DebugDebugger_IsLoggingHelper", NativeDebugger.tryExecuteQCall "DebugDebugger_IsLoggingHelper"
             "EventPipeInternal_Enable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Enable"
             "EventPipeInternal_Disable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Disable"
             "EventPipeInternal_CreateProvider", NativeEventPipe.tryExecuteQCall "EventPipeInternal_CreateProvider"
