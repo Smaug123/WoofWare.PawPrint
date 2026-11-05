@@ -19,8 +19,6 @@
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="LoaderAllocator.fs" />
-    <Compile Include="EmitScope.fs" />
-    <Compile Include="EmitScopeImage.fs" />
     <Compile Include="DynamicAssemblyImage.fs" />
     <Compile Include="Tuple.fs" />
     <Compile Include="List.fs" />

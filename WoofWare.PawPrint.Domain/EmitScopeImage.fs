@@ -112,6 +112,35 @@ module EmitScopeImage =
 
         starts
 
+    // ECMA-335 II.22.23 and II.22.27 require `InterfaceImpl` and `MethodImpl` sorted by class. Sorting by
+    // (class, position) is the stable sort, which keeps each class's rows in the order they were added.
+    // The result lists the scope's positions (from 0) in image order.
+    let private sortedOrder (classes : TypeDefRid seq) : int[] =
+        classes
+        |> Seq.mapi (fun i cls -> (cls.Rid, i), i)
+        |> Seq.sortBy fst
+        |> Seq.map snd
+        |> Array.ofSeq
+
+    let private imageRids (classes : TypeDefRid seq) : ImmutableArray<int> =
+        let order = sortedOrder classes
+        let rids = Array.zeroCreate<int> order.Length
+
+        for imageIndex in 0 .. order.Length - 1 do
+            rids.[order.[imageIndex]] <- imageIndex + 1
+
+        ImmutableArray.Create<int> rids
+
+    /// The RID each `InterfaceImpl` row has in the image: position `i` holds the RID of the row the
+    /// scope added `i`-th (from 0).
+    let interfaceImplRids (scope : EmitScope) : ImmutableArray<int> =
+        EmitScope.interfaceImpls scope |> Seq.map (fun row -> row.Class) |> imageRids
+
+    /// The RID each `MethodImpl` row has in the image: position `i` holds the RID of the row the scope
+    /// added `i`-th (from 0).
+    let methodImplRids (scope : EmitScope) : ImmutableArray<int> =
+        EmitScope.methodImpls scope |> Seq.map (fun row -> row.Class) |> imageRids
+
     let private stringHeap (scope : EmitScope) : BlobBuilder =
         let heap = BlobBuilder ()
         heap.WriteByte 0uy
@@ -188,21 +217,21 @@ module EmitScopeImage =
             |> Array.ofSeq
             |> pointerTable
 
-        // ECMA-335 II.22.23 and II.22.27 require these sorted by class. Sorting by (class, position) is
-        // the stable sort, which keeps each class's rows in the order they were added.
         let interfaceImpls =
-            EmitScope.interfaceImpls scope
-            |> Seq.indexed
-            |> Seq.sortBy (fun (i, row) -> row.Class.Rid, i)
-            |> Seq.map snd
-            |> Array.ofSeq
+            let rows = EmitScope.interfaceImpls scope
+
+            rows
+            |> Seq.map (fun row -> row.Class)
+            |> sortedOrder
+            |> Array.map (fun i -> rows.[i])
 
         let methodImpls =
-            EmitScope.methodImpls scope
-            |> Seq.indexed
-            |> Seq.sortBy (fun (i, row) -> row.Class.Rid, i)
-            |> Seq.map snd
-            |> Array.ofSeq
+            let rows = EmitScope.methodImpls scope
+
+            rows
+            |> Seq.map (fun row -> row.Class)
+            |> sortedOrder
+            |> Array.map (fun i -> rows.[i])
 
         let rowCounts = Array.zeroCreate tableCount
         rowCounts.[int TableIndex.Module] <- 1

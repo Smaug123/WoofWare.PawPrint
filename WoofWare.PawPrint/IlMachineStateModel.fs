@@ -288,10 +288,15 @@ type IlMachineState =
     member this.WithLoadedAssembly (value : DumpedAssembly) =
         this.WithTypeSystem (this.TypeSystem.WithLoadedAssembly value)
 
-    /// Register a dynamic assembly; see `LoadedAssemblies.WithDynamicAssembly`, whose error this
-    /// passes on.
-    member this.WithDynamicAssembly (value : DumpedAssembly) : Result<IlMachineState, DumpedAssembly> =
-        this.TypeSystem.WithDynamicAssembly value |> Result.map this.WithTypeSystem
+    /// Register a dynamic assembly, read from the image of `scope`; see
+    /// `LoadedAssemblies.WithDynamicAssembly`, whose error this passes on.
+    member this.WithDynamicAssembly
+        (loggerFactory : ILoggerFactory)
+        (scope : EmitScope)
+        : Result<IlMachineState * DumpedAssembly, DumpedAssembly>
+        =
+        this.TypeSystem.WithDynamicAssembly loggerFactory scope
+        |> Result.map (fun (typeSystem, assembly) -> this.WithTypeSystem typeSystem, assembly)
 
     /// The loaded assembly with this definition identity, if it is loaded.
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
