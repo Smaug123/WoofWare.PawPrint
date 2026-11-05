@@ -768,11 +768,20 @@ module SignalDispatch =
         // For SIGCHLD, SIGCONT and SIGWINCH the loop first calls the
         // console's terminal-invalidation callback, and for SIGCHLD the
         // process class's child-reaping callback, or reaps every child itself
-        // if its saved disposition was SIG_IGN or it is process 1. PawPrint
-        // implements neither `SystemNative_SetTerminalInvalidationHandler` nor
-        // `SystemNative_RegisterForSigChld`, so neither callback is set, and
-        // it models no child process for a `waitpid` to find.
-        match Signal.ofRawSignoUnder numbering signo with
+        // if there is none and its saved disposition was SIG_IGN or it is
+        // process 1. PawPrint implements no
+        // `SystemNative_SetTerminalInvalidationHandler`, so the first
+        // callback is never set; and it models no child process for a
+        // `waitpid` to find, so the reaping loop finds none.
+        let signal = Signal.ofRawSignoUnder numbering signo
+
+        match signal, PosixSignalShim.sigChldCallback state.Kernel.PosixSignalShim with
+        | ValueSome Signal.SIGCHLD, Some callback ->
+            failwith
+                $"SignalDispatch.poll: System.Native's dispatcher read SIGCHLD, for which the real SignalHandlerLoop calls System.Diagnostics.Process's child-reaping callback (%s{(SignalHandler.methodInfo callback).Name}, registered with SystemNative_RegisterForSigChld); PawPrint does not model that callback."
+        | _ ->
+
+        match signal with
         | ValueSome signal when PosixSignalShim.isRegistered signal state.Kernel.PosixSignalShim ->
             SignalPoll.Continues (startCallback loggerFactory baseClassTypes dispatcher signal state), elsewhere
         | ValueSome _
