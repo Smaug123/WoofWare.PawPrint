@@ -131,14 +131,18 @@ type LoadedAssemblies =
     /// <c>DumpedAssembly</c> was written; <c>None</c> if no dynamic assembly has that identity.
     /// </summary>
     member this.TryDynamicScope (fullName : string) : EmitScope option =
-        failwith "TODO: LoadedAssemblies.TryDynamicScope"
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> Some content.Scope
+        | false, _ -> None
 
     /// <summary>
     /// True if the runtime has created this type of the dynamic assembly with this definition
     /// identity (<c>WithCreatedType</c>).
     /// </summary>
     member this.IsCreatedType (fullName : string) (typeDef : TypeDefRid) : bool =
-        failwith "TODO: LoadedAssemblies.IsCreatedType"
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> content.Created.Contains typeDef
+        | false, _ -> false
 
     /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
@@ -255,6 +259,18 @@ type LoadedAssemblies =
 
         result, canonical
 
+    /// The assembly an emit scope's image holds.
+    static member private ReadScope (loggerFactory : ILoggerFactory) (scope : EmitScope) : DumpedAssembly =
+        use image = new MemoryStream (EmitScopeImage.write scope)
+        Assembly.read loggerFactory None image
+
+    /// What the load context holds for the dynamic assembly with this identity, crashing if it holds
+    /// none: the caller has mistaken some other assembly for one the runtime emitted.
+    member private this.DynamicContent (operation : string) (fullName : string) : DynamicAssemblyContent =
+        match this.Dynamic.TryGetValue fullName with
+        | true, content -> content
+        | false, _ -> failwith $"%s{operation}: %s{fullName} is not a dynamic assembly, so it has no emit scope"
+
     /// <summary>
     /// Register a dynamic assembly: one created at run time, whose identity no image on disk
     /// supplied. Its <c>DumpedAssembly</c> is read from the image of <paramref name="scope"/>, which
@@ -271,7 +287,28 @@ type LoadedAssemblies =
         (scope : EmitScope)
         : Result<LoadedAssemblies * DumpedAssembly, DumpedAssembly>
         =
-        failwith "TODO: LoadedAssemblies.WithDynamicAssembly"
+        if (EmitScope.assembly scope).IsNone then
+            invalidArg (nameof scope) "a dynamic assembly's scope must define the Assembly row, which names it"
+
+        let assy = LoadedAssemblies.ReadScope loggerFactory scope
+        let definitionName = assy.DefinitionFullName
+
+        match this.ByDefinition.TryGetValue definitionName with
+        | true, existing -> Error existing
+        | false, _ ->
+            let content : DynamicAssemblyContent =
+                {
+                    Scope = scope
+                    Created = ImmutableHashSet.Empty
+                }
+
+            ({ this with
+                ByDefinition = this.ByDefinition.Add (definitionName, assy)
+                LoadOrder = this.LoadOrder.Add definitionName
+                Dynamic = this.Dynamic.Add (definitionName, content)
+             },
+             assy)
+            |> Ok
 
     /// <summary>
     /// Replace the dynamic assembly with this definition identity by the image of
@@ -291,7 +328,34 @@ type LoadedAssemblies =
         (scope : EmitScope)
         : LoadedAssemblies * DumpedAssembly
         =
-        failwith "TODO: LoadedAssemblies.WithEmitScope"
+        let content = this.DynamicContent "WithEmitScope" fullName
+
+        match EmitScopeExtension.violations content.Created content.Scope scope with
+        | [] -> ()
+        | violations ->
+            let described = violations |> List.map string |> String.concat "; "
+
+            failwith
+                $"Refusing to replace the dynamic assembly %s{fullName} by the image of a scope that does not extend its own: %s{described}"
+
+        let assy = LoadedAssemblies.ReadScope loggerFactory scope
+
+        // The `Assembly` row is unchanged, so the identity is too.
+        if assy.DefinitionFullName <> fullName then
+            failwith
+                $"The image of an extension of %s{fullName}'s scope is named %s{assy.DefinitionFullName}; an unchanged Assembly row must name the same assembly"
+
+        { this with
+            ByDefinition = this.ByDefinition.SetItem (fullName, assy)
+            Dynamic =
+                this.Dynamic.SetItem (
+                    fullName,
+                    { content with
+                        Scope = scope
+                    }
+                )
+        },
+        assy
 
     /// <summary>
     /// Record that the runtime has created this type of the dynamic assembly with this definition
@@ -300,7 +364,24 @@ type LoadedAssemblies =
     /// </summary>
     /// <remarks>Crashes if the type is not in the assembly's scope, or is already created.</remarks>
     member this.WithCreatedType (fullName : string) (typeDef : TypeDefRid) : LoadedAssemblies =
-        failwith "TODO: LoadedAssemblies.WithCreatedType"
+        let content = this.DynamicContent "WithCreatedType" fullName
+
+        if typeDef.Rid > (EmitScope.typeDefs content.Scope).Count then
+            failwith
+                $"Refusing to create TypeDef %d{typeDef.Rid} of %s{fullName}: it is not in the scope, which has %d{(EmitScope.typeDefs content.Scope).Count} types"
+
+        if content.Created.Contains typeDef then
+            failwith $"Refusing to create TypeDef %d{typeDef.Rid} of %s{fullName}: it is already created"
+
+        { this with
+            Dynamic =
+                this.Dynamic.SetItem (
+                    fullName,
+                    { content with
+                        Created = content.Created.Add typeDef
+                    }
+                )
+        }
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =

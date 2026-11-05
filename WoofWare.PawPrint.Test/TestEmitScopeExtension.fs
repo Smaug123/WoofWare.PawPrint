@@ -144,7 +144,8 @@ module TestEmitScopeExtension =
                         let! mvid = genGuid
                         let! ops = genOps
                         let! extra = genOps
-                        let! choices = Gen.listOf choice
+                        // A few created types, so that many extensions change none of them.
+                        let! choices = Gen.choose (0, 3) |> Gen.bind (fun n -> Gen.listOfLength n choice)
                         return mvid, ops, extra, List.ofSeq choices
                     }
                 ))

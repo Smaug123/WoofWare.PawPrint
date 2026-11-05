@@ -229,7 +229,7 @@ module NativeRuntimeAssemblyBuilder =
                 | Ok (state, assembly) -> state, assembly
                 | Error existing ->
                     failwith
-                        $"TODO: %s{operation}: a dynamic assembly would share its identity with the assembly already loaded as %s{existing.DefinitionFullName}; CoreCLR admits both, but PawPrint identifies an assembly by that name"
+                        $"TODO: %s{operation}: a dynamic assembly named %s{existing.DefinitionFullName} would share its identity with the assembly already loaded under that name; CoreCLR admits both, but PawPrint identifies an assembly by its name"
 
             let runtimeAssembly, state =
                 NativeRuntimeType.getOrAllocateRuntimeAssembly
