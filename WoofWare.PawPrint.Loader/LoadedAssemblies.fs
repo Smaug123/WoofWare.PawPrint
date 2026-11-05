@@ -14,6 +14,17 @@ open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 
 /// <summary>
+/// What the load context holds for a dynamic assembly beyond its <c>DumpedAssembly</c>: the emit scope
+/// that assembly's image is written from, and which of its types the runtime has created.
+/// </summary>
+[<NoEquality ; NoComparison>]
+type private DynamicAssemblyContent =
+    {
+        Scope : EmitScope
+        Created : ImmutableHashSet<TypeDefRid>
+    }
+
+/// <summary>
 /// The assemblies the interpreter has loaded, together with the record of which
 /// AssemblyReferences have already been bound to which of them. This is the CLR's split
 /// between a *binder* (which reference identity resolves to which assembly) and a *load
@@ -41,17 +52,6 @@ open Microsoft.FSharp.Core
 /// which takes an <c>AssemblyReference</c> — you cannot reach the binder with a bare
 /// <c>AssemblyName</c>, and every other member consumes a definition identity.
 /// </remarks>
-/// <summary>
-/// What the load context holds for a dynamic assembly beyond its <c>DumpedAssembly</c>: the emit scope
-/// that assembly's image is written from, and which of its types the runtime has created.
-/// </summary>
-[<NoEquality ; NoComparison>]
-type private DynamicAssemblyContent =
-    {
-        Scope : EmitScope
-        Created : ImmutableHashSet<TypeDefRid>
-    }
-
 [<NoEquality ; NoComparison>]
 type LoadedAssemblies =
     private
