@@ -8,16 +8,14 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module internal Launched =
 
-    /// A process on `platform` launched with `streams`, its leader `leader`
-    /// on `cpu`.
+    /// A process launched with `streams`, its leader `leader` on `cpu`.
     let launch<'Task when 'Task : comparison>
-        (platform : SimulatedUnixPlatform)
         (streams : Map<int, LaunchDescriptor>)
         (leader : 'Task)
         (cpu : CpuId)
         : ProcessLaunch<'Task>
         =
-        ProcessLaunch.create platform streams leader cpu
+        ProcessLaunch.create streams leader cpu
 
     /// `image` booted with a first process launched with `streams`, its leader
     /// `leader` on `cpu`, as `configure` configures the launch.
@@ -29,7 +27,7 @@ module internal Launched =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        let launch = launch (UnixBootImage.platform image) streams leader cpu |> configure
+        let launch = launch streams leader cpu |> configure
 
         UnixBootImage.boot launch image
 
