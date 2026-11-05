@@ -5836,7 +5836,14 @@ module NativeSystemNative =
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-                | AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), unix ->
+                | AcceptOutcome.Accepted (acceptedFd, address), unix ->
+
+                let copiedOut, reportedLength =
+                    match address with
+                    | PeerAddressCopy.Written (copiedOut, reportedLength) -> copiedOut, reportedLength
+                    | PeerAddressCopy.NotRequested ->
+                        failwith
+                            $"%s{operation}: the kernel accepted fd %d{acceptedFd} without writing the peer address, which it does only for a NULL destination, yet the shim screens a NULL destination out before calling accept (this is an interpreter bug)."
 
                 let unix =
                     match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
@@ -5928,7 +5935,17 @@ module NativeSystemNative =
                     with :? UnmodelledException as e ->
                         refusing fd e
 
-                settle fd (int parked.DeclaredLength) outcome
+                let declaredLength =
+                    match parked.DeclaredLength with
+                    | Some declaredLength -> int declaredLength
+                    | None ->
+                        // The shim answers a NULL `socketAddress` with
+                        // Error_EFAULT before calling `accept4`, so every
+                        // accept it parks named a destination.
+                        failwith
+                            $"%s{operation}: thread %O{ctx.Thread}'s accept on fd %d{fd} was parked with no declared length, which only a NULL destination has, yet the shim screens a NULL destination out before calling accept (this is an interpreter bug)."
+
+                settle fd declaredLength outcome
             | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
@@ -6000,7 +6017,7 @@ module NativeSystemNative =
                         (state.Kernel.Caller ctx.Thread)
                         fd
                         (BufferPointer.toUserBuffer addressArgument)
-                        (uint32 declaredLength)
+                        (Some (uint32 declaredLength))
                         (SocketArgumentsPal.acceptFlags state.Kernel.UnixPlatform)
                         state.Kernel.System
                 with :? UnmodelledException as e ->
@@ -6771,7 +6788,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             // The ioctl writes the shim's own stack `int`, which is mapped.
-            let answer =
+            let answer, system =
                 try
                     UnixDescriptor.bytesAvailable
                         (state.Kernel.Caller ctx.Thread)
@@ -6783,6 +6800,8 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd}"
                         "CoreLib's Socket.Available asks this of the socket it holds; one that is not connected reaches this."
                         e
+
+            let state = state.MapKernel (EmulatedKernel.withUnix system)
 
             match answer with
             | BytesAvailableAnswer.Failed error ->

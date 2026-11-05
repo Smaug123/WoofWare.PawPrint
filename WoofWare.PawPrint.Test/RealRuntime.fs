@@ -615,9 +615,14 @@ module RealRuntime =
                         $"The filesystem seed gives %s{prefix}/%s{name} the owner %O{owner}, and this oracle can only create entries owned by the user running it. Leave the owner as None, or move the case to sourcesImpure, which materialises nothing."
                 | SeedEntry.File _
                 | SeedEntry.Directory _
-                | SeedEntry.Symlink _ -> ()
+                | SeedEntry.Symlink _
+                // Refused below, whatever its owner.
+                | SeedEntry.CharacterDevice _ -> ()
 
                 match entry with
+                | SeedEntry.CharacterDevice (number, _, _) ->
+                    failwith
+                        $"The filesystem seed declares %s{prefix}/%s{name} as the character device %O{number}. Only the device filesystem's contents may hold a device node (`UnixBootImage.withFileSystem` refuses a seed that does), and this oracle could not make one without privileges it does not have."
                 | SeedEntry.File (_, permissions, _) ->
                     requireOraclePermissions $"%s{prefix}/%s{name}" false permissions
                 | SeedEntry.Directory (children, permissions, _) ->
@@ -738,6 +743,9 @@ module RealRuntime =
         |> Map.forall (fun _ entry ->
             match entry with
             | SeedEntry.Symlink (_, _) -> true
+            // No host can stand one in, so skipping would retire the case
+            // everywhere; `validateSeedForOracle` refuses it instead.
+            | SeedEntry.CharacterDevice _ -> true
             | SeedEntry.File (_, permissions, _) -> permissions = SeedEntry.defaultPermsForRegularFile
             | SeedEntry.Directory (children, permissions, _) ->
                 permissions = SeedEntry.defaultPermsForDirectory && canMaterialise children
@@ -802,6 +810,9 @@ module RealRuntime =
             // create one that does.
             | SeedEntry.Symlink (target, _) ->
                 File.CreateSymbolicLink (path, hostTarget path target) |> ignore<FileSystemInfo>
+            | SeedEntry.CharacterDevice (number, _, _) ->
+                failwith
+                    $"The oracle was asked to materialise \"%s{path}\" as the character device %O{number}, which `validateSeedForOracle` refuses before anything is written (this is a bug in the oracle)."
 
     let private executeInScratch
         (timeout : TimeSpan)
