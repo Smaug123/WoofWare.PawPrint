@@ -2227,6 +2227,59 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "IsAsyncMethod",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when
+            generics.IsEmpty
+            ->
+            // .NET 11's FCall, which reflection asks before it invokes a method: CoreCLR is
+            // `FC_RETURN_BOOL(pMethod->IsAsyncMethod())` (runtimehandles.cpp:2206), on a `MethodDesc*`
+            // it asserts non-null. A dynamic method's `DynamicMethodDesc` is made without async data
+            // (dynamicmethod.cpp:160), so it is not async.
+            let operation = "RuntimeMethodHandle.IsAsyncMethod"
+
+            let state, isAsync =
+                match MethodHandleResolution.resolveMethodHandleFromArg operation state instruction.Arguments.[0] with
+                | MethodHandle.FromDynamic _ -> state, false
+                | MethodHandle.FromMetadata identity ->
+                    let method =
+                        MethodHandleResolution.methodInfoOfMetadataIdentity operation state identity
+
+                    let declaringAssembly =
+                        state.LoadedAssembly (identity.GetAssemblyFullName ())
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: the assembly declaring %O{method} is not loaded"
+                        )
+
+                    match
+                        RuntimeAsyncMethod.isAsyncCall
+                            ctx.LoggerFactory
+                            state.DotnetRuntimeDirs
+                            ctx.BaseClassTypes.Corelib
+                            declaringAssembly
+                            (MethodInfo.requireMetadata operation method)
+                            state.TypeSystem._LoadedAssemblies
+                    with
+                    | assemblies, Ok isAsync ->
+                        { state with
+                            TypeSystem =
+                                { state.TypeSystem with
+                                    _LoadedAssemblies = assemblies
+                                }
+                        },
+                        isAsync
+                    // CoreCLR classified the method when it loaded the declaring type, which PawPrint
+                    // has loaded too.
+                    | _, Error failure ->
+                        failwith
+                            $"%s{operation}: classifying %O{method} needs a type PawPrint cannot bind, though it loaded the method's declaring type: %s{TypeBindingFailure.describe failure}"
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool isAsync) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsDynamicMethod",
           [ CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) when

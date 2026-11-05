@@ -418,7 +418,6 @@ public static class Program
 
     [<Test>]
     let ``an open delegate invoked by reflection on a receiver whose slot is reabstracted throws`` () : unit =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
         agrees "CaseOpenDelegateDynamicInvoke" 0
 
     [<Test>]

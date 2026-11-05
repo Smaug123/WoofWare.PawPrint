@@ -103,59 +103,12 @@ module TestPureCases =
     /// and how it was verified to behave on real .NET 11.
     let parkedOnNet11 : Map<string, string> =
         [
-            yield!
-                [
-                    "AssemblyGetExecutingAssemblyViaReflection.cs"
-                    "CustomAttributeNamedArgs.cs"
-                    "DelegateDynamicInvoke.cs"
-                    "DelegateMulticastInvoke.cs"
-                    "ExpressionInterpreterByRefCall.cs"
-                    "ExpressionLambdaCompile.cs"
-                    "ExpressionLambdaCompileWide.cs"
-                    "ForeignRaiseFlagConsumedByRethrow.cs"
-                    "ForeignRaiseFlagNotStolenByCleanup.cs"
-                    "ForeignRaiseFlagPendingBeforeCleanup.cs"
-                    "ForeignRaiseFlagSetInFinally.cs"
-                    "ForeignRaiseFlagSetInFinallyDuringRethrow.cs"
-                    "ForeignRaiseFlagSurvivesFramelessRethrow.cs"
-                    "ForeignRaiseReadsCurrentExceptionTrace.cs"
-                    "ForeignRaiseTokenSurvivesLocalCleanup.cs"
-                    "ImmutableAgileExceptionNullArgument.cs"
-                    "ReflectionGetMethodFromCanonicalUnshared.cs"
-                    "ReflectionInvokeByRefParameter.cs"
-                    "ReflectionInvokeIntrinsicTarget.cs"
-                    "ReflectionInvokeIntrinsicTypeMember.cs"
-                    "ReflectionInvokeMethod.cs"
-                    "ReflectionInvokeMethodManyArguments.cs"
-                    "ReflectionInvokeMethodMultipleArguments.cs"
-                    "ReflectionInvokeNullableReturn.cs"
-                    "ReflectionInvokeOutNullSlot.cs"
-                    "ReflectionInvokePointerSignature.cs"
-                    "ReflectionInvokeStructReceiver.cs"
-                    "ReflectionInvokeVirtualMethod.cs"
-                    "ReflectionMethodAtSlot.cs"
-                    "ReflectionOverloadedIndexer.cs"
-                    "ReflectionPropertyHiding.cs"
-                    "ReflectionPropertyHidingCrossModule.cs"
-                    "ReflectionPropertyType.cs"
-                    "ReflectionPropertyTypeGenericDeclaringType.cs"
-                    "ReflectiveIsTypicalMethodDefinition.cs"
-                    "StackFrameHelperUnsharedFrames.cs"
-                    "UnmanagedCallersOnlyFunctionPointer.cs"
-                ]
-                |> List.map (fun case -> case, Net11Frontier.isAsyncMethod)
-            "DelegateOpenInstanceRepresentation.cs",
-            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 18, at the check that the method-group delegates `twiceGroup` and `thriceGroup` compare unequal and hash alike (line 311), which holds on .NET 10. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
-            "DelegateMethodInfo.cs",
-            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 exits 120, since its `Delegate` declares no non-public instance `FindMethodHandle`, which the guest looks up by reflection (line 244) and .NET 10 declares. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "LockOnArray.cs",
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",
             """On .NET 11, an unchecked conversion from floating point to an integer narrower than 32 bits saturates to that integer's own range, where .NET 10 takes the low bits of the saturated `int32` conversion. Measured on RC1 against .NET 10: `(byte)300.0` is 255 (44), `(sbyte)-1e20` is -128 (0), `(short)70000.7` is 32767 (4464), `(char)70000.7` is 65535 (4464), and `(byte)-1.5` is 0 (255). The guest asserts .NET 10's rule, so real RC1 exits 40 at its first narrow check, and PawPrint converts by .NET 10's rule on every runtime. Un-park when the conversion opcodes take the runtime's rule and this case states .NET 11's results."""
             "StringContentRoundTrip.cs",
             """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
-            "ReflectionStripMethodInstantiationOpenDefinition.cs",
-            """Parked behind `Net11Frontier.isAsyncMethod`. The case also asserts .NET 10's behaviour: real .NET 11 dies of a `NullReferenceException`: the non-public `RuntimeMethodHandle` member the guest looks up by reflection (line 29) is not there to call. Measured on RC1. Un-park when that is answered, and check that PawPrint then ends as `endingsOnNet11` says real .NET 11 does."""
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
         ]
@@ -168,6 +121,7 @@ module TestPureCases =
             "DelegateOpenStaticVirtualInvoke.cs", GuestEnding.ExitCode 10
             "FileSystemSupportsLockingDirect.cs", GuestEnding.ExitCode 100
             "MarshalStructureToPtrEnum.cs", GuestEnding.ExitCode 10
+            "ReflectionInvokeAsyncCallMethod.cs", GuestEnding.ExitCode 10
         ]
         |> Map.ofList
 
@@ -1017,8 +971,6 @@ public class Program
     /// first to show that the difference is really there to be seen.
     [<Test>]
     let ``StripMethodInstantiation refuses a caller that could see the canonical declaring type`` () =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
-
         let source =
             """
 using System;
@@ -1090,8 +1042,6 @@ public class Program
     /// are `sourcesPure/ReflectionGetMethodFromCanonicalUnshared.cs`.
     [<Test>]
     let ``GetMethodFromCanonical refuses a caller that could see the canonical declaring type`` () =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
-
         let source =
             """
 using System;
@@ -1171,8 +1121,6 @@ public class Program
     [<TestCase "capture.Invoke(null, new object[] { helper, false, null });">]
     [<TestCase "initializeSourceInfo.Invoke(helper, new object[] { false, null });">]
     let ``GetStackFramesInternal refuses a caller that could see a canonical frame`` (entry : string) =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
-
         let source =
             """
 using System;
@@ -1269,8 +1217,6 @@ public class Program
     [<TestCase("StripMethodInstantiation")>]
     [<TestCase("GetMethodFromCanonical")>]
     let ``Canonicalising entry points refuse an open construction with a shared argument`` (entryPoint : string) =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
-
         let source =
             """
 using System;
