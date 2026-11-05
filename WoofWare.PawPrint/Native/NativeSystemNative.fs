@@ -558,12 +558,7 @@ module NativeSystemNative =
         // and Linux in a container (.NET 10.0.11); the next descriptor opened
         // was two higher than before
         // (docs/plans/2026-08-23-posix-kernel-extraction/signal-pipe-descriptors.cs).
-        let flags =
-            match PipeFlagsPal.decode state.Kernel.UnixPlatform PipeFlagsPal.CloseOnExec with
-            | Some flags -> flags
-            | None ->
-                failwith
-                    $"%s{operation}: PipeFlagsPal refuses PAL_O_CLOEXEC, which is the one flag SystemNative_Pipe admits (this is a bug in PipeFlagsPal)."
+        let flags = PipeFlagsPal.closeOnExec state.Kernel.UnixPlatform
 
         let created =
             try
@@ -5134,16 +5129,22 @@ module NativeSystemNative =
 
             pushInt32 (if supported then 1 else 0) ctx |> Some
         // `int32_t SystemNative_Pipe(int32_t pipeFds[2], int32_t flags)`
-        // (pal_io.c:557). The flags parameter is matched loosely for the reason
-        // `SystemNative_FLock`'s operation is: CoreLib declares it as the
-        // `Interop.Sys.PipeFlags` enum.
+        // (pal_io.c): the runtime's flag screen, `pipe2`, and then, on .NET 11,
+        // `O_NONBLOCK` on each end the flags name. The flags parameter is
+        // matched loosely for the reason `SystemNative_FLock`'s operation is:
+        // CoreLib declares it as the `Interop.Sys.PipeFlags` enum.
         | Some "SystemNative_Pipe",
           [ ConcretePointer _ ; _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_Pipe"
             let flags = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            match PipeFlagsPal.decode state.Kernel.UnixPlatform flags with
+            match
+                PipeFlagsPal.decode
+                    (EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib)
+                    state.Kernel.UnixPlatform
+                    flags
+            with
             | None ->
                 // The shim's `default` arm: EINVAL without reaching the kernel,
                 // and so without looking at the array.
@@ -5151,7 +5152,7 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Some kernelFlags ->
+            | Some request ->
 
             let pipeFds = bufferPointerArgument operation "pipeFds" instruction.Arguments.[0]
 
@@ -5159,7 +5160,7 @@ module NativeSystemNative =
                 try
                     UnixPipe.pipe2
                         (state.Kernel.Caller ctx.Thread)
-                        kernelFlags
+                        request.Pipe2Flags
                         (BufferPointer.toUserBuffer pipeFds)
                         state.Kernel.System
                 with :? UnmodelledException as e ->
@@ -5168,7 +5169,7 @@ module NativeSystemNative =
                         (KernelRefusal.advising
                             [
                                 BufferPointer.unmodelledHint pipeFds
-                                "CoreLib passes only 0 or PAL_O_CLOEXEC and a two-int array of its own, so a refusal of anything else is a hand-rolled P/Invoke's."
+                                "CoreLib passes a two-int array of its own, so a refusal of anything else is a hand-rolled P/Invoke's."
                             ])
                         e
 
@@ -5187,13 +5188,50 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: the kernel made a pipe for an array that names no storage. Every such array is answered or refused before the pipe is made (this is an interpreter bug)."
 
+            // The shim's nonblocking step: the read end, then the write end
+            // only if the read end's succeeded. On a failure it closes both
+            // ends, ignoring what the closes answer, and fails with the
+            // `fcntl`'s errno; `pipe2` has filled the array by then, so it
+            // names the closed descriptors either way.
+            let caller = state.Kernel.Caller ctx.Thread
+
+            let nonBlocking =
+                [
+                    if request.NonBlockingRead then
+                        yield readFd
+                    if request.NonBlockingWrite then
+                        yield writeFd
+                ]
+                |> List.fold
+                    (fun outcome fd ->
+                        match outcome with
+                        | Error _ -> outcome
+                        | Ok system ->
+                            // The system comes back on the failing arm too,
+                            // as `SystemNative_FcntlSetIsNonBlocking`'s does.
+                            match UnixDescriptor.setNonBlocking caller fd true system with
+                            | SetNonBlockingAnswer.Set, system -> Ok system
+                            | SetNonBlockingAnswer.Failed error, system -> Error (error, system)
+                    )
+                    (Ok system)
+
+            let resultCode, state =
+                match nonBlocking with
+                | Ok system -> 0, withAnswered system state
+                | Error (error, system) ->
+                    let system =
+                        [ readFd ; writeFd ]
+                        |> List.fold (fun system fd -> UnixDescriptor.close caller fd system |> snd) system
+
+                    -1, withErrno ctx error system state
+
             let bytes = Array.zeroCreate<byte> 8
             BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (0, 4), readFd)
             BinaryPrimitives.WriteInt32LittleEndian (bytes.AsSpan (4, 4), writeFd)
 
-            withAnswered system state
+            state
             |> writeBytesThrough ctx operation destination (ImmutableArray.Create<byte> bytes)
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_FcntlSetFD",
