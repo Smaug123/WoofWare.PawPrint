@@ -295,6 +295,8 @@ costs one dictionary probe rather than an `AssemblyName.FullName`, which hashes 
   assembly's row names that assembly, with the token `AssemblyName` derives.
 * `ModuleBuilderTypeReferences.cs` checks the tokens, `GetReferencedAssemblies` and `ResolveType` over
   twelve types of four assemblies, against constants measured on .NET 10.
+* Of 25 mutants of the Domain functions, the load-context map and the handler, 24 are caught. The one
+  that survives drops the handler's `WithAssemblyRefTarget` call; see below.
 
 ### 3a: left to later stages
 
