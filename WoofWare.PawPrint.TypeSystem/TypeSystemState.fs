@@ -197,14 +197,19 @@ type TypeSystemState =
             _LoadedAssemblies = this._LoadedAssemblies.WithLoadedAssembly value
         }
 
-    /// Register a dynamic assembly; see `LoadedAssemblies.WithDynamicAssembly`, whose error this
-    /// passes on.
-    member this.WithDynamicAssembly (value : DumpedAssembly) : Result<TypeSystemState, DumpedAssembly> =
-        this._LoadedAssemblies.WithDynamicAssembly value
-        |> Result.map (fun loaded ->
+    /// Register a dynamic assembly, read from the image of `scope`; see
+    /// `LoadedAssemblies.WithDynamicAssembly`, whose error this passes on.
+    member this.WithDynamicAssembly
+        (loggerFactory : ILoggerFactory)
+        (scope : EmitScope)
+        : Result<TypeSystemState * DumpedAssembly, DumpedAssembly>
+        =
+        this._LoadedAssemblies.WithDynamicAssembly loggerFactory scope
+        |> Result.map (fun (loaded, assembly) ->
             { this with
                 _LoadedAssemblies = loaded
-            }
+            },
+            assembly
         )
 
     /// The loaded assembly with this definition identity, if it is loaded.

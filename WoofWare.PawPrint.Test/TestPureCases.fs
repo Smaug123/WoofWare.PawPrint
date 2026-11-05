@@ -103,6 +103,8 @@ module TestPureCases =
     /// and how it was verified to behave on real .NET 11.
     let parkedOnNet11 : Map<string, string> =
         [
+            "ProcessStartMissingExecutable.cs",
+            """On .NET 11, `Process.Start` with standard output redirected first asks System.Diagnostics.Process's `Interop.Sys.IsAtomicNonInheritablePipeCreationSupported`, ahead of System.Native's signal initialisation, and PawPrint stops there (measured): "Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_IsAtomicNonInheritablePipeCreationSupported)". .NET 11 makes the redirection's pipe in managed code before it starts the child, where .NET 10 leaves that to `SystemNative_ForkAndExecProcess`, which a missing executable never reaches. Un-park when that native, and whatever pipe creation follows it, is answered. Verified to exit 0 on real .NET 11 RC1."""
             "LockOnArray.cs",
             """On .NET 11, `lock` on a multi-dimensional array reaches `RuntimeHelpers.GetRawData` on it, whose `RawData::Data` projection PawPrint refuses for a multi-dimensional array: "TODO: RawData::Data projection for multi-dimensional array (rank 2)". Its single-dimensional array locks before that. Un-park when that projection is modelled and the header word is placed before a multi-dimensional array's bounds."""
             "ConvFloatSaturating.cs",
@@ -111,6 +113,8 @@ module TestPureCases =
             """On .NET 11, `HttpContent.LoadIntoBufferAsyncCore` in System.Net.Http is a runtime-async method: it awaits through `AsyncHelpers.Await` and returns its `Task` from an empty stack, which PawPrint does not run, and its stack-shape check refuses the body: "is executing offset 49, which is invalid IL: StackUnderflow (49, Nullary Ret, 0)". Un-park when runtime-async methods run. Verified to exit 0 on real .NET 11."""
             "AssemblyGetCallingAssemblyFromEntryPoint.cs",
             """On .NET 11, `Assembly.GetCallingAssembly()` in `Main` is not the program's own assembly, so real .NET 11 exits 2 where .NET 10 exits 0 (measured on RC1). PawPrint answers the program's own assembly on every runtime, so it exits 0. Un-park when PawPrint answers as RC1 does."""
+            "ProcessStartRootedSeeded.cs",
+            """On .NET 11, `Process.Start` first asks `Interop.Sys.IsAtomicNonInheritablePipeCreationSupported` for its redirections, and PawPrint stops there (measured): "Unimplemented native method (PInvokeImpl libSystem.Native!SystemNative_IsAtomicNonInheritablePipeCreationSupported)". Past that, .NET 11's `SystemNative_ForkAndExecProcess` takes another argument list and makes no `access` check before it forks: a rooted path naming nothing executable forks a child, whose failed `execve` sends its errno back over a pipe. Un-park when PawPrint models that child. Verified to exit 0 on real .NET 11 RC1, which skips the guest's direct calls of .NET 10's shim."""
         ]
         |> Map.ofList
 
@@ -501,6 +505,10 @@ module TestPureCases =
                 [
                     name "s", SeedEntry.directory (Map.ofList [ name "h", SeedEntry.directory Map.empty ])
                 ]
+            // A file without execute permission (the default mode is 0644),
+            // and a directory, each named by a rooted path to Process.Start.
+            "ProcessStartRootedSeeded.cs",
+            Map.ofList [ name "f", file "hello" ; name "d", SeedEntry.directory Map.empty ]
             "FlockContentionSeeded.cs",
             Map.ofList
                 [

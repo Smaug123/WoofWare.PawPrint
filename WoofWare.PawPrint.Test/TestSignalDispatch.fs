@@ -947,6 +947,102 @@ module TestSignalDispatch =
 
         callbackArguments dispatcher state' |> List.head |> shouldEqual (int32Arg 15)
 
+    /// `SystemNative_RegisterForSigChld` with `callback`, as
+    /// System.Diagnostics.Process's one-time initialisation calls it.
+    let private registerForSigChld (callback : SignalHandler) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            match
+                PosixSignalShim.registerForSigChld
+                    (numberingOf state)
+                    callback
+                    (kernel.Caller kernel.Leader)
+                    kernel.System
+                    kernel.PosixSignalShim
+            with
+            | Ok system, shim ->
+                { EmulatedKernel.withUnix system kernel with
+                    PosixSignalShim = shim
+                }
+            | Error errno, _ -> failwith $"registering the SIGCHLD callback failed with %O{errno}"
+        )
+
+    /// Whether `signal` is caught by System.Native's handler.
+    let private caughtBySystemNative (signal : Signal) (state : IlMachineState) : bool =
+        match KernelSignals.disposition signal state.Kernel.System with
+        | SignalDisposition.Catch {
+                                      Handler = NativeSignalHandler.SystemNative
+                                  } -> true
+        | SignalDisposition.Catch _
+        | SignalDisposition.Default
+        | SignalDisposition.Ignore -> false
+
+    [<Test>]
+    let ``registering the SIGCHLD callback records it and installs System.Native's handler for SIGCHLD`` () : unit =
+        let state, _dispatcher, callback = preparedState ()
+
+        caughtBySystemNative Signal.SIGCHLD state |> shouldEqual false
+
+        let state = registerForSigChld callback state
+
+        PosixSignalShim.sigChldCallback state.Kernel.PosixSignalShim
+        |> shouldEqual (Some callback)
+
+        caughtBySystemNative Signal.SIGCHLD state |> shouldEqual true
+
+    [<Test>]
+    let ``the SIGCHLD callback is registered once`` () : unit =
+        let state, _dispatcher, callback = preparedState ()
+        let state = registerForSigChld callback state
+
+        let exn =
+            Assert.Throws (fun () -> registerForSigChld callback state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "already registered"
+
+    [<Test>]
+    let ``disabling SIGCHLD's managed registration keeps System.Native's handler while the SIGCHLD callback needs it``
+        ()
+        : unit
+        =
+        // `SystemNative_DisablePosixSignalHandling` leaves the handler in
+        // place for SIGCHLD once `g_sigChldCallback` is set, whichever was
+        // installed first; without the callback it restores the default.
+        let state, _dispatcher, callback = preparedState ()
+
+        let withoutCallback = state |> register Signal.SIGCHLD |> unregister Signal.SIGCHLD
+
+        caughtBySystemNative Signal.SIGCHLD withoutCallback |> shouldEqual false
+
+        for registered in
+            [
+                state |> registerForSigChld callback |> register Signal.SIGCHLD
+                state |> register Signal.SIGCHLD |> registerForSigChld callback
+            ] do
+            let disabled = registered |> unregister Signal.SIGCHLD
+
+            PosixSignalShim.isRegistered Signal.SIGCHLD disabled.Kernel.PosixSignalShim
+            |> shouldEqual false
+
+            caughtBySystemNative Signal.SIGCHLD disabled |> shouldEqual true
+
+    [<Test>]
+    let ``the dispatcher refuses a SIGCHLD once the SIGCHLD callback is registered`` () : unit =
+        // The loop would call System.Diagnostics.Process's `OnSigChild`, which
+        // PawPrint does not model. (Without the callback, the same byte is
+        // handled as not cancelled, which for SIGCHLD does nothing: see
+        // ``a signal read after its registration went is handled as not
+        // cancelled, by the dispatcher itself``.) Both with and without a
+        // managed registration.
+        let state, _dispatcher, callback = preparedState ()
+
+        let state =
+            state |> withSibling ThreadStatus.Runnable |> registerForSigChld callback
+
+        for sent in [ state ; register Signal.SIGCHLD state ] do
+            let sent = sendToProcess Signal.SIGCHLD sent
+            let exn = Assert.Throws (fun () -> poll sent |> ignore<IlMachineState>)
+            exn.Message |> shouldContainText "child-reaping callback"
+
     /// `state` with the descriptor `fd` replaced by a duplicate of standard
     /// output, as `dup2(1, fd)` would leave it.
     let private replacedByStdout (fd : int) (state : IlMachineState) : IlMachineState =

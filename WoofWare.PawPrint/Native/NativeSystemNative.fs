@@ -516,6 +516,20 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"
 
+    /// The managed method an unmanaged-function-pointer argument names, which
+    /// the BCL takes with `&Callback` (a `ldftn`) on an
+    /// `[UnmanagedCallersOnly]` method of its own. Fails on any other value:
+    /// it has no callable identity to record, and dropping it would let the
+    /// BCL register a callback that PawPrint could never call.
+    let private signalCallbackArgument (operation : string) (argument : CliType) : SignalHandler =
+        match CliType.unwrapPrimitiveLikeDeep argument with
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
+            FunctionPointerTarget.requireManaged operation target
+            |> SignalHandler.ofMethodInfo
+        | other ->
+            failwith
+                $"%s{operation}: expected a FunctionPointer argument (from Ldftn on a managed callback), got %O{other}"
+
     /// The signal half of `SystemNative_InitializeTerminalAndSignalHandling`,
     /// issued by `thread`: on the first call, `InitializeSignalHandlingCore`
     /// makes the signal pipe with `pipe()` (`O_CLOEXEC`, blocking), starts the
@@ -1903,6 +1917,42 @@ module NativeSystemNative =
             state
         else
             writeBytesThrough ctx operation buffer bytes state
+
+    /// `access(path, mode)` on behalf of the calling thread, with `path` the
+    /// `const char*` argument the guest passed and `mode` raw: `<unistd.h>`'s
+    /// numbering, which the shim's `AccessMode` static-asserts. The kernel
+    /// screens the mode, per flavour, before it reads the path.
+    let private accessAnswer
+        (ctx : NativeCallContext)
+        (operation : string)
+        (path : CliType)
+        (mode : int)
+        (state : IlMachineState)
+        : SyscallAnswer
+        =
+        try
+            match UnixPathResolution.access (state.Kernel.Caller ctx.Thread) mode state.Kernel.System with
+            | CallProgress.Answered answer -> answer
+            | CallProgress.NeedsCopyIn paused ->
+                // Read only now: a pointer this interpreter cannot
+                // dereference would refuse at transfer, where Linux
+                // answers a bad mode without looking at it.
+                UnixPathResolution.accessWithPath (pathArgumentBytes ctx operation "path" path state) paused
+        with :? UnmodelledException as e ->
+            // `<unistd.h>`'s R_OK, W_OK and X_OK are the low three bits
+            // on both flavours; anything above them on Darwin asks for
+            // its extended rights.
+            let extendedRights =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin when mode &&& ~~~7 <> 0 ->
+                    "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> ""
+
+            KernelRefusal.failAdvising
+                operation
+                (String.concat " " [ privilegedDarwinAdvice state.Kernel ; extendedRights ])
+                e
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -3522,34 +3572,7 @@ module NativeSystemNative =
             let operation = "SystemNative_Access"
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            let answer =
-                try
-                    match UnixPathResolution.access (state.Kernel.Caller ctx.Thread) mode state.Kernel.System with
-                    | CallProgress.Answered answer -> answer
-                    | CallProgress.NeedsCopyIn paused ->
-                        // Read only now: a pointer this interpreter cannot
-                        // dereference would refuse at transfer, where Linux
-                        // answers a bad mode without looking at it.
-                        UnixPathResolution.accessWithPath
-                            (pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state)
-                            paused
-                with :? UnmodelledException as e ->
-                    // `<unistd.h>`'s R_OK, W_OK and X_OK are the low three bits
-                    // on both flavours; anything above them on Darwin asks for
-                    // its extended rights.
-                    let extendedRights =
-                        match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-                        | SimulatedUnixFlavour.Darwin when mode &&& ~~~7 <> 0 ->
-                            "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
-                        | SimulatedUnixFlavour.Darwin
-                        | SimulatedUnixFlavour.Linux -> ""
-
-                    KernelRefusal.failAdvising
-                        operation
-                        (String.concat " " [ privilegedDarwinAdvice state.Kernel ; extendedRights ])
-                        e
-
-            match answer with
+            match accessAnswer ctx operation instruction.Arguments.[0] mode state with
             | SyscallAnswer.Failed error ->
                 withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -3558,6 +3581,87 @@ module NativeSystemNative =
             | SyscallAnswer.Completed _ ->
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+        // .NET 10's `int32_t SystemNative_ForkAndExecProcess(const char* filename,
+        // char* const argv[], char* const envp[], const char* cwd,
+        // int32_t redirectStdin, int32_t redirectStdout, int32_t redirectStderr,
+        // int32_t setCredentials, uint32_t userId, uint32_t groupId,
+        // uint32_t* groups, int32_t groupsLength, int32_t* childPid,
+        // int32_t* stdinFd, int32_t* stdoutFd, int32_t* stderrFd)` (pal_process.c).
+        // Before it makes a pipe or forks, the shim asks `access(filename, X_OK)`,
+        // and if that fails it stores -1 through each of the four out-pointers and
+        // returns -1 with access's errno. `Process.Start` reaches it with a rooted
+        // `FileName` unresolved, so a path naming nothing executable fails here.
+        // Past that check the shim forks a child to `execve` the file, which
+        // PawPrint does not model. (.NET 11's shim takes a different argument
+        // list and has no such check: its child reports a failed `execve`.)
+        | Some "SystemNative_ForkAndExecProcess",
+          [ ConcretePointer _
+            ConcretePointer _
+            ConcretePointer _
+            ConcretePointer _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
+            ConcretePointer _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer _
+            ConcretePointer _
+            ConcretePointer _
+            ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "SystemNative_ForkAndExecProcess"
+
+            // The shim asserts each of these is 0 or 1.
+            for index, name in
+                [
+                    4, "redirectStdin"
+                    5, "redirectStdout"
+                    6, "redirectStderr"
+                    7, "setCredentials"
+                ] do
+                match NativeCall.int32Argument operation instruction.Arguments.[index] with
+                | 0
+                | 1 -> ()
+                | other ->
+                    failwith
+                        $"%s{operation}: `%s{name}` is %d{other}, where the shim asserts 0 or 1. CoreLib passes only those; a hand-rolled P/Invoke passed this."
+
+            // The shim asserts every out-pointer is non-null, and stores through
+            // each of them on every path.
+            let outCell (index : int) (name : string) : ManagedPointerSource =
+                match bufferPointerArgument operation name instruction.Arguments.[index] with
+                | BufferPointer.RawAddress 0UL ->
+                    failwith
+                        $"%s{operation}: `%s{name}` is null, where the shim asserts it is not. CoreLib passes the address of a local; a hand-rolled P/Invoke passed null."
+                | pointer -> requireStorage operation name pointer
+
+            let childPid = outCell 12 "childPid"
+            let stdinFd = outCell 13 "stdinFd"
+            let stdoutFd = outCell 14 "stdoutFd"
+            let stderrFd = outCell 15 "stderrFd"
+
+            // `<unistd.h>`'s X_OK, on both flavours.
+            let executeOk = 1
+
+            match accessAnswer ctx operation instruction.Arguments.[0] executeOk state with
+            | SyscallAnswer.Completed _ ->
+                failwith
+                    $"%s{operation}: access(filename, X_OK) succeeded, so the shim would go on to make its pipes and fork a child to execve the file. PawPrint does not model child processes."
+            | SyscallAnswer.Failed error ->
+                let minusOne = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> minusOne, -1)
+                let minusOne = ImmutableArray.CreateRange minusOne
+
+                // In the shim's order: the three descriptors, then the pid.
+                [ stdinFd ; stdoutFd ; stderrFd ; childPid ]
+                |> List.fold (fun state cell -> writeBytesThrough ctx operation cell minusOne state) state
+                |> withErrnoOnly ctx error
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
         // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
@@ -8754,26 +8858,64 @@ module NativeSystemNative =
             // (`g_posixSignalHandler`) and the signal-handling thread later
             // invokes it after a signal is queued. PawPrint records the
             // managed identity of the target method on `PosixSignalShim`,
-            // and `SignalDispatch` reads it back at dispatch time. We refuse
-            // anything other than a real
-            // `NativeIntSource.FunctionPointer`: any other tag means the
-            // value didn't come from `Ldftn` on a managed method, so we
-            // have no callable identity to record and silently dropping it
-            // would let the BCL register handlers that the simulator can
-            // never invoke.
-            let operation = "SystemNative_SetPosixSignalHandler"
-
-            let mi =
-                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[0] with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
-                    FunctionPointerTarget.requireManaged operation target
-                | other ->
-                    failwith
-                        $"%s{operation}: expected FunctionPointer argument (from Ldftn on the managed signal callback), got %O{other}"
+            // and `SignalDispatch` reads it back at dispatch time.
+            let handler =
+                signalCallbackArgument "SystemNative_SetPosixSignalHandler" instruction.Arguments.[0]
 
             state.MapKernel (fun kernel ->
                 { kernel with
-                    PosixSignalShim = PosixSignalShim.setHandler (SignalHandler.ofMethodInfo mi) kernel.PosixSignalShim
+                    PosixSignalShim = PosixSignalShim.setHandler handler kernel.PosixSignalShim
+                }
+            )
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_RegisterForSigChld", [ ConcreteFunctionPointer _ ], MethodReturnType.Void ->
+            // System.Diagnostics.Process's one-time initialisation, with
+            // `&OnSigChild`: the shim records the callback, which its
+            // dispatcher calls for each SIGCHLD to reap the children the
+            // class started, and installs its handler for SIGCHLD. PawPrint
+            // models no child process, and `SignalDispatch` refuses a SIGCHLD
+            // that reaches the dispatcher once the callback is recorded.
+            let operation = "SystemNative_RegisterForSigChld"
+            let callback = signalCallbackArgument operation instruction.Arguments.[0]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+            let installed, shim =
+                PosixSignalShim.registerForSigChld
+                    numbering
+                    callback
+                    (state.Kernel.Caller ctx.Thread)
+                    state.Kernel.System
+                    state.Kernel.PosixSignalShim
+
+            match installed with
+            // The shim only asserts that its handler is installed, and
+            // `sigaction` lets SIGCHLD be caught on every flavour.
+            | Error error ->
+                failwith $"%s{operation}: sigaction refused System.Native's handler for SIGCHLD with %O{error}"
+            | Ok system ->
+                state.MapKernel (fun kernel ->
+                    { EmulatedKernel.withUnix system kernel with
+                        PosixSignalShim = shim
+                    }
+                )
+                |> NativeHandlerResult.completed
+                |> Some
+        | Some "SystemNative_SetDelayedSigChildConsoleConfigurationHandler",
+          [ ConcreteFunctionPointer _ ],
+          MethodReturnType.Void ->
+            // The terminal reconfiguration that the shim runs on a SIGCHLD's
+            // non-cancelled handling when the child-reaping callback asked
+            // for it; it never runs here, because that callback never does.
+            let callback =
+                signalCallbackArgument
+                    "SystemNative_SetDelayedSigChildConsoleConfigurationHandler"
+                    instruction.Arguments.[0]
+
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    PosixSignalShim =
+                        PosixSignalShim.setDelayedSigChldConsoleConfiguration callback kernel.PosixSignalShim
                 }
             )
             |> NativeHandlerResult.completed
@@ -8801,8 +8943,10 @@ module NativeSystemNative =
             // Mirror image of `SystemNative_EnablePosixSignalHandling`: clear
             // the per-signo registration bit and `RestoreSignalHandler`, which
             // puts back the disposition the shim saved when it installed its
-            // handler (unless the console or terminal machinery still needs
-            // the signal, which PawPrint has neither of). The restore is
+            // handler, unless something else of the shim's still needs the
+            // signal: of what PawPrint models, that is SIGCHLD once
+            // System.Diagnostics.Process has registered its callback (see
+            // `PosixSignalShim.disable`). The restore is
             // unchecked, so where `sigaction` refuses it — a number the
             // kernel has no signal for, or a signal nobody may catch — the
             // shim carries on with EINVAL in errno, and that is what a guest

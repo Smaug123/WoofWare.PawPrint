@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System
-open System.IO
 open System.Reflection
 
 open NativeRuntimeTypeHelpers
@@ -223,22 +222,14 @@ module NativeRuntimeAssemblyBuilder =
                     HashAlgorithm = enum<System.Reflection.AssemblyHashAlgorithm> hashAlgorithm
                 }
 
-            if uint32 name.Flags > 0xFFFFu then
-                failwith
-                    $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 requestedFlags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
-
             let moduleVersionId, state = freshModuleVersionId operation ctx.Thread state
 
-            let assembly =
-                use image = new MemoryStream (DynamicAssemblyImage.build name moduleVersionId)
-                Assembly.read ctx.LoggerFactory None image
-
-            let state =
-                match state.WithDynamicAssembly assembly with
-                | Ok state -> state
+            let state, assembly =
+                match state.WithDynamicAssembly ctx.LoggerFactory (DynamicAssemblyImage.scope name moduleVersionId) with
+                | Ok (state, assembly) -> state, assembly
                 | Error existing ->
                     failwith
-                        $"TODO: %s{operation}: a dynamic assembly named %s{assembly.DefinitionFullName} would share its identity with the assembly already loaded as %s{existing.DefinitionFullName}; CoreCLR admits both, but PawPrint identifies an assembly by that name"
+                        $"TODO: %s{operation}: a dynamic assembly named %s{existing.DefinitionFullName} would share its identity with the assembly already loaded under that name; CoreCLR admits both, but PawPrint identifies an assembly by its name"
 
             let runtimeAssembly, state =
                 NativeRuntimeType.getOrAllocateRuntimeAssembly

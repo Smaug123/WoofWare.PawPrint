@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Immutable
 open System.IO
 open System.Reflection
 open FsCheck
@@ -460,22 +461,36 @@ module TestLoadedAssemblies =
         let loaded = LoadedAssemblies.empty.WithLoadedAssembly first
         expectCollisionRejected (fun () -> loaded.WithLoadedAssembly second |> ignore)
 
-    /// A dynamic assembly named `name`, with no public key, as `AppDomain_CreateDynamicAssembly`
-    /// would make it.
-    let private dynamicAssembly (name : string) : DumpedAssembly =
-        let parts : DynamicAssemblyName =
-            {
-                SimpleName = name
-                Version = Version (0, 0, 0, 0)
-                Culture = ""
-                PublicKey = System.Collections.Immutable.ImmutableArray<byte>.Empty
-                Flags = enum<AssemblyFlags> 0
-                HashAlgorithm = AssemblyHashAlgorithm.Sha1
-            }
+    let private dynamicParts (name : string) : DynamicAssemblyName =
+        {
+            SimpleName = name
+            Version = Version (0, 0, 0, 0)
+            Culture = ""
+            PublicKey = System.Collections.Immutable.ImmutableArray<byte>.Empty
+            Flags = enum<AssemblyFlags> 0
+            HashAlgorithm = AssemblyHashAlgorithm.Sha1
+        }
 
+    /// The scope of a dynamic assembly named `name`, with no public key, as
+    /// `AppDomain_CreateDynamicAssembly` would make it.
+    let private dynamicScope (name : string) : EmitScope =
+        DynamicAssemblyImage.scope (dynamicParts name) Guid.Empty
+
+    /// The image of `dynamicScope name`, read as an ordinary assembly.
+    let private dynamicImage (name : string) : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        use stream = new MemoryStream (DynamicAssemblyImage.build parts Guid.Empty)
+
+        use stream =
+            new MemoryStream (DynamicAssemblyImage.build (dynamicParts name) Guid.Empty)
+
         AssemblyApi.read loggerFactory None stream
+
+    let private registerDynamic (scope : EmitScope) (loaded : LoadedAssemblies) : LoadedAssemblies * DumpedAssembly =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        match loaded.WithDynamicAssembly loggerFactory scope with
+        | Ok registered -> registered
+        | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
 
     /// A reference whose identity is `target`'s definition identity: the shape the exact-identity
     /// fallback in `TryResolveReference` answers.
@@ -492,12 +507,8 @@ module TestLoadedAssemblies =
         if references.Value.Length = 0 then
             Assert.Ignore "No shared-framework assemblies found next to corelib"
 
-        let dynamic = dynamicAssembly "Dynamic"
-
-        let loaded =
-            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
-            | Ok loaded -> loaded
-            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+        let loaded, dynamic =
+            registerDynamic (dynamicScope "Dynamic") LoadedAssemblies.empty
 
         loaded.IsDynamic dynamic.DefinitionFullName |> shouldEqual true
 
@@ -509,7 +520,7 @@ module TestLoadedAssemblies =
 
         // An image registered the ordinary way under the same kind of identity is found by the same
         // reference; that is the fallback the dynamic one must not take.
-        let image = dynamicAssembly "Image"
+        let image = dynamicImage "Image"
         let withImage = loaded.WithLoadedAssembly image
         withImage.IsDynamic image.DefinitionFullName |> shouldEqual false
 
@@ -520,18 +531,50 @@ module TestLoadedAssemblies =
         |> shouldEqual true
 
     [<Test>]
+    let ``a dynamic assembly holds the scope its image was read from`` () : unit =
+        let scope = dynamicScope "Scoped"
+        let loaded, dynamic = registerDynamic scope LoadedAssemblies.empty
+
+        match loaded.TryDynamicScope dynamic.DefinitionFullName with
+        | None -> Assert.Fail "Expected the dynamic assembly's scope"
+        | Some held -> Object.ReferenceEquals (held, scope) |> shouldEqual true
+
+        Object.ReferenceEquals (loaded.ByDefinitionName dynamic.DefinitionFullName, dynamic)
+        |> shouldEqual true
+
+        dynamic.Name.Name |> shouldEqual "Scoped"
+        dynamic.ScopeName |> shouldEqual DynamicAssemblyImage.manifestModuleName
+
+        // Only a dynamic assembly has a scope.
+        let image = dynamicImage "Image"
+        let withImage = loaded.WithLoadedAssembly image
+        withImage.TryDynamicScope image.DefinitionFullName |> shouldEqual None
+
+    [<Test>]
+    let ``a scope with no Assembly row is refused`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let scope = EmitScope.create DynamicAssemblyImage.manifestModuleName Guid.Empty
+
+        let thrown =
+            try
+                LoadedAssemblies.empty.WithDynamicAssembly loggerFactory scope |> ignore
+                None
+            with e ->
+                Some e.Message
+
+        match thrown with
+        | None -> Assert.Fail "Expected a scope with no Assembly row to be refused"
+        | Some message -> message |> shouldContainText "Assembly row"
+
+    [<Test>]
     let ``a dynamic assembly cannot share an identity already loaded`` () : unit =
         if pool.Value.Length = 0 then
             Assert.Ignore "No shared-framework assemblies found next to corelib"
 
-        let dynamic = dynamicAssembly "Twin"
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let loaded, dynamic = registerDynamic (dynamicScope "Twin") LoadedAssemblies.empty
 
-        let loaded =
-            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
-            | Ok loaded -> loaded
-            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
-
-        match loaded.WithDynamicAssembly (dynamicAssembly "Twin") with
+        match loaded.WithDynamicAssembly loggerFactory (dynamicScope "Twin") with
         | Ok _ -> Assert.Fail "Expected a second dynamic assembly named Twin to be refused"
         | Error existing -> Object.ReferenceEquals (existing, dynamic) |> shouldEqual true
 
@@ -540,7 +583,7 @@ module TestLoadedAssemblies =
 
         // Identical to the image in everything but its module version ID and contents.
         let shadow =
-            let parts : DynamicAssemblyName =
+            DynamicAssemblyImage.scope
                 {
                     SimpleName = image.Name.Name
                     Version = image.Name.Version
@@ -549,14 +592,9 @@ module TestLoadedAssemblies =
                     Flags = image.Flags
                     HashAlgorithm = image.HashAlgorithm
                 }
+                Guid.Empty
 
-            let _, loggerFactory = LoggerFactory.makeTest ()
-            use stream = new MemoryStream (DynamicAssemblyImage.build parts Guid.Empty)
-            AssemblyApi.read loggerFactory None stream
-
-        shadow.DefinitionFullName |> shouldEqual image.DefinitionFullName
-
-        match loaded.WithDynamicAssembly shadow with
+        match loaded.WithDynamicAssembly loggerFactory shadow with
         | Ok _ -> Assert.Fail $"Expected a dynamic assembly named %s{image.DefinitionFullName} to be refused"
         | Error existing -> Object.ReferenceEquals (existing, image) |> shouldEqual true
 
@@ -565,12 +603,8 @@ module TestLoadedAssemblies =
         if references.Value.Length = 0 then
             Assert.Ignore "No shared-framework assemblies found next to corelib"
 
-        let dynamic = dynamicAssembly "Unbindable"
-
-        let loaded =
-            match LoadedAssemblies.empty.WithDynamicAssembly dynamic with
-            | Ok loaded -> loaded
-            | Error existing -> failwith $"unexpected collision with %s{existing.DefinitionFullName}"
+        let loaded, dynamic =
+            registerDynamic (dynamicScope "Unbindable") LoadedAssemblies.empty
 
         let thrown =
             try
@@ -582,3 +616,173 @@ module TestLoadedAssemblies =
         match thrown with
         | None -> Assert.Fail "Expected binding a reference to a dynamic assembly to be refused"
         | Some message -> message |> shouldContainText "never binds a reference to a dynamic assembly"
+
+    let private thrownBy (f : unit -> 'a) : string option =
+        try
+            f () |> ignore<'a>
+            None
+        with e ->
+            Some e.Message
+
+    [<Test>]
+    let ``replacing a dynamic assembly's scope by an extension of it swaps in the new image`` () : unit =
+        let property (mvid : Guid) (ops : EmitScopeGen.Op list) (extra : EmitScopeGen.Op list) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            let before = EmitScopeGen.apply mvid ops
+            let after = EmitScopeGen.apply mvid (ops @ extra)
+
+            let other = dynamicImage "Other"
+            let loaded, original = registerDynamic before LoadedAssemblies.empty
+            let loaded = loaded.WithLoadedAssembly other
+            let name = original.DefinitionFullName
+
+            let replaced, assembly = loaded.WithEmitScope loggerFactory name after
+
+            assembly.DefinitionFullName |> shouldEqual name
+
+            Object.ReferenceEquals (replaced.ByDefinitionName name, assembly)
+            |> shouldEqual true
+
+            replaced.IsDynamic name |> shouldEqual true
+
+            match replaced.TryDynamicScope name with
+            | None -> Assert.Fail "Expected the replaced assembly's scope"
+            | Some held -> Object.ReferenceEquals (held, after) |> shouldEqual true
+
+            replaced.DefinitionNamesInLoadOrder
+            |> List.ofSeq
+            |> shouldEqual (List.ofSeq loaded.DefinitionNamesInLoadOrder)
+
+            assembly.TypeDefs.Count |> shouldEqual (EmitScope.typeDefs after).Count
+            assembly.Methods.Count |> shouldEqual (EmitScope.methodDefs after).Count
+            assembly.Fields.Count |> shouldEqual (EmitScope.fields after).Count
+            assembly.TypeRefs.Count |> shouldEqual (EmitScope.typeRefs after).Count
+            assembly.Members.Count |> shouldEqual (EmitScope.memberRefs after).Count
+
+            assembly.AssemblyReferences.Count
+            |> shouldEqual (EmitScope.assemblyRefs after).Count
+
+            // The other assembly, and the old registration, are untouched.
+            Object.ReferenceEquals (replaced.ByDefinitionName other.DefinitionFullName, other)
+            |> shouldEqual true
+
+            Object.ReferenceEquals (loaded.ByDefinitionName name, original)
+            |> shouldEqual true
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 50,
+            Prop.forAll
+                (Arb.fromGen (Gen.zip3 EmitScopeGen.genGuid EmitScopeGen.genOps EmitScopeGen.genOps))
+                (fun (mvid, ops, extra) -> property mvid ops extra)
+        )
+
+    [<Test>]
+    let ``replacing a dynamic assembly's scope by one that rewrites a row is refused`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let loaded, dynamic =
+            registerDynamic (dynamicScope "Rewritten") LoadedAssemblies.empty
+
+        let rewritten =
+            DynamicAssemblyImage.scope
+                { dynamicParts "Rewritten" with
+                    Flags = AssemblyFlags.Retargetable
+                }
+                Guid.Empty
+
+        match thrownBy (fun () -> loaded.WithEmitScope loggerFactory dynamic.DefinitionFullName rewritten) with
+        | None -> Assert.Fail "Expected a scope that rewrites the Assembly row to be refused"
+        | Some message -> message |> shouldContainText "RowChanged"
+
+    [<Test>]
+    let ``only a dynamic assembly's scope can be replaced`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = dynamicImage "Image"
+        let loaded = LoadedAssemblies.empty.WithLoadedAssembly image
+
+        match
+            thrownBy (fun () -> loaded.WithEmitScope loggerFactory image.DefinitionFullName (dynamicScope "Image"))
+        with
+        | None -> Assert.Fail "Expected replacing the scope of an image from disk to be refused"
+        | Some message -> message |> shouldContainText "not a dynamic assembly"
+
+    /// A public class `name` with no members, in the global namespace.
+    let private withType (name : string) (scope : EmitScope) : TypeDefRid * EmitScope =
+        let name, scope = EmitScope.internString name scope
+        let ns, scope = EmitScope.internString "" scope
+
+        EmitScope.addTypeDef
+            {
+                Flags = TypeAttributes.Public ||| TypeAttributes.Class
+                Name = name
+                Namespace = ns
+                Extends = None
+            }
+            scope
+
+    /// An instance method `void M()` of `owner`, whose body is `ret`.
+    let private withMethod (owner : TypeDefRid) (scope : EmitScope) : EmitScope =
+        let name, scope = EmitScope.internString "M" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0x20uy ; 0uy ; 0x01uy |]) scope
+
+        EmitScope.addMethodDef
+            {
+                Owner = owner
+                // A tiny header (ECMA-335 II.25.4.2) for one byte of code, then `ret`.
+                Body = Some (ImmutableArray.Create<byte> [| 0x06uy ; 0x2Auy |])
+                ImplFlags = MethodImplAttributes.IL
+                Flags = MethodAttributes.Public ||| MethodAttributes.HideBySig
+                Name = name
+                Signature = signature
+            }
+            scope
+        |> snd
+
+    [<Test>]
+    let ``a created type gains no members`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let first, scope = dynamicScope "Creating" |> withType "First"
+        let second, scope = withType "Second" scope
+        let loaded, dynamic = registerDynamic scope LoadedAssemblies.empty
+        let name = dynamic.DefinitionFullName
+
+        loaded.IsCreatedType name first |> shouldEqual false
+        let loaded = loaded.WithCreatedType name first
+        loaded.IsCreatedType name first |> shouldEqual true
+        loaded.IsCreatedType name second |> shouldEqual false
+
+        // A type not yet created still gains members.
+        let withSecondMethod = withMethod second scope
+        let loaded, assembly = loaded.WithEmitScope loggerFactory name withSecondMethod
+        assembly.Methods.Count |> shouldEqual 1
+        loaded.IsCreatedType name first |> shouldEqual true
+
+        match thrownBy (fun () -> loaded.WithEmitScope loggerFactory name (withMethod first withSecondMethod)) with
+        | None -> Assert.Fail "Expected a method added to a created type to be refused"
+        | Some message -> message |> shouldContainText "AddedToCreatedType"
+
+    [<Test>]
+    let ``a type is created once, and only a type the scope has`` () : unit =
+        let first, scope = dynamicScope "CreatedOnce" |> withType "First"
+        let loaded, dynamic = registerDynamic scope LoadedAssemblies.empty
+        let name = dynamic.DefinitionFullName
+        let loaded = loaded.WithCreatedType name first
+
+        match thrownBy (fun () -> loaded.WithCreatedType name first) with
+        | None -> Assert.Fail "Expected creating a type twice to be refused"
+        | Some message -> message |> shouldContainText "already created"
+
+        // `<Module>` is RID 1, so the scope's types are RIDs 1 and 2.
+        let missing, _ = withType "Missing" scope
+
+        match thrownBy (fun () -> loaded.WithCreatedType name missing) with
+        | None -> Assert.Fail "Expected creating a type the scope does not have to be refused"
+        | Some message -> message |> shouldContainText "not in the scope"
+
+        let image = dynamicImage "Image"
+
+        match thrownBy (fun () -> (loaded.WithLoadedAssembly image).WithCreatedType image.DefinitionFullName first) with
+        | None -> Assert.Fail "Expected creating a type of an image from disk to be refused"
+        | Some message -> message |> shouldContainText "not a dynamic assembly"

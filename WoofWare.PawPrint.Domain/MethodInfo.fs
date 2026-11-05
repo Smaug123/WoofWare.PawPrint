@@ -500,6 +500,14 @@ type MetadataMethodFacts =
         RawSignature : TypeMethodSignature<TypeDefn>
 
         /// <summary>
+        /// The signature blob's bytes, exactly as the image encodes them. Different encodings of
+        /// one signature, such as a count spelled in more bytes than it needs, parse to the same
+        /// <see cref="RawSignature"/>; CoreCLR tells them apart where it compares blobs, as
+        /// <c>FindMethodDef</c> does.
+        /// </summary>
+        SignatureBlob : ImmutableArray<byte>
+
+        /// <summary>
         /// Custom attributes defined on the method.
         /// </summary>
         CustomAttributes : WoofWare.PawPrint.CustomAttribute ImmutableArray
@@ -1509,6 +1517,7 @@ module MethodInfo =
                 Handle = methodHandle
                 Parameters = methodParams
                 RawSignature = typeSig
+                SignatureBlob = metadataReader.GetBlobContent methodDef.Signature
                 MethodAttributes = methodAttrs
                 CustomAttributes = attrs
                 ImplAttributes = implAttrs

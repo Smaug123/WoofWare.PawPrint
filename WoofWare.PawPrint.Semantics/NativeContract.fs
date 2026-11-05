@@ -169,10 +169,11 @@ type NativeContractRow =
         Reason : string
     }
 
-/// The contracts of CoreLib's native methods, as checked in beside this file
-/// (`NativeContractTable.tsv`, embedded). Every native method a row names runs no managed code but
-/// the methods its row says it calls, and the parameterless constructor of each exception it
-/// raises, which CoreCLR runs to make it, and whose own exceptions escape in its place.
+/// The contracts of each supported runtime's CoreLib's native methods, as checked in beside this
+/// file (`NativeContractTable.Net10.tsv` and so on, embedded), each read from that runtime's source.
+/// Every native method a row names runs no managed code but the methods its row says it calls, and
+/// the parameterless constructor of each exception it raises, which CoreCLR runs to make it, and
+/// whose own exceptions escape in its place.
 [<RequireQualifiedAccess>]
 module NativeContractTable =
 
@@ -339,34 +340,50 @@ module NativeContractTable =
 
         lines [] |> List.map parse
 
-    /// Every row, in the order the checked-in table lists them.
-    let rows : Lazy<NativeContractRow list> =
-        lazy
-            (let assembly = typeof<NativeContractRow>.Assembly
-             let name = "WoofWare.PawPrint.Semantics.NativeContractTable.tsv"
+    /// `compute` of each runtime, computed once.
+    let private perRuntime (compute : EmulatedRuntime -> 'a) : EmulatedRuntime -> 'a =
+        let net10 = lazy (compute EmulatedRuntime.Net10)
+        let net11 = lazy (compute EmulatedRuntime.Net11)
 
-             use stream =
-                 match assembly.GetManifestResourceStream name with
-                 | null -> failwith $"NativeContractTable: %s{assembly.FullName} embeds no %s{name}"
-                 | stream -> stream
+        fun runtime ->
+            match runtime with
+            | EmulatedRuntime.Net10 -> net10.Force ()
+            | EmulatedRuntime.Net11 -> net11.Force ()
 
-             use reader = new StreamReader (stream)
-             ofText (reader.ReadToEnd ()))
+    /// Every row of `runtime`'s table, in the order the checked-in table lists them.
+    let rows : EmulatedRuntime -> NativeContractRow list =
+        perRuntime (fun runtime ->
+            let assembly = typeof<NativeContractRow>.Assembly
 
-    let private index (key : NativeContractRow -> 'key option) : Lazy<Map<'key, NativeContractRow>> =
-        lazy
-            (rows.Force ()
-             |> List.choose (fun row -> key row |> Option.map (fun key -> key, row))
-             |> List.groupBy fst
-             |> List.map (fun (key, rows) ->
-                 match rows with
-                 | [ _, row ] -> key, row
-                 | _ -> failwith $"NativeContractTable: %A{key} has %d{rows.Length} rows"
-             )
-             |> Map.ofList)
+            let name =
+                match runtime with
+                | EmulatedRuntime.Net10 -> "WoofWare.PawPrint.Semantics.NativeContractTable.Net10.tsv"
+                | EmulatedRuntime.Net11 -> "WoofWare.PawPrint.Semantics.NativeContractTable.Net11.tsv"
 
-    /// The rows for static FCalls, by declaring type and method name.
-    let fcalls : Lazy<Map<string * string, NativeContractRow>> =
+            use stream =
+                match assembly.GetManifestResourceStream name with
+                | null -> failwith $"NativeContractTable: %s{assembly.FullName} embeds no %s{name}"
+                | stream -> stream
+
+            use reader = new StreamReader (stream)
+            ofText (reader.ReadToEnd ())
+        )
+
+    let private index (key : NativeContractRow -> 'key option) : EmulatedRuntime -> Map<'key, NativeContractRow> =
+        perRuntime (fun runtime ->
+            rows runtime
+            |> List.choose (fun row -> key row |> Option.map (fun key -> key, row))
+            |> List.groupBy fst
+            |> List.map (fun (key, rows) ->
+                match rows with
+                | [ _, row ] -> key, row
+                | _ -> failwith $"NativeContractTable: %A{key} has %d{rows.Length} rows on %A{runtime}"
+            )
+            |> Map.ofList
+        )
+
+    /// The rows of `runtime`'s table for static FCalls, by declaring type and method name.
+    let fcalls : EmulatedRuntime -> Map<string * string, NativeContractRow> =
         index (fun row ->
             match row.Native with
             | TabulatedNative.FCall (declaringType, method) -> Some (declaringType, method)
@@ -374,8 +391,8 @@ module NativeContractTable =
             | TabulatedNative.QCall _ -> None
         )
 
-    /// The rows for instance FCalls, by declaring type and method name.
-    let instanceFCalls : Lazy<Map<string * string, NativeContractRow>> =
+    /// The rows of `runtime`'s table for instance FCalls, by declaring type and method name.
+    let instanceFCalls : EmulatedRuntime -> Map<string * string, NativeContractRow> =
         index (fun row ->
             match row.Native with
             | TabulatedNative.InstanceFCall (declaringType, method) -> Some (declaringType, method)
@@ -383,8 +400,8 @@ module NativeContractTable =
             | TabulatedNative.QCall _ -> None
         )
 
-    /// The rows for QCalls, by entry point.
-    let qcalls : Lazy<Map<string, NativeContractRow>> =
+    /// The rows of `runtime`'s table for QCalls, by entry point.
+    let qcalls : EmulatedRuntime -> Map<string, NativeContractRow> =
         index (fun row ->
             match row.Native with
             | TabulatedNative.QCall entryPoint -> Some entryPoint

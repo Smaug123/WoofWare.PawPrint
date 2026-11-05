@@ -57,7 +57,7 @@ type NativeMethod =
     /// HRESULT to throw from, sets no last error, adds no locale argument, and passes a fixed
     /// argument list by a convention that takes no `this`.
     | ShimFunction of FrameworkShim * entryPoint : string
-    /// A method of CoreLib's that the contract table (`NativeContractTable`) describes: an FCall,
+    /// A method of CoreLib's that its runtime's contract table (`NativeContractTable`) describes: an FCall,
     /// or a QCall called by a P/Invoke whose stub copies every value as its bytes and does nothing
     /// besides, as for `ShimFunction`.
     | Tabulated of NativeContractRow
@@ -218,7 +218,8 @@ module NativeMethod =
     /// The operation `method` performs, when it is a native method of `assembly`, a CoreLib, that
     /// this module describes. Recognition is by class, name and signature, or by the library and
     /// entry point a P/Invoke names, so it holds for any CoreLib that keeps those; a method this
-    /// does not recognise is `None`.
+    /// does not recognise is `None`. A tabulated native is one the contract table of the CoreLib's
+    /// own runtime (`EmulatedRuntime.ofCoreLib`) describes.
     let recognise (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : NativeMethod option =
         let definition = assembly.Methods.[method]
 
@@ -248,7 +249,7 @@ module NativeMethod =
                 // CoreCLR binds CoreLib's P/Invokes into `QCall` to its own functions by entry point
                 // (`vm/qcallentrypoints.cpp`), without loading a library.
                 | None when import.ModuleName = qcall ->
-                    Map.tryFind import.EntryPointName (NativeContractTable.qcalls.Force ())
+                    Map.tryFind import.EntryPointName (NativeContractTable.qcalls (EmulatedRuntime.ofCoreLib assembly))
                     |> Option.map NativeMethod.Tabulated
                 | None -> None
             | _ -> None
@@ -283,7 +284,9 @@ module NativeMethod =
                         else
                             NativeContractTable.instanceFCalls
 
-                    Map.tryFind (declaringType.Namespace + "." + declaringType.Name, definition.Name) (rows.Force ())
+                    Map.tryFind
+                        (declaringType.Namespace + "." + declaringType.Name, definition.Name)
+                        (rows (EmulatedRuntime.ofCoreLib assembly))
                     |> Option.map NativeMethod.Tabulated
                 | _ -> None
 

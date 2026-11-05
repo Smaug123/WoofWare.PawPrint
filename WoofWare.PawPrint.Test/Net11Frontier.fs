@@ -3,19 +3,19 @@ namespace WoofWare.PawPrint.Test
 open WoofWare.PawPrint
 
 /// Why a test is parked on `EmulatedRuntime.Net11`, for each cause that blocks more than a handful
-/// of tests there. Each was measured on 11.0.0-rc.1.26425.128 on 2026-10-14, with the test failing
+/// of tests there. Each was measured on 11.0.0-rc.1.26425.128, with the test failing
 /// under PawPrint and not on account of the real runtime; a park whose cause is specific to one
 /// test says so at the park instead.
 [<RequireQualifiedAccess>]
 module Net11Frontier =
 
-    /// The checked-in native contract table is .NET 10's.
-    let nativeContractTable : string =
-        "`NativeContractTable.tsv` was read from .NET 10's source, and has rows for natives .NET 11 does not have: the `Environment.get_CurrentManagedThreadId` FCall, which .NET 11's CoreLib does not declare (it reads a thread-static instead), citing `JIT_GetCurrentManagedThreadId`, which .NET 11's VM does not define; and `Monitor`'s `TryEnter_FastPath` and `Exit_FastPath` FCalls and `Monitor_Enter_Slowpath` and `Monitor_Exit_Slowpath` QCalls, which .NET 11 replaces with its managed thin lock, the third of which runs `SynchronizationContext.InvokeWaitMethodHelper`, which .NET 11's binder does not name and its CoreLib does not define. Un-park when the table is kept per runtime."
+    /// .NET 11's contract table has no row for the cast helpers' fallback.
+    let castFallbackThroughUnmanagedCallersOnly : string =
+        "On .NET 11, the QCall `IsInstanceOf_NoCacheLookup`, which the cast helpers fall back to, asks an object implementing `IDynamicInterfaceCastable` through an `[UnmanagedCallersOnly]` overload of `DynamicInterfaceCastableHelpers.IsInterfaceImplemented` (`UnmanagedCallersOnlyCaller::InvokeThrowing`, callhelpers.h): the overload catches what the method raises and hands it back, and the VM throws it again (`COMPlusThrow`), first running `Exception.InternalPreserveStackTrace` on it. A row naming the overload would hide what the method raises, since the escape analysis does not know the VM throws it again, so `NativeContractTable.Net11.tsv` has no row for the QCall and the analysis cannot see through the cast helpers. Un-park when a native's row can name a call the VM makes through `[UnmanagedCallersOnly]`."
 
     /// .NET 11's `SpanHelpers` copies and clears memory through QCalls the table has no row for.
     let spanHelpersMemoryQCalls : string =
-        "On .NET 11, `SpanHelpers.Memmove` and `SpanHelpers.ClearWithoutReferences` hand a long copy or clear to QCalls whose entry points are `memmove` and `memset` (SpanHelpers.ByteMemOps.cs), where .NET 10 copies through the `Buffer_MemMove` QCall. `NativeContractTable.tsv` is .NET 10's (`nativeContractTable`), so it has no row for either, and the escape analysis cannot see through `CastHelpers.Box`, `Box_Nullable` or `Unbox_Nullable`, which copy a struct that way, nor so through any struct `box`, any `unbox` of a `Nullable<T>`, or `Unsafe.Unbox`. Un-park when the table is kept per runtime."
+        "On .NET 11, `SpanHelpers.Memmove` and `SpanHelpers.ClearWithoutReferences` hand a long copy or clear to QCalls whose entry points are `memmove` and `memset` (SpanHelpers.ByteMemOps.cs), where .NET 10 copies through the `Buffer_MemMove` QCall. `NativeContractTable.Net11.tsv` has no row for either, and the escape analysis cannot see through `CastHelpers.Box`, `Box_Nullable` or `Unbox_Nullable`, which copy a struct that way, nor so through any struct `box`, any `unbox` of a `Nullable<T>`, or `Unsafe.Unbox`. Un-park when .NET 11's table has rows for them."
 
     /// Park the calling test on .NET 11 alone, for `reason`: `ParkedOn.check` on that runtime.
     let park (reason : string) : unit =
