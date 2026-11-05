@@ -299,8 +299,6 @@ unsafe class Program
     /// PawPrint's virtual CPU never requires alignment, so only the null faults are compared.
     [<Test>]
     let ``PawPrint raises exactly the faults each primitive it implements has in its contract`` () : unit =
-        Net11Frontier.park Net11Frontier.isAsyncMethod
-
         let implemented =
             calls
             |> List.filter (fun (primitive, _) -> not (unimplemented.Contains primitive))

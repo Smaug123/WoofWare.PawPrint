@@ -85,11 +85,14 @@ public static class Program
             return 11;
         }
 
-        // `DefineDynamicAssembly` asks for the caller's load context unless a contextual-reflection
-        // scope names one, and PawPrint does not yet answer that question
-        // (`AssemblyNative_GetLoadContextForAssembly`).
-        using AssemblyLoadContext.ContextualReflectionScope scope = AssemblyLoadContext.Default.EnterContextualReflection ();
+        // 19: the anonymous host is defined into the default context.
+        if (!ReferenceEquals (AssemblyLoadContext.GetLoadContext (host), AssemblyLoadContext.Default))
+        {
+            return 19;
+        }
 
+        // With no contextual-reflection scope, `DefineDynamicAssembly` defines into its caller's
+        // load context, which it asks `GetLoadContext` for.
         AssemblyName requested = new AssemblyName ("Named, Version=1.2.3.4, Culture=fr-FR");
         requested.Flags = AssemblyNameFlags.Retargetable;
         AssemblyBuilder builder = AssemblyBuilder.DefineDynamicAssembly (requested, AssemblyBuilderAccess.Run);
@@ -103,6 +106,13 @@ public static class Program
         if (!named.IsDynamic || ReferenceEquals (named, builder))
         {
             return 13;
+        }
+
+        // 20: both the builder and the assembly it wraps answer the default context.
+        if (!ReferenceEquals (AssemblyLoadContext.GetLoadContext (named), AssemblyLoadContext.Default)
+            || !ReferenceEquals (AssemblyLoadContext.GetLoadContext (builder), AssemblyLoadContext.Default))
+        {
+            return 20;
         }
 
         if ((named.GetName ().Flags & AssemblyNameFlags.Retargetable) == 0)

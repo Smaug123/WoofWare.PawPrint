@@ -71,4 +71,41 @@ module NativeAssemblyLoadContext =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | "AssemblyNative_GetLoadContextForAssembly",
+          "System.Private.CoreLib",
+          "System.Runtime.Loader",
+          "AssemblyLoadContext",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallAssembly",
+                                                        qCallAssemblyGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr) when
+            qCallAssemblyGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_GetLoadContextForAssembly"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            state.LoadedAssembly assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+            |> ignore<DumpedAssembly>
+
+            // PawPrint binds every assembly, dynamic ones included, in the default binder:
+            // `AssemblyNative_InitializeAssemblyLoadContext` refuses to make any other.
+            let binder = AssemblyBinder.Default
+
+            // CoreCLR answers the managed context's GC handle for any other binder, and 0 for the
+            // default one, which `GetLoadContext` maps to `AssemblyLoadContext.Default`.
+            let loadContext =
+                match binder with
+                | AssemblyBinder.Default -> NativeIntSource.Verbatim 0L
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt loadContext) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | _ -> None

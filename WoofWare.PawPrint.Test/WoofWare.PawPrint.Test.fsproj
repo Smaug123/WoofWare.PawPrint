@@ -66,6 +66,7 @@
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
     <Compile Include="TestUnsafeAccessorSharedGenericVirtual.fs" />
+    <Compile Include="TestGetReferencedAssemblies.fs" />
     <Compile Include="TestForegroundThreadsAtExit.fs" />
     <Compile Include="TestAbortChannel.fs" />
     <Compile Include="TestGuestLocation.fs" />
@@ -118,6 +119,7 @@
     <Compile Include="TestMarshalIllegalFieldNesting.fs" />
     <Compile Include="TestMarshalByValArrayLayout.fs" />
     <Compile Include="TestStructureMarshalerRefusal.fs" />
+    <Compile Include="TestRuntimeAsyncMethod.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />

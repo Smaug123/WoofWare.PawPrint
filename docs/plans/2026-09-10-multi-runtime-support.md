@@ -884,14 +884,15 @@ mutation-testing skill applies to each table/classifier they introduce.
      itself to differ, so a runtime-keyed rule for `conv.i1`/`u1`/`i2`/`u2` and `char`, with
      `ConvFloatSaturating.cs` stating each runtime's results;
    * **(landed, for the analysis)** `ExceptionMaking` per runtime: RC1's VM runs what makes an
-     exception (a fault's, a failed bind's, a QCall's or a refused compilation's) through an
-     `[UnmanagedCallersOnly]` wrapper, and throws what that raises again, after preserving its
-     stack trace, which runs managed code too; a failure that recurs on every attempt recurs until
+     exception (a fault's, a failed bind's, a QCall's, a refused compilation's, or the wrapper of a
+     thrown non-exception) through an `[UnmanagedCallersOnly]` wrapper, and throws what that
+     raises again, after preserving its stack trace, which runs managed code too; a failure that
+     recurs on every attempt recurs until
      the stack overflows. `ExceptionMaking` tells an exception IL throws (`ThrownByIl`, whose
      constructor's raises escape on every runtime) from one the VM makes, and `vmMakingRaise` says
      per runtime what a raise during the VM's making does. Still open: the interpreter, which delivers the
-     constructor's exception on .NET 11 too; a failed message lookup no longer replacing a
-     `TypeInitializationException`; and the wrapping of a thrown non-exception;
+     constructor's exception on .NET 11 too; and a failed message lookup no longer replacing a
+     `TypeInitializationException`;
    * **(landed)** the JIT's hardware-intrinsic tables, kept per runtime:
      `HardwareIntrinsicTable.Net10.tsv` and `.Net11.tsv`, each regenerated from its runtime's
      source by a reader that follows the headers' `#include`s and conditionals (RC1 drops the
@@ -908,6 +909,13 @@ mutation-testing skill applies to each table/classifier they introduce.
      JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
      `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
      holds it to that runtime's `jithelpers.h` and `corelib.h`;
+   * **(landed)** the `RuntimeMethodHandle::IsAsyncMethod` FCall, which RC1's reflection asks
+     before it invokes a method and refuses one that is `AsyncCall`. The class loader decides
+     that from metadata alone (`RuntimeAsyncMethod.isAsyncCall`): a method declaring
+     `MethodImplAttributes.Async` is `AsyncCall` unless it returns CoreLib's `Task`, `ValueTask`,
+     `Task<T>` or `ValueTask<T>`, when only its async variant is, which reflection never lists.
+     A test holds the answer to real RC1's over every method of CoreLib and System.Net.Http.
+     Every case parked on it passes, the F# printf cases among them;
    * the guest cases whose real .NET 11 ending differs from .NET 10's, recorded in
      `TestPureCases.endingsOnNet11` (delegate equality, `Delegate.Method`'s declaring type,
      `GetCallingAssembly` from `Main`, and the private reflection several cases lean on);

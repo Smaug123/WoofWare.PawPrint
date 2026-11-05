@@ -90,11 +90,6 @@ module TestUnmanagedCallersOnlyEntry =
 
     [<TestCaseSource(nameof cases)>]
     let ``entering an UnmanagedCallersOnly method from managed code is fatal`` (sourceName : string) : unit =
-        match sourceName with
-        | "UnmanagedCallersOnlyForceEmitInvoke.cs"
-        | "UnmanagedCallersOnlyReflectionInvoke.cs" -> Net11Frontier.park Net11Frontier.isAsyncMethod
-        | _ -> ()
-
         let image = Roslyn.compile [ Assembly.getEmbeddedResourceAsString sourceName assy ]
 
         // The oracle first, so that a guest which stopped reaching the refusal on real .NET is
