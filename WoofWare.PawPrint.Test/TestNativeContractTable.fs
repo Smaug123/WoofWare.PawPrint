@@ -323,7 +323,7 @@ module TestNativeContractTable =
                 if not (qcallEntryPoints.Contains $"DllImportEntry(%s{entryPoint})") then
                     failwith $"vm/qcallentrypoints.cpp lists no %s{entryPoint}"
 
-    /// What a C++ function or macro that `NativeContractCallees.tsv` vouches for can run.
+    /// What a C++ function or macro that `NativeContractCallees.<runtime>.tsv` vouches for can run.
     [<RequireQualifiedAccess>]
     type private VouchedRuns =
         /// No managed code.
@@ -340,7 +340,7 @@ module TestNativeContractTable =
         /// `NativeAssumption.MetadataWellFormed`.
         | Malformed
 
-    /// What a row of `NativeContractCallees.tsv` vouches for.
+    /// What a row of `NativeContractCallees.<runtime>.tsv` vouches for.
     [<RequireQualifiedAccess>]
     type private Vouched =
         /// The calls of a function or macro, wherever they are made, by the name they spell.
@@ -355,7 +355,7 @@ module TestNativeContractTable =
         /// The calls of `callee` that the routine `routine` of the file `path` makes, and no others.
         | CallsIn of path : string * routine : string * callee : string
 
-    /// A row of `NativeContractCallees.tsv`.
+    /// A row of `NativeContractCallees.<runtime>.tsv`.
     type private Vouch =
         {
             Vouched : Vouched
@@ -365,7 +365,7 @@ module TestNativeContractTable =
     /// How a vouch for a routine's indirect branches spells its symbol, after the routine's name.
     let private indirectBranchesSuffix : string = "::" + CppSource.indirectBranch
 
-    /// A row of `NativeContractCallees.tsv`, as the file spells it.
+    /// A row of `NativeContractCallees.<runtime>.tsv`, as the file spells it.
     let private parseVouch (line : string) : Vouch =
         match line.Split '\t' with
         | [| callee ; runs ; reason |] when reason.Trim () <> "" ->
