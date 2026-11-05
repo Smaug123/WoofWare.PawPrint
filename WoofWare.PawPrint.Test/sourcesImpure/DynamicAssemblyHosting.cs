@@ -160,6 +160,16 @@ public static class Program
             return 18;
         }
 
+        // 21: and it stores all thirty-two bits, not only the sixteen ECMA-335 defines. The
+        // `AssemblyName.Flags` setter has already cleared the processor-architecture and content-type
+        // bits (0xfffff10f is left), and `GetName` sets `PublicKey`.
+        AssemblyName allFlags = new AssemblyName ("AllFlags") { Flags = (AssemblyNameFlags) (-1) };
+
+        if ((int) AssemblyBuilder.DefineDynamicAssembly (allFlags, AssemblyBuilderAccess.Run).ManifestModule.Assembly.GetName ().Flags != -3825)
+        {
+            return 21;
+        }
+
         return 0;
     }
 }
