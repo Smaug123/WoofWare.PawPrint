@@ -1618,8 +1618,8 @@ module TestTypeSystemBindingFailure =
             | Some (index, malformed),
               Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation (declaringType,
                                                                                              "Pair",
-                                                                                             actualIndex,
-                                                                                             actualMalformed))) when
+                                                                                             MethodInstantiationFault.Argument (actualIndex,
+                                                                                                                                actualMalformed)))) when
                 (index, malformed) = (actualIndex, actualMalformed)
                 && declaringType = pair.RequiredDeclaringType.Identity
                 ->
@@ -1676,6 +1676,112 @@ module TestTypeSystemBindingFailure =
         | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
             ()
         | other -> failwith $"expected the declaring type's base type to be absent, got %A{other}"
+
+    /// The handles of `arguments`, concretized in no context.
+    let private concretizeArguments
+        (f : UnmodelledImage.Fixture)
+        (arguments : TypeDefn list)
+        : TypeSystemState * ImmutableArray<ConcreteTypeHandle>
+        =
+        let state, handles =
+            ((typeSystem f, []), arguments)
+            ||> List.fold (fun (state, handles) argument ->
+                let state, handle =
+                    TypeSystemState.concretizeType
+                        f.LoggerFactory
+                        HostImage.runtimeDirs
+                        f.BaseClassTypes
+                        state
+                        f.Analysed.DefinitionFullName
+                        ImmutableArray.Empty
+                        ImmutableArray.Empty
+                        argument
+
+                state, BindingResult.value handle :: handles
+            )
+
+        state, handles |> List.rev |> ImmutableArray.CreateRange
+
+    /// CoreCLR refuses an instantiation of the wrong arity before it reads the method's signature,
+    /// whatever its arguments are; `Pair<T, U>`'s signature names an absent type.
+    [<Test>]
+    let ``a method instantiation of the wrong arity is refused before the method's signature is read`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let pair = f.Analysed.Methods.[f.Shapes.Pair]
+
+        for arguments in
+            [
+                [ int32 ]
+                [ int32 ; int32 ; int32 ]
+                [ TypeDefn.Pointer int32 ]
+                [ int32 ; int32 ; TypeDefn.Pointer int32 ]
+            ] do
+            let state, handles = concretizeArguments f arguments
+
+            let result, _, _ =
+                Concretization.concretizeMethod
+                    state.ConcreteTypes
+                    (loader f)
+                    state._LoadedAssemblies
+                    f.BaseClassTypes
+                    pair
+                    ImmutableArray.Empty
+                    handles
+
+            match result with
+            | Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation (declaringType,
+                                                                                             "Pair",
+                                                                                             MethodInstantiationFault.Arity (2,
+                                                                                                                             supplied)))) when
+                supplied = arguments.Length
+                && declaringType = pair.RequiredDeclaringType.Identity
+                ->
+                ()
+            | other -> failwith $"for Pair<%A{arguments}> expected a refusal of its arity, got %A{other}"
+
+    /// CoreCLR loads a method's declaring type before it checks the instantiation's arity.
+    [<Test>]
+    let ``a method instantiation's arity is checked once its declaring type loads`` () : unit =
+        let f = UnmodelledImage.fixture ()
+        let state, handles = concretizeArguments f [ int32 ; int32 ]
+
+        let result, _, _ =
+            Concretization.concretizeMethod
+                state.ConcreteTypes
+                (loader f)
+                state._LoadedAssemblies
+                f.BaseClassTypes
+                f.Analysed.Methods.[f.Shapes.DerivedLift]
+                ImmutableArray.Empty
+                handles
+
+        match result with
+        | Error (TypeBindingFailure.BaseTypeAbsent (TypeResolutionMiss.TopLevelTypeAbsent (_, Some "System", "Gone"))) ->
+            ()
+        | other -> failwith $"expected the declaring type's base type to be absent, got %A{other}"
+
+    /// A generic method named with no instantiation is not an instantiation of the wrong arity,
+    /// which CoreCLR would refuse with BadImageFormatException; nor is it modelled.
+    [<Test>]
+    let ``a generic method named with no instantiation is not refused as an instantiation`` () : unit =
+        let f = UnmodelledImage.fixture ()
+
+        let e =
+            Assert.Throws<System.Exception> (fun () ->
+                MethodConcretisation.concretizeMethodWithTypeGenerics
+                    f.LoggerFactory
+                    HostImage.runtimeDirs
+                    f.BaseClassTypes
+                    ImmutableArray.Empty
+                    f.Analysed.Methods.[f.Shapes.Pair]
+                    None
+                    f.Analysed.DefinitionFullName
+                    ImmutableArray.Empty
+                    (typeSystem f)
+                |> ignore<TypeSystemState * Result<_, TypeBindingFailure>>
+            )
+
+        e.Message |> shouldContainText "is named with no instantiation"
 
     [<RequireQualifiedAccess>]
     type private Agreement =
