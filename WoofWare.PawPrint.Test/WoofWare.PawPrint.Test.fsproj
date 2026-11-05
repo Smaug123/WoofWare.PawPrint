@@ -382,6 +382,7 @@
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
     <Compile Include="TestFabricatedClassSlotMethodImpl.fs" />
     <Compile Include="TestFabricatedMethodImplBodyLookup.fs" />
+    <Compile Include="TestFabricatedTypicalMethodToken.fs" />
     <Compile Include="TestFabricatedConstrainedEnumRetarget.fs" />
     <Compile Include="TestFabricatedWrappedEnumStore.fs" />
     <Compile Include="TestFabricatedUnimplementedInterface.fs" />
