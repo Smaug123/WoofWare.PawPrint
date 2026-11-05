@@ -122,7 +122,7 @@ type ExceptionRegion =
         | ExceptionRegionKind.Fault -> ExceptionRegion.Fault offset
         | _ -> raise (ArgumentOutOfRangeException ())
 
-type MethodInstructions<'methodVars> =
+type MethodInstructions =
     {
         /// <summary>
         /// The IL instructions that compose the method body, along with their offset positions.
@@ -142,14 +142,20 @@ type MethodInstructions<'methodVars> =
         /// </summary>
         LocalsInit : bool
 
-        LocalVars : ImmutableArray<'methodVars> option
+        /// <summary>
+        /// The method's local variables, as its local signature spells them, in the generic context
+        /// of the method and its declaring type. A frame of the method concretises them against its
+        /// instantiation when it is created, which is when CoreCLR loads them: when it compiles the
+        /// method, not when it binds a call to it.
+        /// </summary>
+        LocalVars : ImmutableArray<TypeDefn> option
 
         ExceptionRegions : ImmutableArray<ExceptionRegion>
     }
 
 [<RequireQualifiedAccess>]
 module MethodInstructions =
-    let onlyRet () : MethodInstructions<'methodVars> =
+    let onlyRet () : MethodInstructions =
         let op = IlOp.Nullary NullaryIlOp.Ret
 
         {
@@ -160,14 +166,6 @@ module MethodInstructions =
             ExceptionRegions = ImmutableArray.Empty
         }
 
-    let setLocalVars<'a, 'b> (v : ImmutableArray<'b> option) (s : MethodInstructions<'a>) : MethodInstructions<'b> =
-        {
-            Instructions = s.Instructions
-            Locations = s.Locations
-            LocalsInit = s.LocalsInit
-            LocalVars = v
-            ExceptionRegions = s.ExceptionRegions
-        }
 
 /// <summary>
 /// The kind of target an <c>[UnsafeAccessor]</c> method accesses, mirroring
@@ -292,9 +290,9 @@ type RuntimeBehaviour =
 /// body at all. This DU names them all so dispatch sites can match exhaustively
 /// rather than treating "no IL" as an undifferentiated <c>None</c>.
 /// </summary>
-type MethodBody<'methodVars> =
+type MethodBody =
     /// Normal IL body parsed from the assembly's PE stream.
-    | Il of MethodInstructions<'methodVars>
+    | Il of MethodInstructions
 
     /// <summary>
     /// Marked <c>[MethodImpl(MethodImplOptions.InternalCall)]</c>. The implementation is
@@ -330,7 +328,7 @@ type MethodBody<'methodVars> =
 
 [<RequireQualifiedAccess>]
 module MethodBody =
-    let tryIl<'methodVars> (body : MethodBody<'methodVars>) : MethodInstructions<'methodVars> option =
+    let tryIl (body : MethodBody) : MethodInstructions option =
         match body with
         | MethodBody.Il instr -> Some instr
         | MethodBody.InternalCall
@@ -338,17 +336,6 @@ module MethodBody =
         | MethodBody.RuntimeProvided _
         | MethodBody.Abstract -> None
 
-    let mapMethodVars<'a, 'b>
-        (f : MethodInstructions<'a> -> MethodInstructions<'b>)
-        (body : MethodBody<'a>)
-        : MethodBody<'b>
-        =
-        match body with
-        | MethodBody.Il instr -> MethodBody.Il (f instr)
-        | MethodBody.InternalCall -> MethodBody.InternalCall
-        | MethodBody.PInvoke -> MethodBody.PInvoke
-        | MethodBody.RuntimeProvided rb -> MethodBody.RuntimeProvided rb
-        | MethodBody.Abstract -> MethodBody.Abstract
 
 /// <summary>
 /// A method the runtime supplies rather than metadata declaring: it has no row in the MethodDef
@@ -676,7 +663,7 @@ type MethodCore<'typeGenerics, 'methodGenerics, 'methodVars> =
         /// InternalCalls, P/Invokes, runtime-synthesised methods (delegates etc.), and
         /// abstract methods; see <see cref="MethodBody"/>.
         /// </summary>
-        Body : MethodBody<'methodVars>
+        Body : MethodBody
 
         /// <summary>
         /// The generic type parameters defined by this method, if any.
@@ -756,7 +743,7 @@ type MethodInfo<'typeGenerics, 'methodGenerics, 'methodVars> =
                 $"%O{this}: this method is owned by the dynamic-methods class of %s{AssemblyDefinitionName.simpleName scopeAssemblyFullName}, which has no TypeDef row, but the operation being performed needs a declaring type"
 
     member this.Name : string = this.Core.Name
-    member this.Body : MethodBody<'methodVars> = this.Core.Body
+    member this.Body : MethodBody = this.Core.Body
     member this.Generics : 'methodGenerics ImmutableArray = this.Core.Generics
     member this.Signature : TypeMethodSignature<'methodVars> = this.Core.Signature
     member this.IsStatic : bool = this.Core.IsStatic
@@ -1053,7 +1040,7 @@ module MethodInfo =
         )
 
     let setMethodVars
-        (body : MethodBody<'vars2>)
+        (body : MethodBody)
         (signature : TypeMethodSignature<'vars2>)
         (m : MethodInfo<'typeGen, 'methodGen, 'vars1>)
         : MethodInfo<'typeGen, 'methodGen, 'vars2>
@@ -1074,7 +1061,7 @@ module MethodInfo =
     /// e.g. formatters, the debugger, and the abstract-method filter. Prefer matching
     /// on <see cref="MethodInfo.Body"/> directly when the dispatch site cares which
     /// non-IL variant is present.
-    let tryIlBody (m : MethodInfo<'typeGen, 'methodGen, 'methodVars>) : MethodInstructions<'methodVars> option =
+    let tryIlBody (m : MethodInfo<'typeGen, 'methodGen, 'methodVars>) : MethodInstructions option =
         MethodBody.tryIl m.Body
 
     type private RawMethodBody =
@@ -1359,7 +1346,7 @@ module MethodInfo =
 
         let declaringTypeName = metadataReader.GetString declaringDefn.Name
 
-        let body : MethodBody<TypeDefn> =
+        let body : MethodBody =
             if implAttrs.HasFlag MethodImplAttributes.InternalCall then
                 MethodBody.InternalCall
             elif methodAttrs.HasFlag MethodAttributes.PinvokeImpl then

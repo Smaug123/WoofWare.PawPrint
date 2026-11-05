@@ -307,6 +307,7 @@ module internal ProgramStartup =
                 else
                     ImmutableArray.Empty
 
+            // The placeholder's body is a bare `ret`, which declares no locals.
             match
                 MethodState.Empty
                     state.TypeSystem.ConcreteTypes
@@ -314,6 +315,7 @@ module internal ProgramStartup =
                     state.TypeSystem._LoadedAssemblies
                     dumped
                     concretizedMainMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     placeholderArgs
                     None
@@ -421,6 +423,9 @@ module internal ProgramStartup =
             // overwrite the main thread completely using the already-concretized method. The entry
             // thread Terminated during the cctor pump (its onlyRet body hit `ret`); we're resurrecting
             // it to run Main, so restore Status to Runnable before the scheduler is asked to pick again.
+            let state, localTypes =
+                ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretizedMainMethod state
+
             let methodState =
                 match
                     MethodState.Empty
@@ -430,6 +435,7 @@ module internal ProgramStartup =
                         dumped
                         concretizedMainMethod
                         ImmutableArray.Empty
+                        localTypes
                         mainArgs
                         None
                 with

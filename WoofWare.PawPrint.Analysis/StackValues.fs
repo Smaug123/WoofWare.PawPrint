@@ -508,7 +508,7 @@ module internal OwnWrites =
     /// so that every location but the method's own arguments and locals holds on entry to each of
     /// them what it held when the method was called. A handler is entered only after something
     /// throws, which runs other code.
-    let reachedFirst (body : MethodInstructions<'methodVars>) : Set<int> =
+    let reachedFirst (body : MethodInstructions) : Set<int> =
         let successors (offset : int) : int list =
             let op = body.Locations.[offset]
             let next = offset + IlOp.NumberOfBytes op
@@ -808,5 +808,5 @@ module internal StackValues =
 
     /// The objects each slot may hold on entry to every instruction of `body` that the flow
     /// could type.
-    let analyse (spellings : BodySpellings) (body : MethodInstructions<'methodVars>) : StackFlow<StackValue> =
+    let analyse (spellings : BodySpellings) (body : MethodInstructions) : StackFlow<StackValue> =
         StackFlow.analyse (lattice spellings (OwnWrites.reachedFirst body)) spellings.Effects body

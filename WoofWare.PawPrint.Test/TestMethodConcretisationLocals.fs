@@ -72,6 +72,13 @@ public static class Holder
                 ImmutableArray.Empty
                 state
 
-        BindingResult.value concretised |> ignore
+        let concretised, _ = BindingResult.value concretised
 
         namesCollections state |> shouldEqual false
+
+        // A frame of the method concretises its locals, which is what loads the assembly.
+        let state, locals =
+            MethodConcretisation.concretizeLocals loggerFactory runtimeDirs bct concretised state
+
+        (BindingResult.value locals).IsEmpty |> shouldEqual false
+        namesCollections state |> shouldEqual true

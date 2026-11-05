@@ -126,6 +126,7 @@ module TestMethodHandleRegistry =
                     concretizedMethod
                     ImmutableArray.Empty
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     None
             with
             | Ok methodState -> methodState
@@ -310,6 +311,7 @@ public static class HasMethod
                     state.TypeSystem._LoadedAssemblies
                     assembly
                     concretizedMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     None
@@ -674,6 +676,7 @@ public static class GenericMethodHolder
                     state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.CreateRange arguments)
                     None

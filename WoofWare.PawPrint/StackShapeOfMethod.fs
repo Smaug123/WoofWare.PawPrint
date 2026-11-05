@@ -57,7 +57,7 @@ module StackShapeOfMethod =
         (binding : GenericBinding)
         (isStatic : bool)
         (signature : TypeMethodSignature<TypeDefn>)
-        (body : MethodInstructions<TypeDefn>)
+        (body : MethodInstructions)
         (tokens : Map<int, TokenShape>)
         : StackShapeInputs
         =

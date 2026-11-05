@@ -605,6 +605,7 @@ module TestDelegateLayout =
                     fixture.BaseClassTypes.Corelib
                     stub
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef (Some fixture.Delegate)))
                     None
             with

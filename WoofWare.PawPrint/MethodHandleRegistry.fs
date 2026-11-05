@@ -73,7 +73,7 @@ module MintedDynamicMethodBody =
         }
 
     /// Complete the body with the `initLocals` that was latched at first execution.
-    let withLocalsInit (localsInit : bool) (body : MintedDynamicMethodBody) : MethodInstructions<TypeDefn> =
+    let withLocalsInit (localsInit : bool) (body : MintedDynamicMethodBody) : MethodInstructions =
         {
             Instructions = body.Instructions
             Locations = body.Locations

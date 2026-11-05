@@ -522,6 +522,9 @@ module SignalDispatch =
         // expected to be the static `OnPosixSignal`; if a test installs an
         // instance stand-in, that's a configuration error in the test, not
         // something this dispatch path should silently paper over.
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes mi state
+
         let newMethodState =
             match
                 MethodState.Empty
@@ -531,6 +534,7 @@ module SignalDispatch =
                     containingAssembly
                     mi
                     mi.Generics
+                    localTypes
                     args
                     None
             with

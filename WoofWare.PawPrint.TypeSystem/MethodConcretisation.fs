@@ -2,7 +2,6 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open System.Reflection.Metadata
-open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 
 /// A method instantiated for execution: its declaring type and its own generic parameters bound to
@@ -31,23 +30,7 @@ module MethodConcretisation =
         // lists, and of the declaring type only its identity and its generic *arity*; so that
         // is the key. A dynamic method has no declaring type and is not memoised.
         let key : ConcreteMethodKey option =
-            match methodToCall.Owner with
-            | MethodOwner.DynamicMethodsClass _ -> None
-            | MethodOwner.DeclaredOn declaringType ->
-                let row, synthesised = methodToCall.IdentityKey
-
-                Some
-                    {
-                        DeclaringType = declaringType.Identity
-                        MethodRow =
-                            row
-                            |> Option.map (fun h ->
-                                MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit h : EntityHandle)
-                            )
-                        Synthesised = synthesised
-                        TypeGenerics = List.ofSeq typeGenerics
-                        MethodGenerics = List.ofSeq methodGenerics
-                    }
+            ConcreteMethodKey.ofMethod methodToCall typeGenerics methodGenerics
 
         match key |> Option.bind (fun key -> Map.tryFind key state._ConcretisedMethods) with
         | Some hit -> state, Ok (hit.Method, hit.DeclaringTypeHandle)
@@ -152,3 +135,41 @@ module MethodConcretisation =
             methodToCall
             concretizedMethodGenerics
             state
+
+    /// The concrete types of the locals of `method`, a method `concretizeMethodWithAllGenerics`
+    /// instantiated, against that instantiation, in slot order (`Concretization.concretizeLocals`):
+    /// what CoreCLR loads when it compiles the method. A dynamic method's are not memoised.
+    let concretizeLocals
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : TypeSystemState)
+        : TypeSystemState * Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure>
+        =
+        let key =
+            ConcreteMethodKey.ofMethod method method.DeclaringTypeGenerics method.Generics
+
+        match key |> Option.bind (fun key -> Map.tryFind key state._ConcretisedLocals) with
+        | Some hit -> state, Ok hit
+        | None ->
+
+        let locals, concreteTypes, assemblies =
+            Concretization.concretizeLocals
+                state.ConcreteTypes
+                (TypeResolution.directoryLoader loggerFactory dotnetRuntimeDirs)
+                state._LoadedAssemblies
+                baseClassTypes
+                method
+
+        let state =
+            { state with
+                ConcreteTypes = concreteTypes
+                _LoadedAssemblies = assemblies
+            }
+
+        // A failure is not memoised: concretising the locals again fails the same way.
+        match locals, key with
+        | Ok locals, Some key -> state.WithConcretisedLocals key locals, Ok locals
+        | Ok locals, None -> state, Ok locals
+        | Error failure, _ -> state, Error failure

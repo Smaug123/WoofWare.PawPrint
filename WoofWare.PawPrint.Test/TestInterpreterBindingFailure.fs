@@ -609,6 +609,7 @@ module TestInterpreterBindingFailure =
                 method
                 ImmutableArray.Empty
                 ImmutableArray.Empty
+                ImmutableArray.Empty
                 None
         with
         | Ok frame -> IlMachineState.addThread frame state

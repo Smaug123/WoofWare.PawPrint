@@ -79,7 +79,7 @@ module TestUnaryConstIlOp =
 
         let op = IlOp.UnaryConst op
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             { MethodInstructions.onlyRet () with
                 Instructions = [ op, 0 ]
                 Locations = Map.empty |> Map.add 0 op
@@ -111,6 +111,7 @@ module TestUnaryConstIlOp =
                     state.TypeSystem._LoadedAssemblies
                     corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None
@@ -258,6 +259,7 @@ module TestUnaryConstIlOp =
                     state.TypeSystem._LoadedAssemblies
                     corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None

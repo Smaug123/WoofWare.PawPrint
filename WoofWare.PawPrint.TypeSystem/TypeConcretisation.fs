@@ -2441,7 +2441,9 @@ module Concretization =
                         |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
                         |> primeFields assemblies concreteTypes
 
-    /// Concretize a method's signature and body.
+    /// Concretize a method's declaring type, signature and generics. Its locals are left as its
+    /// local signature spells them, for `concretizeLocals`: CoreCLR loads them when it compiles the
+    /// method, not when it binds a call to it.
     ///
     /// `typeArgs` instantiates the declaring type and must have exactly one handle per generic
     /// parameter it declares (counting those a nested type inherits from its declaring types);
@@ -2582,33 +2584,12 @@ module Concretization =
         | Error failure, concCtx -> stopped failure concCtx
         | Ok signature, concCtx ->
 
-        // Concretize local variables (only IL bodies carry them).
-        let body =
-            match method.Body with
-            | MethodBody.Il instr ->
-                match instr.LocalVars with
-                | None -> Ok (MethodBody.Il (MethodInstructions.setLocalVars None instr)), concCtx
-                | Some vars ->
-                    match
-                        concretizeTypeArray concCtx loadAssembly declaringType.AssemblyFullName typeArgs methodArgs vars
-                    with
-                    | Ok handles, ctx -> Ok (MethodBody.Il (MethodInstructions.setLocalVars (Some handles) instr)), ctx
-                    | Error failure, ctx -> Error failure, ctx
-            | MethodBody.InternalCall -> Ok MethodBody.InternalCall, concCtx
-            | MethodBody.PInvoke -> Ok MethodBody.PInvoke, concCtx
-            | MethodBody.RuntimeProvided rb -> Ok (MethodBody.RuntimeProvided rb), concCtx
-            | MethodBody.Abstract -> Ok MethodBody.Abstract, concCtx
-
-        match body with
-        | Error failure, concCtx2 -> stopped failure concCtx2
-        | Ok body, concCtx2 ->
-
         // Map generics to handles
         let genericHandles =
             method.Generics
             |> ImmutableArray.map (fun (gp, md) -> methodArgs.[gp.SequenceNumber])
 
-        // Concretization rewrites only the universal facts — declaring type, body, generics,
+        // Concretization rewrites only the universal facts — declaring type, generics,
         // signature — so whichever tail the method carries passes through untouched.
         let concretizedMethod : MethodInfo<_, _, _> =
             method
@@ -2616,7 +2597,7 @@ module Concretization =
                 {
                     Owner = MethodOwner.DeclaredOn concretizedDeclaringType
                     Name = core.Name
-                    Body = body
+                    Body = core.Body
                     Generics = genericHandles
                     Signature = signature
                     IsStatic = core.IsStatic
@@ -2624,8 +2605,7 @@ module Concretization =
             )
 
         // Every ConcreteTypeHandle this method emits is subsequently fed to
-        // CliType.zeroOf: locals when the frame is set up (MethodState.Empty),
-        // each parameter handle when the caller coerces arguments before invoke
+        // CliType.zeroOf: each parameter handle when the caller coerces arguments before invoke
         // (IlMachineStateExecution.callMethod), and the return handle when a
         // non-void method returns (IlMachineThreadState.ret). Some intrinsics
         // — Unsafe.SizeOf<T>, Span<T>.Clear, and their siblings — also feed
@@ -2663,25 +2643,77 @@ module Concretization =
             | MethodReturnType.Void -> []
             | MethodReturnType.Returns h -> [ h ]
 
-        let localHandles =
-            match body with
-            | MethodBody.Il instr ->
-                match instr.LocalVars with
-                | None -> []
-                | Some vars -> List.ofSeq vars
-            | MethodBody.InternalCall
-            | MethodBody.PInvoke
-            | MethodBody.RuntimeProvided _
-            | MethodBody.Abstract -> []
-
-        // Parameters, the return, locals; then the method-level generic arguments (Unsafe.SizeOf<T>
-        // etc read T here) and the declaring type's (Span<T>.Clear etc read T here).
+        // Parameters, the return; then the method-level generic arguments (Unsafe.SizeOf<T> etc read
+        // T here) and the declaring type's (Span<T>.Clear etc read T here). The locals are primed
+        // by `concretizeLocals`.
         signature.ParameterTypes
         @ returnHandles
-        @ localHandles
         @ List.ofSeq genericHandles
         @ List.ofSeq concretizedDeclaringType.Generics
-        |> prime concCtx2.LoadedAssemblies concCtx2.ConcreteTypes
+        |> prime concCtx.LoadedAssemblies concCtx.ConcreteTypes
+
+
+    /// Concretize the locals of `method`, a method `concretizeMethod` instantiated, against that
+    /// instantiation, in slot order; and load every assembly the base chain of each names, as
+    /// `concretizeMethod` does for its signature, since a frame zeroes each local. This is what
+    /// CoreCLR loads when it compiles the method. A method with no IL body, or no locals, has none.
+    ///
+    /// A type a local names that does not bind is the result's failure, with what was loaded and
+    /// registered before it.
+    let concretizeLocals
+        (ctx : AllConcreteTypes)
+        (loadAssembly : IAssemblyLoad)
+        (assemblies : LoadedAssemblies)
+        (baseTypes : BaseClassTypes<DumpedAssembly>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : Result<ImmutableArray<ConcreteTypeHandle>, TypeBindingFailure> * AllConcreteTypes * LoadedAssemblies
+        =
+        match MethodInfo.tryIlBody method |> Option.bind _.LocalVars with
+        | None -> Ok ImmutableArray.Empty, ctx, assemblies
+        | Some vars ->
+
+        let concCtx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = ctx
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
+            }
+
+        match
+            concretizeTypeArray
+                concCtx
+                loadAssembly
+                method.DeclaringAssemblyFullName
+                method.DeclaringTypeGenerics
+                method.Generics
+                vars
+        with
+        | Error failure, concCtx -> Error failure, concCtx.ConcreteTypes, concCtx.LoadedAssemblies
+        | Ok handles, concCtx ->
+
+        let visited = System.Collections.Generic.HashSet<ConcreteTypeHandle> ()
+
+        let rec prime
+            (assemblies : LoadedAssemblies)
+            (concreteTypes : AllConcreteTypes)
+            (rest : ConcreteTypeHandle list)
+            =
+            match rest with
+            | [] -> Ok handles, concreteTypes, assemblies
+            | handle :: rest ->
+                match
+                    ensureBaseAssembliesLoadedForConcreteHandle
+                        loadAssembly
+                        baseTypes
+                        visited
+                        assemblies
+                        concreteTypes
+                        handle
+                with
+                | assemblies, concreteTypes, None -> prime assemblies concreteTypes rest
+                | assemblies, concreteTypes, Some failure -> Error failure, concreteTypes, assemblies
+
+        prime concCtx.LoadedAssemblies concCtx.ConcreteTypes (List.ofSeq handles)
 
     let rec concreteHandleToTypeDefn
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
