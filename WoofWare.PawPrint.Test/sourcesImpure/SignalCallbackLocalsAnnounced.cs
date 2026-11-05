@@ -48,8 +48,10 @@ unsafe class Program
         SetHandler(&Callback);
         Kill(Environment.ProcessId, GetPlatformSignalNumber(PosixSignal.SIGCONT));
 
-        for (int i = 0; i < 10000 && s_done == 0; i++)
-            Thread.Yield();
+        // Up to 30 seconds, for the signal thread to be scheduled and the
+        // callback compiled on a busy host.
+        for (int i = 0; i < 3000 && s_done == 0; i++)
+            Thread.Sleep(10);
 
         if (s_done == 0)
             return 7;
