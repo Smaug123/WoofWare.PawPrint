@@ -313,7 +313,11 @@ type EmitScope =
 module EmitScope =
     let private strictUtf8 : UTF8Encoding = UTF8Encoding (false, true)
 
-    /// The bytes `#Strings` holds for a string, without its terminating NUL.
+    // CoreCLR's emitter takes UTF-16 and stores UTF-8, replacing each unpaired surrogate with U+FFFD
+    // (measured on .NET 10: an assembly named "Bad" and U+D800 reports the name "Bad" and U+FFFD).
+    let private replacingUtf8 : UTF8Encoding = UTF8Encoding (false, false)
+
+    /// The bytes `#Strings` holds for a string `internString` stored, without its terminating NUL.
     let internal utf8 (value : string) : byte[] = strictUtf8.GetBytes value
 
     /// The length of the compressed unsigned integer (ECMA-335 II.23.2) that prefixes a blob.
@@ -364,12 +368,15 @@ module EmitScope =
         requireRid "EmitScope.guidAt" "#GUID" scope.Guids.Count index.Index
         scope.Guids.[index.Index - 1]
 
-    /// The offset of a string in the `#Strings` heap, adding it if the heap lacks it, as CoreCLR's string
-    /// pool interns. Refuses a string with a NUL, which the heap's terminator would cut short, and one
-    /// that is not valid UTF-16, which has no UTF-8 encoding to store.
+    /// The offset in the `#Strings` heap of what CoreCLR's emitter stores for a UTF-16 string, adding it
+    /// if the heap lacks it, as CoreCLR's string pool interns. That is the string's UTF-8 encoding, with
+    /// each unpaired surrogate replaced by U+FFFD, so `stringAt` gives back the string with those
+    /// replacements made. Refuses a string with a NUL, which the heap's terminator would cut short.
     let internString (value : string) (scope : EmitScope) : StringOffset * EmitScope =
         if value.Contains '\000' then
             invalidArg (nameof value) $"a #Strings entry cannot hold a NUL, which would end it: %A{value}"
+
+        let value = replacingUtf8.GetString (replacingUtf8.GetBytes value)
 
         match scope.StringOffsets.TryGetValue value with
         | true, offset -> offset, scope
