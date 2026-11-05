@@ -158,110 +158,158 @@ module TestEmitScopeExtension =
         moved.Value |> shouldBeGreaterThan 10
         added.Value |> shouldBeGreaterThan 30
 
-    /// Every row, heap entry and identity column of `before`'s image, and whether `after`'s image reads
-    /// each back the same; the sorted tables per class, each class's rows in image order.
-    let private readsBackTheSame (before : EmitScope) (after : EmitScope) : bool =
+    /// What reading `after`'s image where `before`'s was read shows to have changed, each as a
+    /// requirement on the violations reported: a category, for counting, and whether the violations
+    /// meet it.
+    let private differencesSeen
+        (before : EmitScope)
+        (after : EmitScope)
+        : (string * (EmitScopeExtensionViolation list -> bool)) list
+        =
         let beforePe, beforeReader = readImage (EmitScopeImage.write before)
         use _ = beforePe
         let afterPe, afterReader = readImage (EmitScopeImage.write after)
         use _ = afterPe
 
-        let rows =
+        let has (violation : EmitScopeExtensionViolation) (violations : EmitScopeExtensionViolation list) =
+            List.contains violation violations
+
+        // A heap entry reads back differently only if it, or an entry interned before it, changed.
+        let heapEntryAtOrBefore (heap : HeapIndex) (entry : int) (violations : EmitScopeExtensionViolation list) =
+            violations
+            |> List.exists (fun v ->
+                match v with
+                | EmitScopeExtensionViolation.HeapEntryChanged (h, e) -> h = heap && e <= entry
+                | _ -> false
+            )
+
+        let reads (f : unit -> 'a) : 'a option =
+            try
+                Some (f ())
+            with _ ->
+                None
+
+        [
+            // A row reads back differently only if the scope's row at that RID changed.
             let afterRows = describeRows afterReader
 
-            describeRows beforeReader
-            |> Map.forall (fun key row -> afterRows.TryFind key = Some row)
+            for KeyValue ((table, rid), row) in describeRows beforeReader do
+                if afterRows.TryFind (table, rid) <> Some row then
+                    yield "row", has (EmitScopeExtensionViolation.RowChanged (table, rid))
 
-        let strings =
-            EmitScope.strings before
-            |> Seq.forall (fun value ->
+            for entry, value in Seq.indexed (EmitScope.strings before) do
                 let offset = EmitScope.internString value before |> fst
 
-                try
-                    afterReader.GetString (MetadataTokens.StringHandle offset.Offset) = value
-                with _ ->
-                    false
-            )
+                if
+                    reads (fun () -> afterReader.GetString (MetadataTokens.StringHandle offset.Offset))
+                    <> Some value
+                then
+                    yield "string", heapEntryAtOrBefore HeapIndex.String (entry + 1)
 
-        let blobs =
-            EmitScope.blobs before
-            |> Seq.forall (fun value ->
+            for entry, value in Seq.indexed (EmitScope.blobs before) do
                 let offset = EmitScope.internBlob value before |> fst
 
-                try
-                    afterReader.GetBlobBytes (MetadataTokens.BlobHandle offset.Offset) |> Seq.toList = Seq.toList value
-                with _ ->
-                    false
-            )
+                let read =
+                    reads (fun () ->
+                        afterReader.GetBlobBytes (MetadataTokens.BlobHandle offset.Offset)
+                        |> List.ofArray
+                    )
 
-        let moduleRow (reader : MetadataReader) =
-            let m = reader.GetModuleDefinition ()
-            MetadataTokens.GetHeapOffset m.Name, reader.GetGuid m.Mvid
+                if read <> Some (List.ofSeq value) then
+                    yield "blob", heapEntryAtOrBefore HeapIndex.Blob (entry + 1)
 
-        let assemblyRow (reader : MetadataReader) =
-            let a = reader.GetAssemblyDefinition ()
+            for entry, value in Seq.indexed (EmitScope.guids before) do
+                if
+                    reads (fun () -> afterReader.GetGuid (MetadataTokens.GuidHandle (entry + 1)))
+                    <> Some value
+                then
+                    yield "guid", has (EmitScopeExtensionViolation.HeapEntryChanged (HeapIndex.Guid, entry + 1))
 
-            a.Version,
-            a.Flags,
-            a.HashAlgorithm,
-            MetadataTokens.GetHeapOffset a.PublicKey,
-            MetadataTokens.GetHeapOffset a.Name,
-            MetadataTokens.GetHeapOffset a.Culture
+            let assemblyRow (reader : MetadataReader) =
+                let a = reader.GetAssemblyDefinition ()
 
-        let perClass (reader : MetadataReader) (t : int) =
-            let definition = reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle t)
+                a.Version,
+                a.Flags,
+                a.HashAlgorithm,
+                MetadataTokens.GetHeapOffset a.PublicKey,
+                MetadataTokens.GetHeapOffset a.Name,
+                MetadataTokens.GetHeapOffset a.Culture
 
-            let interfaces =
-                [
-                    for i in definition.GetInterfaceImplementations () do
-                        yield token (reader.GetInterfaceImplementation i).Interface
-                ]
+            if assemblyRow beforeReader <> assemblyRow afterReader then
+                yield "assembly", has (EmitScopeExtensionViolation.RowChanged (TableIndex.Assembly, 1))
 
-            let impls =
-                [
-                    for i in definition.GetMethodImplementations () do
-                        let row = reader.GetMethodImplementation i
-                        yield token row.MethodBody, token row.MethodDeclaration
-                ]
+            // A class's rows in a sorted table, in image order, gain rows only at the end, unless the
+            // scope's rows of that table changed.
+            let rowOfTable (table : TableIndex) (violations : EmitScopeExtensionViolation list) =
+                violations
+                |> List.exists (fun v ->
+                    match v with
+                    | EmitScopeExtensionViolation.RowChanged (t, _) -> t = table
+                    | _ -> false
+                )
 
-            interfaces, impls
+            let perClass (reader : MetadataReader) (t : int) =
+                let definition = reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle t)
 
-        let sorted =
-            [ 1 .. (EmitScope.typeDefs before).Count ]
-            |> List.forall (fun t ->
+                let interfaces =
+                    [
+                        for i in definition.GetInterfaceImplementations () do
+                            yield token (reader.GetInterfaceImplementation i).Interface
+                    ]
+
+                let impls =
+                    [
+                        for i in definition.GetMethodImplementations () do
+                            let row = reader.GetMethodImplementation i
+                            yield token row.MethodBody, token row.MethodDeclaration
+                    ]
+
+                interfaces, impls
+
+            for t in 1 .. min (EmitScope.typeDefs before).Count (EmitScope.typeDefs after).Count do
                 let beforeInterfaces, beforeImpls = perClass beforeReader t
                 let afterInterfaces, afterImpls = perClass afterReader t
 
-                List.truncate beforeInterfaces.Length afterInterfaces = beforeInterfaces
-                && List.truncate beforeImpls.Length afterImpls = beforeImpls
-            )
+                if List.truncate beforeInterfaces.Length afterInterfaces <> beforeInterfaces then
+                    yield "sorted", rowOfTable TableIndex.InterfaceImpl
 
-        rows
-        && strings
-        && blobs
-        && moduleRow beforeReader = moduleRow afterReader
-        && assemblyRow beforeReader = assemblyRow afterReader
-        && sorted
+                if List.truncate beforeImpls.Length afterImpls <> beforeImpls then
+                    yield "sorted", rowOfTable TableIndex.MethodImpl
+        ]
 
     [<Test>]
-    let ``rewriting a scope's history is refused whenever its image would read back differently`` () : unit =
-        let differed = ref 0
+    let ``rewriting a scope's history is refused for everything its image would read back differently`` () : unit =
+        let seen = Collections.Generic.Dictionary<string, int> ()
 
-        let property (mvid : Guid) (ops : Op list) (index : int) (replacement : Op) (suffix : int) : unit =
+        let property
+            (mvid : Guid)
+            (otherMvid : Guid option)
+            (ops : Op list)
+            (index : int)
+            (replacement : Op)
+            (suffix : int)
+            : unit
+            =
             if not ops.IsEmpty then
                 let i = index % ops.Length
                 let before = apply mvid ops
-                // The rewritten history, perhaps cut short.
+                // The rewritten history, perhaps cut short, and perhaps of another module.
                 let rewritten =
                     List.updateAt i replacement ops |> List.truncate (i + 1 + suffix % ops.Length)
 
-                let after = apply mvid rewritten
+                let after = apply (Option.defaultValue mvid otherMvid) rewritten
 
                 let violations = EmitScopeExtension.violations ImmutableHashSet.Empty before after
 
-                if not (readsBackTheSame before after) then
-                    differed.Value <- differed.Value + 1
-                    violations |> shouldNotEqual []
+                for category, met in differencesSeen before after do
+                    seen.[category] <-
+                        (match seen.TryGetValue category with
+                         | true, n -> n
+                         | false, _ -> 0)
+                        + 1
+
+                    if not (met violations) then
+                        failwith $"a %s{category} difference is not among the violations %A{violations}"
 
                 // Nothing is created, so nothing can be added to or moved within a created type.
                 violations |> List.choose createdTypeNamed |> shouldEqual []
@@ -272,17 +320,41 @@ module TestEmitScopeExtension =
                 (Arb.fromGen (
                     gen {
                         let! mvid = genGuid
+                        let! otherMvid = Gen.frequency [ 3, Gen.constant None ; 1, Gen.map Some genGuid ]
                         let! ops = genOps
                         let! index = choice
                         let! replacement = genOp
                         let! suffix = choice
-                        return mvid, ops, index, replacement, suffix
+                        return mvid, otherMvid, ops, index, replacement, suffix
                     }
                 ))
-                (fun (mvid, ops, index, replacement, suffix) -> property mvid ops index replacement suffix)
+                (fun (mvid, otherMvid, ops, index, replacement, suffix) ->
+                    property mvid otherMvid ops index replacement suffix
+                )
         )
 
-        differed.Value |> shouldBeGreaterThan 100
+        for category in [ "row" ; "string" ; "blob" ; "guid" ; "sorted" ] do
+            let count =
+                match seen.TryGetValue category with
+                | true, n -> n
+                | false, _ -> 0
+
+            if count < 20 then
+                failwith $"only %d{count} %s{category} differences were generated; the property barely tests them"
+
+    /// The one way two modules' scopes differ in the `Module` row alone: the empty name is at offset 0,
+    /// and `<Module>`, which every scope interns next, is then at the offset the other name has.
+    [<Test>]
+    let ``a scope of another module is refused`` () : unit =
+        let before = EmitScope.create "" Guid.Empty
+        let after = EmitScope.create "<Module>" Guid.Empty
+
+        EmitScope.strings after
+        |> List.ofSeq
+        |> shouldEqual (List.ofSeq (EmitScope.strings before))
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before after
+        |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.Module, 1) ]
 
     [<Test>]
     let ``a changed row is reported at its RID`` () : unit =
