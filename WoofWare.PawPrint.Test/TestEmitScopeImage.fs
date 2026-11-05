@@ -58,8 +58,22 @@ module TestEmitScopeImage =
             MethodRefs : MemberRefRid list
         }
 
+    // Unpaired surrogates too, built at run time because the F# compiler replaces one in a literal.
     let private genName : Gen<string> =
-        Gen.elements [ "a" ; "Z" ; "0" ; "_" ; " " ; "<" ; "é" ; "日" ; "\U0001F600" ]
+        Gen.elements
+            [
+                "a"
+                "Z"
+                "0"
+                "_"
+                " "
+                "<"
+                "é"
+                "日"
+                "\U0001F600"
+                string (char 0xD800)
+                string (char 0xDFFF)
+            ]
         |> Gen.listOf
         |> Gen.map String.Concat
 
@@ -981,6 +995,35 @@ module TestEmitScopeImage =
             Prop.forAll
                 (Arb.fromGen (Gen.zip3 genGuid genOps choice))
                 (fun (mvid, ops, split) -> property mvid ops split)
+        )
+
+    /// What CoreCLR's emitter stores for a UTF-16 string: its UTF-8 encoding, each unpaired surrogate
+    /// replaced by U+FFFD (measured on .NET 10: an assembly named "Bad" and U+D800 is named "Bad" and
+    /// U+FFFD).
+    let private asCoreClrStores (value : string) : string =
+        Text.Encoding.UTF8.GetString (Text.Encoding.UTF8.GetBytes value)
+
+    [<Test>]
+    let ``a string is interned as the UTF-8 CoreCLR stores, unpaired surrogates replaced`` () : unit =
+        let genChar =
+            Gen.oneof [ Gen.choose (1, 0xFFFF) |> Gen.map char ; Gen.elements [ char 0xD800 ; char 0xDC00 ; 'a' ] ]
+
+        let property (value : string) : unit =
+            let offset, scope = EmitScope.internString value (EmitScope.create "M" Guid.Empty)
+            EmitScope.stringAt offset scope |> shouldEqual (asCoreClrStores value)
+
+            // And the string it is stored as is the same entry.
+            EmitScope.internString (asCoreClrStores value) scope |> fst |> shouldEqual offset
+
+            let pe, reader = readImage (EmitScopeImage.write scope)
+            use _ = pe
+            reader.GetString (MetadataTokens.StringHandle offset.Offset) |> shouldEqual (asCoreClrStores value)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll
+                (Arb.fromGen (Gen.listOf genChar |> Gen.map (fun cs -> System.String (Array.ofList (List.ofSeq cs)))))
+                property
         )
 
     [<Test>]

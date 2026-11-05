@@ -170,6 +170,14 @@ public static class Program
             return 21;
         }
 
+        // 22: the name is stored as UTF-8, with an unpaired surrogate replaced by U+FFFD.
+        AssemblyName unpaired = new AssemblyName ("Unpaired" + (char) 0xD800);
+
+        if (AssemblyBuilder.DefineDynamicAssembly (unpaired, AssemblyBuilderAccess.Run).ManifestModule.Assembly.GetName ().Name != "Unpaired\uFFFD")
+        {
+            return 22;
+        }
+
         return 0;
     }
 }
