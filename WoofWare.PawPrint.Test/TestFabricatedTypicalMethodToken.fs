@@ -1,7 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.IO
 open System.Reflection
+open System.Reflection.Emit
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
@@ -251,3 +253,65 @@ public static class Driver
                 )
             then
                 failwith $"PawPrint did not refuse the token as naming the typical instantiation: %A{messages}"
+
+    /// `class Gen<T>` with `virtual int Foo()` returning 5, and `int Caller()`, which makes a
+    /// `Func<int>` over `this` by `ldvirtftn Gen`1::Foo()`, by MethodDef, and invokes it.
+    let private fabricateVirtual () : byte[] =
+        let builder =
+            PersistedAssemblyBuilder (AssemblyName "TypicalVirtual", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "TypicalVirtual"
+        let gen = modul.DefineType ("Gen`1", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        gen.DefineGenericParameters [| "T" |] |> ignore<GenericTypeParameterBuilder[]>
+
+        gen.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<ConstructorBuilder>
+
+        let foo =
+            gen.DefineMethod (
+                "Foo",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<int>,
+                [||]
+            )
+
+        let il = foo.GetILGenerator ()
+        il.Emit OpCodes.Ldc_I4_5
+        il.Emit OpCodes.Ret
+
+        let caller =
+            gen.DefineMethod ("Caller", MethodAttributes.Public ||| MethodAttributes.HideBySig, typeof<int>, [||])
+
+        let il = caller.GetILGenerator ()
+        il.Emit OpCodes.Ldarg_0
+        il.Emit OpCodes.Dup
+        il.Emit (OpCodes.Ldvirtftn, foo)
+        il.Emit (OpCodes.Newobj, typeof<Func<int>>.GetConstructor [| typeof<obj> ; typeof<nativeint> |])
+        il.Emit (OpCodes.Callvirt, typeof<Func<int>>.GetMethod "Invoke")
+        il.Emit OpCodes.Ret
+
+        gen.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// Unlike `call` and `ldftn`, `ldvirtftn` dispatches on its receiver, whose type is closed, so
+    /// real .NET runs this shape.
+    [<Test>]
+    let ``an ldvirtftn of a generic type's virtual method by MethodDef dispatches on its receiver`` () : unit =
+        FabricatedGuest.run
+            "TypicalVirtual"
+            (fabricateVirtual ())
+            "TypicalVirtualDriver"
+            """
+public static class Driver
+{
+    public static int Main(string[] args) => new Gen<string>().Caller();
+}
+"""
+            5
