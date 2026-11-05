@@ -413,6 +413,22 @@ module TestImpureCases =
         [
             currentDirectoryCase "/héllo/中文/🐶",
             """A *short* non-ASCII directory, parked for an unrelated reason: it fits the stackalloc, so `SystemNative_GetCwd` succeeds and ERANGE never enters into it, but decoding the bytes back with `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path, which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a `cgt.un` between two byrefs into one stackalloc block ("refusing cgt.un: no structural order between byrefs"). The ASCII siblings in `cases` cover the same handler; what is missing is byref ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of such a path directly in the meantime."""
+            {
+                FileName = "TypeBuilderInterfaceOverride.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            },
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, it stops in `ModuleBuilder.DefineType` at `TypeBuilder_DefineType`; each stage of the plan takes it a QCall further."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -4260,6 +4276,25 @@ module TestImpureCases =
                                 // PawPrint runs with invariant globalization, which admits no culture
                                 // but the invariant one unless this is off; the guest names `fr-FR`.
                                 "System.Globalization.PredefinedCulturesOnly", "false"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `ModuleBuilder_GetTypeRef`, through `ModuleBuilder.GetTypeMetadataToken`: the
+                // TypeRef and AssemblyRef rows a dynamic module gains for types of other
+                // assemblies, each deduplicated as CoreCLR's emitter does. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "ModuleBuilderTypeReferences.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
                 Oracle = OraclePolicy.Never
