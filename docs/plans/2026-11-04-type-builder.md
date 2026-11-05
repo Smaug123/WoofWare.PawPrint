@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -237,3 +237,67 @@ All thirteen mutants of the check, the load-context members and the writer's RID
   moved-row check. That is plausible (create `B`, then `DefineMethodOverride` on `A`), so if a guest
   reaches it, we decide then whether PawPrint keeps those handles anywhere outside the `DumpedAssembly`
   that a re-read rebuilds.
+
+## Stage 3 in detail
+
+### The split
+
+**Chosen (2026-11-05): one QCall group per PR.** The issue's guest interleaves references and
+definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineMethod`, a `MemberRef` for
+`IThing.get_Value`, ...), so a PR of all the references would move it no further than one of
+`GetTypeRef` alone. Each PR implements one group and re-runs the guest to find the next:
+
+* **3a, `ModuleBuilder_GetTypeRef`.** The guest then stops at `TypeBuilder_DefineType`.
+* Then `DefineType`, then methods and their signatures, then the `MemberRef`s and `MethodImpl`, in the
+  order the guest reaches them.
+
+### 3a: what CoreCLR's emitter writes
+
+Read from `ModuleBuilder_GetTypeRef` (vm/commodule.cpp), `Assembly::AddAssemblyRef`, `AssemblySpec`
+and `RegMeta` (md/compiler), and measured on .NET 10 through the public
+`ModuleBuilder.GetTypeMetadataToken`:
+
+* A dynamic module's emitter checks for duplicates of `TypeRef`, `AssemblyRef`, `MemberRef`,
+  signatures and the rest (`MDDupDefault | MDDupTypeDef | MDDupAssemblyRef | ...`, set in
+  `Assembly::CreateDynamic`'s scope). A type asked for twice gets one row.
+* A top-level type's `TypeRef` is scoped by an `AssemblyRef` made from the defining assembly's own
+  `Assembly` row: its name, version and culture, the key reduced to its token, and the row's flags
+  without `PublicKey`, then with the processor-architecture bits cleared unless marked specified.
+  `FindAssemblyRef` matches on name, culture, version and token, and ignores build and revision for
+  `mscorlib`.
+* A nested type's `TypeRef` is scoped by its enclosing type's, which the managed caller asks for first,
+  so the enclosing type's row comes first.
+* The namespace is everything before the last `.`, except that `A..ctor` is the name `.ctor` in `A`.
+* A reference from the module to its own type is looked up among its TypeDefs, not added. The managed
+  caller asks for one only for a type of this module that is not a `TypeBuilder`, which only
+  `CreateType` makes, so 3a refuses it with a TODO.
+
+### 3a: which assembly an AssemblyRef names
+
+CoreCLR's module also records, in its rid map, the loaded assembly each `AssemblyRef` was emitted for
+(`ForceStoreAssemblyRef`, first association kept), and a reference resolves through that before the
+binder sees it. That is how one dynamic module refers to a type of another, which the binder never
+finds.
+
+**Chosen (2026-11-05): a per-module map now.** Each dynamic assembly's entry in `LoadedAssemblies`
+holds `AssemblyRefRid -> definition identity`, which `WithAssemblyRefTarget` fills, asserting that the
+row is the one the scope finds for that assembly, and `TryResolveReference` consults it first. The
+alternative was to bind by name and refuse a reference to a dynamic assembly until a guest made one.
+An `AssemblyReference` now carries its referencing assembly's stored definition identity, so the lookup
+costs one dictionary probe rather than an `AssemblyName.FullName`, which hashes the key on every call.
+
+### 3a: the oracle
+
+* Find-or-define, over generated sequences: each `TypeRef` and `AssemblyRef` is found exactly when a
+  model of `FindTypeRefByName` and `FindAssemblyRef` says so, a found row adds nothing to any heap, and
+  each new row holds what `_SetAssemblyRefProps` stores.
+* Over every assembly in the test host's framework and an unsigned one, the request made from an
+  assembly's row names that assembly, with the token `AssemblyName` derives.
+* `ModuleBuilderTypeReferences.cs` checks the tokens, `GetReferencedAssemblies` and `ResolveType` over
+  twelve types of four assemblies, against constants measured on .NET 10.
+
+### 3a: left to later stages
+
+* The handler's call to `WithAssemblyRefTarget` is seen by no guest yet, because every assembly a 3a
+  guest can reference is one the binder also finds. A guest that derives a type in one dynamic module
+  from a `TypeBuilder` in another, after `DefineType`, is the case that shows it.

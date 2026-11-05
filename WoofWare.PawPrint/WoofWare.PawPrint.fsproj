@@ -238,6 +238,7 @@
     <Compile Include="Native\NativeRuntimeModule.fs" />
     <Compile Include="Native\NativeAssemblyLoadContext.fs" />
     <Compile Include="Native\NativeRuntimeAssemblyBuilder.fs" />
+    <Compile Include="Native\NativeRuntimeModuleBuilder.fs" />
     <!-- After NativeRuntimeTypeHelpers.fs: the CastHelpers QCall formats CoreCLR's
          InvalidCastException message with that module's type-name renderer. -->
     <Compile Include="Native\NativeDelegate.fs" />

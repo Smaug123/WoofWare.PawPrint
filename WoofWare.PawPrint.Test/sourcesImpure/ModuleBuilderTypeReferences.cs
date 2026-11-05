@@ -6,7 +6,8 @@ using System.Reflection.Emit;
 // The TypeRef and AssemblyRef rows a dynamic module gains when it is asked for a token naming a type
 // of another assembly, through `ModuleBuilder.GetTypeMetadataToken`. Each distinct type gets one
 // TypeRef, in the order first asked for, and an enclosing type's TypeRef comes before its nested
-// type's; each distinct assembly gets one AssemblyRef, in the same order. Measured on .NET 10.
+// type's; each distinct assembly gets one AssemblyRef, in the same order; and each token resolves
+// back to its type. Measured on .NET 10.
 //
 // Returns 0 on success, or the number of the first check that failed.
 
@@ -54,6 +55,17 @@ public static class Program
             {
                 Console.WriteLine ($"{Expected[i].Type}: expected {Expected[i].Token:x8}, got {token:x8}");
                 return 10 + i;
+            }
+        }
+
+        // Each row reads back, through the module's image and the AssemblyRef that scopes it, as the
+        // type it was made for.
+        for (int i = 0; i < Expected.Length; i++)
+        {
+            if (module.ResolveType (Expected[i].Token) != Expected[i].Type)
+            {
+                Console.WriteLine ($"{Expected[i].Token:x8} resolved to {module.ResolveType (Expected[i].Token)}, not {Expected[i].Type}");
+                return 50 + i;
             }
         }
 

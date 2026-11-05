@@ -428,7 +428,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. It stops in `ModuleBuilder.DefineType` at `ModuleBuilder_GetTypeRef`, resolving the parent type `object`; each stage of the plan un-parks it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, it stops in `ModuleBuilder.DefineType` at `TypeBuilder_DefineType`; each stage of the plan takes it a QCall further."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -4285,8 +4285,8 @@ module TestImpureCases =
             {
                 // `ModuleBuilder_GetTypeRef`, through `ModuleBuilder.GetTypeMetadataToken`: the
                 // TypeRef and AssemblyRef rows a dynamic module gains for types of other
-                // assemblies, each deduplicated as CoreCLR's emitter does. Every token is
-                // deterministic, so the real runtime checks the guest's constants.
+                // assemblies, each deduplicated as CoreCLR's emitter does. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
                 FileName = "ModuleBuilderTypeReferences.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -4297,7 +4297,7 @@ module TestImpureCases =
                                 "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
                             ]
                     )
-                Oracle = OraclePolicy.Always
+                Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }

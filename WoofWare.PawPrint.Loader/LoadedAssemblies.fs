@@ -161,8 +161,34 @@ type LoadedAssemblies =
     ///
     /// A dynamic assembly is never found this way. CoreCLR's binder does not consult dynamic
     /// assemblies, so a reference that names one is bound, if at all, to an image on disk.
+    ///
+    /// A row of a dynamic assembly that its emitter recorded (<c>WithAssemblyRefTarget</c>) resolves
+    /// to the assembly it was emitted for, before any of that: CoreCLR's module looks a reference up
+    /// in its rid map before it asks the binder.
     /// </remarks>
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
+        let recorded =
+            match this.Dynamic.TryGetValue reference.ReferencingAssemblyFullName with
+            | false, _ -> None
+            | true, content ->
+                let row =
+                    MetadataTokens.GetRowNumber (
+                        AssemblyReferenceHandle.op_Implicit (fst reference.Handle) : EntityHandle
+                    )
+
+                match EmitScope.tryAssemblyRefRid row content.Scope with
+                | None ->
+                    failwith
+                        $"TryResolveReference: %s{reference.ReferencingAssemblyFullName} has no AssemblyRef row %d{row} in its scope, but its image holds a reference there"
+                | Some row ->
+                    match content.AssemblyRefTargets.TryGetValue row with
+                    | true, target -> Some target
+                    | false, _ -> None
+
+        match recorded with
+        | Some target -> Some this.ByDefinition.[target]
+        | None ->
+
         let refFullName = reference.FullName
 
         match this.Bindings.TryGetValue refFullName with
@@ -408,7 +434,35 @@ type LoadedAssemblies =
         (target : DumpedAssembly)
         : LoadedAssemblies
         =
-        failwith "TODO: LoadedAssemblies.WithAssemblyRefTarget"
+        let operation = "WithAssemblyRefTarget"
+        let content = this.DynamicContent operation fullName
+
+        match this.ByDefinition.TryGetValue target.DefinitionFullName with
+        | true, loaded when Object.ReferenceEquals (loaded, target) -> ()
+        | _ ->
+            failwith
+                $"%s{operation}: %s{target.DefinitionFullName} is not the loaded assembly with that identity, so no row of %s{fullName} can have been emitted for it"
+
+        let request = AssemblyRefRequest.ofDefinition (target.PeReader.GetMetadataReader ())
+
+        match EmitScopeReferences.tryFindAssemblyRef request content.Scope with
+        | Some found when found = assemblyRef -> ()
+        | found ->
+            failwith
+                $"%s{operation}: the AssemblyRef row of %s{fullName} that a reference to %s{target.DefinitionFullName} would find is %A{found}, not row %d{assemblyRef.Rid}"
+
+        if content.AssemblyRefTargets.ContainsKey assemblyRef then
+            this
+        else
+            { this with
+                Dynamic =
+                    this.Dynamic.SetItem (
+                        fullName,
+                        { content with
+                            AssemblyRefTargets = content.AssemblyRefTargets.Add (assemblyRef, target.DefinitionFullName)
+                        }
+                    )
+            }
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =
