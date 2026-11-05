@@ -521,130 +521,6 @@ module ConcreteInterfaceDispatch =
             failwith
                 $"%s{operation}: a MethodImpl on %s{ownerDescription} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
 
-    /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
-    /// row is that method; a MemberRef is resolved against the owner's own methods by name and
-    /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one. A type on the way
-    /// that does not bind is the failure, and a body that names anything else is an unmodelled one:
-    /// CoreCLR refuses to load the owner (`IDS_CLASSLOAD_MI_ILLEGAL_BODY`).
-    let internal methodImplBody
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
-        (state : TypeSystemState)
-        (owner : SlotOwner)
-        (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (assembly : DumpedAssembly)
-        (body : MetadataToken)
-        : TypeSystemState *
-          Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
-        =
-        let refuse (state : TypeSystemState) (detail : string) : TypeSystemState * Result<'a, TypeBindingFailure> =
-            state,
-            Error (
-                TypeBindingFailure.Unmodelled
-                    {
-                        Diagnostic =
-                            $"%s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{body}, %s{detail}; ECMA-335 II.22.27 requires the body to be a method of the type itself, and CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_ILLEGAL_BODY), which is not modelled"
-                    }
-            )
-
-        match body with
-        | MetadataToken.MethodDef handle ->
-            let method = assembly.Methods.[handle]
-
-            if method.RequiredDeclaringType.Identity <> owner.Identity then
-                refuse state "a method of another type"
-            else
-                state, Ok method
-        | MetadataToken.MemberReference handle ->
-            let memberRef = assembly.Members.[handle]
-
-            match memberRef.Signature with
-            | MemberSignature.Field _ -> refuse state "which names a field"
-            | MemberSignature.Method signature ->
-
-            let state, parentIdentity =
-                match memberRef.Parent with
-                | MetadataToken.TypeDefinition parent ->
-                    state, Ok (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent)
-                | MetadataToken.TypeReference parent ->
-                    match
-                        TypeSystemState.resolveTypeFromRef
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            assembly
-                            assembly.TypeRefs.[parent]
-                            ImmutableArray.Empty
-                            state
-                    with
-                    | state, Error failure -> state, Error failure
-                    | state, Ok (_, resolved) ->
-                        state,
-                        Ok (
-                            ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
-                        )
-                | MetadataToken.TypeSpecification parent ->
-                    let spelling =
-                        match assembly.TypeSpecs.[parent].Signature with
-                        | TypeDefn.GenericInstantiation (generic, _) -> generic
-                        | nominal -> nominal
-
-                    ConcreteMethodTable.nominalIdentityOfSpelling
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        operation
-                        state
-                        assembly
-                        spelling
-                | _ -> refuse state "whose parent is not a type"
-
-            match parentIdentity with
-            | Error failure -> state, Error failure
-            | Ok parentIdentity when parentIdentity <> owner.Identity -> refuse state "a method of another type"
-            | Ok _ ->
-
-            let rec first
-                (state : TypeSystemState)
-                candidates
-                : TypeSystemState *
-                  Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
-                =
-                match candidates with
-                | [] -> refuse state "which names no method the type declares"
-                | (candidate : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) :: rest ->
-                    if candidate.Name <> memberRef.PrettyName then
-                        first state rest
-                    else
-
-                    match
-                        TypeSystemState.signaturesEquivalent
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            state
-                            false
-                            {
-                                Signature = signature
-                                AssemblyFullName = assembly.DefinitionFullName
-                                DeclaringTypeGenerics = owner.Substitution
-                            }
-                            {
-                                Signature = candidate.Signature
-                                AssemblyFullName = owner.AssemblyFullName
-                                DeclaringTypeGenerics = owner.Substitution
-                            }
-                    with
-                    | state, Error failure -> state, Error failure
-                    | state, Ok true -> state, Ok candidate
-                    | state, Ok false -> first state rest
-
-            first state ownerTypeInfo.Methods
-        | other ->
-            failwith
-                $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
-
     /// The interface dispatch entries `typeHandle` itself contributes, excluding everything it
     /// inherits: `MethodTableBuilder::PlaceInterfaceMethods` followed by the interface half of
     /// `PlaceMethodImpls`.
@@ -963,7 +839,7 @@ module ConcreteInterfaceDispatch =
                 | state, Ok (Some (interfaceHandle, declaredSubstitution, interfaceMethod)) ->
 
                 match
-                    methodImplBody
+                    ConcreteMethodTable.methodImplBody
                         loggerFactory
                         dotnetRuntimeDirs
                         baseClassTypes

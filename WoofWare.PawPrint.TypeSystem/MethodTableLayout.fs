@@ -322,6 +322,144 @@ module MethodTableLayout =
             failwith
                 $"%s{operation}: a base type is spelled %O{other}, which names no type definition; an extends clause is a TypeDefOrRefOrSpec, so it resolves to a nominal type or to `object`"
 
+    /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
+    /// row is that method; a MemberRef is resolved against the owner's own methods by name and
+    /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one. A type on the way
+    /// that does not bind is the failure, and a body that names anything else is an unmodelled one:
+    /// CoreCLR refuses to load the owner (`IDS_CLASSLOAD_MI_ILLEGAL_BODY`).
+    let internal methodImplBody
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (operation : string)
+        (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+        (owner : SlotOwner)
+        (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (assembly : DumpedAssembly)
+        (body : MetadataToken)
+        : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+          Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
+        =
+        let refuse
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (detail : string)
+            : TypeConcretization.ConcretizationContext<DumpedAssembly> * Result<'a, TypeBindingFailure>
+            =
+            ctx,
+            Error (
+                TypeBindingFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            $"%s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{body}, %s{detail}; ECMA-335 II.22.27 requires the body to be a method of the type itself, and CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_ILLEGAL_BODY), which is not modelled"
+                    }
+            )
+
+        match body with
+        | MetadataToken.MethodDef handle ->
+            let method = assembly.Methods.[handle]
+
+            if method.RequiredDeclaringType.Identity <> owner.Identity then
+                refuse ctx "a method of another type"
+            else
+                ctx, Ok method
+        | MetadataToken.MemberReference handle ->
+            let memberRef = assembly.Members.[handle]
+
+            match memberRef.Signature with
+            | MemberSignature.Field _ -> refuse ctx "which names a field"
+            | MemberSignature.Method signature ->
+
+            let ctx, parentIdentity =
+                match memberRef.Parent with
+                | MetadataToken.TypeDefinition parent ->
+                    ctx, Ok (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent)
+                | MetadataToken.TypeReference parent ->
+                    resolveTypeFromRef loggerFactory dotnetRuntimeDirs assembly assembly.TypeRefs.[parent] ctx
+                | MetadataToken.TypeSpecification parent ->
+                    let spelling =
+                        match assembly.TypeSpecs.[parent].Signature with
+                        | TypeDefn.GenericInstantiation (generic, _) -> generic
+                        | nominal -> nominal
+
+                    nominalIdentityOfSpelling loggerFactory dotnetRuntimeDirs operation ctx assembly spelling
+                | _ -> refuse ctx "whose parent is not a type"
+
+            match parentIdentity with
+            | Error failure -> ctx, Error failure
+            | Ok parentIdentity when parentIdentity <> owner.Identity -> refuse ctx "a method of another type"
+            | Ok _ ->
+
+            if assembly.DefinitionFullName <> owner.AssemblyFullName then
+                failwith
+                    $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body by a MemberRef of %s{assembly.DefinitionFullName}, but a MethodImpl row lives in its owner's assembly %s{owner.AssemblyFullName}"
+
+            // `FindMethodDef` (mdinternalro.cpp:794-880) takes the first of the type's own methods
+            // with the MemberRef's name whose signature blob is byte-for-byte the MemberRef's,
+            // skipping PrivateScope methods.
+            if
+                signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+            then
+                ctx,
+                Error (
+                    TypeBindingFailure.Unmodelled
+                        {
+                            Diagnostic =
+                                $"%s{operation}: a MethodImpl on %s{owner.Description} names its body by a MemberRef with a vararg signature, which CoreCLR compares by its fixed part (`_GetFixedSigOfVarArg`); that is not modelled"
+                        }
+                )
+            else
+
+            let named =
+                ownerTypeInfo.Methods
+                |> List.tryFind (fun candidate ->
+                    candidate.Name = memberRef.PrettyName
+                    && match candidate.TryMetadata with
+                       | None -> false
+                       | Some facts ->
+                           facts.SignatureBlob.Length = memberRef.SignatureBlob.Length
+                           && Seq.forall2 (=) facts.SignatureBlob memberRef.SignatureBlob
+                           && facts.MethodAttributes &&& MethodAttributes.MemberAccessMask
+                              <> MethodAttributes.PrivateScope
+                )
+
+            match named with
+            | Some candidate -> ctx, Ok candidate
+            | None -> refuse ctx "which names no method the type declares"
+        | other ->
+            failwith
+                $"BUG: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
+
+    /// `body`, which `methodImplBody` resolved for a MethodImpl of `owner` whose declaration is an
+    /// instance virtual, if it can override that declaration. A static body is refused: its signature
+    /// lacks the declaration's `HASTHIS` bit, so `EnumerateMethodImpls`' comparison of the two fails
+    /// (`IDS_CLASSLOAD_MI_BODY_DECL_MISMATCH`). So is a non-virtual instance body
+    /// (`IDS_CLASSLOAD_MI_MUSTBEVIRTUAL`). CoreCLR refuses to load the owner in either case, which is
+    /// not modelled.
+    let internal instanceOverrideBody
+        (operation : string)
+        (owner : SlotOwner)
+        (body : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        : Result<MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>, TypeBindingFailure>
+        =
+        let refuse (detail : string) =
+            Error (
+                TypeBindingFailure.Unmodelled
+                    {
+                        Diagnostic =
+                            $"%s{operation}: a MethodImpl on %s{owner.Description} names %s{body.Name} as the body of an instance virtual method, but %s{detail}, so CoreCLR rejects this type at load time with a TypeLoadException; that is not modelled"
+                    }
+            )
+
+        if body.IsStatic then
+            // `MetaSig::CompareMethodSigs` compares the calling-convention byte, `HASTHIS` included
+            // (siginfo.cpp:4590), and its failure is fatal (methodtablebuilder.cpp:2453).
+            refuse
+                "it is static, so its signature does not match the declaration's (IDS_CLASSLOAD_MI_BODY_DECL_MISMATCH)"
+        elif not body.IsVirtual then
+            // methodtablebuilder.cpp:5114-5121.
+            refuse "it is not virtual (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL)"
+        else
+            Ok body
+
     /// The base type a definition extends, and the arguments its extends clause applies to it, read in
     /// the extending type's own vocabulary.
     ///
@@ -1255,69 +1393,24 @@ module MethodTableLayout =
             | Ok DeclarationTarget.NoSlot -> ctx, Ok (content, writtenHere)
             | Ok (DeclarationTarget.Names (declaration, declaredSlot)) ->
 
-            let bodyHandle =
-                match impl.Body with
-                | MetadataToken.MethodDef handle -> Ok handle
-                | MetadataToken.MemberReference _ ->
-                    // Upstream resolves a MemberRef body to a method of the type itself
-                    // (`FindMethodDeclarationForMethodImpl`, methodtablebuilder.cpp:2337-2350), and
-                    // rejects the type only when it names anything else.
-                    Error (
-                        TypeBindingFailure.Unmodelled
-                            {
-                                Diagnostic =
-                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its body by a MemberRef, which CoreCLR resolves to a method of the type itself; that is not modelled"
-                            }
-                    )
-                | other ->
-                    failwith
-                        $"BUG: %s{operation}: MethodImpl on %s{table.Owner.Description} names its body with the token %O{other}, but a MethodImpl body is a MethodDefOrRef coded index"
+            let ctx, bodyMethod =
+                methodImplBody loggerFactory dotnetRuntimeDirs operation ctx table.Owner typeInfo assembly impl.Body
 
-            match bodyHandle with
+            match bodyMethod |> Result.bind (instanceOverrideBody operation table.Owner) with
             | Error failure -> ctx, Error failure
-            | Ok bodyHandle ->
+            | Ok bodyMethod ->
 
-            let body =
+            let bodySlot, bodyHome =
                 table.Placed
                 |> List.tryFind (fun (slot, _) ->
                     (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.DefinitionFullName,
-                                                                                   (Some bodyHandle, None))
+                                                                                   bodyMethod.IdentityKey)
                 )
-                // "Body's parent must be this class": upstream reads the body token's parent and
-                // throws `IDS_CLASSLOAD_MI_ILLEGAL_BODY` when it is not `GetCl()`
-                // (methodtablebuilder.cpp:2418-2421). `Placed` spans the whole chain, so without
-                // this an ancestor's method would be accepted as a body and its slot written.
-                |> Option.filter (fun (slot, _) -> slot.DeclaredBy.Identity = table.Owner.Identity)
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"BUG: %s{operation}: MethodImpl on %s{table.Owner.Description} names %s{bodyMethod.Name} as its body, an instance virtual method of the type itself, but the type's placed slots do not hold it"
+                )
 
-            match body with
-            | None ->
-                // A body another type declares is the load error `IDS_CLASSLOAD_MI_ILLEGAL_BODY`
-                // (:2418-2421), whatever else it is. A static body of the type itself is diverted
-                // before `PlaceMethodImpls` (:6445-6446) and never reaches a vtable slot, so this row
-                // does not write the vtable; a non-virtual instance body is the load error
-                // `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:4880-4884). `Placed` holds only instance
-                // virtuals, so each of those three arrives here.
-                let bodyMethod = assembly.Methods.[bodyHandle]
-
-                let refused (why : string) =
-                    ctx,
-                    Error (
-                        TypeBindingFailure.Unmodelled
-                            {
-                                Diagnostic =
-                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} names %s{bodyMethod.Name} as its body, which is not a virtual method of the type itself: %s{why}; that is not modelled"
-                            }
-                    )
-
-                if bodyMethod.RequiredDeclaringType.Identity <> table.Owner.Identity then
-                    refused
-                        "another type declares it, so CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_ILLEGAL_BODY)"
-                elif bodyMethod.IsStatic then
-                    ctx, Ok (content, writtenHere)
-                else
-                    refused
-                        "it is not virtual, so CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL)"
-            | Some (bodySlot, bodyHome) ->
 
             // `MethodImplCompareSignatures` (:6371-6403): the declaration and the body must have
             // equivalent signatures, and equivalent generic constraints when the declaration is
