@@ -608,6 +608,47 @@ module TestEmitScopeImage =
         |> Seq.map (fun (i, _) -> i + 1)
         |> List.ofSeq
 
+    /// Each method's parameter RIDs in the order CoreCLR lists them, keyed by method RID:
+    /// `CMiniMdRW::FixParamSequence` (md/enc/metamodelrw.cpp) slides each new parameter ahead of every
+    /// earlier one of the same method with a greater sequence number.
+    let private paramsInCoreClrOrder (parameters : ParamRow seq) : Map<int, int list> =
+        let listed = Collections.Generic.Dictionary<int, ResizeArray<int * uint16>> ()
+
+        parameters
+        |> Seq.iteri (fun i p ->
+            let list =
+                match listed.TryGetValue p.Owner.Rid with
+                | true, list -> list
+                | false, _ ->
+                    let list = ResizeArray ()
+                    listed.[p.Owner.Rid] <- list
+                    list
+
+            let mutable at = list.Count
+
+            while at > 0 && p.Sequence < snd list.[at - 1] do
+                at <- at - 1
+
+            list.Insert (at, (i + 1, p.Sequence))
+        )
+
+        listed
+        |> Seq.map (fun kv -> kv.Key, kv.Value |> Seq.map fst |> List.ofSeq)
+        |> Map.ofSeq
+
+    let private paramsOf (method : int) (order : Map<int, int list>) : int list =
+        order.TryFind method |> Option.defaultValue []
+
+    /// Whether every method's parameters, in CoreCLR's order, are already the `Param` table's RID order,
+    /// so that no `ParamPtr` is needed.
+    let private paramsInRidOrder (methodCount : int) (parameters : ParamRow seq) : bool =
+        let order = paramsInCoreClrOrder parameters
+
+        [
+            for m in 1..methodCount do
+                yield! paramsOf m order
+        ] = [ 1 .. Seq.length parameters ]
+
     /// Every row of the scope reads back from the image with the same columns at the RID the scope gave
     /// it, and every heap reference at the offset the scope gave it.
     let private checkRoundTrip (scope : EmitScope) (image : byte[]) : unit =
@@ -675,7 +716,6 @@ module TestEmitScopeImage =
         let parameters = EmitScope.parameters scope
         let fieldOwners = fields |> Seq.map _.Owner.Rid
         let methodOwners = methods |> Seq.map _.Owner.Rid
-        let paramOwners = parameters |> Seq.map _.Owner.Rid
 
         // A pointer table exactly when the children are not already grouped by parent.
         reader.GetTableRowCount TableIndex.FieldPtr
@@ -684,8 +724,15 @@ module TestEmitScopeImage =
         reader.GetTableRowCount TableIndex.MethodPtr
         |> shouldEqual (if grouped methodOwners then 0 else methods.Count)
 
+        let paramOrder = paramsInCoreClrOrder parameters
+
         reader.GetTableRowCount TableIndex.ParamPtr
-        |> shouldEqual (if grouped paramOwners then 0 else parameters.Count)
+        |> shouldEqual (
+            if paramsInRidOrder methods.Count parameters then
+                0
+            else
+                parameters.Count
+        )
 
         let typeDefs = EmitScope.typeDefs scope
         let interfaceImpls = EmitScope.interfaceImpls scope
@@ -779,7 +826,7 @@ module TestEmitScopeImage =
             actual.GetParameters ()
             |> Seq.map MetadataTokens.GetRowNumber
             |> List.ofSeq
-            |> shouldEqual (ridsOwnedBy i paramOwners)
+            |> shouldEqual (paramsOf i paramOrder)
 
         reader.GetTableRowCount TableIndex.Param |> shouldEqual parameters.Count
 
@@ -860,6 +907,15 @@ module TestEmitScopeImage =
         for owners in [ methodOwners ; fieldOwners ; paramOwners ] do
             ungrouped owners |> shouldBeGreaterThan 20
             (scopes.Length - ungrouped owners) |> shouldBeGreaterThan 20
+
+        // And parameters grouped by method that still need a pointer table, being out of sequence.
+        scopes
+        |> Seq.filter (fun s ->
+            grouped (paramOwners s)
+            && not (paramsInRidOrder (EmitScope.methodDefs s).Count (EmitScope.parameters s))
+        )
+        |> Seq.length
+        |> shouldBeGreaterThan 5
 
         // And sorted tables that must be re-sorted.
         scopes
@@ -1006,23 +1062,34 @@ module TestEmitScopeImage =
     [<Test>]
     let ``a string is interned as the UTF-8 CoreCLR stores, unpaired surrogates replaced`` () : unit =
         let genChar =
-            Gen.oneof [ Gen.choose (1, 0xFFFF) |> Gen.map char ; Gen.elements [ char 0xD800 ; char 0xDC00 ; 'a' ] ]
+            Gen.oneof
+                [
+                    Gen.choose (1, 0xFFFF) |> Gen.map char
+                    Gen.elements [ char 0xD800 ; char 0xDC00 ; 'a' ]
+                ]
 
         let property (value : string) : unit =
             let offset, scope = EmitScope.internString value (EmitScope.create "M" Guid.Empty)
             EmitScope.stringAt offset scope |> shouldEqual (asCoreClrStores value)
 
             // And the string it is stored as is the same entry.
-            EmitScope.internString (asCoreClrStores value) scope |> fst |> shouldEqual offset
+            EmitScope.internString (asCoreClrStores value) scope
+            |> fst
+            |> shouldEqual offset
 
             let pe, reader = readImage (EmitScopeImage.write scope)
             use _ = pe
-            reader.GetString (MetadataTokens.StringHandle offset.Offset) |> shouldEqual (asCoreClrStores value)
+
+            reader.GetString (MetadataTokens.StringHandle offset.Offset)
+            |> shouldEqual (asCoreClrStores value)
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 300,
             Prop.forAll
-                (Arb.fromGen (Gen.listOf genChar |> Gen.map (fun cs -> System.String (Array.ofList (List.ofSeq cs)))))
+                (Arb.fromGen (
+                    Gen.listOf genChar
+                    |> Gen.map (fun cs -> System.String (Array.ofList (List.ofSeq cs)))
+                ))
                 property
         )
 
