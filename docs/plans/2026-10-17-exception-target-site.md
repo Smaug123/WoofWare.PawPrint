@@ -199,4 +199,4 @@ divergence entry: a refusal is the ordinary unimplemented state.
 ## Out of scope
 
 * The `.NET 11` frontier `runtimeMethodInfoValue`, which the wrap work needs next.
-* A `NativeContractTable.tsv` row for this QCall (the escape analysis treats it as opaque today).
+* A `NativeContractTable.<runtime>.tsv` row for this QCall (the escape analysis treats it as opaque today).

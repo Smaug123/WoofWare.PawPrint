@@ -465,7 +465,7 @@ static class Program
 
     /// The contract table's row for `String.FastAllocateString`.
     let private fastAllocateString : NativeContractRow =
-        NativeContractTable.rows.Force ()
+        NativeContractTable.rows (FrameworkUnderTest.runtime ())
         |> List.find (fun row -> row.Native = TabulatedNative.FCall ("System.String", "FastAllocateString"))
 
     [<Test>]

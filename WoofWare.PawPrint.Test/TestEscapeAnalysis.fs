@@ -2161,6 +2161,8 @@ public static class SR
 
     [<Test>]
     let ``the cast helper that stores into an array of references is known, write barrier and all`` () : unit =
+        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
+
         let corelib = hostCoreLib ()
 
         let key =
@@ -2263,8 +2265,6 @@ public static class SR
         ()
         : unit
         =
-        Net11Frontier.park Net11Frontier.nativeContractTable
-
         let corelib = hostCoreLib ()
 
         let tabulated =
@@ -2280,7 +2280,7 @@ public static class SR
         |> List.map snd
         |> List.distinct
         |> List.length
-        |> shouldEqual (NativeContractTable.rows.Force ()).Length
+        |> shouldEqual (NativeContractTable.rows (EmulatedRuntime.ofCoreLib corelib)).Length
 
         let analysis =
             analysisOf
@@ -2497,7 +2497,7 @@ public static class Cases
 
     [<Test>]
     let ``every cast helper the JIT calls is seen through, the throwing ones raising InvalidCastException`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
 
         let corelib = hostCoreLib ()
 
@@ -2539,7 +2539,7 @@ public static class Cases
 
     [<Test>]
     let ``a cast helper's fallback is hidden without either assumption it relies on`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
 
         let corelib = hostCoreLib ()
 
@@ -2913,7 +2913,7 @@ public static class Cases
 
     [<Test>]
     let ``a store into an array of references relies on what the cast helpers' fallback does`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -3727,7 +3727,7 @@ public static class Cases
 
     [<Test>]
     let ``every box and unbox helper the JIT calls is seen through`` () : unit =
-        Net11Frontier.park Net11Frontier.nativeContractTable
+        Net11Frontier.park Net11Frontier.spanHelpersMemoryQCalls
 
         let corelib = hostCoreLib ()
 
@@ -16587,6 +16587,18 @@ public static class Runners
 
             Set.unionMany (List.map fst shown), Set.unionMany (List.map snd shown)
 
+        // These reach the cast helpers' fallback, which the analysis cannot see through on .NET 11.
+        let parked =
+            match FrameworkUnderTest.runtime () with
+            | EmulatedRuntime.Net10 -> Set.empty
+            | EmulatedRuntime.Net11 ->
+                set
+                    [
+                        "BoxIsinstDisposableBrfalse"
+                        "CallsBoxTCastDisposableShared"
+                        "CallsBoxTCastEquatableShared"
+                    ]
+
         let analysisFailures =
             [
                 for name, refused in refusals do
@@ -16612,7 +16624,13 @@ public static class Runners
 
                     let expected = Set.union (Set.ofList reported) (shownRefusals madeShown)
 
-                    if not (Set.isSubset opaque madeOpaque) || shownRefusals shown <> expected then
+                    let fails = not (Set.isSubset opaque madeOpaque) || shownRefusals shown <> expected
+
+                    if parked.Contains name then
+                        if not fails then
+                            yield
+                                $"%s{name} is parked on this runtime (`Net11Frontier.castFallbackThroughUnmanagedCallersOnly`), and passes: un-park it"
+                    elif fails then
                         yield
                             $"%s{name}: %A{Set.toList shown}, opaque at %A{Set.toList opaque}; expected %A{Set.toList expected} of the refusals, and nothing opaque beyond making it"
             ]

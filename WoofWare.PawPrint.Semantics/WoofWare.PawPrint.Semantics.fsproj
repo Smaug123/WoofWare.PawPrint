@@ -46,7 +46,8 @@
         <Compile Include="IntrinsicBody.fs" />
         <EmbeddedResource Include="HardwareIntrinsicTable.Net10.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net10.tsv" />
         <EmbeddedResource Include="HardwareIntrinsicTable.Net11.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.Net11.tsv" />
-        <EmbeddedResource Include="NativeContractTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.tsv" />
+        <EmbeddedResource Include="NativeContractTable.Net10.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.Net10.tsv" />
+        <EmbeddedResource Include="NativeContractTable.Net11.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.Net11.tsv" />
         <EmbeddedResource Include="VmBoundFields.tsv" LogicalName="WoofWare.PawPrint.Semantics.VmBoundFields.tsv" />
         <EmbeddedResource Include="VmLaidOutClasses.tsv" LogicalName="WoofWare.PawPrint.Semantics.VmLaidOutClasses.tsv" />
         <EmbeddedResource Include="version.json" />
