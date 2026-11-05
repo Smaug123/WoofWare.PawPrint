@@ -13,13 +13,15 @@ type MalformedArgument =
     | FunctionPointer
 
 /// <summary>
-/// A type that CoreCLR's class loader refuses to load, whatever kind of type it is, and why.
+/// A type that CoreCLR's class loader refuses to load, whatever kind of type it is, or a generic
+/// method's instantiation it refuses to create, and why.
 /// </summary>
 /// <remarks>
-/// This is a fact about the type, not about where it is named: CoreCLR raises it wherever it loads
-/// the type, and does not raise it where it never loads the type (a <c>CLASS</c> local the JIT need
-/// not resolve, say). A consumer that turns a refusal into a guest exception must therefore know that
-/// CoreCLR loads the type at that point. Each case says which exception CoreCLR raises; the type
+/// This is a fact about the type or the instantiation, not about where it is named: CoreCLR raises
+/// it wherever it loads the type or creates the instantiation, and does not raise it where it never
+/// does (a <c>CLASS</c> local the JIT need not resolve, say). A consumer that turns a refusal into a
+/// guest exception must therefore know that CoreCLR loads the type, or creates the instantiation, at
+/// that point. Each case says which exception CoreCLR raises; the type
 /// names are those its <c>TypeLoadException.TypeName</c> reports.
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -27,6 +29,13 @@ type TypeLoadRefusal =
     /// An instantiation of `definition` whose argument at index `argument` is one no instantiation may
     /// have. `TypeLoadException` (`IDS_CLASSLOAD_INVALIDINSTANTIATION`) naming the definition.
     | InvalidInstantiation of definition : ResolvedTypeIdentity * argument : int * MalformedArgument
+    /// An instantiation of the generic method `method` of `declaringType` whose argument at index
+    /// `argument` is one no instantiation may have. `BadImageFormatException`, which names neither.
+    | InvalidMethodInstantiation of
+        declaringType : ResolvedTypeIdentity *
+        method : string *
+        argument : int *
+        MalformedArgument
     /// A signature spelled `named` as `spelled`, and the definition is the other kind.
     /// `TypeLoadException` (`BFA_CLASSLOAD_VALUETYPEMISMATCH`) naming `named`.
     | KindMismatch of named : ResolvedTypeIdentity * spelled : SignatureTypeKind
@@ -53,6 +62,8 @@ module TypeLoadRefusal =
         match refusal with
         | TypeLoadRefusal.InvalidInstantiation (definition, argument, malformed) ->
             $"CoreCLR refuses to load an instantiation of %O{definition} with TypeLoadException: its argument %d{argument} is a %O{malformed}, which no instantiation may have"
+        | TypeLoadRefusal.InvalidMethodInstantiation (declaringType, method, argument, malformed) ->
+            $"CoreCLR refuses an instantiation of the generic method %s{method} of %O{declaringType} with BadImageFormatException: its argument %d{argument} is a %O{malformed}, which no instantiation may have"
         | TypeLoadRefusal.KindMismatch (named, spelled) ->
             $"CoreCLR refuses to load %O{named} with TypeLoadException: a signature spells it %O{spelled}, which it is not"
         | TypeLoadRefusal.WrongArity (definition, declared, supplied) ->
