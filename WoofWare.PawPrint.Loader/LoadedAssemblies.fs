@@ -149,6 +149,14 @@ type LoadedAssemblies =
         | false, _ -> false
 
     /// <summary>
+    /// True if <paramref name="identity"/> is a type of a dynamic assembly that the runtime has not
+    /// created (<c>WithCreatedType</c>). CoreCLR's class loader does not load such a type: it raises
+    /// the <c>TypeResolve</c> event instead.
+    /// </summary>
+    member this.IsUncreatedDynamicType (identity : ResolvedTypeIdentity) : bool =
+        failwith "TODO: LoadedAssemblies.IsUncreatedDynamicType"
+
+    /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
     /// </summary>
     /// <remarks>

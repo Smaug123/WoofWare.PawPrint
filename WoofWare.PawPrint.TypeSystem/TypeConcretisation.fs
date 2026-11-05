@@ -324,6 +324,7 @@ module AllConcreteTypes =
         findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
 
     let private intern
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -384,17 +385,19 @@ module AllConcreteTypes =
     /// arguments must already be interned.
     let add
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : Result<ConcreteTypeHandle * AllConcreteTypes, TypeLoadRefusal>
         =
         match malformedArgument baseClassTypes this ct.Generics with
         | Some (index, malformed) -> Error (TypeLoadRefusal.InvalidInstantiation (ct.Identity, index, malformed))
-        | None -> Ok (intern ct this)
+        | None -> Ok (intern loaded ct this)
 
     /// Intern `ct`, a non-generic type, which must not already be interned. No rule `add` checks
     /// can refuse it.
     let addNonGeneric
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -402,7 +405,7 @@ module AllConcreteTypes =
         if not ct.Generics.IsEmpty then
             failwith $"BUG: %O{ct} is an instantiation; intern it with `add`, which checks its arguments"
 
-        intern ct this
+        intern loaded ct this
 
 // Active patterns for matching concrete types
 
@@ -817,7 +820,7 @@ module TypeConcretization =
             ConcreteType.makeFromIdentity identity ns name ImmutableArray.Empty
 
         let handle, newConcreteTypes =
-            AllConcreteTypes.addNonGeneric concreteType ctx.ConcreteTypes
+            AllConcreteTypes.addNonGeneric ctx.LoadedAssemblies concreteType ctx.ConcreteTypes
 
         let newCtx =
             { ctx with
@@ -870,6 +873,7 @@ module TypeConcretization =
             match
                 AllConcreteTypes.add
                     ctx.BaseTypes
+                    ctx.LoadedAssemblies
                     (ConcreteType.makeFromIdentity identity ns name generics)
                     ctx.ConcreteTypes
             with
