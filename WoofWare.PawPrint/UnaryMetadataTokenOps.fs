@@ -77,21 +77,15 @@ module internal UnaryMetadataTokenOps =
             failwith
                 $"TODO: %s{opName} of a MemberReference whose parent names generic type definition %s{describeMember ()} without an instantiation refers to the typical instantiation, which needs an open-generic declaring type; a TypeSpecification parent, which is what compilers emit, carries the instantiation instead"
 
-    /// Resolve a `MemberReference` against the executing frame's generic context.
-    ///
-    /// Shared by `ldftn`/`ldvirtftn` and `ldtoken`, which is sound precisely because CoreCLR
-    /// resolves `mdtMemberRef` the same way for both: `CEEInfo::resolveToken` reaches
+    /// Resolve a `MemberReference` an `ldtoken` names against the executing frame's generic context,
+    /// as CoreCLR does: `CEEInfo::resolveToken` reaches
     /// `GetTypeContext(pResolvedToken->tokenContext, &typeContext)` before
-    /// `MemberLoader::GetDescFromMemberRef`, whatever the opcode (`vm/jitinterface.cpp`). The two
-    /// opcodes part company only on what they will *accept*: `ldftn` refuses the field arm, and
-    /// `ldtoken` does not.
+    /// `MemberLoader::GetDescFromMemberRef`, whatever the opcode (`vm/jitinterface.cpp`). A method
+    /// arm is instantiated as every other instruction's is (`MethodTokenBinding`).
     ///
-    /// This sharing deliberately stops short of `MethodDef`, which CoreCLR resolves through
-    /// `GetMethodDescFromMethodDef` — a call that takes no `SigTypeContext` at all, so a bare
-    /// `MethodDef` names the typical instantiation rather than the frame's. Routing `ldtoken`'s
-    /// `MethodDef` through the frame-substituting arm `ldftn` uses would produce a wrong handle
-    /// rather than a failure.
-    ///
+    /// `MethodDef` is not resolved here: CoreCLR resolves it through `GetMethodDescFromMethodDef`,
+    /// which takes no `SigTypeContext` at all, so a bare `MethodDef` names the typical
+    /// instantiation rather than the frame's.
     let private resolveMemberReferenceToken
         (ctx : UnaryMetadataIlOpContext)
         (handle : MemberReferenceHandle)
@@ -120,44 +114,22 @@ module internal UnaryMetadataTokenOps =
         | MemberReferenceResolution.Resolved (_, resolved, extractedTypeArgs) ->
 
         match resolved with
-        | Choice1Of2 method when not method.Generics.IsEmpty ->
-            // A *bare* MemberReference to a generic method names that method's typical
-            // instantiation -- its own `!!i` stand unbound -- exactly as a bare MethodDef does, and
-            // for the same reason: CoreCLR reaches `MemberLoader::GetDescFromMemberRef` with
-            // `strictMetadataChecks` off for `ldtoken`, which permits the uninstantiated form. An
-            // instantiation arrives as a MethodSpec *wrapping* this row, which is the only spelling
-            // any compiler emits, and which `resolveMethodSpecificationToken` handles.
-            //
-            // Refused here rather than concretized: `concretizeMethodForExecution` has no method
-            // generics to substitute, and concretization would refuse `!!0` as out of scope, which
-            // is CoreCLR's answer to a signature, not to this token, and names neither.
-            failwith
-                $"TODO: ldtoken/ldftn of a bare MemberReference to generic method %s{method.Name} names the typical instantiation, which needs open generic RuntimeMethodHandle support; got %O{method}"
         | Choice1Of2 method ->
-            refuseTypicalDeclaringType
-                "ldtoken/ldftn"
-                extractedTypeArgs
-                method.DeclaringTypeGenerics
-                (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
-
-            // `extractedTypeArgs` are the declaring type's arguments, read from the parent TypeSpec
-            // already substituted against this frame. Handing them over explicitly is what keeps a
-            // member of `G<List<T>>` resolving at `G<List<string>>` rather than at the frame's own
-            // `G<string>`: `concretizeMethodForExecution` falls back to the frame's declaring-type
-            // generics when given none.
-            let state, concretizedResult =
-                ExecutionConcretization.concretizeMethodForExecution
+            match
+                MethodTokenBinding.instantiateReferencedMethod
                     loggerFactory
                     baseClassTypes
                     thread
+                    "ldtoken"
                     method
+                    extractedTypeArgs
                     None
-                    (Some extractedTypeArgs)
                     state
-
-            let concretized, _ = BindingStop.bound concretizedResult
-
-            state, ResolvedMemberToken.Method (concretized, method)
+            with
+            | state, MethodTokenBinding.Method (concretized, method) ->
+                state, ResolvedMemberToken.Method (concretized, method)
+            | state, MethodTokenBinding.RefusedParent refusal -> state, ResolvedMemberToken.RefusedParent refusal
+            | _, MethodTokenBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
         | Choice2Of2 (FieldReferenceBinding.Fails failure) -> state, ResolvedMemberToken.BindingFails failure
         | Choice2Of2 (FieldReferenceBinding.Bound field) ->
             refuseTypicalDeclaringType
@@ -177,196 +149,6 @@ module internal UnaryMetadataTokenOps =
 
             state, ResolvedMemberToken.Field (declaringTypeHandle, field.Handle)
 
-    /// Resolve a `MethodSpecification` — a generic method at a particular instantiation — against
-    /// the executing frame's generic context, over either of the two parents a spec may have.
-    ///
-    /// Returns the concretized method alongside the pre-concretization one, which carries the
-    /// metadata names worth logging.
-    let private resolveMethodSpecificationToken
-        (opName : string)
-        (ctx : UnaryMetadataIlOpContext)
-        (handle : MethodSpecificationHandle)
-        (state : IlMachineState)
-        : IlMachineState *
-          Result<
-              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
-              TypeOperandRefusal
-           >
-        =
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let currentMethod = ctx.CurrentMethod
-        let thread = ctx.Thread
-
-        let spec = activeAssy.MethodSpecs.[handle]
-
-        match spec.Method with
-        | MetadataToken.MethodDef token ->
-            let method =
-                activeAssy.Methods.[token]
-                |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-
-            if not method.DeclaringTypeGenerics.IsEmpty then
-                // The spec binds the *method's* generics; nothing here binds the declaring type's.
-                // Passing `None` below would let `resolveTargetTypeGenerics` fall back to the
-                // executing frame's `DeclaringTypeGenerics`, which is not what the token means:
-                // CoreCLR takes the owning MethodTable from the MethodDef row via
-                // `MemberLoader::GetMethodDescFromMethodSpec` without applying the caller's class
-                // instantiation, so the declaring type is the typical one. The fallback would
-                // silently hand back a handle for *the caller's* instantiation — a wrong answer
-                // rather than a failure — or trip an arity error when the two disagree in length.
-                //
-                // No compiler emits this shape: a generic method on a generic type is referenced
-                // through a MemberReference with a TypeSpec parent (measured), which the arm below
-                // handles and which carries the instantiation explicitly. So this guards
-                // hand-written IL, and it is refused for the same reason the bare MethodDef arm in
-                // `executeLdtoken` is.
-                failwith
-                    $"TODO: %s{opName} of a MethodSpecification over a MethodDef declared on generic type %s{MethodOwner.describe method.Owner} names the typical instantiation of the declaring type, which needs open generic RuntimeMethodHandle support; got %O{method}"
-
-            let state, concretizedResult =
-                ExecutionConcretization.concretizeMethodForExecution
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    method
-                    (Some spec.Signature)
-                    None
-                    state
-
-            let concretized, _ = BindingStop.bound concretizedResult
-
-            state, Ok (concretized, method)
-        | MetadataToken.MemberReference ref ->
-            // Concretize the spec's generic method args against the current frame's
-            // generic context so `resolveMember` can pick the right overload — the
-            // member signature may reference these method type parameters by index.
-            let state, methodGenerics =
-                ((state, []), spec.Signature)
-                ||> Seq.fold (fun (state, acc) typeDefn ->
-                    let state, concreteType =
-                        IlMachineState.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            activeAssy.DefinitionFullName
-                            currentMethod.DeclaringTypeGenerics
-                            currentMethod.Generics
-                            typeDefn
-
-                    state, concreteType :: acc
-                )
-
-            let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
-
-            let state, resolution =
-                IlMachineState.resolveMember
-                    (memberReferenceUse ctx)
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    activeAssy
-                    ref
-                    state
-
-            let resolution = TokenBindingStop.memberReference activeAssy ref resolution
-
-            match resolution with
-            | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
-            | MemberReferenceResolution.Resolved (_, method, extractedTypeArgs) ->
-
-            match method with
-            | Choice2Of2 _field ->
-                // ECMA-335 II.22.29: a MethodSpec's Method column indexes MethodDef or MemberRef,
-                // and a MemberRef reached this way must carry a method signature.
-                failwith
-                    $"%s{opName}: MethodSpecification %O{handle} names a MemberReference that resolves to a field, which is not a generic method"
-            | Choice1Of2 method ->
-                refuseTypicalDeclaringType
-                    opName
-                    extractedTypeArgs
-                    method.DeclaringTypeGenerics
-                    (fun () -> $"%s{MethodOwner.describe method.Owner}::%s{method.Name}")
-
-                let state, concretizedResult =
-                    ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        method
-                        methodGenerics
-                        (Some extractedTypeArgs)
-                        state
-
-                let concretized, _ = BindingStop.bound concretizedResult
-
-                state, Ok (concretized, method)
-        | k -> failwith $"Unrecognised MethodSpecification kind for %s{opName}: %O{k}"
-
-    /// Resolve the method token of an `ldftn`/`ldvirtftn` to the concrete method its function
-    /// pointer names, before any virtual dispatch. Returns the concretized method alongside the
-    /// pre-concretization one, which carries the metadata names worth logging.
-    ///
-    /// `opName` names the opcode being executed, so that a token shape we cannot resolve produces
-    /// a failure that says which instruction hit it.
-    let private resolveMethodPointerTarget
-        (opName : string)
-        (ctx : UnaryMetadataIlOpContext)
-        (state : IlMachineState)
-        : IlMachineState *
-          Result<
-              WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-              WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
-              TypeOperandRefusal
-           >
-        =
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let currentMethod = ctx.CurrentMethod
-        let thread = ctx.Thread
-
-        // Resolution mirrors `UnaryMetadataCallOps.executeCall`: in-assembly methods arrive as
-        // MethodDef (optionally wrapped in a MethodSpec for generic methods), cross-assembly
-        // methods arrive as MemberReference (optionally MethodSpec-wrapped). MemberReference
-        // resolution must thread the extracted declaring-type generics back to the concretization
-        // step, otherwise generic types defined in another assembly would lose their instantiation
-        // when projected onto the eval-stack function pointer. For the MethodSpec(MemberReference)
-        // case we additionally bypass the default re-substitution path: the spec's method-generic
-        // args are caller-relative and have already been resolved against the current frame, so
-        // we hand the concrete handles directly to the concretization step rather than letting it
-        // re-substitute them against the (target type's) generics.
-        match metadataToken with
-        | MetadataToken.MethodDef handle ->
-            let method =
-                activeAssy.Methods.[handle]
-                |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-
-            let state, concretizedResult =
-                ExecutionConcretization.concretizeMethodForExecution
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    method
-                    None
-                    None
-                    state
-
-            let concretized, _ = BindingStop.bound concretizedResult
-
-            state, Ok (concretized, method)
-        | MetadataToken.MemberReference h ->
-            match resolveMemberReferenceToken ctx h state with
-            | state, ResolvedMemberToken.Method (concretized, method) -> state, Ok (concretized, method)
-            | state, ResolvedMemberToken.RefusedParent refusal -> state, Error refusal
-            | _, ResolvedMemberToken.Field _
-            | _, ResolvedMemberToken.BindingFails _ -> failwith $"tried to %s{opName} a field"
-        | MetadataToken.MethodSpecification h -> resolveMethodSpecificationToken opName ctx h state
-        | t -> failwith $"Unexpectedly asked to %s{opName} a non-method: {t}"
-
     /// Push a function pointer to `concretizedMethod` and advance past the instruction.
     let private pushFunctionPointer
         (ctx : UnaryMetadataIlOpContext)
@@ -384,103 +166,50 @@ module internal UnaryMetadataTokenOps =
         |> Tuple.withRight WhatWeDid.Executed
 
     let executeLdftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
-        let logger = ctx.Logger
-        let thread = ctx.Thread
-
-        match resolveMethodPointerTarget "Ldftn" ctx state with
-        | state, Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
-        | state, Ok (concretizedMethod, method) ->
-
         // `ldftn` is one of the three opcodes ECMA and the JIT importer allow `constrained.` to
         // precede, so it must consume the prefix. Consuming means both halves: *clearing* it, or a
         // later call-like instruction in this frame picks it up (frames start at
-        // `PrefixState.empty`, so the damage is frame-scoped but real — see
+        // `PrefixState.empty`, so the damage is frame-scoped but real -- see
         // `ConstrainedLdftnPrefixNotLeaked.cs`), and *honouring* it, because the prefix is what
         // directs resolution from an interface's abstract declaration to the constrained type's
         // implementation.
         //
         // Unlike `call`, this never reinstalls the prefix: `ldftn` runs no class initialiser and
         // resolution cannot suspend, so the instruction is atomic and never re-executes.
-        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
+        let constrained, state = UnaryMetadataCallOps.takeConstrainedPrefix ctx.Thread state
 
-        let pendingConstrained, state =
-            match state.ThreadState.[thread].MethodState.PendingPrefix.Constrained with
-            | None -> None, state
-            | Some _ as cur ->
-                let cleared =
-                    state
-                    |> IlMachineState.mapFrame
-                        thread
-                        activeFrameId
-                        (fun frame ->
-                            { frame with
-                                PendingPrefix =
-                                    { frame.PendingPrefix with
-                                        Constrained = None
-                                    }
-                            }
-                        )
+        let state, binding =
+            CallSiteBinding.bindLdftn
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                ctx.Thread
+                ctx.ActiveAssembly
+                constrained
+                ctx.MetadataToken
+                state
 
-                cur, cleared
-
-        let pushTarget
-            (target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-            (state : IlMachineState)
-            : IlMachineState * WhatWeDid
-            =
-            logger.LogDebug (
+        match binding with
+        | CallSiteBinding.Method target ->
+            ctx.Logger.LogDebug (
                 "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
-                method.DeclaringAssemblyFullName,
-                method.RequiredDeclaringType.Name,
-                method.Name
+                target.DeclaringAssemblyFullName,
+                target.RequiredDeclaringType.Name,
+                target.Name
             )
 
             pushFunctionPointer ctx target state
-
-        match pendingConstrained with
-        | Some constrainedTypeHandle ->
-            match
-                UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
-                    "Ldftn"
-                    ctx
-                    constrainedTypeHandle
-                    method
-                    concretizedMethod
-                    state
-            with
-            | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
-                pushTarget implementation state
-            | state, ConstrainedStaticImplementation.Fails failure ->
-                let frame = state.ThreadState.[thread].MethodState.ExecutingMethod
-
-                // Where CoreCLR raises depends on whether it compiled this frame as shared code.
-                // In exact code the JIT resolves the slot as it compiles, and `getCallInfo`
-                // (jitinterface.cpp) plants a throw helper at the `ldftn` itself. In shared code
-                // the pointer comes from a generic dictionary slot holding a stub that resolves and
-                // throws when called (`CreateStubForStaticVirtualDispatch`, genericdict.cpp) —
-                // unless the JIT inlined this frame into exact code, where the `ldftn` throws.
-                // Measured: under default tiering the delegate is made, and under
-                // `DOTNET_TieredCompilation=0` an inlined one throws at the `ldftn`.
-                if CodeSharing.isShared ctx.BaseClassTypes state.TypeSystem frame then
-                    failwith
-                        $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}, in %s{frame.Name}, which CoreCLR runs as shared generic code. Measured: real .NET then makes a delegate over a stub, and invoking it raises what that failure does, unless the JIT inlined the frame into exact code, where the ldftn throws; which one happens depends on the JIT"
-                else
-                    IlMachineStateExecution.raiseDispatchFailure
-                        ctx.LoggerFactory
-                        ctx.BaseClassTypes
-                        (IlMachineStateExecution.DispatchOrigin.Instruction
-                            IlMachineStateExecution.DispatchSite.ConstrainedType)
-                        failure
-                        thread
-                        state
-        | None ->
-
-        match concretizedMethod.Body with
-        | MethodBody.Abstract -> UnaryMetadataCallOps.raiseNamedAbstractMethod ctx state
-        | MethodBody.Il _
-        | MethodBody.InternalCall
-        | MethodBody.PInvoke
-        | MethodBody.RuntimeProvided _ -> pushTarget concretizedMethod state
+        | CallSiteBinding.ArrayAccessor accessor ->
+            failwith $"BUG: ldftn bound to the multi-dim array accessor %O{accessor.Kind}, which only call names"
+        | CallSiteBinding.RaisesWhenExecuted failure ->
+            IlMachineStateExecution.raiseDispatchFailure
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (IlMachineStateExecution.DispatchOrigin.Instruction IlMachineStateExecution.DispatchSite.ConstrainedType)
+                failure
+                ctx.Thread
+                state
+        | CallSiteBinding.CompilationFails failure -> UnaryMetadataCallOps.raiseCompilationFailure ctx failure state
+        | CallSiteBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
 
     /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
     /// a `callvirt` of the same token on the same receiver would have run.
@@ -497,9 +226,20 @@ module internal UnaryMetadataTokenOps =
         let thread = ctx.Thread
         let logger = ctx.Logger
 
-        match resolveMethodPointerTarget "Ldvirtftn" ctx state with
-        | state, Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
-        | state, Ok (callSiteMethod, method) ->
+        match
+            MethodTokenBinding.bind
+                loggerFactory
+                baseClassTypes
+                thread
+                (memberReferenceUse ctx)
+                "Ldvirtftn"
+                ctx.ActiveAssembly
+                ctx.MetadataToken
+                state
+        with
+        | _, MethodTokenBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
+        | state, MethodTokenBinding.RefusedParent refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+        | state, MethodTokenBinding.Method (callSiteMethod, method) ->
 
         // CoreCLR's importer falls through to its `ldftn` handling when the named method is
         // `static`, `final`, or not `virtual` (`case CEE_LDVIRTFTN`, importer.cpp): the receiver is
@@ -845,9 +585,20 @@ module internal UnaryMetadataTokenOps =
                     failwith
                         $"BUG: ldtoken's MemberReference was refused for naming %O{refusal}, but resolveMember refuses no reference for ldtoken"
             | MetadataToken.MethodSpecification h ->
-                match resolveMethodSpecificationToken "Ldtoken" ctx h state with
-                | state, Ok (concretized, _) -> state, Ok (LdtokenTarget.Method concretized)
-                | _, Error refusal ->
+                match
+                    MethodTokenBinding.bindMethodSpecification
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        (memberReferenceUse ctx)
+                        "Ldtoken"
+                        activeAssy
+                        h
+                        state
+                with
+                | state, MethodTokenBinding.Method (concretized, _) -> state, Ok (LdtokenTarget.Method concretized)
+                | _, MethodTokenBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
+                | _, MethodTokenBinding.RefusedParent refusal ->
                     failwith
                         $"BUG: ldtoken's MethodSpecification was refused for naming %O{refusal}, but resolveMember refuses no reference for ldtoken"
             | MetadataToken.TypeSpecification h ->

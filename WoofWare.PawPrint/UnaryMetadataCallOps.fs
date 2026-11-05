@@ -409,34 +409,6 @@ module internal UnaryMetadataCallOps =
         else
             buildResult state
 
-    /// Detect `call` targeting a runtime-synthesized member on a multi-dim array
-    /// (ECMA-335 II.14.2): a MemberReference whose parent TypeSpec is `TypeDefn.Array`.
-    /// `newobj` for the synthesized ctor is handled in `executeNewobj`; this entry
-    /// point covers the `Set`/`Get`/`Address` members invoked via plain `call`. Returns
-    /// `None` for ordinary method calls so they take the normal resolution path.
-    let private tryGetMultiDimArrayCall
-        (activeAssy : DumpedAssembly)
-        (metadataToken : MetadataToken)
-        : (string * TypeDefn * int * MemberSignature) option
-        =
-        match metadataToken with
-        | MetadataToken.MemberReference mrHandle ->
-            match activeAssy.Members.TryGetValue mrHandle with
-            | true, memberRef ->
-                match memberRef.Parent with
-                | MetadataToken.TypeSpecification specHandle ->
-                    match activeAssy.TypeSpecs.TryGetValue specHandle with
-                    | true, ts ->
-                        match ts.Signature with
-                        | TypeDefn.Array (elt, rank) ->
-                            let name = activeAssy.Strings memberRef.Name
-                            Some (name, elt, rank, memberRef.Signature)
-                        | _ -> None
-                    | false, _ -> None
-                | _ -> None
-            | false, _ -> None
-        | _ -> None
-
     /// `ConstrainedType.resolve` against the machine's type system: the type CoreCLR resolves a
     /// `constrained.` call of `called` against, where the prefix names `named`.
     let private resolveConstrainedType
@@ -472,44 +444,6 @@ module internal UnaryMetadataCallOps =
 
         failwith
             $"TODO: %s{opName} of %s{MethodOwner.describe called.Owner}::%s{called.Name} on the enum %s{described}: CoreCLR resolves it against the enum's underlying primitive if the method holds Object.GetHashCode's slot number, but PawPrint places no slot for this method, or reads no single instance field `value__` off the enum"
-
-    /// `StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod` against the machine's type
-    /// system, on the type CoreCLR resolves the call against (`ConstrainedType.resolve`): the type
-    /// the prefix names, or the underlying primitive of an enum it names, where CoreCLR retargets
-    /// the call there.
-    let resolveConstrainedStaticInterfaceMethod
-        (opName : string)
-        (ctx : UnaryMetadataIlOpContext)
-        (constrainedTypeHandle : ConcreteTypeHandle)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : IlMachineState * ConstrainedStaticImplementation
-        =
-        let state, resolvedAgainst =
-            resolveConstrainedType ctx constrainedTypeHandle methodToCall state
-
-        let constrainedTypeHandle =
-            match resolvedAgainst with
-            | ConstrainedType.AsNamed named -> named
-            | ConstrainedType.EnumUnderlying (_, underlying, RetargetedCall.Named) -> underlying
-            | ConstrainedType.EnumUnderlying (_, _, RetargetedCall.ObjectGetHashCode) ->
-                failwith
-                    $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}, a class's method"
-            | ConstrainedType.Undecided enum -> refuseUndecidedRetarget opName state enum methodToCall
-
-        let typeSystem, implementation =
-            StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod
-                ctx.LoggerFactory
-                state.DotnetRuntimeDirs
-                ctx.BaseClassTypes
-                opName
-                constrainedTypeHandle
-                methodToCall
-                concretizedMethod
-                state.TypeSystem
-
-        state.WithTypeSystem typeSystem, BindingStop.bound implementation
 
     /// Refuse a `call`/`callvirt` whose arguments violate ECMA-335 III.3.19: each argument must be
     /// assignable to its declared parameter type. Returns `state` unchanged when every argument
@@ -741,6 +675,50 @@ module internal UnaryMetadataCallOps =
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> enterCallee ctx concretizedMethod state
 
+    /// Raise what CoreCLR raises where it refuses to compile the method holding the executing
+    /// instruction over that instruction's token. The program counter is left on the instruction,
+    /// for exception dispatch.
+    ///
+    /// Real .NET raises it when it compiles the method, so it arrives before that method has run
+    /// anything, and none of that method's own handlers can catch it. PawPrint has no compilation
+    /// step to fail and raises it when the instruction executes instead; docs/divergences.md
+    /// records the difference.
+    let raiseCompilationFailure
+        (ctx : UnaryMetadataIlOpContext)
+        (failure : CompilationFailure)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        match failure with
+        | CompilationFailure.NamesAbstractMethod -> raiseNamedAbstractMethod ctx state
+        | CompilationFailure.RefusesTypeOperand refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
+
+    /// The type the active frame's pending `constrained.` prefix names, if it has one, and the state
+    /// with the prefix cleared: the instruction it precedes consumes it.
+    let takeConstrainedPrefix
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : ConcreteTypeHandle option * IlMachineState
+        =
+        match state.ThreadState.[thread].MethodState.PendingPrefix.Constrained with
+        | None -> None, state
+        | Some _ as constrained ->
+            let cleared =
+                state
+                |> IlMachineState.mapFrame
+                    thread
+                    state.ThreadState.[thread].ActiveMethodState
+                    (fun frame ->
+                        { frame with
+                            PendingPrefix =
+                                { frame.PendingPrefix with
+                                    Constrained = None
+                                }
+                        }
+                    )
+
+            constrained, cleared
+
     let executeCall (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         // Split on the operand before anything else: `ctx.ActiveAssembly` and `ctx.MetadataToken`
         // are partial, and a scope operand has neither, so binding them eagerly would fail for a
@@ -806,189 +784,41 @@ module internal UnaryMetadataCallOps =
         | ResolvedMetadataOperand.ScopeField _
         | ResolvedMetadataOperand.ScopeTypeTarget _ ->
 
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let currentMethod = ctx.CurrentMethod
-        let thread = ctx.Thread
+        // Take the pending `constrained.` prefix and clear it from the frame before anything else,
+        // so a stale prefix cannot leak to a later call in the same frame whatever the binding
+        // says. Nothing reinstalls it: the class-initialisation check runs as the callee's
+        // prologue, so this instruction commits exactly once.
+        let constrained, state = takeConstrainedPrefix ctx.Thread state
 
-        // Multi-dimensional array Get/Set are runtime-synthesized (ECMA-335 II.14.2): the
-        // metadata token is a MemberReference whose parent is a TypeSpec of TypeDefn.Array.
-        // There's no managed body to resolve, so route to the inline element-access path
-        // before invoking ordinary member resolution (which would look up the name on
-        // System.Array and fail).
-        match tryGetMultiDimArrayCall activeAssy metadataToken with
-        | Some (name, elt, rank, sig0) ->
-            match name with
-            | "Set" -> executeMultiDimArraySet ctx state elt rank sig0
-            | "Get" -> executeMultiDimArrayGet ctx state rank sig0
-            | "Address" -> executeMultiDimArrayAddress ctx state elt rank sig0
-            | other ->
-                failwith
-                    $"unexpected synthesized member %s{other} on multi-dim array (rank %d{rank}); expected Get/Set/Address/.ctor"
-        | None ->
+        let state, binding =
+            CallSiteBinding.bindCall
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                ctx.Thread
+                ctx.ActiveAssembly
+                constrained
+                ctx.MetadataToken
+                state
 
-        // For MethodSpec(MemberReference) the spec's method-generic args are caller-relative
-        // and have already been substituted against the current frame to drive overload
-        // resolution; we surface them as `preConcretizedMethodGenerics` so the concretization
-        // step below uses them directly rather than re-substituting against the (target type's)
-        // generics, which would be the wrong context.
-        let state, resolution =
-            match metadataToken with
-            | MetadataToken.MethodSpecification h ->
-                let spec = activeAssy.MethodSpecs.[h]
-
-                let state, methodGenerics =
-                    ((state, []), spec.Signature)
-                    ||> Seq.fold (fun (state, acc) typeDefn ->
-                        let state, concreteType =
-                            IlMachineState.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                activeAssy.DefinitionFullName
-                                currentMethod.DeclaringTypeGenerics
-                                currentMethod.Generics
-                                typeDefn
-
-                        state, concreteType :: acc
-                    )
-
-                let methodGenerics = List.rev methodGenerics |> ImmutableArray.CreateRange
-
-                match spec.Method with
-                | MetadataToken.MethodDef token ->
-                    let method =
-                        activeAssy.Methods.[token]
-                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-
-                    state, Ok (method, Some spec.Signature, None, None)
-                | MetadataToken.MemberReference ref ->
-                    let state, resolved =
-                        IlMachineState.resolveMember
-                            (MemberReferenceUse.Other "call")
-                            loggerFactory
-                            baseClassTypes
-                            thread
-                            activeAssy
-                            ref
-                            state
-
-                    let resolved = TokenBindingStop.memberReference activeAssy ref resolved
-
-                    match resolved with
-                    | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
-                    | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Call a field"
-                    | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
-                        state, Ok (method, None, Some extractedTypeArgs, Some methodGenerics)
-                | k -> failwith $"Unrecognised kind: %O{k}"
-            | MetadataToken.MemberReference h ->
-                let state, resolved =
-                    IlMachineState.resolveMember
-                        (MemberReferenceUse.Other "call")
-                        loggerFactory
-                        baseClassTypes
-                        thread
-                        activeAssy
-                        h
-                        state
-
-                let resolved = TokenBindingStop.memberReference activeAssy h resolved
-
-                match resolved with
-                | MemberReferenceResolution.RefusedParent refusal -> state, Error refusal
-                | MemberReferenceResolution.Resolved (_, Choice2Of2 _field, _) -> failwith "tried to Call a field"
-                | MemberReferenceResolution.Resolved (_, Choice1Of2 method, extractedTypeArgs) ->
-                    state, Ok (method, None, Some extractedTypeArgs, None)
-
-            | MetadataToken.MethodDef defn ->
-                match activeAssy.Methods.TryGetValue defn with
-                | true, method ->
-                    let method = method |> MethodInfo.mapTypeGenerics (fun _ -> failwith "not generic")
-                    state, Ok (method, None, None, None)
-                | false, _ -> failwith $"could not find method in {activeAssy.Name}"
-            | k -> failwith $"Unrecognised kind: %O{k}"
-
-        match resolution with
-        | Error refusal -> UnaryMetadataIlOpContext.raiseTypeRefusal ctx refusal state
-        | Ok (methodToCall, methodGenerics, typeArgsFromMetadata, preConcretizedMethodGenerics) ->
-
-        // Capture the pending `constrained.` prefix up front and clear it from the current frame,
-        // so a stale prefix cannot leak to a later call in the same frame. Nothing reinstalls it:
-        // the class-initialisation check runs as the callee's prologue, so this instruction
-        // commits exactly once.
-        let activeFrameId = state.ThreadState.[thread].ActiveMethodState
-
-        let pendingConstrained, state =
-            let cur = state.ThreadState.[thread].MethodState.PendingPrefix.Constrained
-
-            match cur with
-            | None -> None, state
-            | Some _ ->
-                let cleared =
-                    state
-                    |> IlMachineState.mapFrame
-                        thread
-                        activeFrameId
-                        (fun frame ->
-                            { frame with
-                                PendingPrefix =
-                                    { frame.PendingPrefix with
-                                        Constrained = None
-                                    }
-                            }
-                        )
-
-                cur, cleared
-
-        let state, concretizedMethodResult =
-            match preConcretizedMethodGenerics with
-            | Some concrete ->
-                ExecutionConcretization.concretizeMethodForExecutionWithConcreteMethodGenerics
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    methodToCall
-                    concrete
-                    typeArgsFromMetadata
-                    state
-            | None ->
-                ExecutionConcretization.concretizeMethodForExecution
-                    loggerFactory
-                    baseClassTypes
-                    thread
-                    methodToCall
-                    methodGenerics
-                    typeArgsFromMetadata
-                    state
-
-        let concretizedMethod, _declaringTypeHandle =
-            BindingStop.bound concretizedMethodResult
-
-        match pendingConstrained with
-        | Some constrainedTypeHandle ->
-            match
-                resolveConstrainedStaticInterfaceMethod
-                    "constrained.call"
-                    ctx
-                    constrainedTypeHandle
-                    methodToCall
-                    concretizedMethod
-                    state
-            with
-            | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
-                enterCallee ctx implementation state
-            | state, ConstrainedStaticImplementation.Fails failure ->
-                IlMachineStateExecution.raiseDispatchFailure
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    (IlMachineStateExecution.DispatchOrigin.Instruction
-                        IlMachineStateExecution.DispatchSite.ConstrainedType)
-                    failure
-                    ctx.Thread
-                    state
-        | None -> enterNamedCallee ctx concretizedMethod state
+        match binding with
+        | CallSiteBinding.Method method -> enterCallee ctx method state
+        | CallSiteBinding.ArrayAccessor accessor ->
+            match accessor.Kind with
+            | ArrayAccessorKind.Set ->
+                executeMultiDimArraySet ctx state accessor.Element accessor.Rank accessor.Signature
+            | ArrayAccessorKind.Get -> executeMultiDimArrayGet ctx state accessor.Rank accessor.Signature
+            | ArrayAccessorKind.Address ->
+                executeMultiDimArrayAddress ctx state accessor.Element accessor.Rank accessor.Signature
+        | CallSiteBinding.RaisesWhenExecuted failure ->
+            IlMachineStateExecution.raiseDispatchFailure
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (IlMachineStateExecution.DispatchOrigin.Instruction IlMachineStateExecution.DispatchSite.ConstrainedType)
+                failure
+                ctx.Thread
+                state
+        | CallSiteBinding.CompilationFails failure -> raiseCompilationFailure ctx failure state
+        | CallSiteBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
 
     /// The generic arguments the receiver's runtime type supplies for `declaring`, read off the
     /// link of its class chain whose definition is `declaring`. `None` when no link is: the
@@ -1865,49 +1695,24 @@ module internal UnaryMetadataCallOps =
         | _ -> None
 
     let executeConstrained (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
-        let activeAssy = ctx.ActiveAssembly
-        let metadataToken = ctx.MetadataToken
-        let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
         // ECMA III.2.1: record the constrained type and advance PC; the next instruction
         // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the
         // three cases (reference type / value type with direct impl / value type boxed for
         // a method it does not implement itself).
-        let state, ty, assy =
-            match metadataToken with
-            | MetadataToken.TypeDefinition h ->
-                let state, ty =
-                    IlMachineState.lookupTypeDefn loggerFactory baseClassTypes state activeAssy h
-
-                let ty = TokenBindingStop.typeToken activeAssy (MetadataToken.TypeDefinition h) ty
-                state, ty, activeAssy
-            | MetadataToken.TypeReference ref ->
-                let state, resolved =
-                    IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy ref
-
-                let ty, assy =
-                    TokenBindingStop.typeToken activeAssy (MetadataToken.TypeReference ref) resolved
-
-                state, ty, assy
-            | MetadataToken.TypeSpecification spec -> state, activeAssy.TypeSpecs.[spec].Signature, activeAssy
-            | _ -> failwith $"unexpected token {metadataToken} in Constrained"
-
-        let state, typeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
+        match
+            CallSiteBinding.bindConstrainedPrefix
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                thread
+                ctx.ActiveAssembly
+                ctx.MetadataToken
                 state
-                assy.DefinitionFullName
-                currentMethod.DeclaringTypeGenerics
-                currentMethod.Generics
-                ty
-
-        match UnaryMetadataIlOpContext.refuseTypeOperand ctx typeHandle state with
-        | Some raised -> raised
-        | None ->
+        with
+        | _, ConstrainedPrefixBinding.Unbound unbound -> failwith (UnboundToken.describe unbound)
+        | state, ConstrainedPrefixBinding.CompilationFails failure -> raiseCompilationFailure ctx failure state
+        | state, ConstrainedPrefixBinding.Type typeHandle ->
 
         let activeFrameId = state.ThreadState.[thread].ActiveMethodState
 
