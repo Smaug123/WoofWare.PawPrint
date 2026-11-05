@@ -118,10 +118,32 @@ module TestTypeLoadValidity =
 
     let private int32 : Signature = Signature.Primitive 0x08uy
 
+    /// A generic method `static void M<T0, T1>()` of the fixture's image.
+    [<RequireQualifiedAccess>]
+    type private Callee =
+        /// `Calls.M`, of a class that loads.
+        | Calls
+        /// `Stray.M`, of a class whose base type, CoreLib's `System.Absent`, does not exist.
+        | Stray
+
+    /// A MethodSpec: `callee` at `arguments`, however many there are.
+    type private Instantiation =
+        {
+            Callee : Callee
+            Arguments : Signature list
+        }
+
+    /// `Calls.M` at `first` and `second`.
+    let private ofCalls (first : Signature, second : Signature) : Instantiation =
+        {
+            Callee = Callee.Calls
+            Arguments = [ first ; second ]
+        }
+
     /// The image: `Holder`1`, `Klass`1`, `Pair`2`, `Plain`, `Outer`1` (enclosing the enum `E`),
-    /// `Ref`, `Orphan`1` and `Calls`, which declares `static void M<T0, T1>()`; then one TypeSpec per
-    /// signature, and one MethodSpec of `M` per pair of arguments in `instantiations`, whose tokens are
-    /// returned in order. A `legacy` image's
+    /// `Ref`, `Orphan`1`, and `Calls` and `Stray`, which each declare `static void M<T0, T1>()`; then
+    /// one TypeSpec per signature, and one MethodSpec per instantiation, whose tokens are returned in
+    /// order. A `legacy` image's
     /// metadata table stream says it is version 1.0, for which CoreCLR overlooks a mismatched
     /// CLASS/VALUETYPE spelling of a type named directly. Version 1.0 has another schema for generic
     /// parameters, so a legacy image declares none: its own types are not generic, and its
@@ -130,7 +152,7 @@ module TestTypeLoadValidity =
         (name : string)
         (legacy : bool)
         (signatures : Signature list)
-        (instantiations : (Signature * Signature) list)
+        (instantiations : Instantiation list)
         : byte[] * int list * int list
         =
         if legacy && not instantiations.IsEmpty then
@@ -182,9 +204,11 @@ module TestTypeLoadValidity =
             MetadataTokens.TypeDefinitionHandle row |> TypeDefinitionHandle.op_Implicit
 
         let mutable nextField = 1
-        // The GenericParam table is sorted by owner, and `M`, MethodDef row 1, sorts before every
-        // TypeDef, so the types' parameters are added once `M`'s are.
-        let typeParameters = ResizeArray<TypeDefinitionHandle * int> ()
+        let mutable nextMethod = 1
+        // Each owner of generic parameters, with how many it declares. The GenericParam table is
+        // sorted by owner's coded index, which interleaves the types' rows with the methods', so the
+        // parameters are added once every owner is known.
+        let parameterOwners = ResizeArray<EntityHandle * int> ()
 
         let addType (name : string) (attrs : TypeAttributes) (parent : EntityHandle) (parameters : int) =
             let parameters = if legacy then 0 else parameters
@@ -196,10 +220,10 @@ module TestTypeLoadValidity =
                     text name,
                     parent,
                     MetadataTokens.FieldDefinitionHandle nextField,
-                    MetadataTokens.MethodDefinitionHandle 1
+                    MetadataTokens.MethodDefinitionHandle nextMethod
                 )
 
-            typeParameters.Add (handle, parameters)
+            parameterOwners.Add (TypeDefinitionHandle.op_Implicit handle, parameters)
             handle
 
         let sealedStruct =
@@ -232,18 +256,17 @@ module TestTypeLoadValidity =
         addType "Ref" TypeAttributes.Public (core "Object") 0 |> ignore // row 8
         addType "Orphan`1" TypeAttributes.Public (core "Absent") 1 |> ignore // row 9
 
-        // Every type's method list starts at row 1, so the last type declares every method.
-        addType "Calls" (TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed) (core "Object") 0
-        |> ignore // row 10
+        // Every type before `Calls` declares no method: its method list starts where the next
+        // type's does.
+        let bodies = BlobBuilder ()
+        let bodyEncoder = MethodBodyStreamEncoder bodies
 
-        let m =
+        let addM () : MethodDefinitionHandle option =
             if legacy then
                 None
             else
-                let body = BlobBuilder ()
-                let il = InstructionEncoder body
+                let il = InstructionEncoder (BlobBuilder ())
                 il.OpCode ILOpCode.Ret
-                let bodies = BlobBuilder ()
 
                 let m =
                     md.AddMethodDefinition (
@@ -252,29 +275,25 @@ module TestTypeLoadValidity =
                         text "M",
                         // A generic method of two parameters, returning void and taking nothing.
                         md.GetOrAddBlob [| 0x10uy ; 2uy ; 0uy ; 0x01uy |],
-                        MethodBodyStreamEncoder(bodies).AddMethodBody il,
+                        bodyEncoder.AddMethodBody il,
                         MetadataTokens.ParameterHandle 1
                     )
 
-                for parameter in 0..1 do
-                    md.AddGenericParameter (
-                        MethodDefinitionHandle.op_Implicit m,
-                        GenericParameterAttributes.None,
-                        text $"T%d{parameter}",
-                        parameter
-                    )
-                    |> ignore
+                parameterOwners.Add (MethodDefinitionHandle.op_Implicit m, 2)
+                nextMethod <- nextMethod + 1
+                Some m
 
-                Some (m, bodies)
+        let staticClass =
+            TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
 
-        for handle, parameters in typeParameters do
+        addType "Calls" staticClass (core "Object") 0 |> ignore // row 10
+        let callsM = addM ()
+        addType "Stray" staticClass (core "Absent") 0 |> ignore // row 11
+        let strayM = addM ()
+
+        for owner, parameters in parameterOwners |> Seq.sortBy (fst >> CodedIndex.TypeOrMethodDef) do
             for parameter in 0 .. parameters - 1 do
-                md.AddGenericParameter (
-                    TypeDefinitionHandle.op_Implicit handle,
-                    GenericParameterAttributes.None,
-                    text $"T%d{parameter}",
-                    parameter
-                )
+                md.AddGenericParameter (owner, GenericParameterAttributes.None, text $"T%d{parameter}", parameter)
                 |> ignore
 
         let target (target : Target) : EntityHandle =
@@ -339,26 +358,23 @@ module TestTypeLoadValidity =
 
         let methodTokens =
             instantiations
-            |> List.map (fun (first, second) ->
+            |> List.map (fun instantiation ->
                 let builder = BlobBuilder ()
-                builder.WriteBytes [| 0x0auy ; 2uy |]
-                encode builder first
-                encode builder second
+                builder.WriteByte 0x0auy
+                builder.WriteCompressedInteger instantiation.Arguments.Length
+                instantiation.Arguments |> List.iter (encode builder)
+
+                let m =
+                    match instantiation.Callee with
+                    | Callee.Calls -> callsM
+                    | Callee.Stray -> strayM
 
                 let handle : EntityHandle =
-                    md.AddMethodSpecification (
-                        MethodDefinitionHandle.op_Implicit (fst m.Value),
-                        md.GetOrAddBlob builder
-                    )
+                    md.AddMethodSpecification (MethodDefinitionHandle.op_Implicit m.Value, md.GetOrAddBlob builder)
                     |> MethodSpecificationHandle.op_Implicit
 
                 MetadataTokens.GetToken handle
             )
-
-        let bodies =
-            match m with
-            | Some (_, bodies) -> bodies
-            | None -> BlobBuilder ()
 
         let pe =
             ManagedPEBuilder (PEHeaderBuilder.CreateLibraryHeader (), MetadataRootBuilder md, bodies)
@@ -515,7 +531,7 @@ module TestTypeLoadValidity =
         (typeArity : int)
         (methodArity : int)
         (signatures : Signature list)
-        (instantiations : (Signature * Signature) list)
+        (instantiations : Instantiation list)
         : Outcomes list * Outcomes list
         =
         let image, tokens, methodTokens = emit name legacy signatures instantiations
@@ -813,28 +829,59 @@ module TestTypeLoadValidity =
 
     /// Instantiations of `M<T0, T1>` the host was measured on while designing these checks, with what
     /// it gave under a context of one type parameter (`int`) and one method parameter (`string`).
-    /// Every argument is loaded before the instantiation is checked, so an argument that fails to load
-    /// is the failure wherever it is.
-    let private measuredInstantiations : ((Signature * Signature) * Outcome) list =
+    /// Every argument is loaded before the instantiation is checked, and the method's declaring type
+    /// is loaded too, so an argument or a declaring type that fails to load is the failure wherever
+    /// it is.
+    let private measuredInstantiations : (Instantiation * Outcome) list =
         let klass (arg : Signature) =
             Signature.Generic (false, Head.Klass, [ arg ])
 
+        let calls (arguments : Signature list) : Instantiation =
+            {
+                Callee = Callee.Calls
+                Arguments = arguments
+            }
+
+        let stray (arguments : Signature list) : Instantiation =
+            {
+                Callee = Callee.Stray
+                Arguments = arguments
+            }
+
+        let absent = Outcome.TypeLoad (Rule.General, "System.Absent")
+
         [
-            (int32, int32), Outcome.Loads
-            (Signature.TypeParameter 0, Signature.MethodParameter 0), Outcome.Loads
-            (Signature.Pointer int32, int32), Outcome.BadImageFormat
-            (int32, Signature.Byref int32), Outcome.BadImageFormat
-            (Signature.Primitive 0x16uy, int32), Outcome.BadImageFormat
-            (Signature.Primitive 0x01uy, int32), Outcome.BadImageFormat
-            (Signature.Nominal (true, Target.Named (Named.Core "TypedReference")), int32), Outcome.BadImageFormat
-            (Signature.Nominal (true, Target.Named (Named.Core "Void")), int32), Outcome.BadImageFormat
-            (int32, Signature.FunctionReturning int32), Outcome.BadImageFormat
-            (Signature.Vector (Signature.Pointer int32), klass (Signature.Vector (Signature.Pointer int32))),
+            ofCalls (int32, int32), Outcome.Loads
+            ofCalls (Signature.TypeParameter 0, Signature.MethodParameter 0), Outcome.Loads
+            ofCalls (Signature.Pointer int32, int32), Outcome.BadImageFormat
+            ofCalls (int32, Signature.Byref int32), Outcome.BadImageFormat
+            ofCalls (Signature.Primitive 0x16uy, int32), Outcome.BadImageFormat
+            ofCalls (Signature.Primitive 0x01uy, int32), Outcome.BadImageFormat
+            ofCalls (Signature.Nominal (true, Target.Named (Named.Core "TypedReference")), int32),
+            Outcome.BadImageFormat
+            ofCalls (Signature.Nominal (true, Target.Named (Named.Core "Void")), int32), Outcome.BadImageFormat
+            ofCalls (int32, Signature.FunctionReturning int32), Outcome.BadImageFormat
+            ofCalls (Signature.Vector (Signature.Pointer int32), klass (Signature.Vector (Signature.Pointer int32))),
             Outcome.Loads
-            (Signature.Pointer int32, klass (Signature.Pointer int32)),
+            ofCalls (Signature.Pointer int32, klass (Signature.Pointer int32)),
             Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
-            (Signature.Pointer int32, Signature.Nominal (false, Target.Head Head.Orphan)),
-            Outcome.TypeLoad (Rule.General, "System.Absent")
+            ofCalls (Signature.Pointer int32, Signature.Nominal (false, Target.Head Head.Orphan)), absent
+            // The wrong number of arguments.
+            calls [ int32 ], Outcome.BadImageFormat
+            calls [ int32 ; int32 ; int32 ], Outcome.BadImageFormat
+            calls [ Signature.Pointer int32 ], Outcome.BadImageFormat
+            calls [ int32 ; int32 ; Signature.Pointer int32 ], Outcome.BadImageFormat
+            calls [ klass (Signature.Pointer int32) ], Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
+            calls [ int32 ; int32 ; klass (Signature.Pointer int32) ],
+            Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
+            calls [ int32 ; int32 ; Signature.Nominal (false, Target.Head Head.Orphan) ], absent
+            calls [ Signature.TypeParameter 5 ], Outcome.BadImageFormat
+            // A declaring type that does not load.
+            stray [ int32 ; int32 ], absent
+            stray [ int32 ], absent
+            stray [ Signature.Pointer int32 ; int32 ], absent
+            stray [ int32 ; int32 ; klass (Signature.Pointer int32) ],
+            Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
         ]
 
     [<Test>]
@@ -848,7 +895,7 @@ module TestTypeLoadValidity =
                     $"%A{instantiation}: measured %A{measured} while designing this test, but the host now gives %A{outcome.Host}"
 
             if outcome.Concretized <> outcome.Host then
-                failwith $"M<%A{instantiation}>: the host gives %A{outcome.Host}, PawPrint %A{outcome.Concretized}"
+                failwith $"%A{instantiation}: the host gives %A{outcome.Host}, PawPrint %A{outcome.Concretized}"
 
     /// A type argument no instantiation may have.
     let private malformed : Signature list =
@@ -976,23 +1023,40 @@ module TestTypeLoadValidity =
                 let! methodArity = Gen.choose (0, 2)
                 let! count = Gen.choose (1, 8)
                 let argument = Gen.choose (0, 8) |> Gen.bind (argument heads)
-                let! instantiations = Gen.listOfLength count (Gen.zip argument argument)
+
+                let instantiation =
+                    gen {
+                        let! callee = Gen.frequency [ 6, Gen.constant Callee.Calls ; 1, Gen.constant Callee.Stray ]
+
+                        let! arity = Gen.frequency [ 6, Gen.constant 2 ; 1, Gen.constant 1 ; 1, Gen.constant 3 ]
+
+                        let! arguments = Gen.listOfLength arity argument
+
+                        return
+                            {
+                                Callee = callee
+                                Arguments = arguments
+                            }
+                    }
+
+                let! instantiations = Gen.listOfLength count instantiation
                 return typeArity, methodArity, instantiations
             }
 
         let seen = HashSet<Outcome> ()
         let mutable refusedForAnArgument = 0
+        let mutable refusedForArity = 0
         let mutable cases = 0
 
-        let property (typeArity : int, methodArity : int, instantiations : (Signature * Signature) list) : unit =
+        let property (typeArity : int, methodArity : int, instantiations : Instantiation list) : unit =
             cases <- cases + 1
 
             let _, outcomes =
                 check $"GeneratedMethodInstantiations%d{cases}" false typeArity methodArity [] instantiations
 
-            for (first, second) as instantiation, outcome in List.zip instantiations outcomes do
+            for instantiation, outcome in List.zip instantiations outcomes do
                 if outcome.Concretized <> outcome.Host then
-                    failwith $"M<%A{instantiation}>: the host gives %A{outcome.Host}, PawPrint %A{outcome.Concretized}"
+                    failwith $"%A{instantiation}: the host gives %A{outcome.Host}, PawPrint %A{outcome.Concretized}"
 
                 seen.Add (
                     match outcome.Host with
@@ -1004,16 +1068,21 @@ module TestTypeLoadValidity =
                 // With no type variable to be out of scope, the instantiation itself is refused.
                 if
                     outcome.Host = Outcome.BadImageFormat
-                    && not (mentionsParameter first || mentionsParameter second)
+                    && not (instantiation.Arguments |> List.exists mentionsParameter)
                 then
-                    refusedForAnArgument <- refusedForAnArgument + 1
+                    if instantiation.Arguments.Length = 2 then
+                        refusedForAnArgument <- refusedForAnArgument + 1
+                    else
+                        refusedForArity <- refusedForArity + 1
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen generator) property)
 
         seen |> shouldContain Outcome.Loads
         seen |> shouldContain Outcome.BadImageFormat
         seen |> shouldContain (Outcome.TypeLoad (Rule.InvalidInstantiation, ""))
+        seen |> shouldContain (Outcome.TypeLoad (Rule.General, ""))
         refusedForAnArgument |> shouldBeGreaterThan 50
+        refusedForArity |> shouldBeGreaterThan 50
 
     [<Test>]
     let ``Generated signatures agree with CoreCLR, whatever kind of type they name`` () : unit =
