@@ -244,9 +244,9 @@
     <Compile Include="Native\NativeDelegate.fs" />
     <Compile Include="Native\NativeCastHelpers.fs" />
     <Compile Include="Native\NativeStackTrace.fs" />
+    <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeQCall.fs" />
     <Compile Include="Native\NativeType.fs" />
-    <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
     <Compile Include="Native\NativeLibcFile.fs" />
     <Compile Include="Native\NativeLibcSignalMask.fs" />
