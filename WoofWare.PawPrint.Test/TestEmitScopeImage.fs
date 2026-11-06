@@ -437,6 +437,9 @@ module TestEmitScopeImage =
 
     [<Test>]
     let ``Assembly.read lists each type's methods and fields as the scope defines them`` () : unit =
+        let mutable missing = 0
+        let mutable abstractBodies = 0
+
         let property (scope : EmitScope) : unit =
             use stream = new MemoryStream (EmitScopeImage.write scope)
             use assy = Assembly.read NullLoggerFactory.Instance None stream
@@ -451,6 +454,26 @@ module TestEmitScopeImage =
                 |> List.map (fun m -> m.TryMetadata.Value.Handle |> MetadataTokens.GetRowNumber)
                 |> shouldEqual (ridsOwnedBy i (EmitScope.methodDefs scope |> Seq.map _.Owner.Rid))
 
+                // A method with a body is IL; one without is abstract if marked so, and otherwise
+                // an IL method with no body.
+                for m in ty.Methods do
+                    let row =
+                        (EmitScope.methodDefs scope).[MetadataTokens.GetRowNumber (
+                                                          MethodDefinitionHandle.op_Implicit m.TryMetadata.Value.Handle
+                                                          : EntityHandle
+                                                      )
+                                                      - 1]
+
+                    match row.Body, m.Body with
+                    | Some _, MethodBody.Il _ -> ()
+                    | None, MethodBody.Abstract when row.Flags.HasFlag MethodAttributes.Abstract ->
+                        abstractBodies <- abstractBodies + 1
+                    | None, MethodBody.MissingIl when not (row.Flags.HasFlag MethodAttributes.Abstract) ->
+                        missing <- missing + 1
+                    | expected, actual ->
+                        failwith
+                            $"%s{m.Name}: the row's body %A{expected} (flags %O{row.Flags}) read back as %A{actual}"
+
                 ty.Fields
                 |> List.map (fun f ->
                     MetadataTokens.GetRowNumber (FieldDefinitionHandle.op_Implicit f.Handle : EntityHandle)
@@ -458,6 +481,57 @@ module TestEmitScopeImage =
                 |> shouldEqual (ridsOwnedBy i (EmitScope.fields scope |> Seq.map _.Owner.Rid))
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 100, Prop.forAll (Arb.fromGen genScope) property)
+
+        missing |> shouldBeGreaterThan 50
+        abstractBodies |> shouldBeGreaterThan 50
+
+    /// A row with no body whose implementation is not managed IL: native code, unmanaged IL, and
+    /// optimised IL, none of which the runtime has a body for.
+    [<TestCase(0x0001)>]
+    [<TestCase(0x0004)>]
+    [<TestCase(0x0002)>]
+    let ``Assembly.read refuses a method with no body whose code is not managed IL`` (implFlags : int) : unit =
+        let scope = emptyScope Guid.Empty
+        let name, scope = EmitScope.internString "Holder" scope
+
+        let holder, scope =
+            EmitScope.addTypeDef
+                {
+                    Flags = TypeAttributes.Public
+                    Name = name
+                    Namespace = StringOffset 0
+                    Extends = None
+                }
+                scope
+
+        let name, scope = EmitScope.internString "NoBody" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0x00uy ; 0x00uy ; 0x01uy |]) scope
+
+        let _, scope =
+            EmitScope.addMethodDef
+                {
+                    Owner = holder
+                    Body = None
+                    ImplFlags = enum<MethodImplAttributes> implFlags
+                    Flags = MethodAttributes.Public ||| MethodAttributes.Static
+                    Name = name
+                    Signature = signature
+                }
+                scope
+
+        use stream = new MemoryStream (EmitScopeImage.write scope)
+
+        let message =
+            try
+                use _ = Assembly.read NullLoggerFactory.Instance None stream
+                failwith "expected Assembly.read to refuse the method"
+            with e ->
+                e.Message
+
+        message |> shouldContainText "NoBody"
+        message |> shouldContainText "not managed IL"
 
     [<Test>]
     let ``extending a scope leaves every row and heap entry it had where it was`` () : unit =

@@ -14,8 +14,8 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 // Runs guests under the interpreter, which is where essentially all of the suite's
 // time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
-// quick. CI selects it by category and so runs it. See AGENTS.md.
-[<Category("Guest")>]
+// quick. CI selects it by category and so runs it, on a runner of its own. See AGENTS.md.
+[<Category("GuestPure")>]
 [<Explicit>]
 module TestPureCases =
     let assy = typeof<RunResult>.Assembly

@@ -1316,35 +1316,6 @@ public static class SR
         )
         |> Set.ofSeq
 
-    /// Whether `site`, over a CoreLib of `runtime`, is one of the QCalls that .NET 11's
-    /// `SpanHelpers` copies and clears memory through, which the contract table has no row for
-    /// (`Net11Frontier.spanHelpersMemoryQCalls`). Never on .NET 10.
-    let private isNet11MemoryQCall
-        (runtime : EmulatedRuntime)
-        (analysis : EscapeAnalysisState)
-        (site : OpaqueSite)
-        : bool
-        =
-        match runtime with
-        | EmulatedRuntime.Net10 -> false
-        | EmulatedRuntime.Net11 ->
-            site.Reason = Opacity.NativeBody
-            && Set.contains
-                (EscapeAnalysis.methodName analysis site.Method)
-                (Set.ofList [ "System.SpanHelpers::memmove" ; "System.SpanHelpers::memset" ])
-
-    /// Whether `key`'s answer, over a CoreLib of `runtime`, is unknown only where it reaches one of
-    /// the QCalls `isNet11MemoryQCall` names. Never on .NET 10.
-    let private unknownOnlyThroughNet11MemoryQCalls
-        (runtime : EmulatedRuntime)
-        (analysis : EscapeAnalysisState)
-        (key : MethodKey)
-        : EscapeAnalysisState * bool
-        =
-        let analysis, sources = EscapeAnalysis.unknownSources analysis key
-
-        analysis, not sources.IsEmpty && Seq.forall (isNet11MemoryQCall runtime analysis) sources
-
     /// A place the analysis cannot see through, as the expectations spell it: the method it is in,
     /// `IL` at an instruction of the method's IL or `entry` at none, why, and the method the
     /// instruction names.
@@ -3895,10 +3866,7 @@ public static class Cases
         let analysis, definition =
             EscapeAnalysis.unknownSources analysis (methodNamed fixture "Calls" "DefaultOf")
 
-        // Some instance boxes a struct, which .NET 11's `CastHelpers.Box` copies through a QCall
-        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
         definition
-        |> Seq.filter (isNet11MemoryQCall (FrameworkUnderTest.runtime ()) analysis >> not)
         |> Seq.map (renderSite analysis)
         |> Set.ofSeq
         |> shouldEqual (
@@ -3923,8 +3891,6 @@ public static class Cases
 
     [<Test>]
     let ``every box and unbox helper the JIT calls is seen through`` () : unit =
-        Net11Frontier.park Net11Frontier.spanHelpersMemoryQCalls
-
         let corelib = hostCoreLib ()
 
         let analysis =
@@ -6027,10 +5993,45 @@ public static class Cases
             }
         | other -> failwith $"unknown profile %s{other}"
 
-    /// Every intrinsic in CoreLib, answered from what CoreCLR runs for it: the IL its VM substitutes
-    /// where there is some, and otherwise its own IL with its call to itself performed as the JIT
-    /// expands it for the CPU: a capability query answers a constant, an instruction the CPU lacks
-    /// throws `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
+    /// What `each CoreLib intrinsic is analysed as what CoreCLR runs for it` checks of an intrinsic's
+    /// answer, from what CoreCLR runs for it.
+    [<RequireQualifiedAccess>]
+    type private IntrinsicCheck =
+        /// The VM substitutes IL of its own for the method (`VmSubstitution.unsafeStub`).
+        | VmIl
+        /// The method's IL calls itself, and the JIT expands that call as a primitive.
+        | SelfCallPrimitive of IntrinsicPrimitive
+        /// The method's IL calls itself, and the JIT expands that call otherwise.
+        | SelfCallExpansion of JitExpansion
+        /// The VM substitutes a primitive for the whole method.
+        | WholePrimitive of IntrinsicPrimitive
+
+    /// What `each CoreLib intrinsic is analysed as what CoreCLR runs for it` checks of its answer for
+    /// `method`, an intrinsic; `None` where there is nothing particular to an intrinsic to check, as
+    /// for one that runs its own IL as any other method does, and then
+    /// `the analysis answers for each CoreLib intrinsic with nothing particular to check` takes it.
+    let private intrinsicCheck (corelib : DumpedAssembly) (method : MethodDefinitionHandle) : IntrinsicCheck option =
+        match VmSubstitution.unsafeStub corelib method, IntrinsicBody.classify corelib method with
+        | Some _, _ -> Some IntrinsicCheck.VmIl
+        | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
+            Some (IntrinsicCheck.SelfCallPrimitive primitive)
+        | None, IntrinsicBody.JitExpansion expansion -> Some (IntrinsicCheck.SelfCallExpansion expansion)
+        // The VM chooses the substitute by instantiation; where it is a primitive, that is the whole
+        // method.
+        | None, IntrinsicBody.VmSubstitution ->
+            IntrinsicPrimitive.recognise corelib method
+            |> Option.map IntrinsicCheck.WholePrimitive
+        // Each case is named, so that a new one does not compile until it is placed.
+        | None, IntrinsicBody.OwnIl
+        | None, IntrinsicBody.CallSiteExpansion
+        | None, IntrinsicBody.StructMarshalling _
+        | None, IntrinsicBody.NoIl -> None
+
+    /// Every intrinsic in CoreLib for which CoreCLR runs something other than its IL as written,
+    /// answered from what CoreCLR runs for it: the IL its VM substitutes where there is some, and
+    /// otherwise its own IL with its call to itself performed as the JIT expands it for the CPU: a
+    /// capability query answers a constant, an instruction the CPU lacks throws
+    /// `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
     [<TestCaseSource(nameof coreLibsAndProfiles)>]
     let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it``
         (coreLibName : string)
@@ -6124,8 +6125,18 @@ public static class Cases
 
             made fullName (Some (ExceptionMaking.ofPrimitiveFault fault))
 
+        // Those with nothing particular to check are not analysed here, but by
+        // `the analysis answers for each CoreLib intrinsic with nothing particular to check`.
         for KeyValue (handle, method) in corelib.Methods do
-            if IntrinsicBody.isIntrinsic corelib handle then
+            let check =
+                if IntrinsicBody.isIntrinsic corelib handle then
+                    intrinsicCheck corelib handle
+                else
+                    None
+
+            match check with
+            | None -> ()
+            | Some check ->
                 let next, escapes = EscapeAnalysis.escapes analysis (MethodKey.make corelib handle)
                 analysis <- next
                 let shown = render analysis escapes
@@ -6133,21 +6144,13 @@ public static class Cases
                 let describe () =
                     $"%s{method.RequiredDeclaringType.Name}::%s{method.Name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
-                match VmSubstitution.unsafeStub corelib handle, IntrinsicBody.classify corelib handle with
-                | Some _, _ ->
+                match check with
+                | IntrinsicCheck.VmIl ->
                     substituted <- substituted + 1
 
-                    let next, net11Frontier =
-                        unknownOnlyThroughNet11MemoryQCalls
-                            (EmulatedRuntime.ofCoreLib corelib)
-                            analysis
-                            (MethodKey.make corelib handle)
-
-                    analysis <- next
-
-                    if escapes.Unknown && not net11Frontier then
+                    if escapes.Unknown then
                         failures.Add $"%s{describe ()}: the VM's IL for it is all there is to see"
-                | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
+                | IntrinsicCheck.SelfCallPrimitive primitive ->
                     primitives <- primitives + 1
 
                     for fault, _ in (IntrinsicPrimitive.contract primitive).Raises do
@@ -6155,22 +6158,17 @@ public static class Cases
                             if not (shown.Contains wanted) then
                                 failures.Add
                                     $"%s{describe ()} lacks %s{wanted}, which %A{primitive} can raise by its fault %A{fault}"
-                | None, IntrinsicBody.VmSubstitution ->
-                    // The VM chooses the substitute by instantiation; where it is a primitive, that
-                    // is the whole method.
-                    match IntrinsicPrimitive.recognise corelib handle with
-                    | Some primitive ->
-                        wholePrimitives <- wholePrimitives + 1
+                | IntrinsicCheck.WholePrimitive primitive ->
+                    wholePrimitives <- wholePrimitives + 1
 
-                        let wanted =
-                            (IntrinsicPrimitive.contract primitive).Raises
-                            |> List.map (fst >> faultShown)
-                            |> Set.unionMany
+                    let wanted =
+                        (IntrinsicPrimitive.contract primitive).Raises
+                        |> List.map (fst >> faultShown)
+                        |> Set.unionMany
 
-                        if escapes.Unknown || shown <> wanted then
-                            failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
-                    | None -> ()
-                | None, IntrinsicBody.JitExpansion expansion ->
+                    if escapes.Unknown || shown <> wanted then
+                        failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
+                | IntrinsicCheck.SelfCallExpansion expansion ->
                     placeholders <- placeholders + 1
 
                     match IntrinsicBody.expandSelfCall profile expansion with
@@ -6225,12 +6223,11 @@ public static class Cases
                             for wanted in wanted do
                                 if not (shown.Contains wanted) then
                                     failures.Add $"%s{describe ()} lacks %s{wanted}"
-                    // Answered by the branch above.
+                    // Answered by `IntrinsicCheck.SelfCallPrimitive`.
                     | SelfCallExpansion.Primitive _ -> ()
                     | SelfCallExpansion.Unrecognised ->
                         if not escapes.Unknown then
                             failures.Add $"%s{describe ()}: what the JIT emits is not known"
-                | None, _ -> ()
 
         if failures.Count > 0 then
             failures |> Seq.truncate 40 |> String.concat Environment.NewLine |> failwith
@@ -6249,6 +6246,46 @@ public static class Cases
             unsupported |> shouldEqual 0
             instructions |> shouldBeGreaterThan 1000
             bareInstructions |> shouldBeGreaterThan 1000
+
+    /// The analysis answers, without failing, for every intrinsic in CoreLib with nothing particular to
+    /// an intrinsic to check (`intrinsicCheck`). Most run their own IL, as any other method does, and
+    /// between them they reach much of CoreLib, so this is what analyses the code a new runtime's
+    /// CoreLib adds to it.
+    [<TestCaseSource(nameof coreLibsAndProfiles)>]
+    let ``the analysis answers for each CoreLib intrinsic with nothing particular to check``
+        (coreLibName : string)
+        (profileName : string)
+        : unit
+        =
+        let corelib, runtimeDirs, target = coreLibNamed coreLibName
+        let profile = profileNamed corelib profileName
+
+        let unchecked =
+            [
+                for KeyValue (handle, _) in corelib.Methods do
+                    if
+                        IntrinsicBody.isIntrinsic corelib handle
+                        && (intrinsicCheck corelib handle).IsNone
+                    then
+                        yield MethodKey.make corelib handle
+            ]
+
+        // Each CoreLib has thousands, so that a test which finds few does not pass.
+        unchecked.Length |> shouldBeGreaterThan 1000
+
+        let failures =
+            ((analysisOf corelib runtimeDirs target profile Assumption.all [] id, []), unchecked)
+            ||> List.fold (fun (analysis, failures) key ->
+                try
+                    fst (EscapeAnalysis.escapes analysis key), failures
+                with e ->
+                    analysis, $"%s{EscapeAnalysis.methodName analysis key}: %s{e.Message}" :: failures
+            )
+            |> snd
+
+        match List.rev failures with
+        | [] -> ()
+        | failures -> failures |> Seq.truncate 40 |> String.concat Environment.NewLine |> failwith
 
     [<Test>]
     let ``a profile supporting another architecture's instruction set is refused`` () : unit =
@@ -14502,6 +14539,36 @@ public static class Runners
                     }
             )
 
+    /// A method whose row is managed IL with no body has no IL to follow. CoreCLR raises
+    /// `BadImageFormatException` when it is invoked, which the analysis does not model.
+    [<Test>]
+    let ``a method with no IL is opaque for want of a body`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read
+                loggerFactory
+                (Some $"%s{MethodWithoutIlImage.name}.dll")
+                (new MemoryStream (MethodWithoutIlImage.fabricate ()))
+
+        let analysis = analysisOver [ assembly ] id
+        let key = methodNamed assembly "Holder" "NoBody"
+        let _, escapes = EscapeAnalysis.escapes analysis key
+        escapes.Unknown |> shouldEqual true
+
+        let _, sources = EscapeAnalysis.unknownSources analysis key
+
+        sources
+        |> shouldEqual (
+            Set.singleton
+                {
+                    Method = key
+                    Offset = None
+                    Reason = Opacity.MissingBody
+                    Names = None
+                }
+        )
+
     /// Where the object a `throw` raises comes from, in an emitted method.
     [<RequireQualifiedAccess>]
     type private Raise =
@@ -15434,8 +15501,6 @@ public static class Holder<T> where T : IProbe
         : EscapeAnalysisState * string list
         =
         let arithmetic = Set.ofList [ dividesByZero ; overflows ]
-        // `analysisOver` reads the host's CoreLib.
-        let coreLibRuntime = EmulatedRuntime.ofCoreLib (hostCoreLib ())
         let mutable analysis = analysis
 
         let failures =
@@ -15468,17 +15533,9 @@ public static class Holder<T> where T : IProbe
                             if not (shown.Contains ("=" + thrown)) then
                                 yield $"%s{describe ()} lacks %s{thrown}"
 
-                    let next, net11Frontier =
-                        unknownOnlyThroughNet11MemoryQCalls
-                            coreLibRuntime
-                            analysis
-                            (methodNamed fixture (ns + ".Runners") name)
-
-                    analysis <- next
-
                     match claim with
                     | DispatchClaim.Precise ->
-                        if (escapes.Unknown && not net11Frontier) || shownArithmetic <> reported then
+                        if escapes.Unknown || shownArithmetic <> reported then
                             yield
                                 $"%s{describe ()}; expected exactly %A{Set.toList reported} of the arithmetic exceptions, and nothing unknown"
                     | DispatchClaim.Unknown ->
@@ -17849,14 +17906,11 @@ public static class Runners
             Assembly.read loggerFactory (Some "Refusals.dll") (new MemoryStream (fabricateRefusals ()))
 
         let mutable analysis = analysisOver [ fixture ] id
-        // `analysisOver` reads the CoreLib of the runtime under test.
-        let runtime = EmulatedRuntime.ofCoreLib (hostCoreLib ())
 
         let failures =
             [
                 // Whether the type is byref-like decides these, and the open definition does not
-                // say. A box of a type variable may call `CastHelpers.Box`, which on .NET 11
-                // reaches a memory QCall the contract table has no row for.
+                // say.
                 for name, dependsOnInstantiation in
                     [ "BoxT", true ; "NewarrT", true ; "BoxTBranch", false ; "BoxU", false ] do
                     let key = methodNamed fixture "Refusals.Runners" name
@@ -17864,11 +17918,7 @@ public static class Runners
                     let next, sources = EscapeAnalysis.unknownSources next key
                     analysis <- next
 
-                    let reasons =
-                        sources
-                        |> Seq.filter (isNet11MemoryQCall runtime analysis >> not)
-                        |> Seq.map _.Reason
-                        |> Set.ofSeq
+                    let reasons = sources |> Seq.map _.Reason |> Set.ofSeq
 
                     let expected =
                         if dependsOnInstantiation then
@@ -17878,7 +17928,7 @@ public static class Runners
 
                     if reasons <> expected then
                         yield
-                            $"%s{name}: unknown %b{escapes.Unknown} through %A{Set.toList reasons}, beyond .NET 11's memory QCalls; expected %A{Set.toList expected}"
+                            $"%s{name}: unknown %b{escapes.Unknown} through %A{Set.toList reasons}; expected %A{Set.toList expected}"
 
                     // Where an instance decides it, the definition's answer is opaque instead.
                     let shown = render analysis escapes
@@ -19097,21 +19147,7 @@ public static class Runners
                     analysis <- next
                     let shown = render analysis summary
 
-                    // A `constrained.` call on a value type that lands in a default body boxes
-                    // its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall the
-                    // table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
-                    let next, net11Frontier =
-                        unknownOnlyThroughNet11MemoryQCalls
-                            (FrameworkUnderTest.runtime ())
-                            analysis
-                            (methodNamed clientAssembly "Client.Runners" methodName)
-
-                    analysis <- next
-
-                    if
-                        (summary.Unknown && not net11Frontier)
-                        || shown.Contains ("=" + initialization) <> escapes
-                    then
+                    if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
                         yield
                             $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
 
@@ -19411,19 +19447,10 @@ public static class Runners
 
         let shown = render analysis escapes
 
-        let analysis, made =
-            making analysis "System.Runtime.AmbiguousImplementationException"
-
-        // The call boxes its receiver, which .NET 11's `CastHelpers.Box` copies through a QCall
-        // the table has no row for (`Net11Frontier.spanHelpersMemoryQCalls`).
-        let _, net11Frontier =
-            unknownOnlyThroughNet11MemoryQCalls
-                (FrameworkUnderTest.runtime ())
-                analysis
-                (methodNamed assembly "Run" "Call")
+        let _, made = making analysis "System.Runtime.AmbiguousImplementationException"
 
         if
-            (escapes.Unknown && not net11Frontier)
+            escapes.Unknown
             || not (shown.Contains "=System.Runtime.AmbiguousImplementationException")
             || not (Set.isSubset made shown)
         then
@@ -19490,17 +19517,8 @@ public static class Runners
                 let shown = render analysis escapes
                 let analysis, made = making analysis "System.EntryPointNotFoundException"
 
-                // A `constrained.` call on a value type whose dispatch fails boxes its receiver,
-                // which .NET 11's `CastHelpers.Box` copies through a QCall the table has no row for
-                // (`Net11Frontier.spanHelpersMemoryQCalls`).
-                let analysis, net11Frontier =
-                    unknownOnlyThroughNet11MemoryQCalls
-                        (FrameworkUnderTest.runtime ())
-                        analysis
-                        (methodNamed entry "ReabstractionEntry.Cases" methodName)
-
                 if
-                    (escapes.Unknown && not net11Frontier)
+                    escapes.Unknown
                     || not (shown.Contains "=System.EntryPointNotFoundException")
                     || not (Set.isSubset made shown)
                 then

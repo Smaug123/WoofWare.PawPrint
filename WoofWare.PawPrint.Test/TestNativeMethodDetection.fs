@@ -48,7 +48,8 @@ module TestNativeMethodDetection =
         | MethodBody.PInvoke -> true
         | MethodBody.Il _
         | MethodBody.RuntimeProvided _
-        | MethodBody.Abstract -> false
+        | MethodBody.Abstract
+        | MethodBody.MissingIl -> false
 
     [<Test>]
     let ``Environment.GetProcessorCount is a native method`` () : unit =

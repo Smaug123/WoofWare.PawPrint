@@ -520,6 +520,7 @@ module IlMachineStateExecution =
                 match methodToCall.Body with
                 | MethodBody.Abstract -> None
                 | MethodBody.Il _
+                | MethodBody.MissingIl
                 | MethodBody.InternalCall
                 | MethodBody.PInvoke
                 | MethodBody.RuntimeProvided _ ->
@@ -946,6 +947,16 @@ module IlMachineStateExecution =
         match outcome with
         | IntrinsicOutcome.Handled (state, commitment) -> state, commitment
         | IntrinsicOutcome.RunBody (state, methodToCall) ->
+
+        match methodToCall.Body with
+        | MethodBody.MissingIl ->
+            failwith
+                $"TODO: calling %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}, an IL method whose row names no body; real .NET raises BadImageFormatException (COR_E_BADIMAGEFORMAT) from the callee when the JIT finds no IL, before anything of it runs"
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _
+        | MethodBody.Abstract -> ()
 
         // Get zero values for all parameters.
         //
