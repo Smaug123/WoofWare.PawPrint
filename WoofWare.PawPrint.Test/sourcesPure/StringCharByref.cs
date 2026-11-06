@@ -57,7 +57,8 @@ public class StringCharByref
 
     public static int TestDirectStringCharWrite()
     {
-        string s = "ab";
+        // Not a literal: PawPrint refuses a write that changes an interned string.
+        string s = new string(new[] { 'a', 'b' });
         ReadOnlySpan<char> span = s;
         ref char first = ref MemoryMarshal.GetReference(span);
 
@@ -74,7 +75,8 @@ public class StringCharByref
 
     public static int TestStringByteViewWrite()
     {
-        string s = "ab";
+        // Not a literal: PawPrint refuses a write that changes an interned string.
+        string s = new string(new[] { 'a', 'b' });
         ReadOnlySpan<char> span = s;
         ref char first = ref MemoryMarshal.GetReference(span);
         ref byte firstByte = ref Unsafe.As<char, byte>(ref first);
@@ -101,9 +103,6 @@ public class StringCharByref
 
     public static unsafe int TestStringFixedPointerByteAdd()
     {
-        // Use a string literal not shared with other tests so this case is
-        // robust against in-place byte-view mutations elsewhere in the
-        // assembly that would otherwise alias through the intern pool.
         string s = "fp";
         ReadOnlySpan<char> span = s;
         fixed (char* p = &MemoryMarshal.GetReference(span))

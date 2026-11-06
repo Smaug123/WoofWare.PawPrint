@@ -102,8 +102,10 @@ module FabricatedGuest =
         | Error e -> FabricatedOutcome.Failed e
 
     /// Lay `fabricated` and a driver compiled against it side by side on disk, and run the driver
-    /// on both runtimes.
-    let runOnBoth
+    /// on both runtimes, PawPrint's seeding `System.AppContext` with `appContext`. The real runtime
+    /// runs with its defaults.
+    let runOnBothUnder
+        (appContext : AppContextProperties)
         (fabricatedName : string)
         (fabricated : byte[])
         (driverName : string)
@@ -132,11 +134,29 @@ module FabricatedGuest =
                                 loggerFactory
                                 (Some driverPath)
                                 peImage
-                                (HostConfig.Default (runtimeDirs tempDir))
+                                (let host = HostConfig.Default (runtimeDirs tempDir)
+
+                                 { host with
+                                     Guest =
+                                         { host.Guest with
+                                             AppContext = appContext
+                                         }
+                                 })
                         )
 
                 onHost, onPawPrint
             )
+
+    /// Lay `fabricated` and a driver compiled against it side by side on disk, and run the driver
+    /// on both runtimes.
+    let runOnBoth
+        (fabricatedName : string)
+        (fabricated : byte[])
+        (driverName : string)
+        (driverSource : string)
+        : RealRuntimeResult * FabricatedOutcome
+        =
+        runOnBothUnder AppContextProperties.empty fabricatedName fabricated driverName driverSource
 
     /// Run the driver on PawPrint alone, giving up after `maxSteps` interpreted steps. For a guest
     /// the real runtime cannot usefully run, and which PawPrint might never finish.

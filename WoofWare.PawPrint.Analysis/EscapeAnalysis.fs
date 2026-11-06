@@ -68,6 +68,9 @@ type Opacity =
     | NativeBody
     /// The method is abstract.
     | AbstractBody
+    /// The method is IL, but its row names no body. CoreCLR raises <c>BadImageFormatException</c>
+    /// when it is invoked, before any of it runs; the analysis does not model that verdict.
+    | MissingBody
     /// Something CoreCLR runs for an <c>[Intrinsic]</c> in place of its IL that the analysis does not
     /// model: the JIT's expansion of the method's call to itself where the JIT's tables do not say
     /// what the instruction raises (<c>HardwareInstruction.contract</c>) or the expansion is not
@@ -102,7 +105,8 @@ type OpaqueSite =
         Method : MethodKey
         /// The offset of the instruction in the IL CoreCLR runs for the method: its own, or what the
         /// VM substitutes for it. <c>None</c> where the place is no instruction: the method has no IL
-        /// the analysis follows (<c>NativeBody</c>, <c>AbstractBody</c>, <c>IntrinsicExpansion</c>),
+        /// the analysis follows (<c>NativeBody</c>, <c>AbstractBody</c>, <c>MissingBody</c>,
+        /// <c>IntrinsicExpansion</c>),
         /// or binding what its body names fails in a way the analysis cannot follow, or the JIT may
         /// refuse to compile it, before any of it runs (<c>DependsOnInstantiation</c>,
         /// <c>UnresolvedAssembly</c>, <c>BoxedByRefLikeReceiver</c>, <c>UnreadableCallingConvention</c>,
@@ -4006,6 +4010,7 @@ module EscapeAnalysis =
         | None, _ ->
             match method.Body with
             | MethodBody.Abstract -> Runs.Opaque Opacity.AbstractBody
+            | MethodBody.MissingIl -> Runs.Opaque Opacity.MissingBody
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->

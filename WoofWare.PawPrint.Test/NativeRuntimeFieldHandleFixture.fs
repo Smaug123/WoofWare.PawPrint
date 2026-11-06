@@ -121,7 +121,8 @@ public sealed class GenericHolder<T>
                 | MethodBody.Il _
                 | MethodBody.PInvoke
                 | MethodBody.RuntimeProvided _
-                | MethodBody.Abstract -> false
+                | MethodBody.Abstract
+                | MethodBody.MissingIl -> false
 
         declaringType.Methods
         |> List.filter isEntry

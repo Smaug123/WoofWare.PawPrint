@@ -75,7 +75,6 @@ type IlMachineState =
         /// assignment; `Scheduler.checkSyscallSleepers` says whether it agrees with what the
         /// thread states and the kernel's parks show.
         _SyscallSleepers : SyscallSleepers
-        InternedStrings : ImmutableDictionary<string, ManagedHeapAddress>
         /// Memo of `IlMachineTypeResolution.cliTypeZeroOfHandle`: the zero value of each
         /// concrete type, which is what every parameter, local, `initobj` and `newarr` cell of
         /// that type starts as. A value type's zero is built by walking its fields, and the walk

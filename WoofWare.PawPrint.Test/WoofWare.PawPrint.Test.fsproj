@@ -75,6 +75,7 @@
     <Compile Include="TestUnsafeAccessorRefusals.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="FabricatedGuest.fs" />
+    <Compile Include="MethodWithoutIlImage.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
     <Compile Include="TypeIdentityTestHelpers.fs" />
     <Compile Include="PointerHashTestHelpers.fs" />
@@ -427,6 +428,7 @@
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
+    <Compile Include="TestInternedStringWrites.fs" />
     <Compile Include="TestDescriptorBoundRefusal.fs" />
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestEmitScopeImage.fs" />
@@ -437,6 +439,7 @@
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
+    <Compile Include="TestFabricatedMethodWithoutIl.fs" />
     <Compile Include="TestIntrinsicBody.fs" />
     <Compile Include="TestSynchronizedMethodHelpers.fs" />
     <Compile Include="TestUnsafeStubs.fs" />
