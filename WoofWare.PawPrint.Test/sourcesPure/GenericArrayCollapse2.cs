@@ -1,4 +1,4 @@
-// Issue 2: resolveTypeFromSpecConcrete round-trip collapses array types.
+// Issue 2: a round-trip through TypeInfo collapses array types.
 //
 // This test exercises the resolveMethodMemberRef path, where a method
 // is called on a generic type parameterized with an array type.
@@ -25,7 +25,7 @@ public class GenericArrayCollapse2
 {
     // Generic method: the stelem inside MakeArray uses a TypeSpec for T.
     // When T = Wrapper<int[]>, the TypeSpec is GenericInstantiation(Wrapper, [int[]]).
-    // resolveTypeFromSpecConcrete collapses int[] to System.Array.
+    // Its int[] argument must not collapse to System.Array.
     static T[] MakeArray<T>(T a, T b)
     {
         T[] arr = new T[2];

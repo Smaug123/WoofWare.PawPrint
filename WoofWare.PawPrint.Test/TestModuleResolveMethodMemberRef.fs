@@ -65,6 +65,14 @@ public struct SBox<T> : IConvertOnStruct
     public void PlainVirtual() { }
 }
 
+// Derives from a type in an assembly that nothing else in this program loads, so that resolving
+// one of its methods is the first thing to touch that assembly.
+public class XmlHolder<T> : System.Xml.XmlDocument
+{
+    public void PlainOnXml() { }
+    public U ConvertOnXml<U>() => default!;
+}
+
 public static class Program
 {
     // Never run: these are here for the MemberRefs they make.
@@ -77,6 +85,8 @@ public static class Program
         new Holder<int>().ConvertVirtualOnClass<int>();
         new SBox<int>().ConvertVirtual<int>();
         new SBox<int>().PlainVirtual();
+        new XmlHolder<int>().PlainOnXml();
+        new XmlHolder<int>().ConvertOnXml<int>();
         InGeneric<long>();
     }
 
@@ -218,9 +228,16 @@ public static class Program
     let private genericVirtualOnStruct : string * string * int =
         "ConvertVirtual", "none", 3 + 8 + 32
 
+    /// Methods on `XmlHolder<int>`, whose base is in an assembly nothing else loads, each resolved by
+    /// a run of its own so that the resolution is the first thing to touch that assembly, and what
+    /// the real runtime was measured to answer. `XmlHolder<int>` is not in `DeclaringTypes`, whose
+    /// initialisation would touch it first.
+    let private firstTouch : (string * string * int) list =
+        [ "PlainOnXml", "none", 64 ; "ConvertOnXml", "none", 8 + 16 + 32 + 64 ]
+
     [<Test>]
     let ``The real runtime answers as measured`` () : unit =
-        for name, context, measured in answered @ canonical @ [ genericVirtualOnStruct ] do
+        for name, context, measured in answered @ canonical @ [ genericVirtualOnStruct ] @ firstTouch do
             let token = memberRefToken (image.Force ()) name
             let actual = realRuntime [ "classify" ; string token ; context ]
 
@@ -284,3 +301,16 @@ public static class Program
         exn.Message |> shouldContainText "ModuleHandle.ResolveMethod"
         exn.Message |> shouldContainText "unboxing stub"
         exn.Message |> shouldContainText name
+
+    [<TestCase 0>]
+    [<TestCase 1>]
+    let ``PawPrint resolves a MemberRef on a class whose base is in an unloaded assembly`` (index : int) : unit =
+        let name, context, expected = firstTouch.[index]
+
+        match underPawPrint $"ModuleResolveMethodMemberRefFirstTouch%d{index}" (checkArgs [ firstTouch.[index] ]) with
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) ->
+            if terminalState.LatchedExitCode <> 0 then
+                failwith
+                    $"%s{name} in context %s{context}: the real runtime classifies it %d{expected}; PawPrint does not"
+        | other -> failwith $"expected the guest to exit, got %A{other}"
