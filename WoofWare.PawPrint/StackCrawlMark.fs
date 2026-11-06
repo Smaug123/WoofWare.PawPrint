@@ -16,8 +16,8 @@ type StackCrawlMark =
     | LookForThread
 
 /// <summary>
-/// The frame walk that CoreCLR's <c>SystemDomain::GetCallersModule</c> performs on behalf of a
-/// <c>StackCrawlMark</c>-taking QCall.
+/// The frame walks that CoreCLR performs on behalf of a <c>StackCrawlMark</c>-taking QCall:
+/// <c>SystemDomain::GetCallersModule</c>'s, and <c>MethodBase_GetCurrentMethod</c>'s simpler one.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,8 +30,9 @@ type StackCrawlMark =
 /// caller supplies that <c>FrameId</c>; this module answers the rest.
 /// </para>
 /// <para>
-/// The walk this module performs is therefore only the part of CoreCLR's that begins *outside* the
-/// marked frame: skipping reflection infrastructure, and counting off one frame or two.
+/// The walks this module performs are therefore only the part of CoreCLR's that begins *outside*
+/// the marked frame: for <c>GetCallersModule</c>, skipping reflection infrastructure and counting
+/// off one frame or two; for <c>GetCurrentMethod</c>, taking the next frame out.
 /// </para>
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -229,6 +230,79 @@ module StackCrawlMark =
                 walk (remaining - 1) (Some caller) (passed + 1) caller
 
         walk thread.MethodStates.Count None 0 start
+
+    /// <summary>
+    /// The frame CoreCLR's <c>MethodBase_GetCurrentMethod</c> answers with, where
+    /// <paramref name="markFrame" /> is the frame whose storage holds the mark: the marked frame's
+    /// caller, stepping over only the delegate stubs that real .NET has no frame for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is not <see cref="resolveCaller" />. CoreCLR's walk for this QCall (<c>SkipMethods</c>,
+    /// reflectioninvocation.cpp) stops at the first frame outside the marked one and neither skips
+    /// reflection infrastructure nor counts frames, so a caller that is reflection infrastructure
+    /// is the answer rather than a frame to look through. The caller decides whether it can vouch
+    /// for that answer.
+    /// </para>
+    /// <para>
+    /// Refuses every mark but <c>LookForMyCaller</c>, the only one CoreCLR's walk accepts (it
+    /// asserts as much) and the only one <c>MethodBase.GetCurrentMethod</c> constructs.
+    /// </para>
+    /// </remarks>
+    let currentMethodFrame
+        (operation : string)
+        (mark : StackCrawlMark)
+        (markFrame : FrameId)
+        (thread : ThreadState)
+        : MethodState
+        =
+        match mark with
+        | StackCrawlMark.LookForMyCaller -> ()
+        | StackCrawlMark.LookForMe
+        | StackCrawlMark.LookForMyCallersCaller
+        | StackCrawlMark.LookForThread ->
+            failwith
+                $"%s{operation}: was handed a %O{mark} stack-crawl mark; CoreCLR's walk for this QCall asserts LookForMyCaller, and MethodBase.GetCurrentMethod constructs nothing else"
+
+        let start =
+            ThreadState.tryGetFrame markFrame thread
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the stack-crawl mark is stored in %O{markFrame}, which is not a live frame of this thread. This is an interpreter bug."
+            )
+
+        // A valid return chain is strictly decreasing in frame id and so cannot cycle; the bound is
+        // here so that a chain which *is* malformed says so rather than looping forever.
+        let rec walk (remaining : int) (frame : MethodState) : MethodState =
+            if remaining < 0 then
+                failwith
+                    $"%s{operation}: walked more than %d{thread.MethodStates.Count} frames, the number live, without leaving the delegate stubs above %O{markFrame}. This is an interpreter bug."
+
+            match frame.ReturnState with
+            | None ->
+                // The marked frame is `GetCurrentMethod` itself, and a delegate stub calls its
+                // target, so each has a caller; PawPrint's outermost frame is the entry point or
+                // its startup placeholder.
+                failwith
+                    $"%s{operation}: the frame %s{frame.ExecutingMethod.Name}, at or above the one holding the stack-crawl mark, has no caller. This is an interpreter bug."
+            | Some returnState ->
+
+            let caller =
+                ThreadState.tryGetFrame returnState.JumpTo thread
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{operation}: frame %O{returnState.JumpTo} is named as the caller of a live frame but is not itself live. This is an interpreter bug."
+                )
+
+            // Real .NET has no frame for a delegate's `Invoke`, and its walk hides the multicast
+            // invoke stub, so `GetCurrentMethod` reached through either names whoever invoked the
+            // delegate (measured for a multicast delegate). See `StackFrameCapture.isDelegateInvokeStub`.
+            if StackFrameCapture.isDelegateInvokeStub caller then
+                walk (remaining - 1) caller
+            else
+                caller
+
+        walk thread.MethodStates.Count start
 
     /// <summary>
     /// Whether <paramref name="markFrame" /> is <paramref name="frame" /> or one of its callers.

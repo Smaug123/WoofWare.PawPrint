@@ -615,6 +615,28 @@ module MethodHandleRegistry =
             MethodGenerics = []
         }
 
+    /// The `RuntimeMethodHandleInternal` naming the typical definition of `method`: CoreCLR's
+    /// `pMD->LoadTypicalMethodDefinition()` handed back as a bare `MethodDesc*`, with both
+    /// instantiations stripped as `typicalMethodDefinition` says. Refuses a runtime-synthesised
+    /// method, which has no MethodDef row to name.
+    let getOrAllocateTypicalDefinitionInternalHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let identity =
+            makeMethodIdentity allConcreteTypes method
+            |> typicalMethodDefinition allConcreteTypes
+
+        let registryId, reg = idOfHandle (MethodHandle.FromMetadata identity) reg
+
+        let mHandle =
+            CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
+
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
+
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
         match typeDefn with
         | TypeDefn.PrimitiveType PrimitiveType.Object

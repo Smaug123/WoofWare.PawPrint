@@ -750,6 +750,59 @@ module NativeCall =
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
         | other -> failwith $"%s{operation}: expected %s{argName} to be StackCrawlMarkHandle, got %O{other}"
 
+    /// <summary>
+    /// Decode the <c>StackCrawlMarkHandle</c> argument of a QCall that crawls the calling thread's
+    /// stack: the frame whose local holds the mark, and the mark itself.
+    /// </summary>
+    /// <remarks>
+    /// Refuses a handle that is not the shape CoreLib constructs, <c>new StackCrawlMarkHandle(ref
+    /// someLocal)</c> over a local of a frame this QCall was reached through on this thread.
+    /// </remarks>
+    let stackCrawlMark (operation : string) (ctx : NativeCallContext) (arg : CliType) : FrameId * StackCrawlMark =
+        let state = ctx.State
+        let markPtr = stackCrawlMarkHandleTarget operation state "stackMark" arg
+
+        // CoreCLR locates the marked frame by comparing the mark's address against each frame's
+        // stack pointer. PawPrint's byref names that frame outright — but only for the exact
+        // shape CoreLib constructs. A projected pointer, an argument slot, or another thread's
+        // frame all mean the handle did not come from there, and guessing which frame was meant
+        // would be worse than stopping.
+        let markFrame =
+            match markPtr with
+            | ManagedPointerSource.Byref {
+                                             Root = ByrefRoot.LocalVariable (sourceThread, markFrame, _)
+                                             Projections = []
+                                         } ->
+                if sourceThread <> ctx.Thread then
+                    failwith
+                        $"%s{operation}: the stack-crawl mark is stored in a frame of %O{sourceThread}, but the QCall is executing on %O{ctx.Thread}. A stack crawl can only answer about the crawling thread."
+
+                markFrame
+            | other ->
+                failwith
+                    $"%s{operation}: expected StackCrawlMarkHandle._ptr to be an unprojected byref to a local variable, got %O{other}"
+
+        // Every mark CoreLib builds is a local of a frame the QCall was reached through, so a
+        // decoded frame that is not on the return chain means the handle was misread. Worth
+        // checking rather than trusting: a misread frame can still yield the right answer, for
+        // instance when every frame between it and the true one is skipped as reflection
+        // infrastructure, and then the mistake would not show up in a test.
+        let threadState = state.ThreadState.[ctx.Thread]
+
+        if not (StackCrawlMark.isOnReturnChainOf markFrame threadState.ActiveMethodState threadState) then
+            failwith
+                $"%s{operation}: the stack-crawl mark decoded to %O{markFrame}, which is not this QCall's frame nor one of its callers. This is an interpreter bug."
+
+        let mark =
+            match
+                IlMachineState.readManagedByref ctx.BaseClassTypes state (ManagedPointerSource.requireAddressed markPtr)
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.Numeric (CliNumericType.Int32 value) -> StackCrawlMark.ofInt32 operation value
+            | other -> failwith $"%s{operation}: expected StackCrawlMark storage to hold an Int32, got %O{other}"
+
+        markFrame, mark
+
     let objectHandleOnStackTarget
         (operation : string)
         (state : IlMachineState)

@@ -7,9 +7,10 @@ open Microsoft.Extensions.Logging
 /// CoreCLR's `reflectioninvocation.cpp` QCalls, other than the `RuntimeTypeHandle_*` family that
 /// `NativeRuntimeTypeQCall` serves. Today that is `RuntimeMethodHandle_InvokeMethod`, the primitive
 /// underneath every `MethodBase.Invoke`; `ReflectionInvocation_GetBoxInfo`, which describes to
-/// managed code how to box a value of a given type; and
+/// managed code how to box a value of a given type;
 /// `ReflectionSerialization_GetCreateUninitializedObjectInfo`, which describes how to allocate one
-/// without running its constructor.
+/// without running its constructor; and `MethodBase_GetCurrentMethod`, which names the method that
+/// called `MethodBase.GetCurrentMethod`.
 [<RequireQualifiedAccess>]
 module internal NativeReflectionInvocation =
 
@@ -1072,6 +1073,77 @@ module internal NativeReflectionInvocation =
                 (CliType.RuntimePointer (
                     CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed description.MethodTable)
                 ))
+            |> NativeHandlerResult.completed
+            |> Some
+        | "MethodBase_GetCurrentMethod",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "MethodBase",
+          "GetCurrentMethod",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StackCrawlMarkHandle",
+                                                        stackMarkGenerics) ],
+          MethodReturnType.Returns (CorelibType state.TypeSystem.ConcreteTypes ("System",
+                                                                                "RuntimeMethodHandleInternal",
+                                                                                returnGenerics)) when
+            stackMarkGenerics.IsEmpty && returnGenerics.IsEmpty
+            ->
+            // CoreCLR (reflectioninvocation.cpp, `MethodBase_GetCurrentMethod`) walks to the first
+            // frame outside the one holding the mark, which is `GetCurrentMethod`'s caller, and
+            // answers `LoadTypicalMethodDefinition()` of its method. The typical definition is
+            // what makes PawPrint's exact instantiations agree with CoreCLR's shared code here:
+            // `G<string>.M` and `G<__Canon>.M` both strip to `G<T>.M`.
+            let operation = "MethodBase_GetCurrentMethod"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let markFrame, mark =
+                NativeCall.stackCrawlMark operation ctx instruction.Arguments.[0]
+
+            let caller =
+                StackCrawlMark.currentMethodFrame operation mark markFrame state.ThreadState.[ctx.Thread]
+
+            let callerMethod = caller.ExecutingMethod
+
+            match callerMethod.SynthesisedKind with
+            | Some (SynthesisedMethod.DynamicMethod _) ->
+                // CoreCLR answers the `DynamicMethodDesc` unchanged, and `RuntimeType.GetMethodBase`
+                // then asks `RuntimeMethodHandle.GetResolver` for the `DynamicMethod`.
+                failwith
+                    $"TODO: %s{operation}: MethodBase.GetCurrentMethod was called from the dynamic method %s{callerMethod.Name}, and naming it needs RuntimeMethodHandle.GetResolver, which PawPrint does not implement."
+            | Some SynthesisedMethod.MulticastDelegateInvokeStub ->
+                failwith
+                    $"%s{operation}: the walk answered PawPrint's multicast invoke stub %s{callerMethod.Name}, which it steps over. This is an interpreter bug."
+            | Some SynthesisedMethod.StructMarshalStub ->
+                failwith
+                    $"TODO: %s{operation}: MethodBase.GetCurrentMethod was called from PawPrint's struct-marshalling stub %s{callerMethod.Name}. What CoreCLR reports for its own marshalling IL stub has not been measured."
+            | Some SynthesisedMethod.EntryPointPlaceholder ->
+                failwith
+                    $"%s{operation}: the caller of MethodBase.GetCurrentMethod is the entry thread's startup placeholder, whose body is a bare ret and calls nothing. This is an interpreter bug."
+            | None ->
+
+            // CoreCLR's walk does not skip reflection infrastructure for this QCall, so a guest that
+            // reaches `GetCurrentMethod` through `MethodInfo.Invoke` or `Delegate.DynamicInvoke`
+            // gets whichever CoreLib frame CoreCLR's invoker interposes. PawPrint's invoker
+            // interposes different frames from CoreCLR's (which also changes with the call count,
+            // as CoreCLR moves from its interpreted invoke to an emitted stub), so answering with
+            // PawPrint's frame would name a method CoreCLR would not.
+            if StackCrawlMark.isReflectionInvocation caller then
+                failwith
+                    $"TODO: %s{operation}: MethodBase.GetCurrentMethod was reached through reflection, so its caller is the reflection-infrastructure frame %s{callerMethod.Name}. CoreCLR answers whichever frame its own invoker interposes there, and PawPrint's invoker does not interpose the same ones."
+
+            let handle, registry =
+                MethodHandleRegistry.getOrAllocateTypicalDefinitionInternalHandle
+                    ctx.BaseClassTypes
+                    state.TypeSystem.ConcreteTypes
+                    callerMethod
+                    state.MethodHandles
+
+            { state with
+                MethodHandles = registry
+            }
+            |> IlMachineState.pushToEvalStack (CliType.ValueType handle) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | _ -> None
