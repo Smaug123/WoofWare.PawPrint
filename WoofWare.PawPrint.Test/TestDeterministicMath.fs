@@ -1705,6 +1705,285 @@ module TestDeterministicMath =
         )
         |> reportFailures
 
+    /// Whether `r` really is the largest integral value at or below `x`, decided without
+    /// reference to any other floor implementation: `r` must be an integer, at or below `x`,
+    /// and `r + 1` must be strictly above it, so that no larger integer would have done. Every
+    /// double is a dyadic rational, so `BigInteger` settles all three exactly.
+    ///
+    /// Note what this deliberately does not see: `atExponent` maps both zeros to 0, so the
+    /// predicate cannot tell `floor(0.5) = +0` from `-0`. That sign is pinned by the
+    /// special-case table and by the bit-for-bit host property instead.
+    let private isFloorOf (x : float) (r : float) : bool =
+        // One octave below the smallest subnormal, so that every double is an exact integer
+        // count of `2^fixedPoint` and `one` below is representable in the same units.
+        let fixedPoint = -1080
+        let one = BigInteger.One <<< -fixedPoint
+
+        let xFixed = atExponent fixedPoint x
+        let rFixed = atExponent fixedPoint r
+
+        (rFixed % one).IsZero && rFixed <= xFixed && rFixed + one > xFixed
+
+    [<Test>]
+    let ``floor matches its exact definition`` () : unit =
+        // As for `ceiling`: `roundToIntegralTowardNegative` is exact, so there is a single right
+        // answer and it is checked against the definition itself rather than against another
+        // implementation.
+        let property (x : float) : bool = isFloorOf x (DeterministicMath.floor x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor agrees with the host bit-for-bit`` () : unit =
+        // The host is an exact oracle here rather than a bound, as for `ceiling`: the operation
+        // is exact, so any disagreement at all, including about the sign of a zero, is a bug in
+        // one of the two.
+        let property (x : float) : bool =
+            let actual = DeterministicMath.floor x
+            BitConverter.DoubleToUInt64Bits actual = BitConverter.DoubleToUInt64Bits (Math.Floor x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor is idempotent`` () : unit =
+        // The result is integral, so a second application must change nothing at all — not even
+        // the sign of the zero the first one may have produced.
+        let property (x : float) : bool =
+            let once = DeterministicMath.floor x
+            let twice = DeterministicMath.floor once
+            BitConverter.DoubleToUInt64Bits twice = BitConverter.DoubleToUInt64Bits once
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor is ceiling reflected through zero`` () : unit =
+        // `floor(x) = -ceiling(-x)`, bit-for-bit and so including the signs of the zeros:
+        // `floor(0.5)` is +0, and `-ceiling(-0.5)` is the negation of -0, which is the same +0;
+        // `floor(-0)` is -0, and `-ceiling(+0)` is the same -0. An implementation that had
+        // copied `ceiling`'s zero rule rather than reflecting it fails here.
+        let property (x : float) : bool =
+            let floored = DeterministicMath.floor x
+            let reflected = -(DeterministicMath.ceiling -x)
+            BitConverter.DoubleToUInt64Bits floored = BitConverter.DoubleToUInt64Bits reflected
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor agrees with truncate at or above zero`` () : unit =
+        // Rounding towards negative infinity *is* rounding towards zero for a non-negative
+        // argument, so the two in-tree implementations must agree there bit-for-bit — including
+        // on the +0 that both produce from 0 < x < 1, and on the -0 that both return unchanged.
+        // Below zero they may not agree, and the reflection property above pins that half.
+        let property (x : float) : bool =
+            if x < 0.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.floor x) = BitConverter.DoubleToUInt64Bits (
+                    DeterministicMath.truncate x
+                )
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor is the identity on doubles that are already integral`` () : unit =
+        // At or above 2^52 in magnitude a double's ulp is at least 1, so it is an integer and
+        // must come back untouched. This is the `exponent >= 0` fast path, which about half of
+        // `genFiniteDouble`'s draws reach; the rest pass vacuously, and are covered by the
+        // properties above instead.
+        let property (x : float) : bool =
+            if abs x < 4503599627370496.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.floor x) = BitConverter.DoubleToUInt64Bits x
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``floor moves its argument by less than one, and never upwards`` () : unit =
+        // The bound a caller actually relies on, stated on its own rather than as a corollary of
+        // the definition above: `0 <= x - floor(x) < 1`, in exact arithmetic so that the
+        // subtraction cannot itself round.
+        let property (x : float) : bool =
+            let fixedPoint = -1080
+            let one = BigInteger.One <<< -fixedPoint
+
+            let difference =
+                atExponent fixedPoint x - atExponent fixedPoint (DeterministicMath.floor x)
+
+            difference.Sign >= 0 && difference < one
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``floor is monotone`` () : unit =
+        // A non-decreasing function of a non-decreasing argument, exactly rather than up to an
+        // error term.
+        let property (a : float, b : float) : bool =
+            let smaller, larger = if a <= b then a, b else b, a
+            DeterministicMath.floor smaller <= DeterministicMath.floor larger
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genFiniteDouble genFiniteDouble)) property)
+
+    [<Test>]
+    let ``floor is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = DeterministicMath.floor x
+            let second = DeterministicMath.floor x
+            BitConverter.DoubleToUInt64Bits first = BitConverter.DoubleToUInt64Bits second
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``floor agrees with the host on a dense sweep`` () : unit =
+        // Quarter-integers either side of zero, which is where the sign rules bite and where a
+        // random draw over a binade would spend nothing at all: every fractional part in sight
+        // is one a generator of uniform mantissas essentially never produces.
+        [ -2000 .. 2000 ]
+        |> List.collect (fun n ->
+            [ -0.75 ; -0.5 ; -0.25 ; 0.0 ; 0.25 ; 0.5 ; 0.75 ]
+            |> List.map (fun offset -> float n + offset)
+        )
+        |> List.choose (fun x ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.floor x)
+            let host = BitConverter.DoubleToUInt64Bits (Math.Floor x)
+
+            if actual = host && isFloorOf x (DeterministicMath.floor x) then
+                None
+            else
+                Some $"floor(%.17g{x}): got %016x{actual}, host %016x{host}"
+        )
+        |> reportFailures
+
+    /// `(argument, expected bits)` for a spread of interesting floor arguments. As for
+    /// `ceilingSpecialCases`, IEEE 754 fixes an answer for every one of them, so these are
+    /// shapes worth pinning rather than exceptions to a rule. Stated in bits so that the sign of
+    /// a zero and the payload of a NaN are pinned rather than compared by an equality that
+    /// ignores them.
+    let private floorSpecialCases : (float * uint64) list =
+        let ofBits (b : uint64) : float = BitConverter.UInt64BitsToDouble b
+        let bits (v : float) : uint64 = BitConverter.DoubleToUInt64Bits v
+
+        // The last binade in which a double can be non-integral: its ulp is 1/2, so the value
+        // below is exactly representable and is the largest non-integral double there is.
+        let justBelowTwoToThe52 = 4503599627370495.5
+
+        [
+            // Zeros and infinities are integral already and come back with their signs.
+            0.0, bits 0.0
+            -0.0, bits (-0.0)
+            infinity, bits infinity
+            -infinity, bits (-infinity)
+
+            // Anything strictly between 0 and 1 rounds down to *positive* zero, the operand's
+            // sign, which the integer arithmetic happens to give as well...
+            Double.Epsilon, bits 0.0
+            1e-320, bits 0.0
+            0.25, bits 0.0
+            0.5, bits 0.0
+            0.75, bits 0.0
+            0.9999999999999999, bits 0.0
+
+            // ...and anything strictly between -1 and 0 rounds down to -1, never to a zero: the
+            // row an implementation that truncated would get wrong.
+            -Double.Epsilon, bits (-1.0)
+            -1e-320, bits (-1.0)
+            -0.25, bits (-1.0)
+            -0.5, bits (-1.0)
+            -0.75, bits (-1.0)
+            -0.9999999999999999, bits (-1.0)
+
+            // Integers are their own floor, with no sign surprises.
+            1.0, bits 1.0
+            -1.0, bits (-1.0)
+            2.0, bits 2.0
+            -2.0, bits (-2.0)
+
+            // Ordinary fractional arguments, both signs. Rounding *down* means the positive rows
+            // truncate towards zero and the negative ones do not, which is the asymmetry a
+            // ceiling-shaped or truncation-shaped implementation gets backwards.
+            1.5, bits 1.0
+            -1.5, bits (-2.0)
+            2.5, bits 2.0
+            -2.5, bits (-3.0)
+            123.456, bits 123.0
+            -123.456, bits (-124.0)
+
+            // The boundary of the integral range: 2^52 is the smallest magnitude whose ulp is 1,
+            // and the row below it is the largest non-integral double there is.
+            justBelowTwoToThe52, bits 4503599627370495.0
+            -justBelowTwoToThe52, bits (-4503599627370496.0)
+            4503599627370496.0, bits 4503599627370496.0
+            -4503599627370496.0, bits (-4503599627370496.0)
+
+            // Beyond it nothing can be fractional, right out to the ends of the range.
+            1e300, bits 1e300
+            -1e300, bits (-1e300)
+            Double.MaxValue, bits Double.MaxValue
+            Double.MinValue, bits Double.MinValue
+
+            // A NaN argument comes back with its payload and sign intact, quietened if it was
+            // signalling, as `roundsd` and `frintm` do and as for `ceiling`.
+            ofBits 0x7FF8000000000000UL, 0x7FF8000000000000UL
+            ofBits 0xFFF8000000000000UL, 0xFFF8000000000000UL
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``the floor special cases satisfy the exact definition`` () : unit =
+        // Keeps the table above honest independently of `floor`, so that a mistyped constant
+        // fails whatever the implementation does. Covers every finite row; the infinities and
+        // NaNs have no integer to compare against and are pinned by the table alone.
+        floorSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let result = BitConverter.UInt64BitsToDouble expected
+
+            if Double.IsNaN x || Double.IsInfinity x then
+                None
+            elif isFloorOf x result then
+                None
+            else
+                Some $"the table's floor(%.17g{x}) = %016x{expected} is not the largest integer at or below it"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``floor matches the IEEE 754 special cases`` () : unit =
+        floorSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.floor x)
+
+            if actual = expected then
+                None
+            else
+                Some $"floor(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``the host agrees about the floor special cases`` () : unit =
+        // No table of permitted alternatives, as for `ceiling`: `roundToIntegralTowardNegative`
+        // is exact and generates no NaN of its own, so every row must match on every host.
+        floorSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Floor x)
+
+            if host = expected then
+                None
+            else
+                Some $"host floor(%.17g{x}): expected bits %016x{expected}, got %016x{host}"
+        )
+        |> reportFailures
+
     /// Whether `r` really is `x` with its fractional part discarded, decided without reference
     /// to any other truncation implementation: `r` must be an integer, it must lie on the same
     /// side of zero as `x` (so it may not have crossed over), it must be no further from zero
