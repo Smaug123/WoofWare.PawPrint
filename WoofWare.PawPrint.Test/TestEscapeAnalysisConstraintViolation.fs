@@ -2236,6 +2236,245 @@ public static class Cases
         if not failures.IsEmpty then
             failures |> String.concat "\n" |> failwith
 
+    /// A method specification CoreCLR refuses to instantiate, whatever instruction names it: one
+    /// supplying the wrong number of arguments, or an argument no instantiation may have (a pointer,
+    /// a byref, or, on .NET 10 but not .NET 11, `TypedReference`). CoreCLR raises
+    /// `BadImageFormatException` creating the instantiation
+    /// (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp) as the JIT resolves the token
+    /// compiling the body naming it, so the body's own `catch` does not stop it.
+    /// A null receiver of an admitted instantiation is the control: the `catch` stops that.
+    [<Test>]
+    let ``a method instantiation CoreCLR refuses raises before the body naming it runs`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let badImage = "System.BadImageFormatException"
+        let typedReference = typeof<obj>.Assembly.GetType "System.TypedReference"
+
+        // Each case: its name, the call it makes, and what the host does running it.
+        let cases
+            : (string *
+              (Reflection.Emit.MethodBuilder * Reflection.Emit.ConstructorBuilder * Reflection.Emit.MethodBuilder
+                  -> Reflection.Emit.ILGenerator
+                  -> unit) *
+              Outcome) list =
+            let refused = Outcome.Escapes badImage
+            let pointer = typeof<int>.MakePointerType ()
+
+            [
+                "VirtualPointer",
+                (fun (virtualMethod, constructor, _) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Newobj, constructor)
+                    il.Emit (Reflection.Emit.OpCodes.Callvirt, virtualMethod.MakeGenericMethod [| pointer |])
+                ),
+                refused
+                "VirtualArity",
+                (fun (virtualMethod, constructor, _) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Newobj, constructor)
+
+                    il.Emit (
+                        Reflection.Emit.OpCodes.Callvirt,
+                        virtualMethod.MakeGenericMethod [| typeof<int> ; typeof<int> |]
+                    )
+                ),
+                refused
+                "StaticPointer",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Call, staticMethod.MakeGenericMethod [| pointer |])
+                ),
+                refused
+                "StaticByref",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (
+                        Reflection.Emit.OpCodes.Call,
+                        staticMethod.MakeGenericMethod [| typeof<int>.MakeByRefType () |]
+                    )
+                ),
+                refused
+                "StaticTypedReference",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Call, staticMethod.MakeGenericMethod [| typedReference |])
+                ),
+                (match FrameworkUnderTest.runtime () with
+                 | EmulatedRuntime.Net10 -> refused
+                 // .NET 11's `TypedReference` is an ordinary value type to the check.
+                 | EmulatedRuntime.Net11 -> Outcome.Runs)
+                "StaticArity",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (
+                        Reflection.Emit.OpCodes.Call,
+                        staticMethod.MakeGenericMethod [| typeof<int> ; typeof<int> |]
+                    )
+                ),
+                refused
+                "LdftnPointer",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Ldftn, staticMethod.MakeGenericMethod [| pointer |])
+                    il.Emit Reflection.Emit.OpCodes.Pop
+                ),
+                refused
+                "LdtokenPointer",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Ldtoken, staticMethod.MakeGenericMethod [| pointer |])
+                    il.Emit Reflection.Emit.OpCodes.Pop
+                ),
+                refused
+                "NullReceiver",
+                (fun (virtualMethod, _, _) il ->
+                    il.Emit Reflection.Emit.OpCodes.Ldnull
+                    il.Emit (Reflection.Emit.OpCodes.Callvirt, virtualMethod.MakeGenericMethod [| typeof<int> |])
+                ),
+                Outcome.Caught
+            ]
+
+        let libraryImage =
+            let builder =
+                Reflection.Emit.PersistedAssemblyBuilder (Reflection.AssemblyName "Lib", typeof<obj>.Assembly)
+
+            let modul = builder.DefineDynamicModule "Lib"
+
+            let baseType =
+                modul.DefineType ("Base", Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class)
+
+            let constructor =
+                baseType.DefineDefaultConstructor Reflection.MethodAttributes.Public
+
+            // `public virtual void V<T>() where T : allows ref struct`, and
+            // `public static void S<T>() where T : allows ref struct`, so that no constraint
+            // refuses `TypedReference`.
+            let generic (name : string) (attributes : Reflection.MethodAttributes) =
+                let method = baseType.DefineMethod (name, attributes, typeof<Void>, Type.EmptyTypes)
+
+                (method.DefineGenericParameters [| "T" |]).[0].SetGenericParameterAttributes
+                    Reflection.GenericParameterAttributes.AllowByRefLike
+
+                method.GetILGenerator().Emit Reflection.Emit.OpCodes.Ret
+                method
+
+            let virtualMethod =
+                generic
+                    "V"
+                    (Reflection.MethodAttributes.Public
+                     ||| Reflection.MethodAttributes.Virtual
+                     ||| Reflection.MethodAttributes.NewSlot
+                     ||| Reflection.MethodAttributes.HideBySig)
+
+            let staticMethod =
+                generic "S" (Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static)
+
+            baseType.CreateType () |> ignore<Type>
+
+            let plain =
+                modul.DefineType (
+                    "Plain",
+                    Reflection.TypeAttributes.Public
+                    ||| Reflection.TypeAttributes.Abstract
+                    ||| Reflection.TypeAttributes.Sealed
+                )
+
+            // Each `static int Name()` makes its call inside `try`, returning 0 if it returns, and 1
+            // if its `catch` stops what it raises.
+            for name, emitCall, _ in cases do
+                let method =
+                    plain.DefineMethod (
+                        name,
+                        Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                        typeof<int>,
+                        Type.EmptyTypes
+                    )
+
+                let il = method.GetILGenerator ()
+                let result = il.DeclareLocal typeof<int>
+                il.BeginExceptionBlock () |> ignore<Reflection.Emit.Label>
+                emitCall (virtualMethod, constructor, staticMethod) il
+                il.Emit Reflection.Emit.OpCodes.Ldc_I4_0
+                il.Emit (Reflection.Emit.OpCodes.Stloc, result)
+                il.BeginCatchBlock typeof<obj>
+                il.Emit Reflection.Emit.OpCodes.Pop
+                il.Emit Reflection.Emit.OpCodes.Ldc_I4_1
+                il.Emit (Reflection.Emit.OpCodes.Stloc, result)
+                il.EndExceptionBlock ()
+                il.Emit (Reflection.Emit.OpCodes.Ldloc, result)
+                il.Emit Reflection.Emit.OpCodes.Ret
+
+            plain.CreateType () |> ignore<Type>
+
+            use stream = new MemoryStream ()
+            builder.Save stream
+            stream.ToArray ()
+
+        let names = cases |> List.map (fun (name, _, _) -> name)
+
+        let clientImage =
+            names
+            |> List.map (fun name -> $"    public static int %s{name}() => Plain.%s{name}();")
+            |> String.concat "\n"
+            |> sprintf "namespace Client;\npublic static class Cases\n{\n%s\n}\n"
+            |> compileClient [ libraryImage ]
+
+        let hostOutcomes = hostOutcomes [ "Lib", libraryImage ] clientImage names
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "Client" clientImage
+        let libraryAssembly = read "Lib" libraryImage
+
+        // The emitter spells the calls as the test means it to: each a method specification of a
+        // method definition, two of them with two arguments.
+        let arities =
+            libraryAssembly.MethodSpecs.Values
+            |> Seq.map (fun spec ->
+                match spec.Method with
+                | MetadataToken.MethodDef _ -> spec.Signature.Length
+                | other -> failwith $"the emitter spelled a method specification of %O{other}"
+            )
+            |> Seq.sort
+            |> List.ofSeq
+
+        Assert.That (arities, Is.EqualTo<int list> [ 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 2 ; 2 ])
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ]
+                (fun loaded ->
+                    let reference =
+                        clientAssembly.AssemblyReferences.Values
+                        |> Seq.find (fun r -> r.Name.Name = "Lib")
+
+                    fst (loaded.WithBoundReference reference libraryAssembly)
+                )
+
+        let failures =
+            [
+                for name, _, expected in cases do
+                    if hostOutcomes.[name] <> expected then
+                        yield $"%s{name}: the host's outcome is %A{hostOutcomes.[name]}, not %A{expected}"
+
+                    for key in
+                        [
+                            methodNamed clientAssembly "Client.Cases" name
+                            methodNamed libraryAssembly "Plain" name
+                        ] do
+                        let answer =
+                            try
+                                let next, escapes = EscapeAnalysis.escapes analysis key
+                                analysis <- next
+                                Ok (escapes, render next escapes)
+                            with e ->
+                                Error e.Message
+
+                        match answer with
+                        | Error message -> yield $"%O{key} (%s{name}): the analysis throws %s{message}"
+                        | Ok (escapes, shown) ->
+                            let named = shown.Contains $"=%s{badImage}"
+
+                            if named <> (expected = Outcome.Escapes badImage) then
+                                yield
+                                    $"%O{key} (%s{name}): the analysis answers %A{Set.toList shown}, unknown %b{escapes.Unknown}, where the host's outcome is %A{hostOutcomes.[name]}"
+            ]
+
+        if not failures.IsEmpty then
+            failures |> String.concat "\n" |> failwith
+
     /// A type whose interface's argument grows without end through a function pointer's signature,
     /// named by a type token. CoreCLR's check for an expanding cycle of instantiations
     /// (`RecursionGraph::AddDependency`, generics.cpp) does not look into a function pointer, so
