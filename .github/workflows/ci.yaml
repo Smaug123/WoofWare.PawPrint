@@ -114,15 +114,19 @@ jobs:
         mkdir -p TestResults
         (while true; do echo "== $(date -u +%H:%M:%S)"; free -m; top -b -n1 -o %CPU -w 200 | head -15; sleep 5; done) > TestResults/probe-top.log 2>&1 &
         vmstat -t 5 > TestResults/probe-vmstat.log 2>&1 &
-        nix develop "$GITHUB_WORKSPACE" --command dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-stack > TestResults/probe-tools.log 2>&1
-        nix develop "$GITHUB_WORKSPACE" --command dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-counters >> TestResults/probe-tools.log 2>&1
+        # The runner's own dotnet, which finds the system libssl; the devshell's does not.
+        dotnet --list-runtimes > TestResults/probe-tools.log 2>&1
+        dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-stack >> TestResults/probe-tools.log 2>&1
+        dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-counters >> TestResults/probe-tools.log 2>&1
         (
-          until pid="$(pgrep -f testhost | head -n1)" && [ -n "$pid" ]; do sleep 1; done
-          echo "testhost $pid" >> TestResults/probe-tools.log
-          nix develop "$GITHUB_WORKSPACE" --command "$RUNNER_TEMP/tools/dotnet-counters" collect -p "$pid" --refresh-interval 5 --counters System.Runtime --format csv -o TestResults/probe-counters.csv >> TestResults/probe-tools.log 2>&1 &
+          export DOTNET_ROLL_FORWARD=Major
+          sleep 20
+          pid="$(ps -C dotnet -o pid=,rss= --sort=-rss | head -n1 | awk '{print $1}')"
+          echo "testhost $pid: $(tr '\0' ' ' < /proc/$pid/cmdline)" >> TestResults/probe-tools.log
+          "$RUNNER_TEMP/tools/dotnet-counters" collect -p "$pid" --refresh-interval 5 --counters System.Runtime --format csv -o TestResults/probe-counters.csv >> TestResults/probe-tools.log 2>&1 &
           while kill -0 "$pid" 2>/dev/null; do
             echo "== $(date -u +%H:%M:%S)"
-            nix develop "$GITHUB_WORKSPACE" --command "$RUNNER_TEMP/tools/dotnet-stack" report -p "$pid" 2>&1
+            "$RUNNER_TEMP/tools/dotnet-stack" report -p "$pid" 2>&1
             sleep 15
           done
         ) > TestResults/probe-stacks.log 2>&1 &
