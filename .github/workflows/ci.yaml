@@ -1,9 +1,12 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/master/src/schemas/json/github-workflow.json
 name: .NET
 
+# No run on a push to main. Every commit reaches main through the merge queue, which
+# fast-forwards main to the commit its merge_group run has just tested, so a push run would
+# test that commit a second time. A job that must act on what has landed, such as publishing,
+# needs a trigger of its own: the `github.ref == 'refs/heads/main'` conditions commented out
+# on the publish jobs below can never hold in this workflow.
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
   merge_group:
@@ -63,8 +66,10 @@ jobs:
         # read, compared with what it is built on. For a pull request that is the first parent of
         # GitHub's merge. For a group it is the group's base, not its commit's parent: the two
         # are one commit when the queue squashes a single pull request, but a rebased or batched
-        # group stacks several commits on the base. A push to main runs everything: that run is
-        # what says main passes, which both skips take on trust.
+        # group stacks several commits on the base. Both skips take on trust that the base
+        # passes: a group's base is main, or the group ahead of it in the queue, and the queue
+        # is the only way onto main, so that base passed its own group's run, or was itself
+        # unaffected relative to a base that did. Any other event runs everything.
         case "${{ github.event_name }}" in
           pull_request) tests="$(python3 scripts/footprint.py affected --merge HEAD)" ;;
           merge_group) tests="$(python3 scripts/footprint.py affected "$MERGE_GROUP_BASE" HEAD)" ;;
@@ -229,8 +234,8 @@ jobs:
         run: nix develop --command alejandra --check .
 
   # Pull requests only. The script needs GitHub's merge of the branch into main,
-  # whose second parent is the branch's head; a merge-queue run or a push to main
-  # checks out a squash, which has one parent. That squash is of a pull request
+  # whose second parent is the branch's head; a merge-queue run checks out a
+  # squash, which has one parent. That squash is of a pull request
   # whose own run already passed this check, so skipping it here misses only a
   # change to main, made after that run, which alters what the change detaches.
   # The steps are skipped rather than the job, because
