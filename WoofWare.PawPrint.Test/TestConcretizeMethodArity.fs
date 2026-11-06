@@ -11,7 +11,9 @@ open WoofWare.PawPrint
 /// type and one per generic parameter of the method. Anything else must be refused: a longer list
 /// would otherwise be silently truncated to a prefix, and a caller that handed a derived type's
 /// instantiation to a base type's method would get a plausible-looking wrong instantiation
-/// instead of a diagnostic.
+/// instead of a diagnostic. A method instantiation of the wrong arity is one a guest's MethodSpec
+/// can spell, and is refused as CoreCLR refuses it; a declaring-type instantiation of the wrong
+/// arity is a caller's bug.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestConcretizeMethodArity =
@@ -154,9 +156,7 @@ public static class Methods
                 typeArgs
                 methodArgs
 
-        let concretized = BindingResult.value concretizedResult
-
-        concretized
+        BindingResult.value concretizedResult
 
     let private getMethod
         (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -241,11 +241,26 @@ public static class Methods
 
                     concretized.Generics |> Seq.toList |> shouldEqual (Seq.toList methodArgs)
                 else
-                    let ex =
-                        Assert.Throws<System.Exception> (fun () ->
-                            concretize fixture m ImmutableArray.Empty methodArgs |> ignore
-                        )
+                    let result, _, _ =
+                        Concretization.concretizeMethod
+                            fixture.ConcreteTypes
+                            fixture.LoadAssembly
+                            fixture.Loaded
+                            fixture.BaseTypes
+                            m
+                            ImmutableArray.Empty
+                            methodArgs
 
-                    Assert.That (ex.Message, Does.Contain name, $"%s{name} with %d{count} method argument(s)")
-                    Assert.That (ex.Message, Does.Contain $"%d{arity} generic parameter")
-                    Assert.That (ex.Message, Does.Contain $"%d{count} method argument")
+                    match result with
+                    | Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation (declaringType,
+                                                                                                     refusedName,
+                                                                                                     MethodInstantiationFault.Arity (declared,
+                                                                                                                                     supplied)))) when
+                        declaringType = methods.Identity
+                        && refusedName = name
+                        && (declared, supplied) = (arity, count)
+                        ->
+                        ()
+                    | other ->
+                        failwith
+                            $"%s{name} with %d{count} method argument(s): expected a refusal of its arity, got %A{other}"

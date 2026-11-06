@@ -149,6 +149,23 @@ type LoadedAssemblies =
         | false, _ -> false
 
     /// <summary>
+    /// True if <paramref name="identity"/> is a type of a dynamic assembly that the runtime has not
+    /// created (<c>WithCreatedType</c>). CoreCLR's class loader does not load such a type: it raises
+    /// the <c>TypeResolve</c> event instead.
+    /// </summary>
+    member this.IsUncreatedDynamicType (identity : ResolvedTypeIdentity) : bool =
+        match this.Dynamic.TryGetValue identity.AssemblyFullName with
+        | false, _ -> false
+        | true, content ->
+            let rid = MetadataTokens.GetRowNumber identity.TypeDefinition.Get
+
+            match EmitScope.tryTypeDefRid rid content.Scope with
+            | Some typeDef -> not (content.Created.Contains typeDef)
+            | None ->
+                failwith
+                    $"BUG: TypeDef %d{rid} of the dynamic assembly %s{identity.AssemblyFullName} is not in its scope, from which its image was written"
+
+    /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
     /// </summary>
     /// <remarks>

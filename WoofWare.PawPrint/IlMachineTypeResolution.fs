@@ -835,7 +835,11 @@ module IlMachineTypeResolution =
                     declaringType |> ConcreteType.mapGeneric (fun i _ -> genericHandles.[i])
 
                 let handle, newConcreteTypes =
-                    AllConcreteTypes.add baseClassTypes concreteTypeWithHandles currentCtx.ConcreteTypes
+                    AllConcreteTypes.add
+                        baseClassTypes
+                        currentCtx.LoadedAssemblies
+                        concreteTypeWithHandles
+                        currentCtx.ConcreteTypes
                     |> Result.mapError TypeBindingFailure.Refused
                     |> BindingStop.bound
 

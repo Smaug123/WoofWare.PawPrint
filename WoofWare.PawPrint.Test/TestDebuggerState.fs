@@ -64,3 +64,22 @@ class Program
         runSource "DebuggerIsAttached.cs" source
         |> exitCodeOfRunOutcome
         |> shouldEqual 0
+
+    [<Test>]
+    let ``Default debugger state reports no debugger logging`` () : unit =
+        let source =
+            """
+using System.Diagnostics;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        return Debugger.IsLogging() ? 1 : 42;
+    }
+}
+"""
+
+        runSource "DebuggerIsLogging.cs" source
+        |> exitCodeOfRunOutcome
+        |> shouldEqual 42

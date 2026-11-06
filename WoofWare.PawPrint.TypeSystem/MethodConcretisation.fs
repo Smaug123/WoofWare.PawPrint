@@ -80,6 +80,10 @@ module MethodConcretisation =
 
         state, Ok (concretizedMethod, declaringTypeHandle)
 
+    /// As `concretizeMethodWithAllGenerics`, with the method's instantiation `methodGenerics` first
+    /// concretized in the context `typeGenerics` and `currentExecutingMethodGenerics`, as spelled in
+    /// `callingAssemblyFullName`. `None` names the method with no instantiation, as a bare MethodDef
+    /// or MemberRef token does, and fails on a generic method.
     let concretizeMethodWithTypeGenerics
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -97,6 +101,16 @@ module MethodConcretisation =
               TypeBindingFailure
            >
         =
+
+        // CoreCLR instantiates nothing for a generic method named bare, so this is not its refusal
+        // of a wrong-arity instantiation. Measured on .NET 10, a `call` through such a token throws
+        // InvalidOperationException ("not fully instantiated") when it runs, unless the JIT inlines
+        // the callee, and `ldftn` and `ldtoken` succeed.
+        match methodGenerics with
+        | None when not methodToCall.Generics.IsEmpty ->
+            failwith
+                $"TODO: the generic method %s{methodToCall.Name}, which declares %d{methodToCall.Generics.Length} generic parameter(s), is named with no instantiation; CoreCLR's answer depends on the instruction and on whether the JIT inlines it"
+        | _ ->
 
         // Concretize method generics if any, stopping at the first that does not bind
         let rec concretizeGenerics
