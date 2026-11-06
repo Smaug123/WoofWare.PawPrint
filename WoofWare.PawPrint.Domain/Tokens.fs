@@ -218,9 +218,8 @@ module SourcedMetadataToken =
 /// Two cases rather than one for the same reason `StringOperand` has two: the token forms are
 /// *indistinguishable*. A scope operand is `index ||| someTag`, which is a perfectly well-formed
 /// TypeDef/MethodDef/FieldDef token naming some unrelated real row in whatever module the dynamic
-/// method is scoped to, and `DynamicScope`'s own indexer masks the tag off and ignores it entirely
-/// (`DynamicILGenerator.cs:976-987`), so not even the tag is authoritative about what the entry is.
-/// The universe is therefore settled when the body is decoded and recorded here.
+/// method is scoped to. The universe is therefore settled when the body is decoded and recorded
+/// here.
 [<RequireQualifiedAccess>]
 [<NoEquality ; NoComparison>]
 type MetadataOperand =
@@ -284,112 +283,16 @@ type StringOperand =
     /// replace the whole slot as well as mutate what is in it.
     | FromDynamicScope of scopeIndex : int
 
-/// What a `DynamicScope` entry is, so far as decoding a method body needs to care.
-///
-/// `Unsupported` is not a decoding failure and must not be treated as one. `DynamicILGenerator`'s
-/// constructor calls `m_scope.GetTokenFor(methodSignature)` before any user code runs, so *every*
-/// dynamic method's scope has a signature blob at index 1 that no instruction ever names —
-/// `GetCallableMethod` reads it out directly. A reader that insisted every entry be of a supported
-/// kind would therefore refuse every dynamic method in existence. Entries are classified totally
-/// here and only rejected if an instruction actually names one.
-[<RequireQualifiedAccess>]
-type DynamicScopeEntry =
-    | String of string
-    /// A boxed `System.RuntimeTypeHandle`, which is what `DynamicILGenerator.Emit(OpCode, Type)`
-    /// stores: `GetTokenFor(RuntimeType)` is `m_scope.GetTokenFor(rtType.TypeHandle)`
-    /// (`DynamicILGenerator.cs:496`).
-    ///
-    /// Carries no payload on purpose. Which type it names is read from the guest heap when the
-    /// instruction executes, not now — see `MetadataOperand.FromDynamicScope`.
-    | TypeHandle
-    /// A guest `System.Reflection.Emit.DynamicMethod`, which is what
-    /// `DynamicILGenerator.Emit(OpCode, MethodInfo)` stores when the operand is itself a dynamic
-    /// method: that overload has a dedicated branch for the case, and `GetTokenFor(DynamicMethod)`
-    /// appends the builder object rather than a handle (`DynamicILGenerator.cs:531-534`).
-    ///
-    /// Carries no payload, as `TypeHandle` does, and here the deferral is doing more than mirroring
-    /// CoreCLR. The method this entry names is identified by the object's `_methodHandle`, which is
-    /// null until the target is minted — so at the moment a body is decoded, a self-referential
-    /// entry names nothing at all. It is precisely because the read happens later that
-    /// `il.Emit(OpCodes.Call, dm)` inside `dm` works.
-    | DynamicMethod
-    /// CoreLib's `System.Reflection.Emit.VarArgMethod`, the wrapper `ILGenerator.EmitCall` stores
-    /// (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`) — *unconditionally*, whether or not
-    /// the caller passed any `optionalParameterTypes`, so it is what an ordinary
-    /// `EmitCall(OpCodes.Call, dm, null)` produces rather than an exotic vararg-only case.
-    ///
-    /// Payload-free for the same reason `DynamicMethod` is: the wrapper's `m_dynamicMethod` is
-    /// followed when the instruction runs. The wrapper's `m_signature` is deliberately *not* part of
-    /// the answer, matching `ResolveToken`, which ignores it for the dynamic case: a `DynamicMethod`
-    /// is always `CallingConventions.Standard` (its constructors reject anything else,
-    /// `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had a call site tried to
-    /// add optional parameters, and the signature is therefore always the callee's own.
-    | VarArgMethod
-    /// A boxed `System.RuntimeFieldHandle`, which is what
-    /// `DynamicScope.GetTokenFor(RuntimeFieldHandle)` adds (`DynamicILGenerator.cs:1042`).
-    ///
-    /// Reachable two ways, and neither is the ordinary one. `Emit(OpCode, FieldInfo)` takes this
-    /// overload only when `field.DeclaringType` is null (`DynamicILGenerator.cs:147`), i.e. for a
-    /// module-level global, which `Type.GetField` cannot produce; and `DynamicILInfo.GetTokenFor`
-    /// exposes it publicly for any field at all. The ordinary case is `GenericFieldInfo`.
-    ///
-    /// Payload-free, as `TypeHandle` is, and for the same reason: which field the handle names is
-    /// read from the live scope when the instruction runs.
-    | FieldHandle
-    /// CoreLib's `System.Reflection.Emit.GenericFieldInfo`, which pairs a `RuntimeFieldHandle` with
-    /// the `RuntimeTypeHandle` of the declaring type it was observed on
-    /// (`DynamicILGenerator.cs:1082`).
-    ///
-    /// Despite the name, this is what *every* field a guest can reach arrives as, generic or not:
-    /// `Emit(OpCode, FieldInfo)` chooses between the one- and two-argument `GetTokenFor` on whether
-    /// the field has a declaring type, not on whether that type is generic, and everything
-    /// `Type.GetField` returns has one.
-    ///
-    /// Payload-free, as the other wrappers are.
-    | GenericFieldInfo
-    /// A boxed `System.RuntimeMethodHandle`, which is what `Emit(OpCode, MethodInfo)` stores for a
-    /// reflected method whose declaring type is neither generic nor an array
-    /// (`DynamicILGenerator.cs:67-70`).
-    ///
-    /// Payload-free, as `TypeHandle` is: which method the handle names is read from the live scope
-    /// when the instruction runs.
-    | MethodHandle
-    /// CoreLib's `System.Reflection.Emit.GenericMethodInfo`, which pairs a `RuntimeMethodHandle`
-    /// with the `RuntimeTypeHandle` of the method's declaring type. `Emit(OpCode, MethodInfo)`
-    /// stores this for a reflected method whose declaring type is generic or an array
-    /// (`DynamicILGenerator.cs:67-70`), because CoreCLR shares one `MethodDesc` across the
-    /// reference-type instantiations of a generic type and needs the type to tell them apart.
-    ///
-    /// Payload-free, as the other wrappers are.
-    | GenericMethodInfo
-    /// Some entry kind whose resolution is not yet implemented, a signature blob above all. The
-    /// description names the kind, for the refusal message an instruction naming it would produce.
-    | Unsupported of description : string
-
-[<RequireQualifiedAccess>]
-module DynamicScopeEntry =
-    /// How to name this entry in a refusal message: "…, which holds <this> rather than a type
-    /// handle". Lives here rather than beside either of its callers because two of them ask —
-    /// the instruction decoder and the catch-clause check — and a second phrasing of the same
-    /// answer would drift.
-    let describe (entry : DynamicScopeEntry) : string =
-        match entry with
-        | DynamicScopeEntry.TypeHandle -> "a type handle"
-        | DynamicScopeEntry.DynamicMethod -> "a dynamic method"
-        | DynamicScopeEntry.VarArgMethod -> "a call site naming a dynamic method"
-        | DynamicScopeEntry.FieldHandle -> "a field handle"
-        | DynamicScopeEntry.GenericFieldInfo -> "a field handle together with its declaring type"
-        | DynamicScopeEntry.MethodHandle -> "a method handle"
-        | DynamicScopeEntry.GenericMethodInfo -> "a method handle together with its declaring type"
-        | DynamicScopeEntry.String contents -> $"the string %s{contents}"
-        | DynamicScopeEntry.Unsupported description -> description
-
 /// Which token universe a method body's operands index into.
 [<RequireQualifiedAccess>]
 [<NoEquality ; NoComparison>]
 type IlTokenUniverse =
     /// The metadata tables and heaps of the named assembly, as for any body read from a PE image.
     | Metadata of AssemblyName
-    /// The `DynamicScope` of a method minted by `Reflection.Emit`, keyed by the index a token's low
-    /// 24 bits carry.
-    | DynamicScope of entries : Map<int, DynamicScopeEntry>
+    /// The `DynamicScope` of a method minted by `Reflection.Emit`, indexed by a token's low 24 bits.
+    ///
+    /// Carries none of the scope's entries. CoreCLR reads them only when it compiles the method, at
+    /// its first invocation (`CreateDelegate` compiles nothing), and a guest can rewrite the scope
+    /// through private reflection at any point before that, so what an entry holds when the body is
+    /// decoded decides nothing about what the instruction naming it will do.
+    | DynamicScope

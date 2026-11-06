@@ -63,9 +63,8 @@ module TestStackShapeDynamicScope =
 
     [<Test>]
     let ``a scope entry swapped for a reflected method after the mint does not stop the body`` () : unit =
-        // The decoder refuses a `RuntimeMethodHandle` in method position when the body is minted,
-        // but a guest can put one there afterwards. PawPrint refuses the call when it executes; a
-        // call that never executes must not be refused ahead of it.
+        // A guest can rewrite a scope slot after the mint. PawPrint resolves the call's entry when
+        // the call executes; a call that never executes must not be refused ahead of it.
         run "DynamicScopeSwappedAfterMint.cs"
 
     [<Test>]

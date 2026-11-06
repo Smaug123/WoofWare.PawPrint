@@ -4751,6 +4751,27 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The same rewrites made *before* CreateDelegate, which compiles nothing: method,
+                // field, type, type-tagged ldtoken, ldstr and catch-clause slots, each broken
+                // before minting (raised at the first invocation) or broken and then repaired
+                // (runs), and the signature slot, which CreateDelegate itself reads. Dynamic-code
+                // switch overridden to true like its siblings; verified by hand to exit 0 on real
+                // .NET.
+                FileName = "DynamicScopeRewrittenBeforeMint.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding

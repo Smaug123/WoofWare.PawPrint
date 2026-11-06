@@ -271,8 +271,7 @@ module internal DynamicScopeOperand =
         // gets through the check and faults the list. Mirrored rather than tidied, because the
         // difference is guest-visible: measured on real .NET, truncating the list so the operand
         // index equals `Count` gives ArgumentOutOfRangeException where a larger index gives
-        // InvalidProgramException. This is the same "mirror the indexer, do not second-guess it"
-        // rule that makes the token's tag non-authoritative.
+        // InvalidProgramException.
         if scopeIndex = size then
             ScopeEntryLookup.PastEnd
         elif scopeIndex < 0 || scopeIndex > size then
@@ -361,10 +360,9 @@ module internal DynamicScopeOperand =
     /// the answer unnarrowed because it hands the handle to the guest rather than consuming it.
     /// </para>
     /// <para>
-    /// Everything the decoder established about this entry is re-established here rather than
-    /// assumed, because the decoder looked at the scope as it was when the method was minted and
-    /// this reads it as it is now; a guest that replaced the slot in between gets what real .NET
-    /// gives it, which is a refusal rather than a resolution against the stale entry.
+    /// Nothing about the entry was checked when the method was minted: real .NET reads it when it
+    /// compiles the method, at the first invocation, so a guest that rewrites the slot at any point
+    /// before then gets the answer its new contents warrant. This is where that is decided.
     /// </para>
     /// </remarks>
     let typeHandleTarget
