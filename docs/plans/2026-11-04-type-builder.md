@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -252,7 +252,9 @@ definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineM
 * **3c, `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl`**, which a `MethodBuilder`'s first
   `MetadataToken` calls one after the other. The guest then stops in `DefineMethodOverride` at
   `ModuleBuilder_GetMemberRefOfMethodInfo`, for `IThing.get_Value`.
-* Then the `MemberRef`s and `MethodImpl`, in the order the guest reaches them.
+* **3d, `ModuleBuilder_GetMemberRefOfMethodInfo`**, for a method whose signature names no type by
+  token. The guest then stops in `DefineMethodOverride` at `TypeBuilder_DefineMethodImpl`.
+* Then the `MethodImpl`, and the rest in the order the guest reaches them.
 
 ### 3a: what CoreCLR's emitter writes
 
@@ -449,3 +451,63 @@ are read but never run.
   `TypeResolve`, and the QCall swallows the failure. No guest reads a dynamic module's global type
   before `CreateGlobalFunctions` yet.
 
+### 3d: what CoreCLR's emitter writes
+
+Read from `ModuleBuilder_GetMemberRefOfMethodInfo` (vm/commodule.cpp), `RegMeta::DefineMemberRef`
+(md/compiler/emit.cpp), `ImportHelper::FindMemberRef` and `CMiniMdRW::CompareMemberRefs`, and
+`ImportHelper::MergeUpdateTokenInSig`, and measured on .NET 10 through
+`ModuleBuilder.GetMethodMetadataToken` and `Module.ResolveSignature` on the dynamic module:
+
+* The managed caller passes the token of the method's declaring type, which it makes first: a
+  `TypeRef` for a non-generic type of another module, a `TypeSpec` for a generic one. A method
+  reached through a derived type is a reference to its declaring type's.
+* For a method of the dynamic module itself, the QCall hands back its `MethodDef` token. Only a created
+  type has such a method.
+* Otherwise it reads the method's name and signature from its `MethodDef`, so an instantiated generic
+  method's reference is to its definition. `TranslateSigWithScope` rewrites each type token in the
+  signature to name a `TypeRef` of the dynamic module, adding `TypeRef` and `AssemblyRef` rows, and
+  copies every other byte unchanged.
+* `DefineMemberRef` checks for a duplicate in a dynamic module (`MDDupDefault` holds `MDDupMemberRef`):
+  the first row with the same parent token, the same UTF-8 name and the same signature bytes is
+  handed back, and otherwise a row is added, interning the name before the signature.
+
+### 3d: a signature that names a type by token
+
+**Chosen (2026-11-06): copy only a signature that names no type by token, and refuse the rest by
+name.** The issue's guest reaches only such signatures (`IThing.get_Value`'s `20 00 08` and
+`object..ctor`'s `20 00 01`). The translation is about 1300 lines of C++, and it adds rows of its
+own that do not agree with `GetTypeRef`'s. Measured, after a reference to `Console.SetOut(TextWriter)`
+names a new `TypeRef` for `TextWriter`, `GetTypeMetadataToken(typeof(TextWriter))` adds a second one,
+while for `Type` and `Guid`, which `GetTypeRef` had named first, the translation reuses its row. That
+is a stage of its own. The alternative was to translate now, in a PR doing two things.
+`EmitScopeReferences.methodSignatureNamesTypeByToken` decides which signatures are copied, and the
+handler refuses the others with a TODO. A parent `TypeSpec` is refused too; it cannot be reached yet,
+because `ModuleBuilder_GetTokenFromTypeSpec` is not implemented.
+
+### 3d: the oracle
+
+* Over generated scopes and requests, against a model: a request with the parent, name and signature
+  of an earlier row (one the scope started with included) is that row, the first of two alike, and
+  leaves the scope as it was; any other is a new row holding the request.
+* Over method signatures generated from the ECMA-335 grammar (nested arrays, pointers, by-refs,
+  instantiations, function pointers, custom modifiers, type and method parameters),
+  `methodSignatureNamesTypeByToken` against the grammar's own answer.
+* Real .NET's emitter: for every method and constructor of a non-generic CoreLib type whose signature
+  names no type by token, each asked for twice, the dynamic module's signature is the method's own
+  bytes, and its token is the one `defineMemberRef` gives.
+* `ModuleBuilderMemberRefOfMethodInfo.cs` checks eleven tokens against constants measured on .NET 10,
+  which exits 0 on it: a duplicate, a constructor, the same parent and signature under two names,
+  the same name with two signatures, a method reached through a derived type, the same name and
+  signature on two parents, and a generic method and its instantiation. Its terminal-state check
+  reads each row's parent, name and signature.
+* `ModuleBuilderMemberRefTranslatedSignature.cs`, parked, measured on .NET 10 to exit 0, reaches the
+  refusal for a class and a value type in a signature.
+* All 17 mutants are caught: of the lookup, the find-or-add, the token check's provider and its
+  refusals, and the handler's refusal, token, parent and scope update.
+
+### 3d: left to later stages
+
+* `TranslateSigWithScope`, and with it the parked guest; it must reproduce the measured `TypeRef`
+  duplicate.
+* A reference to a method of the dynamic module itself, which needs `CreateType` (stage 4).
+* A parent `TypeSpec`, with `ModuleBuilder_GetTokenFromTypeSpec`.
