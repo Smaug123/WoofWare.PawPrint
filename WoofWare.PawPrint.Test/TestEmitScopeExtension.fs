@@ -28,7 +28,8 @@ module TestEmitScopeExtension =
     let private rowNumber (handle : EntityHandle) : int = MetadataTokens.GetRowNumber handle
 
     /// Everything a created type's `MethodTable` is built from, as handles into the image: its
-    /// methods with their parameters, its fields, its interface implementations and its method impls.
+    /// methods with their implementation flags and parameters, its fields, its interface
+    /// implementations and its method impls.
     let private typeView (reader : MetadataReader) (typeDef : TypeDefRid) =
         let definition =
             reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle typeDef.Rid)
@@ -42,7 +43,10 @@ module TestEmitScopeExtension =
                                 yield rowNumber (ParameterHandle.op_Implicit p)
                         ]
 
-                    yield rowNumber (MethodDefinitionHandle.op_Implicit m), parameters
+                    yield
+                        rowNumber (MethodDefinitionHandle.op_Implicit m),
+                        (reader.GetMethodDefinition m).ImplAttributes,
+                        parameters
             ]
 
         let fields =
@@ -74,6 +78,7 @@ module TestEmitScopeExtension =
     let private createdTypeNamed (violation : EmitScopeExtensionViolation) : TypeDefRid option =
         match violation with
         | EmitScopeExtensionViolation.AddedToCreatedType (_, _, createdType)
+        | EmitScopeExtensionViolation.FilledInCreatedType (_, _, createdType)
         | EmitScopeExtensionViolation.SortedRowMoved (_, _, createdType, _, _) -> Some createdType
         | EmitScopeExtensionViolation.RowChanged _
         | EmitScopeExtensionViolation.HeapEntryChanged _ -> None
@@ -97,6 +102,7 @@ module TestEmitScopeExtension =
         let changed = ref 0
         let moved = ref 0
         let added = ref 0
+        let filled = ref 0
 
         let property (mvid : Guid) (ops : Op list) (extra : Op list) (choices : int list) : unit =
             let before = apply mvid ops
@@ -104,7 +110,8 @@ module TestEmitScopeExtension =
             let created = created before choices
             let violations = EmitScopeExtension.violations created before after
 
-            // `after` appends to `before`, so every row and heap entry of `before` is still there.
+            // `after` appends to `before`, or fills in a column of one of its rows, so every row and
+            // heap entry of `before` is still there.
             violations |> List.filter (createdTypeNamed >> Option.isNone) |> shouldEqual []
 
             let beforePe, beforeReader = readImage (EmitScopeImage.write before)
@@ -133,6 +140,7 @@ module TestEmitScopeExtension =
                 match violation with
                 | EmitScopeExtensionViolation.SortedRowMoved _ -> moved.Value <- moved.Value + 1
                 | EmitScopeExtensionViolation.AddedToCreatedType _ -> added.Value <- added.Value + 1
+                | EmitScopeExtensionViolation.FilledInCreatedType _ -> filled.Value <- filled.Value + 1
                 | EmitScopeExtensionViolation.RowChanged _
                 | EmitScopeExtensionViolation.HeapEntryChanged _ -> ()
 
@@ -152,11 +160,12 @@ module TestEmitScopeExtension =
                 (fun (mvid, ops, extra, choices) -> property mvid ops extra choices)
         )
 
-        // Both answers, and both reasons for refusing, must be common enough to be tested.
+        // Both answers, and every reason for refusing, must be common enough to be tested.
         unchanged.Value |> shouldBeGreaterThan 30
         changed.Value |> shouldBeGreaterThan 30
         moved.Value |> shouldBeGreaterThan 10
         added.Value |> shouldBeGreaterThan 30
+        filled.Value |> shouldBeGreaterThan 10
 
     /// What reading `after`'s image where `before`'s was read shows to have changed, each as a
     /// requirement on the violations reported: a category, for counting, and whether the violations
@@ -190,10 +199,11 @@ module TestEmitScopeExtension =
                 None
 
         [
-            // A row reads back differently only if the scope's row at that RID changed.
-            let afterRows = describeRows afterReader
+            // A row reads back differently only if the scope's row at that RID changed. Nothing is
+            // created, so a column the emitter fills in may differ.
+            let afterRows = withoutFilledColumns (describeRows afterReader)
 
-            for KeyValue ((table, rid), row) in describeRows beforeReader do
+            for KeyValue ((table, rid), row) in withoutFilledColumns (describeRows beforeReader) do
                 if afterRows.TryFind (table, rid) <> Some row then
                     yield "row", has (EmitScopeExtensionViolation.RowChanged (table, rid))
 
@@ -406,3 +416,52 @@ module TestEmitScopeExtension =
 
         EmitScopeExtension.violations ImmutableHashSet.Empty before after
         |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
+
+    [<Test>]
+    let ``only a method's implementation flags may be filled in, and only while its type is not created`` () : unit =
+        let scope = apply Guid.Empty []
+        let name, scope = EmitScope.internString "M" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0uy ; 0uy ; 1uy |]) scope
+
+        let method (flags : Reflection.MethodAttributes) : MethodDefRow =
+            {
+                Owner = TypeDefRid 1
+                Body = None
+                ImplFlags = Reflection.MethodImplAttributes.IL
+                Flags = flags
+                Name = name
+                Signature = signature
+            }
+
+        let publicStatic =
+            Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static
+
+        let privateStatic =
+            Reflection.MethodAttributes.Private ||| Reflection.MethodAttributes.Static
+
+        let before = EmitScope.addMethodDef (method publicStatic) scope |> snd
+
+        let fill (scope : EmitScope) =
+            EmitScope.setMethodImplFlags (MethodDefRid 1) Reflection.MethodImplAttributes.NoInlining scope
+
+        let filled = fill before
+        let reflagged = EmitScope.addMethodDef (method privateStatic) scope |> snd
+        let both = fill reflagged
+        let created = ImmutableHashSet.Create (TypeDefRid 1)
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before filled
+        |> shouldEqual []
+
+        EmitScopeExtension.violations created before filled
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
+            ]
+
+        // Any other column is fixed once the row is added, filled in alongside or not.
+        for after in [ reflagged ; both ] do
+            for createdTypes in [ ImmutableHashSet.Empty ; created ] do
+                EmitScopeExtension.violations createdTypes before after
+                |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]

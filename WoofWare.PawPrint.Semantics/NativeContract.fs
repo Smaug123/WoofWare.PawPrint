@@ -149,12 +149,20 @@ type TabulatedNative =
     /// `vm/qcallentrypoints.cpp` lists.
     | QCall of entryPoint : string
 
-/// A file of the pinned runtime source, relative to `src/coreclr`, and a symbol defined there.
+/// Code that a row of the contract table was read from.
+[<RequireQualifiedAccess>]
 type NativeSource =
-    {
-        Path : string
-        Symbol : string
-    }
+    /// A function or assembly routine that the file `path` of the pinned runtime source, relative
+    /// to `src/coreclr`, defines.
+    | InCoreClr of path : string * symbol : string
+    /// A function of the C library, which no file of the runtime's source defines.
+    | CLibrary of symbol : string
+
+    /// The name of the function or routine.
+    member this.Symbol : string =
+        match this with
+        | NativeSource.InCoreClr (_, symbol)
+        | NativeSource.CLibrary symbol -> symbol
 
 /// One row of the contract table: a native method, what it can do, and where in the runtime's
 /// source that was read from.
@@ -294,17 +302,21 @@ module NativeContractTable =
 
             let sources =
                 sources.Split '|'
-                |> Array.map (fun source ->
+                |> Array.mapi (fun index source ->
                     // A symbol may be qualified (`Thread::GetExposedObject`); a path has no colon.
                     let colon = source.IndexOf ':'
 
                     if colon <= 0 || colon = source.Length - 1 then
                         fail $"a source %s{source}, not path:symbol"
 
-                    {
-                        Path = source.Substring (0, colon)
-                        Symbol = source.Substring (colon + 1)
-                    }
+                    match source.Substring (0, colon), source.Substring (colon + 1) with
+                    | "-", symbol ->
+                        // Only `vm/qcallentrypoints.cpp` binds a native to the C library, so
+                        // only a QCall's first source, the function it is bound to, can be there.
+                        match native with
+                        | TabulatedNative.QCall _ when index = 0 -> NativeSource.CLibrary symbol
+                        | _ -> fail $"a source %s{source} of the C library's, not the function a QCall is bound to"
+                    | path, symbol -> NativeSource.InCoreClr (path, symbol)
                 )
                 |> List.ofArray
 

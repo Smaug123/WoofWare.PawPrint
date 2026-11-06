@@ -55,6 +55,20 @@ type ManagedHeap =
         ///
         /// Invariant: every key is a live allocation, so a key of `SyncBlocks`.
         MonitorLocks : Map<ManagedHeapAddress, MonitorLock>
+        /// CoreCLR's string literal map (`GlobalStringLiteralMap`): each interned value and the
+        /// string object that holds it, which `ldstr`, `string.Intern` and `string.IsInterned`
+        /// look up.
+        ///
+        /// Invariant: every value is the current contents of its object, because `setStringChar`
+        /// and `set` refuse to change an interned object and nothing else writes a string after
+        /// it is allocated.
+        InternedStrings : ImmutableDictionary<string, ManagedHeapAddress>
+        /// The objects in `InternedStrings`, so that a write can ask whether its target is
+        /// interned without scanning the map.
+        ///
+        /// Invariant: exactly the value set of `InternedStrings`; `intern` is the only writer of
+        /// either.
+        InternedAddresses : ImmutableHashSet<ManagedHeapAddress>
     }
 
 [<RequireQualifiedAccess>]
@@ -70,6 +84,8 @@ module ManagedHeap =
             SyncBlocks = Map.empty
             HeaderWords = Map.empty
             MonitorLocks = Map.empty
+            InternedStrings = ImmutableDictionary.Empty
+            InternedAddresses = ImmutableHashSet.Empty
         }
 
     /// The object header of the object at `addr`. Every live heap object has one,
@@ -328,6 +344,11 @@ module ManagedHeap =
         | Some offset -> offset
         | None -> failwith $"string data offset for %O{addr} was not recorded"
 
+    /// See `TestInternedStringWrites.fs` for the measurements behind this.
+    let private refuseInternedWrite (addr : ManagedHeapAddress) (contents : string) (what : string) : 'a =
+        failwith
+            $"refusing to %s{what} of the interned string %O{addr} (%A{contents}): CoreCLR's literal map compares a lookup against an entry's current characters, but the JIT resolves an ldstr when it compiles the method and may constant-fold the literal's characters, so what a later ldstr, string.Intern or string.IsInterned of either value yields depends on JIT tier and inlining"
+
     let private requireStringContents (operation : string) (addr : ManagedHeapAddress) (heap : ManagedHeap) : string =
         match getStringContents addr heap with
         | Some contents -> contents
@@ -345,6 +366,14 @@ module ManagedHeap =
         if charIndex > contents.Length then
             failwith
                 $"string character index %d{charIndex} is beyond the null terminator of string %O{addr} with length %d{contents.Length}"
+
+        // The null terminator is not part of the value CoreCLR's literal map compares.
+        if
+            charIndex < contents.Length
+            && contents.[charIndex] <> value
+            && heap.InternedAddresses.Contains addr
+        then
+            refuseInternedWrite addr contents $"write %A{value} into character %d{charIndex}"
 
         let dataOffset = getStringDataOffset addr heap
         let newArr = heap.StringArrayData.ToBuilder ()
@@ -367,6 +396,23 @@ module ManagedHeap =
             }
         else
             heap
+
+    let tryGetInterned (value : string) (heap : ManagedHeap) : ManagedHeapAddress option =
+        match heap.InternedStrings.TryGetValue value with
+        | true, addr -> Some addr
+        | false, _ -> None
+
+    let intern (addr : ManagedHeapAddress) (heap : ManagedHeap) : ManagedHeap =
+        let value = requireStringContents "intern" addr heap
+
+        match heap.InternedStrings.TryGetValue value with
+        | true, existing ->
+            failwith $"intern: %A{value} is already interned as %O{existing}, so %O{addr} cannot be interned under it"
+        | false, _ ->
+            { heap with
+                InternedStrings = heap.InternedStrings.Add (value, addr)
+                InternedAddresses = heap.InternedAddresses.Add addr
+            }
 
     /// Read a character from the runtime string data side-table. `charIndex` equal
     /// to the string length addresses the null terminator, matching CoreCLR's
@@ -517,8 +563,17 @@ module ManagedHeap =
     /// `getSyncBlock` is total over live addresses.
     let set (alloc : ManagedHeapAddress) (v : AllocatedNonArrayObject) (heap : ManagedHeap) : ManagedHeap =
         // TODO: arrays too
-        if not (heap.NonArrayObjects.ContainsKey alloc) then
-            failwith $"set: %O{alloc} is not a live managed heap allocation of non-array kind"
+        match heap.NonArrayObjects.TryGetValue alloc with
+        | false, _ -> failwith $"set: %O{alloc} is not a live managed heap allocation of non-array kind"
+        | true, existing ->
+            // Compared by byte image, which is what the guest can observe: a field store records
+            // when it happened even if it stores the value the field already held.
+            if
+                heap.InternedAddresses.Contains alloc
+                && (existing.ConcreteType <> v.ConcreteType
+                    || CliValueType.ToBytes existing.Contents <> CliValueType.ToBytes v.Contents)
+            then
+                refuseInternedWrite alloc (requireStringContents "set" alloc heap) "change the fields"
 
         { heap with
             NonArrayObjects = heap.NonArrayObjects |> Map.add alloc v

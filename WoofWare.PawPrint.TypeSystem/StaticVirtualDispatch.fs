@@ -264,6 +264,7 @@ module StaticVirtualDispatch =
                 match candidate.Body.Body with
                 | MethodBody.Abstract -> state, Ok (Some (VirtualImplementation.Reabstracted candidate.Body))
                 | MethodBody.Il _
+                | MethodBody.MissingIl
                 | MethodBody.InternalCall
                 | MethodBody.PInvoke
                 | MethodBody.RuntimeProvided _ -> state, Ok (Some (found state candidate.Interface candidate.Body))
@@ -287,6 +288,7 @@ module StaticVirtualDispatch =
         match definition.Body with
         | MethodBody.Abstract -> state, Ok VirtualImplementation.NotImplemented
         | MethodBody.Il _
+        | MethodBody.MissingIl
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> state, Ok (found state target definition)

@@ -13,8 +13,8 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 // Runs guests under the interpreter, which is where essentially all of the suite's
 // time goes; `Explicit` keeps it out of a bare `dotnet test` so local iteration is
-// quick. CI selects it by category and so runs it. See AGENTS.md.
-[<Category("Guest")>]
+// quick. CI selects it by category and so runs it, on a runner of its own. See AGENTS.md.
+[<Category("GuestImpure")>]
 [<Explicit>]
 module TestImpureCases =
     let assy = typeof<RunResult>.Assembly
@@ -464,7 +464,39 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing` and the TypeDef of `Thing`, it stops in `TypeBuilder.DefineMethod` at `TypeBuilder_DefineMethod`; each stage of the plan takes it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing` and the MethodDef of `get_Value`, it stops in `TypeBuilder.DefineMethodOverride` at `ModuleBuilder_GetMemberRefOfMethodInfo`, for `IThing.get_Value`; each stage of the plan takes it a QCall further."""
+            {
+                FileName = "TypeBuilderDefinePInvokeMethod.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            },
+            """`TypeBuilder.DefinePInvokeMethod`, measured on .NET 10 to exit 0. Its first `MetadataToken` defines a P/Invoke row through `TypeBuilder_DefineMethod`, which refuses it with a TODO: `TypeBuilder_SetPInvokeData` writes the import in an ImplMap row afterwards, an emit scope has no ImplMap table yet, and `MethodInfo.read` refuses a P/Invoke row without one. Un-parked by implementing `TypeBuilder_SetPInvokeData` and reading a P/Invoke row whose import is not written yet."""
+            {
+                FileName = "TypeBuilderNonIlImplementationFlags.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            },
+            """`MethodBuilder.SetImplementationFlags` with `Native` and then `Unmanaged` on a method with no body, measured on .NET 10 to exit 0. `TypeBuilder_SetMethodImpl` refuses each with a TODO, because `MethodInfo.read` refuses a bodiless method that is not managed IL, abstract, an InternalCall or runtime-provided. Un-parked by letting the dynamic image hold such a row until `CreateType`."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -1196,6 +1228,82 @@ module TestImpureCases =
             ]
 
         (EmitScope.typeRefs scope).Count |> shouldEqual 4
+
+    /// `TypeBuilderDefineMethod.cs` has defined nine methods, none of them of a created type. A guest
+    /// cannot read a method row's flags, implementation flags or signature until `CreateType`, so this
+    /// checks the rows its dynamic module's scope ends with, which are what .NET 10 reports for each
+    /// token once the types are created. The TypeRefs are `object` (1) and `Version` (2).
+    let private assertDefinedMethodRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let rtSpecial =
+            System.Reflection.MethodAttributes.RTSpecialName
+            ||| System.Reflection.MethodAttributes.SpecialName
+
+        let publicStatic =
+            System.Reflection.MethodAttributes.Public
+            ||| System.Reflection.MethodAttributes.Static
+
+        EmitScope.methodDefs scope
+        |> Seq.map (fun row ->
+            row.Body |> shouldEqual None
+
+            row.Owner.Rid,
+            EmitScope.stringAt row.Name scope,
+            row.Flags,
+            row.ImplFlags,
+            List.ofSeq (EmitScope.blobAt row.Signature scope)
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                3,
+                "M",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "M",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "M",
+                System.Reflection.MethodAttributes.Family,
+                System.Reflection.MethodImplAttributes.NoInlining,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "N",
+                publicStatic,
+                System.Reflection.MethodImplAttributes.AggressiveInlining,
+                [ 0x00uy ; 0x02uy ; 0x08uy ; 0x12uy ; 0x09uy ; 0x12uy ; 0x0Cuy ]
+                2,
+                ".ctor",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x01uy ; 0x01uy ; 0x08uy ]
+                2,
+                "_VtblGap1_2",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "Reserved",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                1, "G", publicStatic, System.Reflection.MethodImplAttributes.IL, [ 0x00uy ; 0x00uy ; 0x01uy ]
+                2,
+                ".ctor",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x01uy ; 0x01uy ; 0x0Euy ]
+            ]
+
+        (EmitScope.typeRefs scope).Count |> shouldEqual 2
 
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
@@ -4428,6 +4536,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertDefinedTypeRows
+            }
+            {
+                // `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl`, through
+                // `MethodBuilder.MetadataToken`: the MethodDef rows a dynamic module gains, before any
+                // type is created; `assertDefinedMethodRows` checks the rows no guest can read yet.
+                // Dynamic-code switch overridden to true like its siblings; verified by hand to exit
+                // 0 on real .NET 10.
+                FileName = "TypeBuilderDefineMethod.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertDefinedMethodRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,

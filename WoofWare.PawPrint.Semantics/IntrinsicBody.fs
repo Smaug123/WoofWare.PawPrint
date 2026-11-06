@@ -352,7 +352,8 @@ module IntrinsicBody =
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _
-        | MethodBody.Abstract -> IntrinsicBody.NoIl
+        | MethodBody.Abstract
+        | MethodBody.MissingIl -> IntrinsicBody.NoIl
         | MethodBody.Il body ->
             if callsItself assembly method body then
                 IntrinsicBody.JitExpansion (expansionOf assembly method)

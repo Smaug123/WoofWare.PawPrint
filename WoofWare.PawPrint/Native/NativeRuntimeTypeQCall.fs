@@ -1556,22 +1556,101 @@ module NativeRuntimeTypeQCall =
                         )
                         |> Tuple.rmap (fun b -> b.ToImmutable ())
 
-                    let state, concretizedResult =
-                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                    // The caller's method instantiation is a substitution context, never the
+                    // method's instantiation: with `strictMetadataChecks` unset for a MemberRef,
+                    // `GetMethodDescFromMemberDefOrRefOrSpec` (memberload.cpp:776-786)
+                    // instantiates the method over its own formals, `LoadMethodInstantiation`. A
+                    // non-generic method is then the method itself, and a generic one its
+                    // definition on the parent's instantiation.
+                    if method.Generics.IsEmpty then
+                        let state, concretizedResult =
+                            ExecutionConcretization.concretizeMethodWithAllGenerics
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                declaringTypeGenerics
+                                method
+                                ImmutableArray.Empty
+                                state
+
+                        let concretized, _ = BindingStop.bound concretizedResult
+
+                        let value, reg =
+                            MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                                ctx.BaseClassTypes
+                                state.TypeSystem.ConcreteTypes
+                                concretized
+                                state.MethodHandles
+
+                        { state with
+                            MethodHandles = reg
+                        },
+                        value
+                    else
+
+                    let declaringType = method.RequiredDeclaringType
+
+                    let declaringTypeKind =
+                        LoadedTypeInfo.signatureTypeKind
+                            ctx.BaseClassTypes
+                            state.TypeSystem._LoadedAssemblies
+                            (state.TypeSystem._LoadedAssemblies
+                                .ByDefinitionName(declaringType.AssemblyFullName)
+                                .TypeDefs.[declaringType.Definition.Get])
+
+                    // CoreCLR keeps a value type's virtual methods in its canonical method table as
+                    // unboxing stubs, and for a generic one the answer is not the definition even on
+                    // a type that is its own canonical form: measured on `SBox<int>`, reflection
+                    // reports it generic over its own parameter, but not a generic method
+                    // definition, and not the `MethodInfo` that `GetMethod` returns.
+                    if
+                        declaringTypeKind = System.Reflection.Metadata.SignatureTypeKind.ValueType
+                        && method.IsVirtual
+                    then
+                        failwith
+                            $"TODO: %s{operation} of MemberRef token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
+
+                    let declaringTypeDefn =
+                        let definition = TypeDefn.FromDefinition (declaringType.Identity, declaringTypeKind)
+
+                        if extractedTypeArgs.IsEmpty then
+                            definition
+                        else
+                            TypeDefn.GenericInstantiation (definition, extractedTypeArgs)
+
+                    let state, declaringHandle =
+                        IlMachineState.concretizeType
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
-                            declaringTypeGenerics
-                            method
-                            methodInstantiation
                             state
+                            method.DeclaringAssemblyFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            declaringTypeDefn
 
-                    let concretized, _ = BindingStop.bound concretizedResult
+                    // CoreCLR takes the method from the parent's canonical method table, and on
+                    // a shared one (`Holder<__Canon>` for `Holder<string>`) the answer is not the
+                    // definition: measured, reflection reports it generic over its own parameter,
+                    // but not a generic method definition, and not the `MethodInfo` that
+                    // `typeof(Holder<string>).GetMethod` returns.
+                    if
+                        not (
+                            NativeRuntimeMethodHandle.isOwnCanonicalInstantiation
+                                operation
+                                ctx.BaseClassTypes
+                                state
+                                declaringHandle
+                        )
+                    then
+                        failwith
+                            $"TODO: %s{operation} of MemberRef token 0x%08x{methodToken}, the generic method %s{method.Name} on %s{AllConcreteTypes.describe state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes declaringHandle}: CoreCLR answers with the method instantiated over its own parameters on that type's canonical method table, an instantiation over System.__Canon, which is not the method's definition and which PawPrint does not model"
 
                     let value, reg =
-                        MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                        MethodHandleRegistry.getOrAllocateInternalHandle
                             ctx.BaseClassTypes
                             state.TypeSystem.ConcreteTypes
-                            concretized
+                            method.DeclaringAssemblyFullName
+                            (RuntimeTypeHandleTarget.Closed declaringHandle)
+                            method
                             state.MethodHandles
 
                     { state with

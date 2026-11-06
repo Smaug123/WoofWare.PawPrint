@@ -20,6 +20,9 @@ module EmitScopeGen =
         | Tiny of nops : int
         /// `locals` picks a `StandAloneSig` to name as the local signature, if the scope has any.
         | Fat of nops : int * maxStack : uint16 * locals : int option
+        /// No body at all, for a method that is not abstract: an IL method whose RVA is 0, as a
+        /// dynamic module's method is until `SetMethodIL`.
+        | NoBody
 
     /// One definition, its references given as choices that `apply` resolves against the rows the
     /// scope has so far, so that every generated list of operations makes a valid scope.
@@ -41,6 +44,8 @@ module EmitScopeGen =
         /// A local signature; never empty.
         | StandAloneSig of locals : int list
         | MethodImpl of cls : int * body : int * declaration : int
+        /// Overwrite the implementation flags of a method already in the scope, if it has any.
+        | SetMethodImplFlags of method : int * flags : int
 
     type private Applied =
         {
@@ -107,6 +112,14 @@ module EmitScopeGen =
             ||| MethodAttributes.NewSlot
         ]
 
+    let methodImplFlagChoices : MethodImplAttributes list =
+        [
+            MethodImplAttributes.IL
+            MethodImplAttributes.NoInlining
+            MethodImplAttributes.AggressiveInlining ||| MethodImplAttributes.NoOptimization
+            MethodImplAttributes.Synchronized
+        ]
+
     let paramFlagChoices : ParameterAttributes list =
         [
             ParameterAttributes.None
@@ -119,6 +132,7 @@ module EmitScopeGen =
         Gen.oneof
             [
                 Gen.choose (0, 60) |> Gen.map BodyShape.Tiny
+                Gen.constant BodyShape.NoBody
                 gen {
                     let! nops = Gen.choose (0, 100)
                     let! maxStack = Gen.choose (0, 20) |> Gen.map uint16
@@ -194,6 +208,7 @@ module EmitScopeGen =
                 |> Gen.bind Gen.subListOf
                 |> Gen.map2 (fun first rest -> Op.StandAloneSig (first :: List.ofSeq rest)) choice
                 2, Gen.map3 (fun c b d -> Op.MethodImpl (c, b, d)) choice choice choice
+                2, Gen.map2 (fun m f -> Op.SetMethodImplFlags (m, f)) choice choice
             ]
 
     let pick (choice : int) (items : 'a list) : 'a option =
@@ -250,8 +265,9 @@ module EmitScopeGen =
         ]
         |> ImmutableArray.CreateRange
 
-    let body (scope : EmitScope) (shape : BodyShape) : ImmutableArray<byte> =
+    let body (scope : EmitScope) (shape : BodyShape) : ImmutableArray<byte> option =
         match shape with
+        | BodyShape.NoBody -> None
         | BodyShape.Tiny nops ->
             [
                 yield byte (((nops + 1) <<< 2) ||| 0x2)
@@ -259,6 +275,7 @@ module EmitScopeGen =
                 yield 0x2Auy
             ]
             |> ImmutableArray.CreateRange
+            |> Some
         | BodyShape.Fat (nops, maxStack, locals) ->
             let localsToken =
                 match locals with
@@ -278,6 +295,7 @@ module EmitScopeGen =
                 yield 0x2Auy
             ]
             |> ImmutableArray.CreateRange
+            |> Some
 
     let private intern (value : string) (applied : Applied) : StringOffset * Applied =
         let offset, scope = EmitScope.internString value applied.Scope
@@ -401,7 +419,7 @@ module EmitScopeGen =
                         if flags.HasFlag MethodAttributes.Abstract then
                             None
                         else
-                            Some (body scope shape)
+                            body scope shape
                     ImplFlags = MethodImplAttributes.IL
                     Flags = flags
                     Name = name
@@ -511,6 +529,13 @@ module EmitScopeGen =
 
                 withScope (EmitScope.addMethodImpl row applied.Scope) applied
             | _ -> applied
+        | Op.SetMethodImplFlags (methodChoice, flags) ->
+            if methodCount = 0 then
+                applied
+            else
+                let method = MethodDefRid (methodChoice % methodCount + 1)
+                let flags = (pick flags methodImplFlagChoices).Value
+                withScope (EmitScope.setMethodImplFlags method flags applied.Scope) applied
 
     let emptyScope (mvid : Guid) : EmitScope =
         let scope = EmitScope.create "RefEmit_InMemoryManifestModule" mvid
@@ -614,3 +639,18 @@ module EmitScopeGen =
                 yield (TableIndex.StandAloneSig, i), box (blob r.Signature)
         ]
         |> Map.ofList
+
+    /// `describeRows` without the columns the emitter fills in after adding a row (a method's
+    /// implementation flags), which an extension of a scope may change while the row's type is not
+    /// created.
+    let withoutFilledColumns (rows : Map<TableIndex * int, obj>) : Map<TableIndex * int, obj> =
+        rows
+        |> Map.map (fun (table, _) row ->
+            if table = TableIndex.MethodDef then
+                let attributes, _, name, signature, owner =
+                    unbox<MethodAttributes * MethodImplAttributes * int * int * int> row
+
+                box (attributes, name, signature, owner)
+            else
+                row
+        )

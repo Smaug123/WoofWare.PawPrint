@@ -907,12 +907,14 @@ mutation-testing skill applies to each table/classifier they introduce.
      `.Net11.tsv`, each held to its own runtime's source on every leg. RC1 has no
      `get_CurrentManagedThreadId` FCall, none of the four `Monitor` natives, no `Buffer_MemMove` or
      `Buffer_Clear`, and no `CastHelpers.WriteBarrier` FCall (`RuntimeHelpers.WriteBarrier` is a
-     managed intrinsic). Still open: a row for `IsInstanceOf_NoCacheLookup`, whose VM asks
-     `IsInterfaceImplemented` through an `[UnmanagedCallersOnly]` overload that hands back what the
-     method raises, which the VM throws again after preserving its stack trace; a row cannot yet
-     name such a call, and the resource lookup, which RC1 makes the same way, names the overload.
-     Then rows for the `memmove` and `memset` QCalls, and the escape analysis's resource-lookup
-     assumption (`Environment.GetResourceStringLocal` is gone);
+     managed intrinsic). RC1's `SpanHelpers` copies and clears long spans through the QCalls
+     `memmove` and `memset`, which `vm/qcallentrypoints.cpp` binds to the C library's functions;
+     their rows cite those as `-:memmove` and `-:memset`. Still open: a row for
+     `IsInstanceOf_NoCacheLookup`, whose VM asks `IsInterfaceImplemented` through an
+     `[UnmanagedCallersOnly]` overload that hands back what the method raises, which the VM throws
+     again after preserving its stack trace; a row cannot yet name such a call, and the resource
+     lookup, which RC1 makes the same way, names the overload. Then the escape analysis's
+     resource-lookup assumption (`Environment.GetResourceStringLocal` is gone);
    * **(landed)** the escape analysis's helpers around a synchronized method, per runtime: RC1's
      JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
      `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
