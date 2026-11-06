@@ -1219,7 +1219,11 @@ module Assembly =
                 (fun i ->
                     let i = i + 1
                     let handle = MetadataTokens.MethodSpecificationHandle i
-                    KeyValuePair (handle, MethodSpec.make assy.Name (metadataReader.GetMethodSpecification handle))
+
+                    KeyValuePair (
+                        handle,
+                        MethodSpec.make assy.Name metadataReader (metadataReader.GetMethodSpecification handle)
+                    )
                 )
             |> ImmutableDictionary.CreateRange
 
