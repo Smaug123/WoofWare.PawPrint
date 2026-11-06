@@ -534,6 +534,26 @@ module internal NativeReflectionInvocation =
                 // original on both runtimes, and neither `TypeInitializationException`'s stack trace
                 // names the instance constructor. `sourcesPure/ReflectionInvokeConstructor.cs` pins
                 // that shape.
+                //
+                // A method's `.cctor` runs after CoreCLR compiles the method, loading what its locals
+                // name, so the locals are concretised first: measured on .NET 10, the `.cctor` sees an
+                // assembly only the method's locals name (`sourcesPure/ReflectionInvokeLoadsLocalsBeforeCctor.cs`).
+                // A constructor's `.cctor` runs when the instance is allocated instead
+                // (`MethodTable::Allocate`'s `CheckRunClassInitAsIfConstructingThrowing`), before the
+                // constructor is compiled, so its `.cctor` does not see them
+                // (`sourcesPure/ConstructorInvokeRunsCctorBeforeLocals.cs`). Either way, the frame
+                // pushed below concretises the locals again, from the memo.
+                let state =
+                    if isConstructor then
+                        state
+                    else
+                        ExecutionConcretization.concretizeLocals
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            target.Method
+                            state
+                        |> fst
+
                 let state, typeInit =
                     IlMachineStateExecution.ensureTypeInitialised
                         ctx.LoggerFactory
