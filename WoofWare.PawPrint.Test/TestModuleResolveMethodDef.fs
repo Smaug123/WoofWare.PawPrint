@@ -62,6 +62,14 @@ public struct Plain : IConvert
     public void PlainNonVirtual() { }
 }
 
+// Derives from a type in an assembly that nothing else in this program loads, so that resolving
+// one of its methods is the first thing to touch that assembly.
+public class OnXml : System.Xml.XmlDocument
+{
+    public void PlainOnXml() { }
+    public virtual U GenericVirtualOnXml<U>() => default!;
+}
+
 public static class Program
 {
     static int Classify(int token, string context)
@@ -179,6 +187,15 @@ public static class Program
             "Plain", "GenericVirtual", "none", 16
         ]
 
+    /// Methods on a class whose base is in an assembly nothing else loads, each resolved by a run of
+    /// its own so that the resolution is the first thing to touch that assembly, and what the real
+    /// runtime was measured to answer.
+    let private firstTouch : (string * string * string * int) list =
+        [
+            "OnXml", "PlainOnXml", "none", plain
+            "OnXml", "GenericVirtualOnXml", "none", definition
+        ]
+
     let private checkArgs (cases : (string * string * string * int) list) : string list =
         [
             yield "check"
@@ -190,7 +207,7 @@ public static class Program
 
     [<Test>]
     let ``The real runtime answers as measured`` () : unit =
-        for typeName, methodName, context, measured in answered @ genericVirtualOnValueType do
+        for typeName, methodName, context, measured in answered @ genericVirtualOnValueType @ firstTouch do
             let token = methodDefToken (image.Force ()) typeName methodName
             let actual = realRuntime [ "classify" ; string token ; context ]
 
@@ -233,3 +250,16 @@ public static class Program
         exn.Message |> shouldContainText "unboxing stub"
         exn.Message |> shouldContainText typeName
         exn.Message |> shouldContainText methodName
+
+    [<TestCase 0>]
+    [<TestCase 1>]
+    let ``PawPrint resolves a MethodDef on a class whose base is in an unloaded assembly`` (index : int) : unit =
+        let typeName, methodName, context, expected = firstTouch.[index]
+
+        match underPawPrint $"ModuleResolveMethodDefFirstTouch%d{index}" (checkArgs [ firstTouch.[index] ]) with
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) ->
+            if terminalState.LatchedExitCode <> 0 then
+                failwith
+                    $"%s{typeName}.%s{methodName} in context %s{context}: the real runtime classifies it %d{expected}; PawPrint does not"
+        | other -> failwith $"expected the guest to exit, got %A{other}"
