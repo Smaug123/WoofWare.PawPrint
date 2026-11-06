@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -237,3 +237,143 @@ All thirteen mutants of the check, the load-context members and the writer's RID
   moved-row check. That is plausible (create `B`, then `DefineMethodOverride` on `A`), so if a guest
   reaches it, we decide then whether PawPrint keeps those handles anywhere outside the `DumpedAssembly`
   that a re-read rebuilds.
+
+## Stage 3 in detail
+
+### The split
+
+**Chosen (2026-11-05): one QCall group per PR.** The issue's guest interleaves references and
+definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineMethod`, a `MemberRef` for
+`IThing.get_Value`, ...), so a PR of all the references would move it no further than one of
+`GetTypeRef` alone. Each PR implements one group and re-runs the guest to find the next:
+
+* **3a, `ModuleBuilder_GetTypeRef`.** The guest then stops at `TypeBuilder_DefineType`.
+* **3b, `TypeBuilder_DefineType`.** The guest then stops at `TypeBuilder_DefineMethod`.
+* Then methods and their signatures, then the `MemberRef`s and `MethodImpl`, in the
+  order the guest reaches them.
+
+### 3a: what CoreCLR's emitter writes
+
+Read from `ModuleBuilder_GetTypeRef` (vm/commodule.cpp), `Assembly::AddAssemblyRef`, `AssemblySpec`
+and `RegMeta` (md/compiler), and measured on .NET 10 through the public
+`ModuleBuilder.GetTypeMetadataToken`:
+
+* A dynamic module's emitter checks for duplicates of `TypeRef`, `AssemblyRef`, `MemberRef`,
+  signatures and the rest (`MDDupDefault | MDDupTypeDef | MDDupAssemblyRef | ...`, set in
+  `Assembly::CreateDynamic`'s scope). A type asked for twice gets one row.
+* A top-level type's `TypeRef` is scoped by an `AssemblyRef` made from the defining assembly's own
+  `Assembly` row: its name, version and culture, the key reduced to its token, and the row's flags
+  without `PublicKey`, then with the processor-architecture bits cleared unless marked specified.
+  `FindAssemblyRef` matches on name, culture, version and token, and ignores build and revision for
+  `mscorlib`.
+* A nested type's `TypeRef` is scoped by its enclosing type's, which the managed caller asks for first,
+  so the enclosing type's row comes first.
+* The namespace is everything before the last `.`, except that `A..ctor` is the name `.ctor` in `A`.
+* A reference from the module to its own type is looked up among its TypeDefs, not added. The managed
+  caller asks for one only for a type of this module that is not a `TypeBuilder`, which only
+  `CreateType` makes, so 3a refuses it with a TODO.
+
+### 3a: which assembly an AssemblyRef names
+
+CoreCLR's module also records, in its rid map, the loaded assembly each `AssemblyRef` was emitted for
+(`ForceStoreAssemblyRef`, first association kept), and a reference resolves through that before the
+binder sees it. That is how one dynamic module refers to a type of another, which the binder never
+finds.
+
+**Chosen (2026-11-05): a per-module map now.** Each dynamic assembly's entry in `LoadedAssemblies`
+holds `AssemblyRefRid -> definition identity`, which `WithAssemblyRefTarget` fills, asserting that the
+row is the one the scope finds for that assembly, and `TryResolveReference` consults it first. The
+alternative was to bind by name and refuse a reference to a dynamic assembly until a guest made one.
+An `AssemblyReference` now carries its referencing assembly's stored definition identity, so the lookup
+costs one dictionary probe rather than an `AssemblyName.FullName`, which hashes the key on every call.
+
+### 3a: the oracle
+
+* Find-or-define, over generated sequences: each `TypeRef` and `AssemblyRef` is found exactly when a
+  model of `FindTypeRefByName` and `FindAssemblyRef` says so, a found row adds nothing to any heap, and
+  each new row holds what `_SetAssemblyRefProps` stores.
+* Over every assembly in the test host's framework and an unsigned one, the request made from an
+  assembly's row names that assembly, with the token `AssemblyName` derives.
+* `ModuleBuilderTypeReferences.cs` checks the tokens, `GetReferencedAssemblies` and `ResolveType` over
+  twelve types of four assemblies, against constants measured on .NET 10.
+* Of 25 mutants of the Domain functions, the load-context map and the handler, 24 are caught. The one
+  that survives drops the handler's `WithAssemblyRefTarget` call; see below.
+
+### 3a: left to later stages
+
+* The handler's call to `WithAssemblyRefTarget` is seen by no guest yet, because every assembly a 3a
+  guest can reference is one the binder also finds. A guest that derives a type in one dynamic module
+  from a `TypeBuilder` in another is the case that shows it, once `CreateType` loads the derived type
+  and so resolves the reference.
+
+### 3b: what CoreCLR's emitter writes
+
+Read from `COMDynamicWrite::DefineType` (vm/comdynamic.cpp), `RegMeta::_DefineTypeDef`,
+`_SetTypeDefProps` and `_SetImplements` (md/compiler), and measured on .NET 10:
+
+* A new type's token is the next `TypeDef` RID, after `<Module>`'s. The managed caller asks for its
+  interfaces' tokens before its parent's, so their `TypeRef`s come first.
+* The emitter checks for a duplicate `TypeDef` (`MDDupTypeDef`) with `FindTypeDefByName`: a row with the
+  same namespace and name, ignoring rows of nested visibility for a top-level type. It then returns
+  `META_S_DUPLICATE`, for which the QCall raises `ArgumentException`. The managed check
+  (`CheckTypeNameConflict`) knows only the module's `TypeBuilder`s, so `DefineType("<Module>")` reaches
+  it.
+* A new row interns its name before its namespace (the reverse of a `TypeRef`), and keeps its flags
+  without `tdReservedMask`. It has no parent if the caller passes none (an interface).
+* Each interface gets an `InterfaceImpl` row, in order. The emitter does not check these for
+  duplicates (`MDDupInterfaceImpl` is not set), so an interface listed twice gets two rows.
+* `AddAvailableClassDontHaveLock` makes the type findable by name. The image read back from the scope
+  holds it.
+
+3b refuses, with a TODO, a nested type (the scope has no `NestedClass` table yet) and a `TypeSpec`
+parent or interface. `ModuleBuilder_GetTokenFromTypeSpec` is what hands a `TypeSpec` out, and it is
+not implemented.
+
+### 3b: a type that is defined but not created
+
+Real .NET never loads a type of a dynamic module before `CreateType`. Its loader raises the
+AppDomain's `TypeResolve` event instead (`ClassLoader::LoadTypeDefThrowing`). Measured:
+`Assembly.GetType` and `Type.GetType` give null, and `ModuleBuilder.ResolveType` throws
+`TypeLoadException`. Once `DefineType` adds the row, PawPrint's image holds the type, so something has
+to stop PawPrint loading it.
+
+**Chosen (2026-11-05): refuse in the type system.** `AllConcreteTypes.add` and `addNonGeneric`, the
+only ways to mint a concrete type, take the `LoadedAssemblies`, and crash with a TODO on a type that
+`IsUncreatedDynamicType` reports. The two alternatives were:
+
+* leaving uncreated types out of the dynamic image's name index, which would make the index disagree
+  with the image, and which would still diverge for a `TypeResolve` handler that answers;
+* deferring the check to stage 4, which would leave a window in which a guest sees a type that .NET
+  does not load.
+
+**Chosen (2026-11-06): the module's global type is loaded lazily, for every module.** PawPrint filled
+`RuntimeModule.m_runtimeType` with the `<Module>` type when it allocated the module, so every dynamic
+module crashed on the refusal at once. CoreCLR fills it on first read, through
+`ModuleHandle_GetModuleType`, which 3b implements. The alternative was to keep the eager fill for
+modules read from an image and leave the field null only for dynamic ones; that takes two paths where
+CoreCLR has one. The QCall loads `<Module>` only if it has a method or a field
+(`Module::NeedsGlobalMethodTable`), and otherwise answers null, so a module C# compiles without a
+module initializer has no global type. A dynamic module has one only once `DefineGlobalMethod` or a
+global field adds a member, and reading it before `CreateGlobalFunctions` crashes on the refusal. In
+CoreCLR that raises `TypeResolve`, and the QCall then swallows the failure.
+
+### 3b: the oracle
+
+* Find-or-define over generated sequences, against a model of `FindTypeDefByName` and
+  `_DefineTypeDef`. Names in the model differ only in case, split alike or apart, collide with
+  `<Module>`, or differ only in a lone surrogate (stored as the same UTF-8). Flags are random 32-bit
+  values. Parents and interface lists repeat entries.
+* `TypeBuilderDefineType.cs` checks the tokens, the `TypeRef` order, and both duplicate refusals,
+  against constants measured on .NET 10. Its terminal-state check reads the rows no guest can see
+  before `CreateType`: flags, parents and interfaces.
+* `ModuleGlobalMembers.cs` and `ModuleInitializerGlobalType.cs` read a static module's global type,
+  under the real-runtime oracle: null without a module initializer, `<Module>` with one.
+* The refusal is checked through both interning functions, before and after `WithCreatedType`.
+* All 17 mutants are caught: of the Domain functions, `IsUncreatedDynamicType`, the refusal, the
+  handler and the global-type QCall.
+
+### 3b: left to later stages
+
+* Stage 4's `TypeBuilder_TermCreateClass` must call `WithCreatedType` before it loads the type.
+* A dynamic module's `<Module>` is loadable only once `CreateGlobalFunctions` creates it. Before that,
+  modelling CoreCLR needs the `TypeResolve` event.

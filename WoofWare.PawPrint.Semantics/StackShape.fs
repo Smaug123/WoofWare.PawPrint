@@ -203,7 +203,7 @@ module StackShape =
     /// one of its spill temps. A join that would be a promotion, but which a branch the importer
     /// may fold reaches, is recorded as `WidthDependsOnFoldedBranch` and propagates as a conflict
     /// does.
-    let analyse (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : StackShape =
+    let analyse (inputs : StackShapeInputs) (body : MethodInstructions) : StackShape =
         let flow = StackFlow.analyse (lattice inputs) (effectInputs inputs) body
 
         {

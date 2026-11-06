@@ -511,8 +511,8 @@
   },
   {
     "pname": "WoofWare.DotnetRuntimeLocator",
-    "version": "0.5.5",
-    "hash": "sha256-NgJvYn+Jr7k0JTVImeQ48aXk1VOJMFCeqEMY0CYI950="
+    "version": "0.5.8",
+    "hash": "sha256-2xBa8rENlurubnrnjF3TH0cggkgDT+q+Xrd51xAwxV0="
   },
   {
     "pname": "WoofWare.Myriad.Plugins",
@@ -526,8 +526,8 @@
   },
   {
     "pname": "WoofWare.PosixKernel",
-    "version": "0.1.423",
-    "hash": "sha256-ZUUhl0X26McvHlW8wy6Q66zp1wYkFtRKXQd/qhzRWiU="
+    "version": "0.1.424",
+    "hash": "sha256-kcFVmG0PiwV3p74Yp6pD42uR48tpt5C1GR6vM7RuA+E="
   },
   {
     "pname": "WoofWare.Whippet.Fantomas",

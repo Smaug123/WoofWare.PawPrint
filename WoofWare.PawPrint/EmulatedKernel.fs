@@ -2160,6 +2160,13 @@ type KernelConfig =
         /// clamps its backlog to. `toKernel` fails below 1. See
         /// `UnixBootImage.withSoMaxConn`.
         SoMaxConn : int option
+        /// The name the guest reads from `gethostname(3)`, which is how
+        /// `Dns.GetHostName` and `Environment.MachineName` learn it, or `None`
+        /// for the kernel's default, `UnixSystem.defaultHostName`
+        /// (`localhost`). `toKernel` fails for a name longer than the flavour
+        /// holds (64 bytes on Linux, 255 on Darwin), and for an empty name on
+        /// Darwin. See `UnixBootImage.withHostName`.
+        HostName : UnixByteString option
         /// Darwin's `net.inet.tcp.sendspace` sysctl, the send buffer a new TCP
         /// socket starts with, or `None` for the flavour's measured default
         /// (131072 on Darwin). A kqueue's `EVFILT_WRITE` reports the buffer's
@@ -2266,6 +2273,7 @@ type KernelConfig =
             Mount = None
             EphemeralPortRange = None
             SoMaxConn = None
+            HostName = None
             TcpSendSpace = None
             TcpReceiveSpace = None
             TcpSendSpaceMax = None
@@ -2387,6 +2395,8 @@ type MachineConfig =
         EphemeralPortRange : (uint16 * uint16) option
         /// See `KernelConfig.SoMaxConn`.
         SoMaxConn : int option
+        /// See `KernelConfig.HostName`.
+        HostName : UnixByteString option
         /// See `KernelConfig.TcpSendSpace`.
         TcpSendSpace : int option
         /// See `KernelConfig.TcpReceiveSpace`.
@@ -2636,6 +2646,26 @@ module MachineConfig =
                 "Configure a positive value, or None for the flavour's default."
                 e
 
+    let private withHostName
+        (knobs : string)
+        (name : UnixByteString option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match name with
+        | None -> image
+        | Some name ->
+
+        try
+            UnixBootImage.withHostName name image
+        with
+        | :? UnmodelledException
+        | :? System.ArgumentException as e ->
+            KernelRefusal.failAdvising
+                $"%s{knobs}.HostName"
+                "Configure a non-empty name the flavour can hold, or None for the kernel's default."
+                e
+
     let private withTcpSendSpace
         (knobs : string)
         (value : int option)
@@ -2762,6 +2792,7 @@ module MachineConfig =
             (config.EphemeralPortRange
              |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour))
         |> withSoMaxConn knobs config.SoMaxConn
+        |> withHostName knobs config.HostName
         |> withTcpSendSpace knobs config.TcpSendSpace
         |> withTcpReceiveSpace knobs config.TcpReceiveSpace
         |> withTcpSendSpaceMax knobs config.TcpSendSpaceMax
@@ -2896,6 +2927,7 @@ module KernelConfig =
                 Mount = config.Mount
                 EphemeralPortRange = config.EphemeralPortRange
                 SoMaxConn = config.SoMaxConn
+                HostName = config.HostName
                 TcpSendSpace = config.TcpSendSpace
                 TcpReceiveSpace = config.TcpReceiveSpace
                 TcpSendSpaceMax = config.TcpSendSpaceMax

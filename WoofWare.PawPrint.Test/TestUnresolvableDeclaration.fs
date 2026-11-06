@@ -18,14 +18,13 @@ open WoofWare.PawPrint
 /// match at the named ancestor is `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL`, which PawPrint reports as
 /// unmodelled, naming that error.
 ///
-/// The shape that would reach the bases on a *valid* image -- a MemberRef to an ancestor that merely
-/// inherits the named method -- cannot be fabricated here (`DefineMethodOverride` takes a
-/// `MethodInfo`, whose `DeclaringType` is where the method is declared, so the row always names the
-/// declaring type; measured, not assumed), and a census over every assembly of the host shared
-/// framework and the pinned linux-x64 pack found no MethodImpl row of that shape at all. What *is*
-/// fabricable is a MemberRef on a TypeSpec naming a method that holds no slot, which CoreCLR rejects
-/// with `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` -- checked against the real runtime below rather than
-/// assumed.
+/// The shape that reaches the bases -- a MemberRef to an ancestor that merely inherits the named
+/// method -- needs an image built row by row, because `DefineMethodOverride` takes a `MethodInfo`,
+/// whose `DeclaringType` is where the method is declared; `TestFabricatedMethodImplAncestorSearch`
+/// builds those. A census over every assembly of the host shared framework and the pinned linux-x64
+/// pack found no MethodImpl row of that shape at all. What `DefineMethodOverride` *can* emit is a
+/// MemberRef on a TypeSpec naming a method that holds no slot, which CoreCLR rejects with
+/// `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` -- checked against the real runtime below rather than assumed.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnresolvableDeclaration =

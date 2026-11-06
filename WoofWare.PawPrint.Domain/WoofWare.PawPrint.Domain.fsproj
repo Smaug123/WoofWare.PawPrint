@@ -65,6 +65,8 @@
         <Compile Include="Debuggable.fs" />
         <Compile Include="IlDumpRendering.fs" />
         <Compile Include="EmitScope.fs" />
+        <Compile Include="EmitScopeReferences.fs" />
+        <Compile Include="EmitScopeDefinitions.fs" />
         <Compile Include="EmitScopeImage.fs" />
         <!-- After TypeConcretisation.fs, for `SubstitutionContext`, and before IlMachineStateModel
              in the main project, which memoises the walks that produce these. -->

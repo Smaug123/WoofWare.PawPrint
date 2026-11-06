@@ -411,6 +411,46 @@ module EmitScope =
                 BlobHeapLength = scope.BlobHeapLength + compressedLengthSize value.Length + value.Length
             }
 
+    /// The `AssemblyRef` row with this RID, if the scope has one.
+    let tryAssemblyRefRid (rid : int) (scope : EmitScope) : AssemblyRefRid option =
+        if rid >= 1 && rid <= scope.AssemblyRefs.Count then
+            Some (AssemblyRefRid rid)
+        else
+            None
+
+    /// The `TypeRef` row with this RID, if the scope has one.
+    let tryTypeRefRid (rid : int) (scope : EmitScope) : TypeRefRid option =
+        if rid >= 1 && rid <= scope.TypeRefs.Count then
+            Some (TypeRefRid rid)
+        else
+            None
+
+    /// The `TypeDef` row with this RID, if the scope has one.
+    let tryTypeDefRid (rid : int) (scope : EmitScope) : TypeDefRid option =
+        if rid >= 1 && rid <= scope.TypeDefs.Count then
+            Some (TypeDefRid rid)
+        else
+            None
+
+    /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
+    /// emitter stores for it, without adding it.
+    let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =
+        if value.Contains '\000' then
+            invalidArg (nameof value) $"a #Strings entry cannot hold a NUL, which would end it: %A{value}"
+
+        match scope.StringOffsets.TryGetValue (replacingUtf8.GetString (replacingUtf8.GetBytes value)) with
+        | true, offset -> Some offset
+        | false, _ -> None
+
+    /// The offset `internBlob` would return for `value` if the heap already holds it, without adding it.
+    let tryBlobOffset (value : ImmutableArray<byte>) (scope : EmitScope) : BlobOffset option =
+        if value.IsDefault then
+            invalidArg (nameof value) "a #Blob entry must be an initialised array"
+
+        match scope.BlobOffsets.TryGetValue value with
+        | true, offset -> Some offset
+        | false, _ -> None
+
     /// What CoreCLR's emit scope holds once it is opened for a dynamic module: the `Module` row and the
     /// `<Module>` type (RID 1), which owns module-scope members.
     let create (moduleName : string) (mvid : Guid) : EmitScope =

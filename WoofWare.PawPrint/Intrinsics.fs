@@ -1954,6 +1954,39 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> advanceCaller
             |> IntrinsicResult.Completed
+        | CorelibAssembly, "Math", "Log" when
+            intrinsicKey.DeclaringTypeFullName = "System.Math"
+            && intrinsicKey.ParameterShapes = [ "System.Double" ]
+            ->
+            // As with `Math.Pow` above: `[Intrinsic]` + `MethodImplOptions.InternalCall` with
+            // no IL body, lowered by the JIT to the platform C library's `log`.
+            // https://github.com/dotnet/runtime/blob/4271d88e0aebf3d04f188f1334c2220d80555ef6/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L75-L77
+            //
+            // `log` is not correctly rounded by mainstream libms either, so the host's is
+            // deliberately not what we call; `DeterministicMath.log` computes it from integer
+            // arithmetic alone.
+            //
+            // The guard on `ParameterShapes` keeps this arm off `Math.Log(double, double)`,
+            // which is neither `[Intrinsic]` nor `InternalCall`: it has an ordinary IL body that
+            // divides two calls to this one, and runs as managed code.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
+            | _ -> failwith $"Math.Log: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
+                | _ -> failwith $"Math.Log: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.log argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> advanceCaller
+            |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared the same way as the three above -- `[Intrinsic]` +
             // `MethodImplOptions.InternalCall`, no IL body -- so it likewise has no IL to run.
@@ -1992,7 +2025,7 @@ module Intrinsics =
             |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
-            // Declared like the four above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
+            // Declared like the arms above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
             // no IL body -- so it likewise has no IL to run. The JIT
             // lowers it to `roundsd`/`frintp` where the hardware has them and to the platform
             // C library's `ceil` otherwise.
@@ -2027,11 +2060,44 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> advanceCaller
             |> IntrinsicResult.Completed
+        | CorelibAssembly, "Math", "Floor" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
+            // `Math.Ceiling` above, rounding the other way: `[Intrinsic]` +
+            // `MethodImplOptions.InternalCall` with no IL body, lowered by the JIT to
+            // `roundsd`/`frintm` where the hardware has them and to the platform C library's
+            // `floor` otherwise.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L67-L69
+            //
+            // `roundToIntegralTowardNegative` is exact, so as with `Math.Ceiling` computing it
+            // in-tree changes no answer; it keeps the guarantee this runtime's own and gives the
+            // tests an exact oracle.
+            //
+            // The `decimal` overload of `Math.Floor` never arrives here: it is not marked
+            // `[Intrinsic]` and has an ordinary IL body, so it runs as managed code. The guard
+            // on `DeclaringTypeFullName` keeps this arm off any other type that happens to
+            // have a `Floor`, and the signature check below rejects anything else.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
+            | _ -> failwith $"Math.Floor: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
+                | _ -> failwith $"Math.Floor: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.floor argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> advanceCaller
+            |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Round" when
             intrinsicKey.DeclaringTypeFullName = "System.Math"
             && intrinsicKey.ParameterShapes = [ "System.Double" ]
             ->
-            // The odd one out among the five `System.Math` arms above: this one is `[Intrinsic]`
+            // The odd one out among the `System.Math` arms above: this one is `[Intrinsic]`
             // but *not* `MethodImplOptions.InternalCall`, so it does have an IL body, which is what
             // PawPrint would run in the absence of this arm.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1306-L1348

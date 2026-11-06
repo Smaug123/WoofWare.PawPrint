@@ -72,6 +72,7 @@ module NativeQCall =
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"
             "ModuleHandle_GetToken", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetToken"
+            "ModuleHandle_GetModuleType", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetModuleType"
             "ModuleHandle_GetDynamicMethod", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetDynamicMethod"
             "RuntimeModule_GetTypes", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetTypes"
             "RuntimeModule_GetScopeName", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetScopeName"
@@ -116,6 +117,7 @@ module NativeQCall =
             "StackTrace_GetStackFramesInternal", NativeStackTrace.tryExecuteQCall "StackTrace_GetStackFramesInternal"
             "DebugDebugger_IsManagedDebuggerAttached",
             NativeDebugger.tryExecuteQCall "DebugDebugger_IsManagedDebuggerAttached"
+            "DebugDebugger_IsLoggingHelper", NativeDebugger.tryExecuteQCall "DebugDebugger_IsLoggingHelper"
             "EventPipeInternal_Enable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Enable"
             "EventPipeInternal_Disable", NativeEventPipe.tryExecuteQCall "EventPipeInternal_Disable"
             "EventPipeInternal_CreateProvider", NativeEventPipe.tryExecuteQCall "EventPipeInternal_CreateProvider"
@@ -148,6 +150,8 @@ module NativeQCall =
             "MetadataImport_GetMarshalAs", NativeMetadataImport.tryExecuteQCall "MetadataImport_GetMarshalAs"
             "AppDomain_CreateDynamicAssembly",
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
+            "ModuleBuilder_GetTypeRef", NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTypeRef"
+            "TypeBuilder_DefineType", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_DefineType"
             "AssemblyNative_InitializeAssemblyLoadContext",
             NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_InitializeAssemblyLoadContext"
             "AssemblyNative_GetLoadContextForAssembly",
@@ -190,6 +194,8 @@ module NativeQCall =
             // case-insensitive list type through `MdUtf8String.EqualsCaseInsensitive`.
             "MdUtf8String_EqualsCaseInsensitive",
             NativeMdUtf8String.tryExecuteQCall "MdUtf8String_EqualsCaseInsensitive"
+            "String_Intern", NativeString.tryExecuteQCall "String_Intern"
+            "String_IsInterned", NativeString.tryExecuteQCall "String_IsInterned"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.

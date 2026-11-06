@@ -42,7 +42,7 @@ module TestNativeMethodDetection =
         | [ m ] -> m
         | many -> failwith $"Ambiguous: found {List.length many} QCall entry points {entryPoint} on {ns}.{typeName}"
 
-    let private isNativeBody (body : MethodBody<_>) : bool =
+    let private isNativeBody (body : MethodBody) : bool =
         match body with
         | MethodBody.InternalCall
         | MethodBody.PInvoke -> true
