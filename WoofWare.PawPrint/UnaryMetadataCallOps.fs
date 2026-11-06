@@ -671,6 +671,7 @@ module internal UnaryMetadataCallOps =
         match concretizedMethod.Body with
         | MethodBody.Abstract -> raiseNamedAbstractMethod ctx state
         | MethodBody.Il _
+        | MethodBody.MissingIl
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> enterCallee ctx concretizedMethod state
@@ -2323,6 +2324,7 @@ module internal UnaryMetadataCallOps =
                     thread
                     state
             | MethodBody.Il _
+            | MethodBody.MissingIl
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->

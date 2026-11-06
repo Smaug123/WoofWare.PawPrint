@@ -935,6 +935,7 @@ module NativeCall =
                     $"Runtime (UnsafeAccessor naming no kind: %d{raw}%s{overrides})"
                 | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"
             | MethodBody.Abstract -> "Abstract"
+            | MethodBody.MissingIl -> "IL with no body"
             | MethodBody.Il _ -> "IL"
 
         let rec formatTypeHandle (cth : ConcreteTypeHandle) : string =

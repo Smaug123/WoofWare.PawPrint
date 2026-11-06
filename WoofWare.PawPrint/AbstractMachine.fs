@@ -418,6 +418,7 @@ module AbstractMachine =
                 raiseFromPoppedStub baseClassTypes.BadImageFormatException (Some BadImageFormatMessages.ofHResult) state
             | MethodBody.Abstract
             | MethodBody.Il _
+            | MethodBody.MissingIl
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->
@@ -528,6 +529,9 @@ module AbstractMachine =
         | MethodBody.Abstract ->
             failwith
                 $"reached executeOneStep for abstract method {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}. Virtual dispatch resolves to an override, and call, ldftn, calli and delegate invocation each raise BadImageFormatException rather than push a frame for an abstract method. TODO: MethodBase.Invoke of a static abstract method still arrives here, where real .NET raises a TargetInvocationException wrapping that BadImageFormatException; any other route arriving here is a PawPrint bug"
+        | MethodBody.MissingIl ->
+            failwith
+                $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}, an IL method whose row names no body; callMethod refuses to push a frame for one"
         | MethodBody.InternalCall
         | MethodBody.PInvoke -> dispatchNative ()
         | MethodBody.Il instructions ->
