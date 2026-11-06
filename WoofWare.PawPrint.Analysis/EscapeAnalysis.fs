@@ -214,7 +214,7 @@ type internal Tested =
 /// its offsets a run may execute (`ControlFlow.mayExecute`).
 type internal Branching =
     {
-        Body : MethodInstructions<TypeDefn>
+        Body : MethodInstructions
         /// The Boolean that the instruction before a branch is known to push, by its offset, in
         /// every instance: what a capability query returns on this CPU, or whether values that are
         /// all null or zero, or all neither, are.
@@ -449,7 +449,7 @@ type internal CallTarget =
 type internal Runs =
     /// IL: the method's own, or what CoreCLR's VM substitutes for it. `selfCall` is the JIT's
     /// expansion of the IL's call to the method itself, where it has one; that call is not a call.
-    | Il of MethodInstructions<TypeDefn> * selfCall : JitExpansion option
+    | Il of MethodInstructions * selfCall : JitExpansion option
     /// One of the runtime's own operations, the whole of the method.
     | Primitive of IntrinsicPrimitive
     /// Native code whose behaviour `NativeMethod` describes, the whole of the method.
@@ -2980,7 +2980,7 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        (body : MethodInstructions<TypeDefn>)
+        (body : MethodInstructions)
         (unbound : Set<int>)
         : EscapeAnalysisState * BodySpellings
         =
@@ -7517,7 +7517,7 @@ module EscapeAnalysis =
     let private writerFacts
         (state : EscapeAnalysisState)
         (instance : MethodInstance)
-        : EscapeAnalysisState * (MethodInstructions<TypeDefn> * LocalFacts) option
+        : EscapeAnalysisState * (MethodInstructions * LocalFacts) option
         =
         let key = instance.Definition
         let assembly, method = methodOf state key

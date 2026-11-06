@@ -132,7 +132,10 @@ module TestSignalDispatch =
         let state, method =
             concretizeStaticByArity fixture state "System" "String" "Compare" 2
 
-        let handler = SignalHandler.ofMethodInfo method
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals state.LoggerFactory fixture.BaseClassTypes method state
+
+        let handler = SignalHandler.ofMethodInfo method localTypes
         state, handler
 
     /// A fresh machine on `fixture`'s CoreLib and `platform`, with System.Native's signal handling
@@ -1895,12 +1898,15 @@ module TestSignalDispatch =
         let state, method =
             concretizeStaticByArity hostFixture state "System" "String" "IsNullOrEmpty" 1
 
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals state.LoggerFactory hostFixture.BaseClassTypes method state
+
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
                     PosixSignalShim =
                         kernel.PosixSignalShim
-                        |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo method)
+                        |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo method localTypes)
                 }
             )
             |> register Signal.SIGINT

@@ -239,6 +239,9 @@ and MethodState =
     {
         // TODO: local variables are initialised to 0 if the localsinit flag is set for the method
         LocalVariables : CliType ImmutableArray
+        /// The concrete type of each local, in slot order: the method's local signature concretised
+        /// against this frame's instantiation when the frame was created.
+        LocalVariableTypes : ConcreteTypeHandle ImmutableArray
         /// Index into the stream of IL bytes.
         _IlOpIndex : int
         EvaluationStack : EvalStack
@@ -475,6 +478,8 @@ and MethodState =
     /// `args` must be populated with entries of the right type.
     /// If `method` is an instance method, `args` must be of length 1+numParams.
     /// If `method` is static, `args` must be of length numParams.
+    /// `localTypes` must be the method's locals concretised against this instantiation, as
+    /// `ExecutionConcretization.concretizeLocals` gives them.
     static member Empty
         (concreteTypes : AllConcreteTypes)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -482,6 +487,7 @@ and MethodState =
         (containingAssembly : DumpedAssembly)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (localTypes : ImmutableArray<ConcreteTypeHandle>)
         (args : ImmutableArray<CliType>)
         (returnState : MethodReturnState option)
         : Result<MethodState, WoofWare.PawPrint.AssemblyReference list>
@@ -503,29 +509,27 @@ and MethodState =
 
             CatchClauseRefusal.check baseClassTypes loadedAssemblies containingAssembly method
 
-        let localVariableSig =
-            match MethodInfo.tryIlBody method with
-            | None -> ImmutableArray.Empty
-            | Some instr ->
-                match instr.LocalVars with
-                | None -> ImmutableArray.Empty
-                | Some vars -> vars
+        let declaredLocals =
+            match MethodInfo.tryIlBody method |> Option.bind _.LocalVars with
+            | None -> 0
+            | Some vars -> vars.Length
+
+        if localTypes.Length <> declaredLocals then
+            failwith
+                $"BUG: a frame of %s{method.Name} was given %d{localTypes.Length} concrete local type(s), but the method declares %d{declaredLocals} local(s)"
+
         // I think valid code should remain valid if we unconditionally localsInit - it should be undefined
         // to use an uninitialised value? Not checked this; TODO.
 
         let localVars =
             let result = ImmutableArray.CreateBuilder ()
 
-            for var in localVariableSig do
-                // Note: This assumes all types have already been concretized
-                // If this fails with "ConcreteTypeHandle not found", it means
-                // we need to ensure types are concretized before creating the MethodState
-                //
+            for var in localTypes do
                 // Deliberately the non-loading walk. This function returns only a `MethodState`,
                 // so it has nowhere to put an updated registry or load context; handing it a real
                 // loader would let it mint `ConcreteTypeHandle`s into a registry that is then
                 // discarded, leaving the locals' `FieldId`s pointing at handles the machine state
-                // does not know. `Concretization.concretizeMethod` primes every local's type
+                // does not know. `Concretization.concretizeLocals` primes every local's type
                 // before we get here, so a miss really is a bug — see
                 // `IAssemblyLoad.alreadyLoadedOnly`.
                 let zero, _, _ =
@@ -538,6 +542,7 @@ and MethodState =
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
+            LocalVariableTypes = localTypes
             _IlOpIndex = 0
             Arguments = args
             ExecutingMethod = method

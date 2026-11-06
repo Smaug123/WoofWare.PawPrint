@@ -93,7 +93,7 @@ module JitImport =
 
     /// The capability queries' answers that decide branches, by the branch's offset, where the JIT
     /// optimises the body; validating what PawPrint says of it.
-    let private decided (body : MethodInstructions<'methodVars>) (folding : JitFolding) : Map<int, bool> =
+    let private decided (body : MethodInstructions) (folding : JitFolding) : Map<int, bool> =
         match folding with
         | JitFolding.Nothing -> Map.empty
         | JitFolding.Optimises optimised ->
@@ -114,7 +114,7 @@ module JitImport =
             ControlFlow.decidedBranches body optimised.Capabilities
 
     /// Bounds on what the JIT imports of `body` when it folds as `folding` says.
-    let compiledCode (body : MethodInstructions<'methodVars>) (folding : JitFolding) : CompiledCode =
+    let compiledCode (body : MethodInstructions) (folding : JitFolding) : CompiledCode =
         let decided = decided body folding
         let maybe = ControlFlow.reachable body (ControlFlow.successorsDecided decided)
 
@@ -184,7 +184,7 @@ module JitImport =
         }
 
     /// The order in which the JIT imports what it may import of `body`, as far as it is fixed.
-    let importOrder (body : MethodInstructions<'methodVars>) (folding : JitFolding) : ImportOrder =
+    let importOrder (body : MethodInstructions) (folding : JitFolding) : ImportOrder =
         let decided = decided body folding
 
         // The flow graph of what the JIT may import, entering a handler from every instruction of

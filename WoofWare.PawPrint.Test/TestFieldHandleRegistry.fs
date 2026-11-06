@@ -934,6 +934,7 @@ public class GenericHolder<T>
                     fixture.BaseClassTypes.Corelib
                     getFieldsMethod
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     methodArgs
                     None
             with
@@ -1002,6 +1003,7 @@ public class GenericHolder<T>
                     state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     getAttributesMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     methodArgs
                     None

@@ -504,6 +504,7 @@ module TestPointerStructByteViewCells =
                     corelib
                     method
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     arguments
                     None
             with

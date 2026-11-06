@@ -64,7 +64,7 @@ module TestFaultHandlers =
                 IlOp.Nullary NullaryIlOp.Ret, 11
             ]
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             {
                 Instructions = ops
                 Locations = ops |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
@@ -97,6 +97,7 @@ module TestFaultHandlers =
                     state.TypeSystem._LoadedAssemblies
                     corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None

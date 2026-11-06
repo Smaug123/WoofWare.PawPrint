@@ -8,7 +8,7 @@ module IlStub =
 
     /// A body of `instructions` at the offsets their encodings give them, with no locals and no
     /// exception regions.
-    let ofInstructions (instructions : IlOp list) : MethodInstructions<TypeDefn> =
+    let ofInstructions (instructions : IlOp list) : MethodInstructions =
         let located =
             ((0, []), instructions)
             ||> List.fold (fun (offset, acc) op -> offset + IlOp.NumberOfBytes op, (op, offset) :: acc)

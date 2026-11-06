@@ -56,7 +56,7 @@ module TestUnaryMetadataIlOp =
                 ImmutableArray.Empty
                 objectToString.Signature
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             { MethodInstructions.onlyRet () with
                 Instructions = [ op, 0 ]
                 Locations = Map.empty |> Map.add 0 op
@@ -86,6 +86,7 @@ module TestUnaryMetadataIlOp =
                     state.TypeSystem._LoadedAssemblies
                     corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None
