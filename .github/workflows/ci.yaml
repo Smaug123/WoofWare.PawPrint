@@ -114,6 +114,18 @@ jobs:
         mkdir -p TestResults
         (while true; do echo "== $(date -u +%H:%M:%S)"; free -m; top -b -n1 -o %CPU -w 200 | head -15; sleep 5; done) > TestResults/probe-top.log 2>&1 &
         vmstat -t 5 > TestResults/probe-vmstat.log 2>&1 &
+        nix develop "$GITHUB_WORKSPACE" --command dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-stack > TestResults/probe-tools.log 2>&1
+        nix develop "$GITHUB_WORKSPACE" --command dotnet tool install --tool-path "$RUNNER_TEMP/tools" dotnet-counters >> TestResults/probe-tools.log 2>&1
+        (
+          until pid="$(pgrep -f testhost | head -n1)" && [ -n "$pid" ]; do sleep 1; done
+          echo "testhost $pid" >> TestResults/probe-tools.log
+          nix develop "$GITHUB_WORKSPACE" --command "$RUNNER_TEMP/tools/dotnet-counters" collect -p "$pid" --refresh-interval 5 --counters System.Runtime --format csv -o TestResults/probe-counters.csv >> TestResults/probe-tools.log 2>&1 &
+          while kill -0 "$pid" 2>/dev/null; do
+            echo "== $(date -u +%H:%M:%S)"
+            nix develop "$GITHUB_WORKSPACE" --command "$RUNNER_TEMP/tools/dotnet-stack" report -p "$pid" 2>&1
+            sleep 15
+          done
+        ) > TestResults/probe-stacks.log 2>&1 &
         for project in $projects; do
           nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --filter "FullyQualifiedName${op}.TestEscapeAnalysis" --logger "trx;LogFilePrefix=default" --results-directory TestResults
         done
@@ -124,7 +136,7 @@ jobs:
         name: test-results-${{ matrix.part }}-${{ matrix.runtime }}
         path: |
           ${{ runner.temp }}/footprint/TestResults/*.trx
-          ${{ runner.temp }}/footprint/TestResults/probe-*.log
+          ${{ runner.temp }}/footprint/TestResults/probe-*
 
   # The guest-running fixtures, which take longer than the rest of the suite put
   # together. They build for themselves rather than downloading `build`'s binaries: the
