@@ -44,12 +44,6 @@ module IlMachineState =
 
     let resolveTypeFromSpec = IlMachineTypeResolution.resolveTypeFromSpec
 
-    let resolveTypeFromSpecConcrete =
-        IlMachineTypeResolution.resolveTypeFromSpecConcrete
-
-    let resolveTypeFromDefnConcrete =
-        IlMachineTypeResolution.resolveTypeFromDefnConcrete
-
     let runtimeTypeHandleTargetForTypeToken =
         IlMachineTypeResolution.runtimeTypeHandleTargetForTypeToken
 
