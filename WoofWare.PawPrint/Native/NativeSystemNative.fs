@@ -3241,6 +3241,61 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer destination) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetHostName",
+          [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_GetHostName(uint8_t* name, int32_t nameLength)`
+            // (pal_networking.c) is `return gethostname((char*)name, (uint32_t)nameLength);`
+            // behind two `assert`s that a retail build compiles out, so a
+            // negative length reaches `gethostname` as a huge `size_t`. CoreLib
+            // passes a 256-byte `stackalloc`, which holds any name either
+            // flavour's kernel can.
+            let operation = "SystemNative_GetHostName"
+            let nameArgument = instruction.Arguments.[0]
+            let nameLength = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let bufferPointer = bufferPointerArgument operation "name" nameArgument
+
+            let answer =
+                try
+                    UnixHostName.getHostName
+                        (state.Kernel.Caller ctx.Thread)
+                        (BufferPointer.toUserBuffer bufferPointer)
+                        (uint64 (uint32 nameLength))
+                        state.Kernel.System
+                with :? UnmodelledException as e ->
+                    KernelRefusal.failAdvising
+                        operation
+                        (KernelRefusal.advising [ BufferPointer.unmodelledHint bufferPointer ])
+                        e
+
+            let placed, failure =
+                match answer with
+                | GetHostNameAnswer.Returned placed -> placed, None
+                | GetHostNameAnswer.Failed (placed, error) -> placed, Some error
+
+            // A call that places nothing does not resolve the buffer: it cannot
+            // fault, and resolving it would turn an answer into a crash.
+            let state =
+                if placed.IsEmpty then
+                    state
+                else
+
+                match BufferPointer.dereferenceable bufferPointer with
+                | Some destination -> writeBytesThrough ctx operation destination placed state
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel placed %d{placed.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+            let ret, state =
+                match failure with
+                | None -> 0, state
+                | Some error -> -1, withErrnoOnly ctx error state
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim ret)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetPid",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
