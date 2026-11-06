@@ -102,8 +102,8 @@ jobs:
     # than the limit (2000 by default), the NUnit adapter drops the filter, runs every
     # non-Explicit test, and reports only those the filter selected. `Rest` selects over 5000, so
     # under the default it would run `TestEscapeAnalysis*` too, unreported, and take as long as the
-    # whole suite. A selection of Explicit
-    # tests, as each `test-guest` runner makes, runs exactly those whatever the limit.
+    # whole suite. A filter that names a category, as each `test-guest` runner's does, is exempt
+    # (`Execution.CheckFilter` in the adapter's source).
     # The TRX files carry each test's duration. They're uploaded so that the tests can be
     # divided between runners by measured cost on CI's 4-vCPU hardware, which isn't
     # proportional to what a developer machine measures.
