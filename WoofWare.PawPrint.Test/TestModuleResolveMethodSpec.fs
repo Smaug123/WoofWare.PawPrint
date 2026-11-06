@@ -67,6 +67,18 @@ public static class Statics
     public static W CallerS<W>() where W : struct => Constrained<W>();
 }
 
+// Each derives from a type in an assembly that nothing else in this program loads, so that
+// resolving a MethodSpec of one of their methods can be the first thing to touch that assembly.
+public class OnXml : System.Xml.XmlDocument
+{
+    public static U Make<U>() => default!;
+}
+
+public class XmlHolder<T> : System.Xml.XmlDocument
+{
+    public static U Make<U>() => default!;
+}
+
 public static class Sites
 {
     public static void GenericOfInt() => Statics.Generic<int>();
@@ -80,6 +92,8 @@ public static class Sites
     public static void PlainGenericVirtual() => new Plain().GenericVirtual<long>();
     public static void ArrayEmpty() => Array.Empty<int>();
     public static void EnumerableEmpty() => Enumerable.Empty<string>();
+    public static void OnXmlMake() => OnXml.Make<int>();
+    public static void XmlHolderMake() => XmlHolder<int>.Make<long>();
 }
 
 public static class Program
@@ -102,6 +116,8 @@ public static class Program
             case "Plain.GenericVirtual<long>": return typeof(Plain).GetMethod("GenericVirtual").MakeGenericMethod(typeof(long));
             case "Array.Empty<int>": return typeof(Array).GetMethod("Empty").MakeGenericMethod(typeof(int));
             case "Enumerable.Empty<string>": return typeof(Enumerable).GetMethod("Empty").MakeGenericMethod(typeof(string));
+            case "OnXml.Make<int>": return typeof(OnXml).GetMethod("Make").MakeGenericMethod(typeof(int));
+            case "XmlHolder<int>.Make<long>": return typeof(XmlHolder<int>).GetMethod("Make").MakeGenericMethod(typeof(long));
             default: throw new Exception("test bug: no expected method " + key);
         }
     }
@@ -227,6 +243,16 @@ public static class Program
             "Sites", "EnumerableEmpty", "none", "Enumerable.Empty<string>"
         ]
 
+    /// Methods on classes whose base is in an assembly nothing else loads, each resolved by a run of
+    /// its own so that the resolution is the first thing to touch that assembly, and the method the
+    /// real runtime was measured to answer with: a MethodSpec over a MethodDef, and one over a
+    /// MemberRef.
+    let private firstTouch : (string * string * string * string) list =
+        [
+            "Sites", "OnXmlMake", "none", "OnXml.Make<int>"
+            "Sites", "XmlHolderMake", "none", "XmlHolder<int>.Make<long>"
+        ]
+
     /// The cases PawPrint refuses, the exception the real runtime was measured to raise, and text
     /// PawPrint's refusal must contain.
     let private refused : (string * string * string * string * string) list =
@@ -250,7 +276,7 @@ public static class Program
 
     [<Test>]
     let ``The real runtime answers as measured`` () : unit =
-        let cases = answered @ List.init refused.Length refusedCase
+        let cases = answered @ firstTouch @ List.init refused.Length refusedCase
 
         match realRuntime (checkArgs cases) with
         | 0 -> ()
@@ -291,3 +317,16 @@ public static class Program
         exn.Message |> shouldContainText (expected.TrimStart '!')
         exn.Message |> shouldContainText refusal
         exn.Message |> shouldContainText $"0x%08x{token}"
+
+    [<TestCase 0>]
+    [<TestCase 1>]
+    let ``PawPrint resolves a MethodSpec on a class whose base is in an unloaded assembly`` (index : int) : unit =
+        let typeName, methodName, context, expected = firstTouch.[index]
+
+        match underPawPrint $"ModuleResolveMethodSpecFirstTouch%d{index}" (checkArgs [ firstTouch.[index] ]) with
+        | RunOutcome.NormalExit (terminalState, _, _)
+        | RunOutcome.ProcessExit (terminalState, _, _) ->
+            if terminalState.LatchedExitCode <> 0 then
+                failwith
+                    $"%s{typeName}.%s{methodName}'s MethodSpec in context %s{context}: the real runtime answers %s{expected}; PawPrint does not"
+        | other -> failwith $"expected the guest to exit, got %A{other}"
