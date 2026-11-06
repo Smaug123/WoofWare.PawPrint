@@ -66,7 +66,7 @@ module internal LocalValues =
     /// `values` says is on the stack where it stores to them. A local whose address the body never
     /// takes is left out, as is any offset no path reaches.
     let analyse
-        (body : MethodInstructions<'methodVars>)
+        (body : MethodInstructions)
         (types : PrimitiveType option list)
         (values : StackFlow<StackValue>)
         : LocalValues

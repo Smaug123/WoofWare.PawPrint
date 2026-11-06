@@ -142,12 +142,7 @@ module TestFabricatedIntrinsicWithoutIl =
 
     /// The fabricated method `typeName::methodName` as PawPrint reads it, and whether PawPrint
     /// classifies it as `[Intrinsic]`.
-    let private readAndClassify
-        (image : byte[])
-        (typeName : string)
-        (methodName : string)
-        : MethodBody<TypeDefn> * bool
-        =
+    let private readAndClassify (image : byte[]) (typeName : string) (methodName : string) : MethodBody * bool =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         use stream = new MemoryStream (image)

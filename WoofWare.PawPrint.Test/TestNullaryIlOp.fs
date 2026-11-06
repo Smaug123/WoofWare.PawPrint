@@ -97,7 +97,7 @@ module TestNullaryIlOp =
             )
             |> fst
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             { MethodInstructions.onlyRet () with
                 Instructions = laidOut
                 Locations = laidOut |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
@@ -137,6 +137,7 @@ module TestNullaryIlOp =
                     state.TypeSystem._LoadedAssemblies
                     corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None

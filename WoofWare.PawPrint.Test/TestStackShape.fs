@@ -19,11 +19,7 @@ module TestStackShape =
     /// A body from a list of instructions laid out consecutively from offset 0. Branch operands
     /// in the list are *absolute target offsets*, translated here into the relative deltas the
     /// opcodes carry, so a test can name its targets by the offset of the instruction they land on.
-    let private layOut
-        (regions : ExceptionRegion list)
-        (ops : IlOp list)
-        : MethodInstructions<TypeDefn> * Map<int, int>
-        =
+    let private layOut (regions : ExceptionRegion list) (ops : IlOp list) : MethodInstructions * Map<int, int> =
         let offsets =
             ops
             |> List.scan (fun offset op -> offset + IlOp.NumberOfBytes op) 0
@@ -81,7 +77,7 @@ module TestStackShape =
         Assembly.readFile (LoggerFactory.makeTest () |> snd) HostImage.coreLibPath
 
     /// Analyse, and fail if any reachable instruction could not be typed.
-    let private analyseOrFail (inputs : StackShapeInputs) (body : MethodInstructions<TypeDefn>) : StackShape =
+    let private analyseOrFail (inputs : StackShapeInputs) (body : MethodInstructions) : StackShape =
         let shape = StackShape.analyse inputs body
 
         if not shape.Invalid.IsEmpty then
@@ -116,7 +112,7 @@ module TestStackShape =
         (regions : ExceptionRegion list)
         (ops : IlOp list)
         (branches : (int * int) list)
-        : MethodInstructions<TypeDefn> * Map<int, int>
+        : MethodInstructions * Map<int, int>
         =
         let _, at = layOut [] ops
 
@@ -1359,7 +1355,7 @@ module TestStackShape =
         )
 
     /// `COND; brtrue A; ldc.r4; br J; A: ldc.r8; J: pop; ret`, with `COND` the listed instructions.
-    let private literalJoin (condition : IlOp list) : MethodInstructions<TypeDefn> * Map<int, int> * int * int =
+    let private literalJoin (condition : IlOp list) : MethodInstructions * Map<int, int> * int * int =
         let ops =
             condition
             @ [
@@ -2010,7 +2006,7 @@ module TestStackShape =
     let private layOutStatements
         (folded : Set<int>)
         (statements : Statement list)
-        : MethodInstructions<TypeDefn> * Map<int, int> * Map<int, TokenShape>
+        : MethodInstructions * Map<int, int> * Map<int, TokenShape>
         =
         let opsOf (index : int) (statement : Statement) : IlOp list =
             match statement with

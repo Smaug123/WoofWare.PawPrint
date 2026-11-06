@@ -437,6 +437,7 @@ public sealed class MethodSignatureHost
                     fixture.BaseClassTypes.Corelib
                     signatureInitMethod
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     methodArgs
                     None
             with
@@ -1037,6 +1038,7 @@ public sealed class MethodSignatureHost
                     state.TypeSystem._LoadedAssemblies
                     fixture.BaseClassTypes.Corelib
                     signatureInitMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     methodArgs
                     None

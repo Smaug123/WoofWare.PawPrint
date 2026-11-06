@@ -307,6 +307,7 @@ module internal ProgramStartup =
                 else
                     ImmutableArray.Empty
 
+            // The placeholder's body is a bare `ret`, which declares no locals.
             match
                 MethodState.Empty
                     state.TypeSystem.ConcreteTypes
@@ -314,6 +315,7 @@ module internal ProgramStartup =
                     state.TypeSystem._LoadedAssemblies
                     dumped
                     concretizedMainMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     placeholderArgs
                     None
@@ -412,9 +414,14 @@ module internal ProgramStartup =
                 failwith
                     "logic error: initial loadClass for entry point cannot block on another thread (no other threads exist yet)"
 
-        /// Put `Main` on the entry thread, to be given `mainArgs`, once class initialisation
-        /// has returned.
-        let installMain (mainArgs : ImmutableArray<CliType>) (state : IlMachineState) : IlMachineState =
+        /// Put `Main`, whose locals are `localTypes`, on the entry thread, to be given
+        /// `mainArgs`, once class initialisation has returned.
+        let installMain
+            (localTypes : ImmutableArray<ConcreteTypeHandle>)
+            (mainArgs : ImmutableArray<CliType>)
+            (state : IlMachineState)
+            : IlMachineState
+            =
             logger.LogInformation "Main method class now initialised"
 
             // Now that BCL initialisation has taken place and the user-code classes are constructed,
@@ -430,6 +437,7 @@ module internal ProgramStartup =
                         dumped
                         concretizedMainMethod
                         ImmutableArray.Empty
+                        localTypes
                         mainArgs
                         None
                 with
@@ -489,7 +497,12 @@ module internal ProgramStartup =
             (state : IlMachineState)
             : IlMachineState * StartupPhase
             =
-            loadInitialState state, StartupPhase.InitialisingClasses (installMain mainArgs, entry.Returns)
+            // CoreCLR compiles Main, loading what its locals name, before the entry type's
+            // `.cctor` runs, so the `.cctor` already sees those assemblies.
+            let state, localTypes =
+                ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretizedMainMethod state
+
+            loadInitialState state, StartupPhase.InitialisingClasses (installMain localTypes mainArgs, entry.Returns)
 
         let atPhase (state : IlMachineState) (phase : StartupPhase) : RunningProgram =
             {

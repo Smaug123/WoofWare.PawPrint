@@ -452,6 +452,7 @@ public sealed class GenericHolder<T>
                     fixture.Corelib
                     fixture.NativeMethod
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     (ImmutableArray.CreateRange args)
                     None
             with

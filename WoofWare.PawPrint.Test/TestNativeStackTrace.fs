@@ -294,6 +294,7 @@ public static class Entry
                     method
                     ImmutableArray.Empty
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     (Some returnState)
             with
             | Ok frame -> frame
@@ -348,6 +349,7 @@ public static class Entry
                     state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     // Placeholders: `MethodState.Empty` checks only the count, and this frame is
                     // never executed — it exists to be walked.
@@ -426,6 +428,7 @@ public static class Entry
                     state.TypeSystem._LoadedAssemblies
                     baseClassTypes.Corelib
                     method
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     ImmutableArray.Empty
                     (Some returnState)

@@ -155,6 +155,9 @@ module HostStartupCall =
 
         let concretized, declaringType = BindingStop.bound concretizedResult
 
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretized state
+
         match
             MethodState.Empty
                 state.TypeSystem.ConcreteTypes
@@ -163,6 +166,7 @@ module HostStartupCall =
                 baseClassTypes.Corelib
                 concretized
                 ImmutableArray.Empty
+                localTypes
                 args
                 None
         with

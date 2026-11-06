@@ -217,6 +217,9 @@ public static class Caller
 
         let concretizedMethod, _declaringType = BindingResult.value concretizedMethodResult
 
+        let state, localTypes =
+            ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes concretizedMethod state
+
         let methodState =
             match
                 MethodState.Empty
@@ -226,6 +229,7 @@ public static class Caller
                     assembly
                     concretizedMethod
                     ImmutableArray.Empty
+                    localTypes
                     ImmutableArray.Empty
                     None
             with

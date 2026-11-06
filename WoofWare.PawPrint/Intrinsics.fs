@@ -1954,6 +1954,39 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> advanceCaller
             |> IntrinsicResult.Completed
+        | CorelibAssembly, "Math", "Log" when
+            intrinsicKey.DeclaringTypeFullName = "System.Math"
+            && intrinsicKey.ParameterShapes = [ "System.Double" ]
+            ->
+            // As with `Math.Pow` above: `[Intrinsic]` + `MethodImplOptions.InternalCall` with
+            // no IL body, lowered by the JIT to the platform C library's `log`.
+            // https://github.com/dotnet/runtime/blob/4271d88e0aebf3d04f188f1334c2220d80555ef6/src/coreclr/System.Private.CoreLib/src/System/Math.CoreCLR.cs#L75-L77
+            //
+            // `log` is not correctly rounded by mainstream libms either, so the host's is
+            // deliberately not what we call; `DeterministicMath.log` computes it from integer
+            // arithmetic alone.
+            //
+            // The guard on `ParameterShapes` keeps this arm off `Math.Log(double, double)`,
+            // which is neither `[Intrinsic]` nor `InternalCall`: it has an ordinary IL body that
+            // divides two calls to this one, and runs as managed code.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.TypeSystem.ConcreteTypes ],
+              MethodReturnType.Returns (ConcreteDouble state.TypeSystem.ConcreteTypes) -> ()
+            | _ -> failwith $"Math.Log: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
+                | _ -> failwith $"Math.Log: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.log argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> advanceCaller
+            |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared the same way as the three above -- `[Intrinsic]` +
             // `MethodImplOptions.InternalCall`, no IL body -- so it likewise has no IL to run.

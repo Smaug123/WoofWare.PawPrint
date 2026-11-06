@@ -453,7 +453,7 @@ module StackShapeTokens =
         (assembly : DumpedAssembly)
         (binding : GenericBinding)
         (offsets : Set<int>)
-        (body : MethodInstructions<'methodVars>)
+        (body : MethodInstructions)
         : Map<int, TokenShape>
         =
         body.Instructions
