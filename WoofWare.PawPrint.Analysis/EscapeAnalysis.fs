@@ -187,6 +187,11 @@ type internal CallSite =
     /// instruction to a call of, such as a cast's `CastHelpers` method. The analysis does not take
     /// what the instruction leaves on the stack to be what the method returns.
     | Runtime of Callee
+    /// An `[UnmanagedCallersOnly]` method of CoreLib's that a native method calls through
+    /// `InvokeThrowing` (`VmCall.InvokeThrowing`), in place of the native's body: what the method's
+    /// catch and filter clauses catch, it hands back, and that escapes here too, as the VM throws it
+    /// again.
+    | InvokeThrowing of Callee
 
 /// A query whose answer the types it names decide, in an instance that says what they are.
 [<RequireQualifiedAccess>]
@@ -587,6 +592,10 @@ type internal InstanceCalls =
         Undecided : (int * Opacity * MethodKey option) list
         /// What the runtime runs outside the body (`OutsideBodyFact.Runs`), past all its handlers.
         Outside : MethodInstance list
+        /// Of `Callees`, each `[UnmanagedCallersOnly]` method the instance calls through
+        /// `InvokeThrowing` (`CallSite.InvokeThrowing`), whose handlers' catches escape at the
+        /// offset too.
+        HandsBack : (int * MethodInstance) list
         /// Of `Outside`, what the runtime runs for what compiling the body raises wherever the JIT
         /// compiles its code (`LocalFacts.RaisedWhereInlined`).
         RaisedWhereInlined : MethodInstance list
@@ -964,8 +973,8 @@ module EscapeAnalysis =
 
     /// The CoreLib method a native method calls (`NativeContract.Runs`), and what it passes: the one
     /// of its name taking an argument per one the call spells. A CoreLib may declare others of the
-    /// name, as .NET 11's declares an `UnmanagedCallersOnly` overload of
-    /// `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, which its VM calls instead.
+    /// name, as .NET 11's declares two `DynamicInterfaceCastableHelpers.IsInterfaceImplemented`, of
+    /// which its VM calls the `[UnmanagedCallersOnly]` one.
     let private nativeCall (state : EscapeAnalysisState) (call : ManagedCall) : MethodKey * SpelledArgument list =
         let corelib = state.BaseTypes.Corelib
 
@@ -1003,8 +1012,12 @@ module EscapeAnalysis =
     /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
     /// name (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
     let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
-        nativeCall state (NativeCall.resolve state.Runtime NativeCall.ResourceMessage)
-        |> fst
+        match NativeCall.resolve state.Runtime NativeCall.ResourceMessage with
+        | VmCall.Direct call -> nativeCall state call |> fst
+        // TODO: the VM hands back what this method catches and throws it again, which the
+        // methods an exception's making runs (`runtimeRaisesNamed`) cannot yet say, so what the
+        // lookup raises is hidden in its handler.
+        | VmCall.InvokeThrowing call -> nativeCall state call |> fst
 
     /// Whether the analysis's caller allows `assumption`.
     let internal allows (state : EscapeAnalysisState) (assumption : Assumption) : bool =
@@ -1012,7 +1025,7 @@ module EscapeAnalysis =
 
     /// The managed code a native method calls (`NativeContract.Runs`), and what it passes.
     let internal nativeCallee (state : EscapeAnalysisState) (call : NativeCall) : MethodKey * SpelledArgument list =
-        nativeCall state (NativeCall.resolve state.Runtime call)
+        nativeCall state (NativeCall.resolve state.Runtime call).Target
 
     /// The one static method of CoreLib's `ns.typeName` of this name that takes `arity` arguments.
     let private corelibStatic
@@ -4038,7 +4051,7 @@ module EscapeAnalysis =
         let contracted
             (raised : ThrownType list)
             (assumed : Assumption list)
-            (runs : (MethodKey * SpelledArgument list) list)
+            (runs : (CallSite * SpelledArgument list) list)
             : LocalFacts
             =
             {
@@ -4046,7 +4059,7 @@ module EscapeAnalysis =
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
                 Relies = []
-                Calls = runs |> List.map (fun (method, passes) -> 0, runtimeRuns method, passes)
+                Calls = runs |> List.map (fun (site, passes) -> 0, site, passes)
                 ConstrainedPointers = []
                 Rethrows = []
                 Regions = []
@@ -4073,28 +4086,55 @@ module EscapeAnalysis =
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
 
             state,
-            contracted (List.map fst raised) [] (raised |> List.collect snd |> List.map (fun method -> method, []))
+            contracted
+                (List.map fst raised)
+                []
+                (raised |> List.collect snd |> List.map (fun method -> runtimeRuns method, []))
         | Runs.Native native ->
             let contract = NativeMethod.contract native
 
             // CoreCLR makes each exception a native raises by running its parameterless constructor
             // (`EEException::CreateThrowable`).
             let constructors =
-                contract.Raises |> List.collect (fun name -> vmConstructs state name)
+                contract.Raises
+                |> List.collect (fun name -> vmConstructs state name)
+                |> List.map (fun (method, passes) -> runtimeRuns method, passes)
+
+            let calls =
+                contract.Runs
+                |> List.collect (fun call ->
+                    let method, passes = nativeCallee state call
+
+                    match NativeCall.resolve state.Runtime call with
+                    | VmCall.Direct _ -> [ runtimeRuns method, passes ]
+                    // The VM throws what the method hands back again, which first preserves its
+                    // stack trace (`RealCOMPlusThrow`).
+                    | VmCall.InvokeThrowing _ ->
+                        [
+                            CallSite.InvokeThrowing
+                                {
+                                    Callee = method
+                                    Spelling = CalleeSpelling.Fixed
+                                },
+                            passes
+                            runtimeRuns (preserveStackTrace state), []
+                        ]
+                )
 
             state,
             contracted
                 (exactly contract.Raises)
                 (contract.Assumes |> List.map Assumption.ofNative)
-                (constructors @ List.map (nativeCallee state) contract.Runs)
+                (constructors @ calls)
         | Runs.ResourceLookup ->
             // A type initializer it runs may fail, and throwing that one's own exception again
             // preserves its stack trace.
-            state, contracted (exactly ResourceLookup.raises) [] [ preserveStackTrace state, [] ]
+            state, contracted (exactly ResourceLookup.raises) [] [ runtimeRuns (preserveStackTrace state), [] ]
         | Runs.ObjectGetType ->
             let constructors =
                 ObjectGetType.constructs state.Runtime
                 |> List.collect (fun name -> vmConstructs state name)
+                |> List.map (fun (method, passes) -> runtimeRuns method, passes)
 
             // It returns the object's `RuntimeType`, never null.
             let runtimeType = corelibType state "System" "RuntimeType"
@@ -4118,7 +4158,8 @@ module EscapeAnalysis =
                 (exactly (Assumption.raises assumption))
                 [ assumption ]
                 (Assumption.constructs assumption
-                 |> List.collect (fun name -> vmConstructs state name))
+                 |> List.collect (fun name -> vmConstructs state name)
+                 |> List.map (fun (method, passes) -> runtimeRuns method, passes))
         | Runs.Il (body, selfCall) ->
 
         // CoreCLR converts the method's own signature for the JIT before anything else of it
@@ -7431,7 +7472,8 @@ module EscapeAnalysis =
                                     | CallSite.Runtime callee -> not (excluded.Contains (offset, callee.Callee))
                                     | CallSite.Direct _
                                     | CallSite.Constrained _
-                                    | CallSite.Virtual _ -> true
+                                    | CallSite.Virtual _
+                                    | CallSite.InvokeThrowing _ -> true
                                 )
                         }
 
@@ -7488,7 +7530,8 @@ module EscapeAnalysis =
                                 | CallSite.Runtime callee -> not (excluded.Contains (offset, callee.Callee))
                                 | CallSite.Direct _
                                 | CallSite.Constrained _
-                                | CallSite.Virtual _ -> true
+                                | CallSite.Virtual _
+                                | CallSite.InvokeThrowing _ -> true
                             )
                     }
 
@@ -7889,7 +7932,8 @@ module EscapeAnalysis =
                 facts.Calls
                 |> List.tryFind (fun (offset, site, _) ->
                     match site with
-                    | CallSite.Runtime _ -> false
+                    | CallSite.Runtime _
+                    | CallSite.InvokeThrowing _ -> false
                     | CallSite.Direct _
                     | CallSite.Constrained _
                     | CallSite.Virtual _ -> offset = call
@@ -7897,7 +7941,8 @@ module EscapeAnalysis =
 
             match made with
             | None -> state, None
-            | Some (_, CallSite.Runtime ran, _) ->
+            | Some (_, CallSite.Runtime ran, _)
+            | Some (_, CallSite.InvokeThrowing ran, _) ->
                 failwith $"BUG: looking for the call at %d{call}, the search found %O{ran.Callee}, which it skips"
             | Some (_, CallSite.Direct callee, passes) ->
                 let state, reached = calleeInstance state assembly instance.Arguments callee
@@ -8110,7 +8155,8 @@ module EscapeAnalysis =
                     let state, reached = passedTo state Set.empty instance facts passes None reached
 
                     reaching offset reached (state, callees, raises, undecided)
-                | CallSite.Runtime callee ->
+                | CallSite.Runtime callee
+                | CallSite.InvokeThrowing callee ->
                     let state, reached = calleeInstance state assembly instance.Arguments callee
                     let state, reached = passedTo state Set.empty instance facts passes None reached
                     reaching offset reached (state, callees, raises, undecided)
@@ -8171,12 +8217,29 @@ module EscapeAnalysis =
         let state, outside = runs state facts.OutsideBody
         let state, raisedWhereInlined = runs state facts.RaisedWhereInlined
 
+        // Each method called through `InvokeThrowing`, as the call reaches it: what `reaching`
+        // put among the callees at that offset for that method.
+        let handsBack =
+            facts.Calls
+            |> List.collect (fun (offset, site, _) ->
+                match site with
+                | CallSite.InvokeThrowing callee ->
+                    callees
+                    |> List.filter (fun (at, reached) -> at = offset && reached.Definition = callee.Callee)
+                | CallSite.Direct _
+                | CallSite.Runtime _
+                | CallSite.Constrained _
+                | CallSite.Virtual _ -> []
+            )
+            |> List.distinct
+
         state,
         {
             Callees = List.rev callees
             Raises = List.rev raises
             Undecided = List.rev undecided
             Outside = List.rev outside
+            HandsBack = handsBack
             RaisedWhereInlined = List.rev raisedWhereInlined
         }
 
@@ -8211,6 +8274,133 @@ module EscapeAnalysis =
         | ExceptionRegion.Filter (_, o)
         | ExceptionRegion.Finally o
         | ExceptionRegion.Fault o -> o
+
+    /// What `clause`, a clause of `key`'s body, catches of what its protected block raises past the
+    /// clauses the runtime tries first, as a `rethrow` in its handler would re-raise it: given what
+    /// each callee lets escape (`summaryOf`), and what each `rethrow` of the body re-raises, by its
+    /// offset (`rethrows`).
+    let private caughtBy
+        (state : EscapeAnalysisState)
+        (key : MethodInstance)
+        (summaryOf : MethodInstance -> Escapes)
+        (rethrows : Map<int, Set<Raised>>)
+        (clause : ExceptionRegion)
+        : EscapeAnalysisState * Set<Raised>
+        =
+        let facts = state.InstanceFacts.[key]
+        let calls = state.InstanceCalls.[key]
+        let assembly = assemblyOf state key.Definition.AssemblyFullName
+        let o = protectedBy clause
+
+        let inside (at : int) =
+            at >= o.TryOffset && at < o.TryOffset + o.TryLength
+
+        let raised =
+            [
+                for at, thrown in facts.Raises @ calls.Raises do
+                    if inside at then
+                        yield at, Raised.Named thrown
+                for at, _, _ in facts.Opaque @ calls.Undecided do
+                    if inside at then
+                        yield at, Raised.Unnamed
+                for at, assumption in facts.Assumed do
+                    if inside at then
+                        yield at, Raised.Assumed (assumption, None)
+                for at, callee in calls.Callees do
+                    if inside at then
+                        let calleeEscapes = summaryOf callee
+
+                        for thrown in calleeEscapes.Types do
+                            yield at, Raised.Named thrown
+
+                        if calleeEscapes.Unknown then
+                            yield at, Raised.Unnamed
+
+                        for assumption in calleeEscapes.Assumes do
+                            yield at, Raised.Assumed (assumption, None)
+                for KeyValue (at, rethrownThere) in rethrows do
+                    if inside at then
+                        for thrown in rethrownThere do
+                            yield at, thrown
+            ]
+            |> List.distinct
+
+        // The clauses the runtime tries before this one.
+        let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
+
+        ((state, Set.empty), raised)
+        ||> List.fold (fun (state, here) (at, raised) ->
+            let thrown =
+                match raised with
+                | Raised.Named thrown -> Some thrown
+                | Raised.Unnamed -> None
+                | Raised.Assumed (_, narrowed) -> narrowed
+
+            match escapesHandlers state assembly before at thrown with
+            | state, false -> state, here
+            | state, true ->
+                match raised, rethrownBy state assembly clause thrown with
+                | _, (state, Rethrown.Nothing) -> state, here
+                // What arises only if an assumption fails is caught only then, as the clause
+                // narrows it.
+                | Raised.Assumed (assumption, _), (state, Rethrown.Thrown thrown) ->
+                    state, Set.add (Raised.Assumed (assumption, Some thrown)) here
+                | Raised.Assumed (assumption, _), (state, Rethrown.Unknown) ->
+                    state, Set.add (Raised.Assumed (assumption, None)) here
+                | _, (state, Rethrown.Thrown thrown) -> state, Set.add (Raised.Named thrown) here
+                | _, (state, Rethrown.Unknown) -> state, Set.add Raised.Unnamed here
+        )
+
+    /// What each `rethrow` in `key`'s body re-raises, by its offset, given what its callees let
+    /// escape (`summaryOf`): what its clause caught (`caughtBy`). That clause's protected block may
+    /// hold another `rethrow`, in a nested handler or in the protected block of a clause nested in
+    /// a handler, so the rethrows depend on each other; they are solved together, to the least
+    /// fixed point.
+    let private rethrownIn
+        (state : EscapeAnalysisState)
+        (key : MethodInstance)
+        (summaryOf : MethodInstance -> Escapes)
+        : EscapeAnalysisState * Map<int, Set<Raised>>
+        =
+        let facts = state.InstanceFacts.[key]
+
+        let rec solve
+            (state : EscapeAnalysisState)
+            (current : Map<int, Set<Raised>>)
+            : EscapeAnalysisState * Map<int, Set<Raised>>
+            =
+            let state, next =
+                ((state, Map.empty), facts.Rethrows)
+                ||> List.fold (fun (state, next) (offset, clause) ->
+                    let state, here = caughtBy state key summaryOf current clause
+                    state, Map.add offset here next
+                )
+
+            if next = current then state, current else solve state next
+
+        solve state (facts.Rethrows |> List.map (fun (offset, _) -> offset, Set.empty) |> Map.ofList)
+
+    /// What `key`'s catch and filter clauses catch (`caughtBy`), given what its callees let escape
+    /// (`summaryOf`): what it hands back, where its handlers hand back all they catch, as an
+    /// `[UnmanagedCallersOnly]` method the VM calls through `InvokeThrowing` does.
+    let private handedBackBy
+        (state : EscapeAnalysisState)
+        (key : MethodInstance)
+        (summaryOf : MethodInstance -> Escapes)
+        : EscapeAnalysisState * Set<Raised>
+        =
+        let state, rethrows = rethrownIn state key summaryOf
+
+        ((state, Set.empty), state.InstanceFacts.[key].Regions)
+        ||> List.fold (fun (state, handedBack) clause ->
+            match clause with
+            | ExceptionRegion.Catch _
+            | ExceptionRegion.Filter _ ->
+                let state, caught = caughtBy state key summaryOf rethrows clause
+                state, Set.union handedBack caught
+            | ExceptionRegion.Finally _
+            | ExceptionRegion.Fault _ -> state, handedBack
+        )
 
     /// <summary>
     /// What may escape `method`, and the state to ask the next question of.
@@ -8251,106 +8441,6 @@ module EscapeAnalysis =
         let escapesAt (state : EscapeAnalysisState) (key : MethodInstance) (offset : int) (thrown : ThrownType option) =
             let facts = state.InstanceFacts.[key]
             escapesHandlers state (assemblyOf state key.Definition.AssemblyFullName) facts.Regions offset thrown
-
-        // What each `rethrow` in `key`'s body re-raises, given what its callees let escape: what
-        // its clause caught of what the clause's protected block raised. That block may hold
-        // another `rethrow`, in a nested handler or in the protected block of a clause nested in
-        // a handler, so the rethrows depend on each other; they are solved together, to the least
-        // fixed point.
-        let rethrown
-            (state : EscapeAnalysisState)
-            (key : MethodInstance)
-            (summaryOf : MethodInstance -> Escapes)
-            : EscapeAnalysisState * (int * Raised) list
-            =
-            let facts = state.InstanceFacts.[key]
-            let calls = state.InstanceCalls.[key]
-            let assembly = assemblyOf state key.Definition.AssemblyFullName
-
-            let rec solve
-                (state : EscapeAnalysisState)
-                (current : Map<int, Set<Raised>>)
-                : EscapeAnalysisState * Map<int, Set<Raised>>
-                =
-                let state, next =
-                    ((state, Map.empty), facts.Rethrows)
-                    ||> List.fold (fun (state, next) (offset, clause) ->
-                        let o = protectedBy clause
-
-                        let inside (at : int) =
-                            at >= o.TryOffset && at < o.TryOffset + o.TryLength
-
-                        let raised =
-                            [
-                                for at, thrown in facts.Raises @ calls.Raises do
-                                    if inside at then
-                                        yield at, Raised.Named thrown
-                                for at, _, _ in facts.Opaque @ calls.Undecided do
-                                    if inside at then
-                                        yield at, Raised.Unnamed
-                                for at, assumption in facts.Assumed do
-                                    if inside at then
-                                        yield at, Raised.Assumed (assumption, None)
-                                for at, callee in calls.Callees do
-                                    if inside at then
-                                        let calleeEscapes = summaryOf callee
-
-                                        for thrown in calleeEscapes.Types do
-                                            yield at, Raised.Named thrown
-
-                                        if calleeEscapes.Unknown then
-                                            yield at, Raised.Unnamed
-
-                                        for assumption in calleeEscapes.Assumes do
-                                            yield at, Raised.Assumed (assumption, None)
-                                for KeyValue (at, rethrownThere) in current do
-                                    if inside at then
-                                        for thrown in rethrownThere do
-                                            yield at, thrown
-                            ]
-                            |> List.distinct
-
-                        // The clauses the runtime tries before this one.
-                        let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
-
-                        let state, here =
-                            ((state, Set.empty), raised)
-                            ||> List.fold (fun (state, here) (at, raised) ->
-                                let thrown =
-                                    match raised with
-                                    | Raised.Named thrown -> Some thrown
-                                    | Raised.Unnamed -> None
-                                    | Raised.Assumed (_, narrowed) -> narrowed
-
-                                match escapesHandlers state assembly before at thrown with
-                                | state, false -> state, here
-                                | state, true ->
-                                    match raised, rethrownBy state assembly clause thrown with
-                                    | _, (state, Rethrown.Nothing) -> state, here
-                                    // What arises only if an assumption fails is re-raised only then,
-                                    // as the clause narrows it.
-                                    | Raised.Assumed (assumption, _), (state, Rethrown.Thrown thrown) ->
-                                        state, Set.add (Raised.Assumed (assumption, Some thrown)) here
-                                    | Raised.Assumed (assumption, _), (state, Rethrown.Unknown) ->
-                                        state, Set.add (Raised.Assumed (assumption, None)) here
-                                    | _, (state, Rethrown.Thrown thrown) -> state, Set.add (Raised.Named thrown) here
-                                    | _, (state, Rethrown.Unknown) -> state, Set.add Raised.Unnamed here
-                            )
-
-                        state, Map.add offset here next
-                    )
-
-                if next = current then state, current else solve state next
-
-            let state, solved =
-                solve state (facts.Rethrows |> List.map (fun (offset, _) -> offset, Set.empty) |> Map.ofList)
-
-            state,
-            [
-                for KeyValue (offset, rethrownHere) in solved do
-                    for thrown in rethrownHere do
-                        yield offset, thrown
-            ]
 
         let seedOf (state : EscapeAnalysisState) (key : MethodInstance) : EscapeAnalysisState * Escapes =
             let facts = state.InstanceFacts.[key]
@@ -8566,10 +8656,26 @@ module EscapeAnalysis =
                         (escaping, calls.Outside)
                         ||> List.fold (fun acc callee -> Escapes.union acc (summaryOf callee))
 
-                    let state, rethrows = rethrown state key summaryOf
+                    let state, rethrows = rethrownIn state key summaryOf
+
+                    let rethrows =
+                        [
+                            for KeyValue (offset, rethrownHere) in rethrows do
+                                for thrown in rethrownHere do
+                                    yield offset, thrown
+                        ]
+
+                    // What each method called through `InvokeThrowing` hands back, which the VM
+                    // throws again at the call.
+                    let state, handedBack =
+                        ((state, []), calls.HandsBack)
+                        ||> List.fold (fun (state, handedBack) (offset, called) ->
+                            let state, caught = handedBackBy state called summaryOf
+                            state, (caught |> Seq.map (fun raised -> offset, raised) |> List.ofSeq) @ handedBack
+                        )
 
                     let state, escaping =
-                        ((state, escaping), rethrows)
+                        ((state, escaping), rethrows @ handedBack)
                         ||> List.fold (fun (state, acc) (offset, raised) ->
                             match raised with
                             | Raised.Named thrown when not (acc.Types.Contains thrown) ->
@@ -8627,6 +8733,38 @@ module EscapeAnalysis =
 
         state, state.Summaries.[root]
 
+    /// What `method`'s catch and filter clauses catch of what their protected blocks raise, and the
+    /// state to ask the next question of: what it hands back, where its handlers hand back all they
+    /// catch, as an `[UnmanagedCallersOnly]` method the VM calls through `InvokeThrowing` does.
+    let internal handedBack (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Escapes =
+        let state, _ = escapes state method
+
+        let state, caught =
+            handedBackBy state (rootOf state method) (fun key -> state.Summaries.[key])
+
+        state,
+        {
+            Types =
+                caught
+                |> Seq.choose (fun raised ->
+                    match raised with
+                    | Raised.Named thrown -> Some thrown
+                    | Raised.Unnamed
+                    | Raised.Assumed _ -> None
+                )
+                |> Set.ofSeq
+            Unknown = caught.Contains Raised.Unnamed
+            Assumes =
+                caught
+                |> Seq.choose (fun raised ->
+                    match raised with
+                    | Raised.Assumed (assumption, _) -> Some assumption
+                    | Raised.Named _
+                    | Raised.Unnamed -> None
+                )
+                |> Set.ofSeq
+        }
+
     /// Where `unknownSources` looks for something the analysis cannot name.
     [<RequireQualifiedAccess>]
     type private UnnamedAt =
@@ -8636,6 +8774,9 @@ module EscapeAnalysis =
         | Rethrown of MethodInstance * offset : int
         /// Escaping every method this instance is inlined into, past all handlers.
         | Inlined of MethodInstance
+        /// Handed back by this instance, which a native calls through `InvokeThrowing`: caught by
+        /// one of its catch or filter clauses.
+        | HandedBack of MethodInstance
 
     /// <summary>
     /// The places that make the answer of <c>escapes state method</c> unknown, and the state to ask
@@ -8698,6 +8839,8 @@ module EscapeAnalysis =
                  |> List.map (fun (offset, callee) -> offset, UnnamedAt.Escaping callee))
                 @ (facts.Rethrows
                    |> List.map (fun (offset, _) -> offset, UnnamedAt.Rethrown (key, offset)))
+                @ (calls.HandsBack
+                   |> List.map (fun (offset, called) -> offset, UnnamedAt.HandedBack called))
 
             let state, onward =
                 ((state, []), onward)
@@ -8777,6 +8920,36 @@ module EscapeAnalysis =
                         reaching state key before (fun at -> at >= o.TryOffset && at < o.TryOffset + o.TryLength)
                     | state, Rethrown.Nothing
                     | state, Rethrown.Thrown _ -> state, [], []
+                | UnnamedAt.HandedBack key ->
+                    let facts = state.InstanceFacts.[key]
+                    let assembly = assemblyOf state key.Definition.AssemblyFullName
+
+                    // What a clause catches of what its protected block raised past the clauses the
+                    // runtime tries first, and that unnamed only where the clause does not narrow
+                    // it.
+                    ((state, [], []), facts.Regions)
+                    ||> List.fold (fun (state, sites, onward) clause ->
+                        match clause with
+                        | ExceptionRegion.Finally _
+                        | ExceptionRegion.Fault _ -> state, sites, onward
+                        | ExceptionRegion.Catch _
+                        | ExceptionRegion.Filter _ ->
+                            match rethrownBy state assembly clause None with
+                            | state, Rethrown.Unknown ->
+                                let o = protectedBy clause
+                                let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
+
+                                let state, caughtSites, caughtOnward =
+                                    reaching
+                                        state
+                                        key
+                                        before
+                                        (fun at -> at >= o.TryOffset && at < o.TryOffset + o.TryLength)
+
+                                state, caughtSites @ sites, caughtOnward @ onward
+                            | state, Rethrown.Nothing
+                            | state, Rethrown.Thrown _ -> state, sites, onward
+                    )
 
             walk state (onward @ rest) (visited.Add next) (Set.union sources (Set.ofList sites))
 

@@ -1362,6 +1362,20 @@ public static class SR
         |> Seq.exactlyOne
         |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
 
+    /// `corelib`'s one method that `call` names, of its name and taking an argument per one it
+    /// spells.
+    let private methodTaking (corelib : DumpedAssembly) (call : ManagedCall) : MethodKey =
+        corelib.Methods
+        |> Seq.filter (fun (KeyValue (_, method)) ->
+            method.Name = call.Method
+            && (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length = call.Arguments.Length
+            && TypeInfo.fullName
+                (fun h -> corelib.TypeDefs.[h])
+                corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get] = call.DeclaringType
+        )
+        |> Seq.exactlyOne
+        |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
     /// The architecture the framework under test's JIT compiles for.
     let private hostTarget () : JitTarget =
         match Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
@@ -2328,8 +2342,6 @@ public static class SR
 
     [<Test>]
     let ``the cast helper that stores into an array of references is known, write barrier and all`` () : unit =
-        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
-
         let corelib = hostCoreLib ()
 
         let key =
@@ -2426,7 +2438,8 @@ public static class SR
 
     /// The runtime makes each exception a native raises by running its parameterless constructor,
     /// whose own exceptions escape in its place, and the exceptions of the methods it calls escape
-    /// it too.
+    /// it too: of one it calls through `InvokeThrowing`, what the method hands back as well, and
+    /// what throwing that again runs.
     [<Test>]
     let ``a native method the contract table describes raises what its row says, what making those runs, and what its calls raise``
         ()
@@ -2462,8 +2475,11 @@ public static class SR
         let _ =
             (analysis, tabulated)
             ||> List.fold (fun analysis (key, row) ->
+                let analysis, preserving =
+                    EscapeAnalysis.escapes analysis (internalPreserveStackTrace corelib)
+
                 let analysis, made =
-                    ((analysis, Set.empty), row.Contract.Raises)
+                    ((analysis, []), row.Contract.Raises)
                     ||> List.fold (fun (analysis, made) name ->
                         let analysis, escapes =
                             EscapeAnalysis.escapes
@@ -2471,23 +2487,58 @@ public static class SR
                                 (parameterlessConstructor corelib name.Namespace name.Name)
 
                         escapes.Unknown |> shouldEqual false
-                        analysis, made |> Set.add ("=" + name.FullName) |> Set.union (render analysis escapes)
+                        analysis, escapes :: made
                     )
 
-                let analysis, (made, unknown) =
-                    ((analysis, (made, false)), row.Contract.Runs)
-                    ||> List.fold (fun (analysis, (made, unknown)) call ->
-                        let call = NativeCall.resolve (FrameworkUnderTest.runtime ()) call
+                // On .NET 11 the VM throws what such a constructor raises again, which preserves
+                // its stack trace (`ExceptionMaking.vmMakingRaise`).
+                let made =
+                    match FrameworkUnderTest.runtime (), made with
+                    | EmulatedRuntime.Net10, made
+                    | EmulatedRuntime.Net11, ([] as made) -> made
+                    | EmulatedRuntime.Net11, made -> preserving :: made
 
-                        let analysis, escapes =
-                            EscapeAnalysis.escapes analysis (methodNamed corelib call.DeclaringType call.Method)
-
-                        analysis, (Set.union made (render analysis escapes), unknown || escapes.Unknown)
+                let analysis, ran =
+                    ((analysis, []), row.Contract.Runs)
+                    ||> List.fold (fun (analysis, ran) call ->
+                        match NativeCall.resolve (FrameworkUnderTest.runtime ()) call with
+                        | VmCall.Direct call ->
+                            let analysis, escapes = EscapeAnalysis.escapes analysis (methodTaking corelib call)
+                            analysis, escapes :: ran
+                        | VmCall.InvokeThrowing call ->
+                            // What escapes the method, what it hands back, and what the VM runs on
+                            // that to throw it again.
+                            let key = methodTaking corelib call
+                            let analysis, escapes = EscapeAnalysis.escapes analysis key
+                            let analysis, handedBack = EscapeAnalysis.handedBack analysis key
+                            analysis, escapes :: handedBack :: preserving :: ran
                     )
+
+                let expected = (Escapes.none, made @ ran) ||> List.fold Escapes.union
 
                 let analysis, escapes = EscapeAnalysis.escapes analysis key
-                render analysis escapes |> shouldEqual made
-                escapes.Unknown |> shouldEqual unknown
+
+                render analysis escapes
+                |> shouldEqual (
+                    row.Contract.Raises
+                    |> List.map (fun name -> "=" + name.FullName)
+                    |> Set.ofList
+                    |> Set.union (render analysis expected)
+                )
+
+                escapes.Unknown |> shouldEqual expected.Unknown
+
+                // What the row holds under, and what the native's own body relies on of no thread
+                // being aborted.
+                escapes.Assumes
+                |> shouldEqual (
+                    row.Contract.Assumes
+                    |> List.map Assumption.ofNative
+                    |> Set.ofList
+                    |> Set.add Assumption.NoThreadAborts
+                    |> Set.union expected.Assumes
+                )
+
                 analysis
             )
 
@@ -2506,6 +2557,145 @@ public static class SR
             | EmulatedRuntime.Net11 -> "System.Environment::GetResourceString"
 
         EscapeAnalysis.methodName analysis key |> shouldEqual expected
+
+    /// Methods whose handlers catch what the methods they wrap raise, as an `[UnmanagedCallersOnly]`
+    /// method the VM calls through `InvokeThrowing` hands back what it catches.
+    let private handBackSource =
+        """
+using System;
+
+namespace HandBack;
+
+public class Mine : Exception { }
+public class Other : Exception { }
+
+public interface IAsked { void Ask(); }
+
+public static class Wrapped
+{
+    public static void ThrowsMine() => throw new Mine();
+
+    public static void ThrowsEither(bool mine)
+    {
+        if (mine) throw new Mine();
+        throw new Other();
+    }
+
+    public static Exception Made() => new Mine();
+
+    public static void ThrowsMade() => throw Made();
+
+    public static void Asks(IAsked asked) => asked.Ask();
+
+    public static void Nothing() { }
+}
+
+public static class Wrappers
+{
+    public static void ThrowsMine(ref Exception slot)
+    {
+        try { Wrapped.ThrowsMine(); } catch (Exception e) { slot = e; }
+    }
+
+    public static void ThrowsEither(bool mine, ref Exception slot)
+    {
+        try { Wrapped.ThrowsEither(mine); } catch (Exception e) { slot = e; }
+    }
+
+    public static void ThrowsMade(ref Exception slot)
+    {
+        try { Wrapped.ThrowsMade(); } catch (Exception e) { slot = e; }
+    }
+
+    public static void Asks(IAsked asked, ref Exception slot)
+    {
+        try { Wrapped.Asks(asked); } catch (Exception e) { slot = e; }
+    }
+
+    public static void Nothing(ref Exception slot)
+    {
+        try { Wrapped.Nothing(); } catch (Exception e) { slot = e; }
+    }
+
+    public static void Filters(bool mine, ref Exception slot)
+    {
+        try { Wrapped.ThrowsEither(mine); } catch (Exception e) when (e.Data != null) { slot = e; }
+    }
+
+    public static void CatchesMine(bool mine, ref Exception slot)
+    {
+        try { Wrapped.ThrowsEither(mine); } catch (Mine e) { slot = e; }
+    }
+
+    public static void CatchesNothing(bool mine, ref Exception slot)
+    {
+        Wrapped.ThrowsEither(mine);
+    }
+}
+
+public static class Unguarded
+{
+    public static void ThrowsMine(ref Exception slot) { Wrapped.ThrowsMine(); }
+
+    public static void ThrowsEither(bool mine, ref Exception slot) { Wrapped.ThrowsEither(mine); }
+
+    public static void ThrowsMade(ref Exception slot) { Wrapped.ThrowsMade(); }
+
+    public static void Asks(IAsked asked, ref Exception slot) { Wrapped.Asks(asked); }
+
+    public static void Nothing(ref Exception slot) { Wrapped.Nothing(); }
+}
+"""
+
+    /// What a method's catch and filter clauses catch is what their protected blocks raise that the
+    /// clauses admit: where a clause admits every exception, exactly what escapes a method whose
+    /// body is its block (`Unguarded`).
+    [<Test>]
+    let ``what a method hands back is what its handlers catch of what their protected blocks raise`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let fixture =
+            Roslyn.compileOptimizedAssembly "HandBack" OutputKind.DynamicallyLinkedLibrary [ handBackSource ]
+            |> fun image -> Assembly.read loggerFactory (Some "HandBack.dll") (new MemoryStream (image))
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let escapesOf (typeName : string) (name : string) : Escapes =
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture typeName name)
+
+            analysis <- next
+            escapes
+
+        let handedBackBy (name : string) : Escapes =
+            let next, handedBack =
+                EscapeAnalysis.handedBack analysis (methodNamed fixture "HandBack.Wrappers" name)
+
+            analysis <- next
+            handedBack
+
+        // A clause catching every exception hands back what escapes its block.
+        for name in [ "ThrowsMine" ; "ThrowsEither" ; "ThrowsMade" ; "Asks" ; "Nothing" ] do
+            (name, handedBackBy name)
+            |> shouldEqual (name, escapesOf "HandBack.Unguarded" name)
+
+        // A filter may admit anything.
+        handedBackBy "Filters"
+        |> shouldEqual (escapesOf "HandBack.Unguarded" "ThrowsEither")
+
+        // A clause of a type hands back only what is of it, and the rest escapes.
+        let catchesMine = handedBackBy "CatchesMine"
+        render analysis catchesMine |> shouldEqual (set [ "=HandBack.Mine" ])
+        catchesMine.Unknown |> shouldEqual false
+
+        render analysis (escapesOf "HandBack.Wrappers" "CatchesMine")
+        |> shouldContain "=HandBack.Other"
+
+        // Nor is anything handed back without a clause.
+        handedBackBy "CatchesNothing" |> shouldEqual Escapes.none
+
+        // Asking an object of a class the analysis cannot see is opaque, and so is what it hands back.
+        (handedBackBy "Asks").Unknown |> shouldEqual true
 
     /// Methods that do nothing, or that catch everything their bodies raise.
     let private abortSource =
@@ -2664,8 +2854,6 @@ public static class Cases
 
     [<Test>]
     let ``every cast helper the JIT calls is seen through, the throwing ones raising InvalidCastException`` () : unit =
-        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
-
         let corelib = hostCoreLib ()
 
         let analysis =
@@ -2706,8 +2894,6 @@ public static class Cases
 
     [<Test>]
     let ``a cast helper's fallback is hidden without either assumption it relies on`` () : unit =
-        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
-
         let corelib = hostCoreLib ()
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
@@ -3080,8 +3266,6 @@ public static class Cases
 
     [<Test>]
     let ``a store into an array of references relies on what the cast helpers' fallback does`` () : unit =
-        Net11Frontier.park Net11Frontier.castFallbackThroughUnmanagedCallersOnly
-
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let fixture =
@@ -16840,18 +17024,6 @@ public static class Runners
 
             Set.unionMany (List.map fst shown), Set.unionMany (List.map snd shown)
 
-        // These reach the cast helpers' fallback, which the analysis cannot see through on .NET 11.
-        let parked =
-            match FrameworkUnderTest.runtime () with
-            | EmulatedRuntime.Net10 -> Set.empty
-            | EmulatedRuntime.Net11 ->
-                set
-                    [
-                        "BoxIsinstDisposableBrfalse"
-                        "CallsBoxTCastDisposableShared"
-                        "CallsBoxTCastEquatableShared"
-                    ]
-
         let analysisFailures =
             [
                 for name, refused in refusals do
@@ -16879,11 +17051,7 @@ public static class Runners
 
                     let fails = not (Set.isSubset opaque madeOpaque) || shownRefusals shown <> expected
 
-                    if parked.Contains name then
-                        if not fails then
-                            yield
-                                $"%s{name} is parked on this runtime (`Net11Frontier.castFallbackThroughUnmanagedCallersOnly`), and passes: un-park it"
-                    elif fails then
+                    if fails then
                         yield
                             $"%s{name}: %A{Set.toList shown}, opaque at %A{Set.toList opaque}; expected %A{Set.toList expected} of the refusals, and nothing opaque beyond making it"
             ]

@@ -8,10 +8,13 @@
 #   returns  returns, or never
 #   result   none (not a reference), nonnull, or maybenull
 #   runs     the CoreLib methods it can call, whose exceptions escape it, separated by |; - for none. Each is
-#            Namespace.Type::Method(arguments), the only method of that name its type declares, with one
-#            argument per parameter, this first, separated by commas: ? for a value the row does not name;
-#            or ResourceMessage, CoreCLR's lookup of a resource string by name (ResMgrGetString), which calls
-#            .NET 10's Environment.GetResourceStringLocal(?) and .NET 11's Environment.GetResourceString(?,?,?)
+#            Namespace.Type::Method(arguments), the only method of that name taking that many arguments its type
+#            declares, with one argument per parameter, this first, separated by commas: ? for a value the row
+#            does not name; or InvokeThrowing(Namespace.Type::Method(arguments)), an UnmanagedCallersOnly method
+#            the VM calls through UnmanagedCallersOnlyCaller::InvokeThrowing, whose last argument is the slot for
+#            what it hands back, which the VM throws again; or ResourceMessage, CoreCLR's lookup of a resource
+#            string by name (ResMgrGetString), which calls .NET 10's Environment.GetResourceStringLocal(?) and
+#            .NET 11's Environment.GetResourceString(?,?,?) through InvokeThrowing
 #   assumes  the claims all the above holds under, separated by |; - for none. NamedTypesLoad: every type it loads is found without the program's assembly resolution handlers, is intact, and is defined as its name says; MetadataWellFormed: the metadata of every loaded image is well formed, so no metadata reader fails, and none of the exceptions CoreCLR makes of a reader's failing HRESULT arises
 #   sources  path:symbol under src/coreclr, each a function or assembly routine the file defines, separated by |, the function it is bound to first;
 #            a QCall that vm/qcallentrypoints.cpp binds to the C library's function of its name cites it first as -:symbol
@@ -37,6 +40,7 @@ FCall	System.Buffer::BulkMoveWithWriteBarrierInternal	-	returns	none	-	-	vm/comu
 InstanceFCall	System.Runtime.CompilerServices.MethodTable::GetNumInstanceFieldBytes	-	returns	none	-	-	vm/comutilnative.cpp:MethodTableNative::GetNumInstanceFieldBytes	Reads the size of the type's instance fields from its method table.
 InstanceFCall	System.Runtime.CompilerServices.MethodTable::GetPrimitiveCorElementType	-	returns	none	-	-	vm/comutilnative.cpp:MethodTableNative::GetPrimitiveCorElementType	Reads the element type of a primitive or an enum from its EEClass.
 InstanceFCall	System.Runtime.CompilerServices.MethodTable::InstantiationArg0	-	returns	none	-	-	vm/comutilnative.cpp:MethodTableNative::InstantiationArg0	Reads the method table of the type's first type argument from its instantiation.
+QCall	IsInstanceOf_NoCacheLookup	System.InvalidCastException|System.OutOfMemoryException	returns	none	InvokeThrowing(System.Runtime.InteropServices.DynamicInterfaceCastableHelpers::IsInterfaceImplemented(?,?,?,?,?))	NamedTypesLoad	vm/jithelpers.cpp:IsInstanceOf_NoCacheLookup|vm/jithelpers.cpp:ObjIsInstanceOfCore|vm/dynamicinterfacecastable.cpp:DynamicInterfaceCastable::IsInstanceOf|vm/dynamicinterfacecastable.cpp:CallIsInterfaceImplemented|vm/methodtable.cpp:MethodTable::CanCastTo|vm/methodtable.cpp:MethodTable::ArrayIsInstanceOf|vm/methodtable.cpp:MethodTable::ArraySupportsBizarreInterface|vm/methodtable.cpp:MethodTable::CanCastToClass|vm/methodtable.cpp:MethodTable::CanCastToInterface|vm/typedesc.cpp:TypeDesc::CanCastParam|vm/methodtable.cpp:MethodTable::CanCastByVarianceToInterfaceOrDelegate|vm/methodtable.cpp:MethodTable::ImplementsEquivalentInterface|vm/typehandle.cpp:TypeHandle::IsBoxedAndCanCastTo|vm/typehandle.cpp:TypeHandle::CanCastTo|vm/typedesc.cpp:TypeDesc::CanCastTo|md/runtime/mdinternalro.cpp:MDInternalRO::GetGenericParamProps|md/enc/mdinternalrw.cpp:MDInternalRW::GetGenericParamProps	Decides whether the object can be cast to the type by its type's base types, interfaces, array element types and variant type arguments, recording the answer in the cast cache; asks an object of a class implementing IDynamicInterfaceCastable through the UnmanagedCallersOnly DynamicInterfaceCastableHelpers.IsInterfaceImplemented, making the interface's RuntimeType, which can run out of memory; loads a generic parameter's constraints only where the type is an open one, as reflection may pass it; and throws InvalidCastException where asked to and the cast fails.
 QCall	ThrowInvalidCastException	System.InvalidCastException|System.OutOfMemoryException	never	none	-	-	vm/jithelpers.cpp:ThrowInvalidCastException	Throws an InvalidCastException whose message it formats from the two types' names, which can run out of memory.
 QCall	memmove	-	returns	none	-	-	-:memmove	Copies the bytes by the C library's memmove, which reports no failure.
 QCall	memset	-	returns	none	-	-	-:memset	Fills the bytes by the C library's memset, which reports no failure.
