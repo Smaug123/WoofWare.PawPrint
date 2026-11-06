@@ -48,6 +48,7 @@
     <Compile Include="TestArrayShapeGuard.fs" />
     <Compile Include="TestMemberResolutionMemo.fs" />
     <Compile Include="TestFrameSetupMemo.fs" />
+    <Compile Include="TestMethodConcretisationLocals.fs" />
     <Compile Include="TestTypeofIsValueTypeFold.fs" />
     <Compile Include="TestPersistentVector.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
@@ -386,6 +387,7 @@
     <Compile Include="TestFabricatedClassSlotMethodImpl.fs" />
     <Compile Include="TestFabricatedMethodImplBodyLookup.fs" />
     <Compile Include="TestFabricatedTypicalMethodToken.fs" />
+    <Compile Include="TestFabricatedMethodImplAncestorSearch.fs" />
     <Compile Include="TestFabricatedConstrainedEnumRetarget.fs" />
     <Compile Include="TestFabricatedWrappedEnumStore.fs" />
     <Compile Include="TestFabricatedUnimplementedInterface.fs" />
@@ -428,6 +430,7 @@
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestEmitScopeImage.fs" />
     <Compile Include="TestEmitScopeExtension.fs" />
+    <Compile Include="TestEmitScopeReferences.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />

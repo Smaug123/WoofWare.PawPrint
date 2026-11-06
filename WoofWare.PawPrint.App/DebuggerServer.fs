@@ -1163,9 +1163,9 @@ module DebuggerServer =
                 writer.WriteBoolean ("localsInit", instructions.LocalsInit)
 
                 let locals =
-                    match instructions.LocalVars with
-                    | None -> Array.empty
-                    | Some locals -> locals |> Seq.mapi (fun i localType -> i, localType) |> Seq.toArray
+                    frame.LocalVariableTypes
+                    |> Seq.mapi (fun i localType -> i, localType)
+                    |> Seq.toArray
 
                 writeValueArray writer "locals" locals (fun writer local -> writeLocalType writer state local)
 

@@ -971,25 +971,25 @@ module MethodTableLayout =
     /// A MethodDef declaration needs no comparison: the row *is* the identity, and `Placed` is keyed
     /// on it. All 36 of corelib's class-declaration rows are of this kind.
     ///
-    /// A MemberRef declaration is resolved against the ancestor it names, its signature compared in
-    /// that ancestor's *own, open* vocabulary with nominal tokens resolved against whichever assembly
-    /// spelled them. That is `CompareMethodSigs` as `FindDeclMethodOnClassInHierarchy` calls it for
-    /// the named type: no substitution for the declaration, and one that is still empty for the
-    /// candidate.
+    /// A MemberRef declaration is resolved as `FindDeclMethodOnClassInHierarchy` resolves it: against
+    /// every method the ancestor it names introduces, then against the virtual methods of each
+    /// ancestor above that, nearest first, its signature compared in the named ancestor's *own,
+    /// open* vocabulary with nominal tokens resolved against whichever assembly spelled them. The
+    /// first level with a match supplies the slot. A non-virtual match at the named ancestor is
+    /// unmodelled `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL`, and no match anywhere is
+    /// `MethodImplDeclarationAbsent`.
     ///
     /// Three departures from upstream, each of which a caller can observe.
     ///
-    /// It **reports as unmodelled** a declaration the named ancestor declares no virtual match for,
-    /// where an ancestor above it declares a virtual method of the same name. Upstream would go on to
-    /// search that ancestor's own bases, so a MemberRef naming `B` can legally resolve to a method `A`
-    /// introduced; PawPrint does not, and no framework assembly needs it (measured: see
-    /// `DeclarationTarget`). Where no virtual above the named ancestor bears the name, the outcome is
-    /// upstream's: `MethodImplDeclarationAbsent` when the named ancestor declares nothing matching
-    /// either, and unmodelled `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` when it declares a match non-virtually.
+    /// It **refuses** when more than one declaration of the named ancestor matches. Comparing in the
+    /// open vocabulary means that can only be one type declaring the same name and signature twice,
+    /// which ECMA-335 II.22.26 forbids; upstream would take the first in `IntroducedMethodIterator`
+    /// order.
     ///
-    /// It **refuses** when more than one declaration matches. Comparing in the open vocabulary means
-    /// that can only be one type declaring the same name and signature twice, which ECMA-335 II.22.26
-    /// forbids; upstream would take the first in `IntroducedMethodIterator` order.
+    /// It **reports as unmodelled** more than one match at a level above the named ancestor. That is
+    /// legal: `A&lt;T&gt;` declaring `M(T)` and `M(string)`, named through `B : A&lt;string&gt;`, has
+    /// both read as `M(string)`. Upstream takes the first in `IntroducedMethodIterator` order, which
+    /// follows how the MethodDescs were chunked rather than metadata order.
     ///
     /// It **accepts** an ancestor named at an instantiation this type does not derive from --
     /// `.override B&lt;int32&gt;::M` from a `C : B&lt;string&gt;` -- where upstream refuses with
@@ -1104,60 +1104,74 @@ module MethodTableLayout =
                 else
                     $"%s{namedTypeInfo.Namespace}.%s{namedTypeInfo.Name}"
 
-            // Only the named ancestor is searched. Upstream's `FindDeclMethodOnClassInHierarchy`
-            // searches the named type together with its own bases; that is not implemented because no
-            // test here can reach it -- `DefineMethodOverride` resolves the `MethodInfo` it is given to
-            // the type that *declares* the method, so a declaration naming a type which merely
-            // inherits it needs a hand-assembled image -- and shipping an untested substitution walk is
-            // worse than reporting, as below, which slots the row leaves unknown.
-            let candidates =
-                table.Placed
-                |> List.filter (fun (slot, _) ->
-                    slot.DeclaredBy.Identity = namedIdentity
-                    && slot.Method.Name = memberRef.PrettyName
-                )
-
-            // Both signatures are compared in the named ancestor's *own, open* vocabulary: its type
-            // variables are left standing on both sides, while nominal tokens are resolved against
-            // whichever assembly spelled them.
+            // `FindDeclMethodOnClassInHierarchy` (methodtablebuilder.cpp:6003-6112) searches the named
+            // ancestor and then each of its own bases, nearest first. It compares each level's
+            // signatures in the named ancestor's *own, open* vocabulary: `CompareMethodSigs` gets
+            // `NULL` as the declaration's substitution and, as the candidate's, a chain that starts
+            // empty at the named type and grows by one extends clause per level climbed. The named
+            // ancestor's own table holds exactly that: every slot of its chain, rebased into its
+            // vocabulary. So the search reads that table, and only maps the slot it finds back into
+            // this type's.
             //
-            // That is upstream's comparison, and the shape of it matters. `CompareMethodSigs` is
-            // handed `NULL` as the declaration's substitution and `pDeclTypeSubstitution` as the
-            // candidate's, and `pDeclTypeSubstitution` begins as `emptySubstitution` -- it only
-            // accumulates as the search climbs *above* the named type. So for the named type itself
-            // neither side is substituted. The two passes the loop makes differ only in
-            // `AdjustForTypeEquivalenceForbiddenScope`, which is COM type equivalence and which
-            // PawPrint does not model at all, so they collapse into this one.
-            //
-            // Comparing under the *closed* instantiation instead would be wrong in a way that looks
-            // harmless: with an ancestor declaring `M(T)` and `M(string)` and closed at `string`, both
-            // substitute to `M(string)` and tie, where upstream sees `M(!0)` match only the first.
-            // A tie invented that way cannot then be broken, because what distinguished the two has
-            // been substituted away.
+            // Comparing in this type's *closed* vocabulary instead would be wrong in a way that looks
+            // harmless: with an ancestor declaring `M(T)` and `M(string)` and closed at `string`,
+            // both substitute to `M(string)` and tie, where upstream sees `M(!0)` match only the
+            // first. A tie invented that way cannot then be broken, because what distinguished the
+            // two has been substituted away.
             //
             // Resolving tokens per module is the other half, and structural equality of the signature
             // records is not a substitute for it: a nominal type decodes as `FromDefinition` from the
             // ancestor's MethodDef and as `FromReference` from a cross-module MemberRef, so comparing
             // the records directly misses a legal match.
+            //
+            // The two passes upstream makes at each level differ only in
+            // `AdjustForTypeEquivalenceForbiddenScope`, which is COM type equivalence and which PawPrint
+            // does not model at all, so they collapse into one.
+            let rec tableOf (placed : PlacedVtable) : PlacedVtable =
+                if placed.Owner.Identity = namedIdentity then
+                    placed
+                else
+                    match placed.Parent with
+                    | Some parent -> tableOf parent
+                    | None ->
+                        failwith
+                            $"BUG: %s{operation}: %s{namedDescription} is on the chain of %s{table.Owner.Description}, but no table on that chain is its own"
+
+            let namedTable = tableOf table
+
             let openContext =
                 TypeConcretization.SubstitutionContext.forDefinition namedIdentity namedTypeInfo.Generics.Length
 
-            let ctx, matches =
+            let declarationComparand : TypeConcretization.SignatureComparand =
+                {
+                    Signature = signature
+                    AssemblyFullName = table.Owner.AssemblyFullName
+                    DeclaringTypeGenerics = openContext
+                }
+
+            // The slots `level` itself declares that match the declaration, in the named ancestor's
+            // vocabulary. `Placed` holds only instance virtuals, which is all upstream compares above
+            // the named ancestor; at the named ancestor it compares non-virtuals too, below.
+            let matchesAt
+                (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+                (level : ResolvedTypeIdentity)
+                : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+                  Result<(VtableSlot * int) list, TypeBindingFailure>
+                =
+                let candidates =
+                    namedTable.Placed
+                    |> List.filter (fun (slot, _) ->
+                        slot.DeclaredBy.Identity = level && slot.Method.Name = memberRef.PrettyName
+                    )
+
                 ([], candidates)
                 ||> StateResult.fold
                         (fun ctx acc (slot, index) ->
-                            let declarationComparand : TypeConcretization.SignatureComparand =
-                                {
-                                    Signature = signature
-                                    AssemblyFullName = table.Owner.AssemblyFullName
-                                    DeclaringTypeGenerics = openContext
-                                }
-
                             let candidateComparand : TypeConcretization.SignatureComparand =
                                 {
                                     Signature = slot.Method.Signature
                                     AssemblyFullName = slot.DeclaredBy.AssemblyFullName
-                                    DeclaringTypeGenerics = openContext
+                                    DeclaringTypeGenerics = slot.DeclaredBy.Substitution
                                 }
 
                             signaturesEquivalent
@@ -1173,101 +1187,33 @@ module MethodTableLayout =
                                 |> Result.map (fun equivalent -> if equivalent then (slot, index) :: acc else acc)
                         )
                         ctx
+                |> fun (ctx, matches) -> ctx, matches |> Result.map List.rev
 
-            match matches with
-            | Error failure -> ctx, Error failure
-            | Ok matches ->
-
-            match matches with
-            | [ single ] -> ctx, Ok (DeclarationTarget.Names single)
-            | [] ->
-                // Upstream's search (`FindDeclMethodOnClassInHierarchy`, methodtablebuilder.cpp:6033-6110)
-                // goes on from the named ancestor to its own bases, so a MemberRef naming `B` can
-                // legally resolve to a method `A` introduced. Above the named ancestor it compares only
-                // virtual methods, by name first (`strcmp`, :6066) and then by signature under a
-                // substitution PawPrint does not build. So the row names nothing exactly when no virtual
-                // above the named ancestor bears the name; `Placed` holds every such virtual.
-                let virtualOfNameAbove =
-                    let above =
-                        // `Chain` runs derived-first, so the named ancestor's own bases are the suffix
-                        // after it.
-                        table.Chain
-                        |> List.skipWhile (fun (identity, _) -> identity <> parentIdentity)
-                        |> List.skip 1
-                        |> List.map fst
-                        |> Set.ofList
-
+            // The slot found, as this type's own table holds it. A slot an ancestor placed keeps its
+            // index all the way down (`CopyParentVtable`, methodtablebuilder.cpp:1143).
+            let named (found : VtableSlot, index : int) : DeclarationTarget =
+                let ownSlot =
                     table.Placed
-                    |> List.exists (fun (slot, _) ->
-                        slot.Method.Name = memberRef.PrettyName
-                        && Set.contains slot.DeclaredBy.Identity above
+                    |> List.tryFind (fun (slot, _) ->
+                        slot.DeclaredBy.Identity = found.DeclaredBy.Identity
+                        && slot.Method.IdentityKey = found.Method.IdentityKey
                     )
 
-                if virtualOfNameAbove then
-                    ctx,
-                    Error (
-                        TypeBindingFailure.Unmodelled
-                            {
-                                Diagnostic =
-                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares %i{List.length candidates} virtual method(s) of that name, none with an equivalent signature, and an ancestor above it declares a virtual method of that name; resolving it needs the search MethodTableBuilder::FindDeclMethodOnClassInHierarchy makes of the named ancestor's own bases, which PawPrint does not implement"
-                            }
-                    )
-                else
+                match ownSlot with
+                | Some (slot, ownIndex) when ownIndex = index -> DeclarationTarget.Names (slot, ownIndex)
+                | Some (_, ownIndex) ->
+                    failwith
+                        $"BUG: %s{operation}: %s{found.Method.Name} of %s{found.DeclaredBy.Description} is at slot %i{index} of %s{namedDescription} but at slot %i{ownIndex} of %s{table.Owner.Description}, though a placed slot keeps its index in every descendant"
+                | None ->
+                    failwith
+                        $"BUG: %s{operation}: %s{found.Method.Name} of %s{found.DeclaredBy.Description} is placed in %s{namedDescription}'s table but not in that of its descendant %s{table.Owner.Description}"
 
-                // At the named ancestor itself upstream compares non-virtual methods too, and finding
-                // one is `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:5977-5980). Its second pass, permitting COM
-                // type equivalence, can match nothing here, because PawPrint models no type as
-                // equivalent to another.
-                let nonVirtuals =
-                    namedTypeInfo.Methods
-                    |> List.filter (fun method -> not method.IsVirtual && method.Name = memberRef.PrettyName)
+            let ctx, atNamed = matchesAt ctx namedIdentity
 
-                let ctx, nonVirtualMatch =
-                    (false, nonVirtuals)
-                    ||> StateResult.fold
-                            (fun ctx found method ->
-                                if found then
-                                    ctx, Ok true
-                                else
-                                    signaturesEquivalent
-                                        loggerFactory
-                                        dotnetRuntimeDirs
-                                        ctx
-                                        false
-                                        {
-                                            Signature = signature
-                                            AssemblyFullName = table.Owner.AssemblyFullName
-                                            DeclaringTypeGenerics = openContext
-                                        }
-                                        {
-                                            Signature = method.Signature
-                                            AssemblyFullName = namedIdentity.AssemblyFullName
-                                            DeclaringTypeGenerics = openContext
-                                        }
-                            )
-                            ctx
-
-                match nonVirtualMatch with
-                | Error failure -> ctx, Error failure
-                | Ok true ->
-                    ctx,
-                    Error (
-                        TypeBindingFailure.Unmodelled
-                            {
-                                Diagnostic =
-                                    $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares only non-virtually; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL), which is not modelled"
-                            }
-                    )
-                | Ok false ->
-                    let miss : MethodImplDeclarationMiss =
-                        {
-                            Type = table.Owner.Identity
-                            Declaration = handle
-                            Name = memberRef.PrettyName
-                        }
-
-                    ctx, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
-            | several ->
+            match atNamed with
+            | Error failure -> ctx, Error failure
+            | Ok [ single ] -> ctx, Ok (named single)
+            | Ok (_ :: _ :: _ as several) ->
                 // Comparing in the open vocabulary means two candidates can only tie by declaring the
                 // same name and the same signature, which ECMA-335 II.22.26 forbids. Upstream would
                 // take the first in `IntroducedMethodIterator` order; refusing says the image is
@@ -1279,6 +1225,91 @@ module MethodTableLayout =
 
                 failwith
                     $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which the named ancestor declares more than once with the same signature (%s{described}); ECMA-335 II.22.26 forbids a type repeating a method signature"
+            | Ok [] ->
+
+            // At the named ancestor itself upstream compares non-virtual methods too, before climbing,
+            // and finding one is `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` (:5977-5980) even when a virtual
+            // above would have matched.
+            let nonVirtuals =
+                namedTypeInfo.Methods
+                |> List.filter (fun method -> not method.IsVirtual && method.Name = memberRef.PrettyName)
+
+            let ctx, nonVirtualMatch =
+                (false, nonVirtuals)
+                ||> StateResult.fold
+                        (fun ctx found method ->
+                            if found then
+                                ctx, Ok true
+                            else
+                                signaturesEquivalent
+                                    loggerFactory
+                                    dotnetRuntimeDirs
+                                    ctx
+                                    false
+                                    declarationComparand
+                                    {
+                                        Signature = method.Signature
+                                        AssemblyFullName = namedIdentity.AssemblyFullName
+                                        DeclaringTypeGenerics = openContext
+                                    }
+                        )
+                        ctx
+
+            match nonVirtualMatch with
+            | Error failure -> ctx, Error failure
+            | Ok true ->
+                ctx,
+                Error (
+                    TypeBindingFailure.Unmodelled
+                        {
+                            Diagnostic =
+                                $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName}, which %s{namedDescription} declares only non-virtually; CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MUSTBEVIRTUAL), which is not modelled"
+                        }
+                )
+            | Ok false ->
+
+            // `Chain` runs derived-first, so the named ancestor's own bases follow it, nearest first.
+            let rec climb
+                (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+                (levels : ResolvedTypeIdentity list)
+                : TypeConcretization.ConcretizationContext<DumpedAssembly> *
+                  Result<DeclarationTarget, TypeBindingFailure>
+                =
+                match levels with
+                | [] ->
+                    let miss : MethodImplDeclarationMiss =
+                        {
+                            Type = table.Owner.Identity
+                            Declaration = handle
+                            Name = memberRef.PrettyName
+                        }
+
+                    ctx, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss)
+                | level :: above ->
+                    match matchesAt ctx level with
+                    | ctx, Error failure -> ctx, Error failure
+                    | ctx, Ok [] -> climb ctx above
+                    | ctx, Ok [ single ] -> ctx, Ok (named single)
+                    | ctx, Ok several ->
+                        // Distinct declarations of one ancestor can coincide once read in the named
+                        // ancestor's vocabulary: `A<T>` declaring `M(T)` and `M(string)`, named through
+                        // `B : A<string>`. Upstream takes the first in `IntroducedMethodIterator` order,
+                        // which follows how the MethodDescs were chunked rather than metadata order.
+                        let described =
+                            several
+                            |> List.map (fun (slot, index) -> $"%s{slot.Method.Name} at slot %i{index}")
+                            |> String.concat ", "
+
+                        ctx,
+                        Error (
+                            TypeBindingFailure.Unmodelled
+                                {
+                                    Diagnostic =
+                                        $"%s{operation}: MethodImpl on %s{table.Owner.Description} declares an override of %s{memberRef.PrettyName} through %s{namedDescription}, and several methods of one of its ancestors match it once read in that type's vocabulary (%s{described}); CoreCLR takes the first in MethodTableBuilder's IntroducedMethodIterator order, which is not modelled"
+                                }
+                        )
+
+            climb ctx (namedTable.Chain |> List.map fst |> List.tail)
         | other ->
             failwith
                 $"%s{operation}: MethodImpl on %s{table.Owner.Description} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"

@@ -235,7 +235,7 @@ module StackFlow =
 
     /// The successors of every instruction in the body's flow graph, including those of an
     /// instruction control never reaches, which CoreCLR's importer still puts in its graph.
-    let private flowGraphOf (body : MethodInstructions<'methodVars>) : Map<int, int list> =
+    let private flowGraphOf (body : MethodInstructions) : Map<int, int list> =
         body.Instructions
         |> List.map (fun (instruction, offset) -> offset, targetsOf offset instruction)
         |> Map.ofList
@@ -243,7 +243,7 @@ module StackFlow =
     /// The offsets at which the importer starts a basic block: the entry, every branch target,
     /// every handler entry, and the instruction after a conditional branch or `switch`. A value
     /// arriving at one of these is a spill temp to the importer, not a constant.
-    let private leadersOf (body : MethodInstructions<'methodVars>) : Set<int> =
+    let private leadersOf (body : MethodInstructions) : Set<int> =
         let fromInstructions =
             body.Instructions
             |> List.collect (fun (instruction, offset) ->
@@ -338,7 +338,7 @@ module StackFlow =
     /// substitutes a constant a caller passes into an inlinee only for an argument that is
     /// neither (`impInlineFetchArg`, whose `argHasStargOp` and `argHasLdargaOp` come from a scan
     /// of the whole body).
-    let private modifiableArguments (body : MethodInstructions<'methodVars>) : Set<int> =
+    let private modifiableArguments (body : MethodInstructions) : Set<int> =
         body.Instructions
         |> List.choose (fun (instruction, _) ->
             match instruction with
@@ -363,7 +363,7 @@ module StackFlow =
     let private foldableBranchesOf
         (lattice : SlotLattice<'slot>)
         (inputs : StackEffectInputs)
-        (body : MethodInstructions<'methodVars>)
+        (body : MethodInstructions)
         : Set<int>
         =
         let leaders = leadersOf body
@@ -476,7 +476,7 @@ module StackFlow =
 
     /// The locals whose address the body takes anywhere, through which anything it runs may store
     /// to them at any time after.
-    let private addressedLocals (body : MethodInstructions<'methodVars>) : Set<int> =
+    let private addressedLocals (body : MethodInstructions) : Set<int> =
         body.Instructions
         |> List.choose (fun (instruction, _) ->
             match instruction with
@@ -488,7 +488,7 @@ module StackFlow =
 
     /// The locals some `finally` or `fault` handler of the body stores to, which may run between a
     /// `leave` and its target.
-    let private cleanupStores (body : MethodInstructions<'methodVars>) : Set<int> =
+    let private cleanupStores (body : MethodInstructions) : Set<int> =
         let handlers =
             body.ExceptionRegions
             |> Seq.choose (fun region ->
@@ -513,7 +513,7 @@ module StackFlow =
     /// The offsets control can reach from the method's entry or a handler entry, following
     /// branches, fall-through and `leave` but not exceptions. A token on an instruction outside
     /// this set need never be read: CoreCLR's importer does not import such code either.
-    let reachable (body : MethodInstructions<'methodVars>) : Set<int> =
+    let reachable (body : MethodInstructions) : Set<int> =
         let seen = System.Collections.Generic.HashSet<int> ()
         let worklist = System.Collections.Generic.Queue<int> ()
 
@@ -606,7 +606,7 @@ module StackFlow =
     let analyse
         (lattice : SlotLattice<'slot>)
         (inputs : StackEffectInputs)
-        (body : MethodInstructions<'methodVars>)
+        (body : MethodInstructions)
         : StackFlow<'slot>
         =
         let locations = body.Locations

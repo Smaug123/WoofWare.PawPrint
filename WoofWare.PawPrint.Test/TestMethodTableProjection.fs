@@ -809,11 +809,24 @@ public unsafe struct PointerWrapper
                 ImmutableArray.Empty
                 objectToString.Signature
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             { MethodInstructions.onlyRet () with
                 Instructions = [ op, 0 ]
                 Locations = Map.empty |> Map.add 0 op
-                LocalVars = if localVars.IsEmpty then None else Some localVars
+                LocalVars =
+                    if localVars.IsEmpty then
+                        None
+                    else
+                        localVars
+                        |> Seq.map (fun handle ->
+                            Concretization.concreteHandleToTypeDefn
+                                bct
+                                handle
+                                state.TypeSystem.ConcreteTypes
+                                state.TypeSystem._LoadedAssemblies
+                        )
+                        |> ImmutableArray.CreateRange
+                        |> Some
             }
 
         let method =
@@ -851,6 +864,7 @@ public unsafe struct PointerWrapper
                     corelib
                     method
                     ImmutableArray.Empty
+                    localVars
                     (ImmutableArray.Create (CliType.ObjectRef None))
                     None
             with

@@ -4,6 +4,8 @@ open System
 open System.Collections.Immutable
 open System.IO
 open System.Reflection
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -548,7 +550,10 @@ module TestLoadedAssemblies =
         // Only a dynamic assembly has a scope.
         let image = dynamicImage "Image"
         let withImage = loaded.WithLoadedAssembly image
-        withImage.TryDynamicScope image.DefinitionFullName |> shouldEqual None
+
+        withImage.TryDynamicScope image.DefinitionFullName
+        |> Option.isNone
+        |> shouldEqual true
 
     [<Test>]
     let ``a scope with no Assembly row is refused`` () : unit =
@@ -785,4 +790,190 @@ module TestLoadedAssemblies =
 
         match thrownBy (fun () -> (loaded.WithLoadedAssembly image).WithCreatedType image.DefinitionFullName first) with
         | None -> Assert.Fail "Expected creating a type of an image from disk to be refused"
+        | Some message -> message |> shouldContainText "not a dynamic assembly"
+
+    /// The reference CoreCLR's emitter makes to `target`.
+    let private requestFor (target : DumpedAssembly) : AssemblyRefRequest =
+        AssemblyRefRequest.ofDefinition (target.PeReader.GetMetadataReader ())
+
+    /// `scope` with the `AssemblyRef` row for `target` and a `TypeRef` named `typeName` through it, as
+    /// `ModuleBuilder_GetTypeRef` adds them.
+    let private referencing
+        (target : DumpedAssembly)
+        (typeName : string)
+        (scope : EmitScope)
+        : AssemblyRefRid * EmitScope
+        =
+        let row, scope = EmitScopeReferences.defineAssemblyRef (requestFor target) scope
+
+        let _, scope =
+            EmitScopeReferences.defineTypeRefByName (ResolutionScope.AssemblyRef row) typeName scope
+
+        row, scope
+
+    /// The reference that the current image of the assembly named `fullName` holds at `row`.
+    let private referenceAt (loaded : LoadedAssemblies) (fullName : string) (row : AssemblyRefRid) : AssemblyReference =
+        (loaded.ByDefinitionName fullName).AssemblyReferences.[MetadataTokens.AssemblyReferenceHandle row.Rid]
+
+    let private resolvesTo (expected : DumpedAssembly) (actual : DumpedAssembly option) : unit =
+        match actual with
+        | None -> Assert.Fail $"Expected the reference to resolve to %s{expected.DefinitionFullName}"
+        | Some actual -> Object.ReferenceEquals (actual, expected) |> shouldEqual true
+
+    [<Test>]
+    let ``a dynamic module's AssemblyRef resolves to the assembly it was emitted for, a dynamic one included``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let loaded, target = registerDynamic (dynamicScope "Target") LoadedAssemblies.empty
+        let image = dynamicImage "Image"
+        let loaded = loaded.WithLoadedAssembly image
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        let toTarget, scope = referencing target "N.T" referrerScope
+        let toImage, scope = referencing image "N.I" scope
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+
+        // Nothing recorded yet: the binder never finds a dynamic assembly.
+        loaded.TryResolveReference (referenceAt loaded name toTarget)
+        |> Option.isNone
+        |> shouldEqual true
+
+        let loaded = loaded.WithAssemblyRefTarget name toTarget target
+        let loaded = loaded.WithAssemblyRefTarget name toImage image
+
+        loaded.TryResolveReference (referenceAt loaded name toTarget)
+        |> resolvesTo target
+
+        loaded.TryResolveReference (referenceAt loaded name toImage) |> resolvesTo image
+
+        // The record outlives a later extension of the scope.
+        let _, scope =
+            EmitScopeReferences.defineTypeRefByName (ResolutionScope.AssemblyRef toTarget) "N.U" scope
+
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+
+        loaded.TryResolveReference (referenceAt loaded name toTarget)
+        |> resolvesTo target
+
+    [<Test>]
+    let ``an AssemblyRef row nothing recorded is bound as the binder binds it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let loaded, target = registerDynamic (dynamicScope "Target") LoadedAssemblies.empty
+        let image = dynamicImage "Image"
+        let loaded = loaded.WithLoadedAssembly image
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        let toTarget, scope = referencing target "N.T" referrerScope
+        let toImage, scope = referencing image "N.I" scope
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+        let loaded = loaded.WithAssemblyRefTarget name toImage image
+
+        loaded.TryResolveReference (referenceAt loaded name toTarget)
+        |> Option.isNone
+        |> shouldEqual true
+
+        loaded.TryResolveReference (referenceAt loaded name toImage) |> resolvesTo image
+
+    [<Test>]
+    let ``every AssemblyRef row emitted for an assembly with a version part of 65535 resolves to it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let target =
+            DynamicAssemblyImage.scope
+                { dynamicParts "Target" with
+                    Version = Version (1, 0, 65535, 0)
+                }
+                Guid.Empty
+
+        let loaded, target = registerDynamic target LoadedAssemblies.empty
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        // The emitter stores the 65535 as 0, so it never finds the row again and adds a second.
+        let first, scope = referencing target "N.T" referrerScope
+        let second, scope = referencing target "N.U" scope
+        second |> shouldNotEqual first
+
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+        let loaded = loaded.WithAssemblyRefTarget name first target
+        let loaded = loaded.WithAssemblyRefTarget name second target
+        loaded.TryResolveReference (referenceAt loaded name first) |> resolvesTo target
+        loaded.TryResolveReference (referenceAt loaded name second) |> resolvesTo target
+
+    [<Test>]
+    let ``an AssemblyRef row recorded twice keeps its first target`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let mscorlib (version : Version) : EmitScope =
+            DynamicAssemblyImage.scope
+                { dynamicParts "mscorlib" with
+                    Version = version
+                }
+                Guid.Empty
+
+        let loaded, first =
+            registerDynamic (mscorlib (Version (4, 0, 0, 0))) LoadedAssemblies.empty
+
+        let loaded, second = registerDynamic (mscorlib (Version (4, 0, 1, 0))) loaded
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        // The emitter does not compare an mscorlib's build, so one row serves both.
+        let toFirst, scope = referencing first "N.T" referrerScope
+        let toSecond, scope = referencing second "N.U" scope
+        toSecond |> shouldEqual toFirst
+
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+        let loaded = loaded.WithAssemblyRefTarget name toFirst first
+        let loaded = loaded.WithAssemblyRefTarget name toSecond second
+        loaded.TryResolveReference (referenceAt loaded name toFirst) |> resolvesTo first
+
+    [<Test>]
+    let ``an AssemblyRef row is recorded only for the assembly it was emitted for`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let loaded, target = registerDynamic (dynamicScope "Target") LoadedAssemblies.empty
+        let loaded, other = registerDynamic (dynamicScope "Other") loaded
+        let referrerScope = dynamicScope "Referrer"
+        let loaded, referrer = registerDynamic referrerScope loaded
+        let name = referrer.DefinitionFullName
+
+        let toTarget, scope = referencing target "N.T" referrerScope
+        let toOther, scope = referencing other "N.O" scope
+        let loaded, _ = loaded.WithEmitScope loggerFactory name scope
+
+        match thrownBy (fun () -> loaded.WithAssemblyRefTarget name toOther target) with
+        | None -> Assert.Fail "Expected a row emitted for another assembly to be refused"
+        | Some message -> message |> shouldContainText "would find"
+
+        match thrownBy (fun () -> loaded.WithAssemblyRefTarget name (AssemblyRefRid 3) target) with
+        | None -> Assert.Fail "Expected a row the scope does not have to be refused"
+        | Some message -> message |> shouldContainText "would find"
+
+        // An assembly of the same identity that the load context does not hold.
+        let unloaded = dynamicImage "Target"
+
+        match thrownBy (fun () -> loaded.WithAssemblyRefTarget name toTarget unloaded) with
+        | None -> Assert.Fail "Expected a target the load context does not hold to be refused"
+        | Some message -> message |> shouldContainText "not the loaded assembly"
+
+        match thrownBy (fun () -> loaded.WithAssemblyRefTarget target.DefinitionFullName toTarget other) with
+        | None -> Assert.Fail "Expected recording a row of a dynamic assembly without that row to be refused"
+        | Some message -> message |> shouldContainText "would find"
+
+        let image = dynamicImage "Image"
+
+        match
+            thrownBy (fun () ->
+                (loaded.WithLoadedAssembly image).WithAssemblyRefTarget image.DefinitionFullName toTarget target
+            )
+        with
+        | None -> Assert.Fail "Expected recording a row of an image from disk to be refused"
         | Some message -> message |> shouldContainText "not a dynamic assembly"
