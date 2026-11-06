@@ -464,7 +464,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value` and the MemberRef of `IThing.get_Value`, it stops in `TypeBuilder.DefineMethodOverride` at `TypeBuilder_DefineMethodImpl`; each stage of the plan takes it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value`, the MemberRef of `IThing.get_Value` and the MethodImpl between them, it stops in `TypeBuilder.CreateType` at `TypeBuilder_SetParentType`; each stage of the plan takes it a QCall further."""
             {
                 FileName = "ModuleBuilderMemberRefTranslatedSignature.cs"
                 ExpectedReturnCode = 0
@@ -1387,8 +1387,11 @@ module TestImpureCases =
         |> List.ofSeq
         |> shouldEqual [ ("", "IThing"), "get_Value" ; ("System", "Object"), "ToString" ]
 
-        let methodDef (rid : int) = MethodDefOrRef.MethodDef (MethodDefRid rid)
-        let memberRef (rid : int) = MethodDefOrRef.MemberRef (MemberRefRid rid)
+        let methodDef (rid : int) =
+            MethodDefOrRef.MethodDef (MethodDefRid rid)
+
+        let memberRef (rid : int) =
+            MethodDefOrRef.MemberRef (MemberRefRid rid)
 
         EmitScope.methodImpls scope
         |> Seq.map (fun row -> row.Class.Rid, row.Body, row.Declaration)
