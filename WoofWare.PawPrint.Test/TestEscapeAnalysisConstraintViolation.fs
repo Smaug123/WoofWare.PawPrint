@@ -2259,13 +2259,29 @@ public unsafe struct S<T> : I<S<delegate*<T, void>[]>> { }
 public static class Cases
 {
     public static int LoadsToken() { System.Type t = typeof(S<int>); return t == null ? 1 : 0; }
+
+    public static int LoadsTokenOnSmallStack()
+    {
+        var thread = new System.Threading.Thread(() => LoadsToken(), 1024 * 1024);
+        thread.Start();
+        thread.Join();
+        return 0;
+    }
 }
 """
 
+        // The host runs `LoadsToken` on a thread of 1 MiB of stack, because the time it takes to
+        // overflow grows much faster than the stack. Measured on .NET 10.0.13 (linux-arm64, idle),
+        // each doubling of the stack from 1 MiB costs four to five times as long: 0.35s at
+        // 1 MiB, 39s at 8 MiB. On the main thread's 8 MiB, CI's loaded x64 runners took from about
+        // a minute to over two, past the oracle's time limit.
+        //
         // The driver ends the process normally only if running the case returns or raises
-        // something it catches. Measured on .NET 10 (eight runs on macOS arm64), the overflow
-        // mostly kills the process by SIGSEGV with nothing on stderr, where the runtime cannot
-        // report it, and otherwise by SIGABRT after reporting it with the frame overflowing.
+        // something it catches. The overflow ends it by SIGABRT after the runtime reports it with
+        // the frame overflowing, or by SIGSEGV with nothing on stderr where the runtime cannot
+        // report it. On the main thread's stack, eight runs of .NET 10 on macOS arm64 mostly ended
+        // by SIGSEGV; on this thread's, every run measured (.NET 10 and 11 on macOS arm64, .NET 10
+        // on linux-arm64) ended by SIGABRT.
         let hostRun =
             let directory =
                 Path.Combine (Path.GetTempPath (), "pawprint-growing-load-" + Path.GetRandomFileName ())
@@ -2274,7 +2290,7 @@ public static class Cases
 
             try
                 let requested = Path.Combine (directory, "cases.txt")
-                File.WriteAllLines (requested, [ "LoadsToken" ])
+                File.WriteAllLines (requested, [ "LoadsTokenOnSmallStack" ])
 
                 RealRuntime.executeConcurrently
                     OracleFrameworks.NetCoreApp
