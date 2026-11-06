@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 // Writes into a string's characters whose outcome CoreCLR gives the same way on every JIT tier.
@@ -29,6 +30,11 @@ class Program
             p[literal.Length] = 'x';
             p[literal.Length] = '\0';
         }
+
+        // Likewise its length.
+        FieldInfo length = typeof(string).GetField("_stringLength", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        length.SetValue(literal, literal.Length);
+        if (literal.Length != 23) return 6;
 
         if (!ReferenceEquals(string.IsInterned(new string('q', 23)), literal)) return 3;
         if (!ReferenceEquals(Literal(), literal)) return 4;
