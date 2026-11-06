@@ -78,7 +78,7 @@ module TestJitImport =
 
     /// The IL for `steps`, in long branch forms so that an instruction's width does not depend on
     /// its target, with the byte offset of each index (and of the end, at index `steps.Length`).
-    let private layOut (steps : Step list) (regions : Region list) : MethodInstructions<TypeDefn> * int[] =
+    let private layOut (steps : Step list) (regions : Region list) : MethodInstructions * int[] =
         let opWith (delta : int -> int) (step : Step) : IlOp =
             match step with
             | Step.Nop -> IlOp.Nullary NullaryIlOp.Nop
@@ -980,7 +980,7 @@ public static class Driver
     /// The prediction for a method's body, given what each capability query answers here.
     let private predict
         (fixture : DumpedAssembly)
-        (body : MethodInstructions<TypeDefn>)
+        (body : MethodInstructions)
         (optimisation : Optimisation)
         : Prediction
         =

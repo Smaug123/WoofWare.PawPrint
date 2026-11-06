@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open WoofWare.PosixKernel
 
 /// Identity of a managed callback the BCL handed System.Native's signal code
@@ -25,6 +26,7 @@ type SignalHandler =
     private
         {
             Method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            LocalTypes : ImmutableArray<ConcreteTypeHandle>
         }
 
     member this.MethodInfo : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
@@ -40,10 +42,23 @@ type SignalHandler =
 
 [<RequireQualifiedAccess>]
 module SignalHandler =
-    let ofMethodInfo (mi : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) : SignalHandler =
+    /// The callback `mi`, whose locals concretise to `localTypes`
+    /// (`ExecutionConcretization.concretizeLocals`). They are concretised when the
+    /// callback is installed rather than when it is called: its frame is pushed by
+    /// `SignalDispatch.poll`, outside any step, where loading an assembly could not
+    /// be announced to an `AppDomain.AssemblyLoad` handler.
+    let ofMethodInfo
+        (mi : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (localTypes : ImmutableArray<ConcreteTypeHandle>)
+        : SignalHandler
+        =
         {
             Method = mi
+            LocalTypes = localTypes
         }
 
     let methodInfo (handler : SignalHandler) : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
         handler.Method
+
+    /// The concrete types of the callback's locals, as `ofMethodInfo` was given them.
+    let localTypes (handler : SignalHandler) : ImmutableArray<ConcreteTypeHandle> = handler.LocalTypes

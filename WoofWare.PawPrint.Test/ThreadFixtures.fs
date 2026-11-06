@@ -54,6 +54,7 @@ module ThreadFixtures =
                 corelib
                 method
                 ImmutableArray.Empty
+                ImmutableArray.Empty
                 (ImmutableArray.Create (CliType.ObjectRef None))
                 None
         with

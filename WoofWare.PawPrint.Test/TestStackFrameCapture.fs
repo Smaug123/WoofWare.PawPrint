@@ -67,7 +67,7 @@ module TestStackFrameCapture =
         let ops : (IlOp * int) list =
             [ IlOp.Nullary NullaryIlOp.Nop, 0 ; IlOp.Nullary NullaryIlOp.Ret, 1 ]
 
-        let instructions : MethodInstructions<ConcreteTypeHandle> =
+        let instructions : MethodInstructions =
             {
                 Instructions = ops
                 Locations = ops |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
@@ -89,6 +89,7 @@ module TestStackFrameCapture =
                 loaded
                 corelib
                 (aMethod ())
+                ImmutableArray.Empty
                 ImmutableArray.Empty
                 (ImmutableArray.Create (CliType.ObjectRef None))
                 None
