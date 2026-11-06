@@ -12,6 +12,12 @@ module NativeRuntimeModuleBuilder =
     /// `mdtTypeRef`, the table byte of a `TypeRef` token.
     let private typeRefTable : int = 0x01
 
+    /// `mdtMemberRef`, the table byte of a `MemberRef` token.
+    let private memberRefTable : int = 0x0A
+
+    /// `mdtTypeSpec`, the table byte of a `TypeSpec` token.
+    let private typeSpecTable : int = 0x1B
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -118,6 +124,103 @@ module NativeRuntimeModuleBuilder =
             state
             |> IlMachineState.pushToEvalStack
                 (CliType.Numeric (CliNumericType.Int32 ((typeRefTable <<< 24) ||| typeRef.Rid)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | "ModuleBuilder_GetMemberRefOfMethodInfo",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeModuleBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System", "RuntimeMethodHandleInternal", methodGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty && methodGenerics.IsEmpty
+            ->
+            let operation = "ModuleBuilder_GetMemberRefOfMethodInfo"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held =
+                match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
+                | Some scope -> scope
+                | None ->
+                    failwith
+                        $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+
+            let tr = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let identity =
+                NativeRuntimeMethodHandle.resolveMetadataIdentityFromArg operation state instruction.Arguments.[2]
+
+            let declaringName = identity.GetAssemblyFullName ()
+
+            let declaring =
+                state.LoadedAssembly declaringName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: %s{declaringName} is not loaded")
+
+            let reader = declaring.PeReader.GetMetadataReader ()
+
+            let definition =
+                reader.GetMethodDefinition (identity.GetMethodDefinitionHandle().Get)
+
+            let name = reader.GetString definition.Name
+            let declaringType = reader.GetTypeDefinition (definition.GetDeclaringType ())
+
+            let described =
+                $"%s{reader.GetString declaringType.Namespace}.%s{reader.GetString declaringType.Name}::%s{name} of %s{declaringName}"
+
+            if declaringName = moduleName then
+                failwith
+                    $"TODO: %s{operation}: a reference from %s{moduleName} to its own method %s{name}, for which CoreCLR hands back the method's MethodDef token; only a created type of the dynamic module has a RuntimeMethodInfo, and TypeBuilder_TermCreateClass is not implemented"
+
+            // An instantiated generic method's reference is to its definition: CoreCLR reads the name
+            // and signature of the MethodDesc's MethodDef. No assembly PawPrint loads is collectible, so
+            // the emitter's collectible-assembly check never applies.
+            let signature = reader.GetBlobContent definition.Signature
+
+            let signature =
+                match EmitScopeReferences.importMethodSignature signature with
+                | MethodSignatureImport.Copied imported -> imported
+                | MethodSignatureImport.NamesTypeByToken ->
+                    failwith
+                        $"TODO: %s{operation}: the signature of %s{described} names a type by token, which CoreCLR's TranslateSigWithScope rewrites to name a TypeRef of %s{moduleName}, adding TypeRef and AssemblyRef rows; PawPrint imports only a signature that names no type by token"
+
+            let parent =
+                match tr >>> 24 with
+                | table when table = typeRefTable ->
+                    match EmitScope.tryTypeRefRid (tr &&& 0x00FFFFFF) held with
+                    | Some rid -> MemberRefParent.TypeRef rid
+                    | None ->
+                        failwith
+                            $"%s{operation}: parent token 0x%08x{tr} for %s{described} names no TypeRef row of %s{moduleName}"
+                | table when table = typeSpecTable ->
+                    failwith
+                        $"TODO: %s{operation}: parent token 0x%08x{tr} for %s{described} is a TypeSpec, which the managed caller makes for a generic type with ModuleBuilder_GetTokenFromTypeSpec; an emit scope has no TypeSpec table yet"
+                | _ ->
+                    failwith
+                        $"%s{operation}: parent token 0x%08x{tr} for %s{described} is neither a TypeRef nor a TypeSpec; the managed caller passes its declaring type's token, which is a TypeDef only for a type of this module"
+
+            let memberRef, extended =
+                EmitScopeReferences.defineMemberRef parent name signature held
+
+            let state =
+                // Found rather than added, so there is nothing to re-read.
+                if Object.ReferenceEquals (extended, held) then
+                    state
+                else
+                    state.WithEmitScope ctx.LoggerFactory moduleName extended |> fst
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 ((memberRefTable <<< 24) ||| memberRef.Rid)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

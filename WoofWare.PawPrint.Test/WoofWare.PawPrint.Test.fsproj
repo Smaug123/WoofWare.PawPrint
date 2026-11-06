@@ -438,6 +438,8 @@
     <Compile Include="TestEmitScopeReferences.fs" />
     <Compile Include="TestEmitScopeDefinitions.fs" />
     <Compile Include="TestEmitScopeMethods.fs" />
+    <Compile Include="TestEmitScopeMemberRefs.fs" />
+    <Compile Include="TestFabricatedMemberRefOfOverlongSignature.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
