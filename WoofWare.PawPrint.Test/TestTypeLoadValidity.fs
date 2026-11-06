@@ -1128,9 +1128,9 @@ module TestTypeLoadValidity =
         seen |> shouldContain Outcome.BadImageFormat
         seen |> shouldContain (Outcome.TypeLoad (Rule.InvalidInstantiation, ""))
         seen |> shouldContain (Outcome.TypeLoad (Rule.General, ""))
-        // Over 25 unseeded runs, measured between 76 and 128, and between 44 and 75.
+        // Over 25 unseeded runs, measured between 60 and 91, and between 116 and 151.
         refusedForAnArgument |> shouldBeGreaterThan 40
-        refusedForArity |> shouldBeGreaterThan 20
+        refusedForArity |> shouldBeGreaterThan 80
 
     [<Test>]
     let ``Generated signatures agree with CoreCLR, whatever kind of type they name`` () : unit =
