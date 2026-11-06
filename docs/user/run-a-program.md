@@ -3,7 +3,7 @@
 PawPrint is intended to be used in tests, so is primarily a library.
 
 Use whatever `dotnet build` command you'd usually use to compile an executable DLL, say `/tmp/MyCoolDll.dll`.
-For the most predictable results, I'd probably `dotnet publish --self-contained` this; otherwise you may find [WoofWare.DotnetRuntimeLocator](https://github.com/Smaug123/WoofWare.DotnetRuntimeLocator) fails to locate the correct .NET runtime (although it *should* work).
+For the most predictable results, I'd probably `dotnet publish --self-contained` this; otherwise you may find [WoofWare.DotnetRuntimeLocator](https://github.com/WoofWare/WoofWare.DotnetRuntimeLocator) fails to locate the correct .NET runtime (although it *should* work).
 
 Besides `WoofWare.PawPrint` itself, the example below needs `WoofWare.DotnetRuntimeLocator` (to find the runtime directories to load the BCL from), `Microsoft.Extensions.Logging`, and `Microsoft.Extensions.Logging.Console`:
 
