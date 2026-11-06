@@ -84,6 +84,7 @@
     <Compile Include="TestAssemblyProbe.fs" />
     <Compile Include="EmitScopeGen.fs" />
     <Compile Include="TestAssemblyBinding.fs" />
+    <Compile Include="TestInternalLoadNames.fs" />
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="UnmodelledImage.fs" />
     <Compile Include="TestUnmodelledBinding.fs" />

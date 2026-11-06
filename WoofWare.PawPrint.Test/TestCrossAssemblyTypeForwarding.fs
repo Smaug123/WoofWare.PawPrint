@@ -13,8 +13,8 @@ open NUnit.Framework
 ///
 /// Each guest starts from <c>typeof(Marker).Assembly</c>, a type the facade genuinely defines, so
 /// it reaches <c>AssemblyNative_GetTypeCore</c> without an assembly *bind* first: the
-/// <c>Type.GetType("Name, Assembly")</c> spelling would stop earlier, at
-/// <c>AssemblyNative_InternalLoad</c>, which PawPrint does not implement.
+/// <c>Type.GetType("Name, Assembly")</c> spelling would bind the facade by name through
+/// <c>AssemblyNative_InternalLoad</c> before that, which is not what these cases are about.
 /// </remarks>
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
