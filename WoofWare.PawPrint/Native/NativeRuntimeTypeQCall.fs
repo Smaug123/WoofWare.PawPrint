@@ -1439,19 +1439,16 @@ module NativeRuntimeTypeQCall =
                 =
                 let declaringType = method.RequiredDeclaringType
 
-                let declaringTypeKind =
+                // Classifying the declaring type walks its base chain, which must be loaded already.
+                let isValueType () : bool =
                     LoadedTypeInfo.signatureTypeKind
                         ctx.BaseClassTypes
                         state.TypeSystem._LoadedAssemblies
                         (state.TypeSystem._LoadedAssemblies
                             .ByDefinitionName(declaringType.AssemblyFullName)
-                            .TypeDefs.[declaringType.Definition.Get])
+                            .TypeDefs.[declaringType.Definition.Get]) = System.Reflection.Metadata.SignatureTypeKind.ValueType
 
-                if
-                    not method.Generics.IsEmpty
-                    && method.IsVirtual
-                    && declaringTypeKind = System.Reflection.Metadata.SignatureTypeKind.ValueType
-                then
+                if not method.Generics.IsEmpty && method.IsVirtual && isValueType () then
                     failwith
                         $"TODO: %s{operation} of %s{tokenKind} token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
 
@@ -1488,8 +1485,6 @@ module NativeRuntimeTypeQCall =
                     // not the definition, and PawPrint refuses it.
                     let method = assembly.Methods.[h]
 
-                    refuseGenericVirtualOnValueType "MethodDef" state method
-
                     let state, declaringTarget =
                         NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget
                             ctx.LoggerFactory
@@ -1497,6 +1492,8 @@ module NativeRuntimeTypeQCall =
                             assembly
                             method
                             state
+
+                    refuseGenericVirtualOnValueType "MethodDef" state method
 
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
