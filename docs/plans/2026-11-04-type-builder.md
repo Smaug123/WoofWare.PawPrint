@@ -465,8 +465,12 @@ Read from `ModuleBuilder_GetMemberRefOfMethodInfo` (vm/commodule.cpp), `RegMeta:
   type has such a method.
 * Otherwise it reads the method's name and signature from its `MethodDef`, so an instantiated generic
   method's reference is to its definition. `TranslateSigWithScope` rewrites each type token in the
-  signature to name a `TypeRef` of the dynamic module, adding `TypeRef` and `AssemblyRef` rows, and
-  copies every other byte unchanged.
+  signature to name a `TypeRef` of the dynamic module, adding `TypeRef` and `AssemblyRef` rows.
+  `MergeUpdateTokenInSig` writes the rest of the signature as follows. A type or method parameter's
+  index, and an instantiation's argument count, come out in their shortest form. Every other byte is
+  copied, including an overlong parameter count, generic arity or array size. Bytes after the last type
+  are dropped. Measured: an overlong `MVAR` or `VAR` index comes out shortest, so two methods `M<T>(T)`
+  of one type, which differ only in that encoding, share one `MemberRef`.
 * `DefineMemberRef` checks for a duplicate in a dynamic module (`MDDupDefault` holds `MDDupMemberRef`):
   the first row with the same parent token, the same UTF-8 name and the same signature bytes is
   handed back, and otherwise a row is added, interning the name before the signature.
@@ -480,8 +484,9 @@ own that do not agree with `GetTypeRef`'s. Measured, after a reference to `Conso
 names a new `TypeRef` for `TextWriter`, `GetTypeMetadataToken(typeof(TextWriter))` adds a second one,
 while for `Type` and `Guid`, which `GetTypeRef` had named first, the translation reuses its row. That
 is a stage of its own. The alternative was to translate now, in a PR doing two things.
-`EmitScopeReferences.methodSignatureNamesTypeByToken` decides which signatures are copied, and the
-handler refuses the others with a TODO. A parent `TypeSpec` is refused too; it cannot be reached yet,
+`EmitScopeReferences.importMethodSignature` walks a signature as `MergeUpdateTokenInSig` does. It gives
+the bytes the emitter writes for a signature that names no type by token, and `NamesTypeByToken` for
+any other, which the handler refuses with a TODO. A parent `TypeSpec` is refused too; it cannot be reached yet,
 because `ModuleBuilder_GetTokenFromTypeSpec` is not implemented.
 
 ### 3d: the oracle
@@ -490,11 +495,17 @@ because `ModuleBuilder_GetTokenFromTypeSpec` is not implemented.
   of an earlier row (one the scope started with included) is that row, the first of two alike, and
   leaves the scope as it was; any other is a new row holding the request.
 * Over method signatures generated from the ECMA-335 grammar (nested arrays, pointers, by-refs,
-  instantiations, function pointers, custom modifiers, type and method parameters),
-  `methodSignatureNamesTypeByToken` against the grammar's own answer.
-* Real .NET's emitter: for every method and constructor of a non-generic CoreLib type whose signature
-  names no type by token, each asked for twice, the dynamic module's signature is the method's own
-  bytes, and its token is the one `defineMemberRef` gives.
+  instantiations, function pointers, custom modifiers, type and method parameters), each integer in
+  its shortest or an overlong form, with trailing bytes: `importMethodSignature` against the
+  grammar's own answer.
+* Real .NET's emitter, three ways:
+  * For every method and constructor of a non-generic CoreLib type whose signature names no type by
+    token, each asked for twice, the dynamic module's signature is the method's own bytes, and its
+    token is the one `defineMemberRef` gives.
+  * For eleven signatures in a fabricated image, overlong or with a trailing byte, the dynamic
+    module's signature is the one `importMethodSignature` gives.
+  * `TestFabricatedMemberRefOfOverlongSignature`, run on both runtimes, gives two methods differing
+    only in an overlong `MVAR` index one token.
 * `ModuleBuilderMemberRefOfMethodInfo.cs` checks eleven tokens against constants measured on .NET 10,
   which exits 0 on it: a duplicate, a constructor, the same parent and signature under two names,
   the same name with two signatures, a method reached through a derived type, the same name and
@@ -502,8 +513,9 @@ because `ModuleBuilder_GetTokenFromTypeSpec` is not implemented.
   reads each row's parent, name and signature.
 * `ModuleBuilderMemberRefTranslatedSignature.cs`, parked, measured on .NET 10 to exit 0, reaches the
   refusal for a class and a value type in a signature.
-* All 17 mutants are caught: of the lookup, the find-or-add, the token check's provider and its
-  refusals, and the handler's refusal, token, parent and scope update.
+* All 24 mutants are caught. They cover the lookup, the find-or-add, the signature walker's
+  re-encoding, copying, token detection and refusals, and the handler's refusal, imported signature,
+  token, parent and scope update.
 
 ### 3d: left to later stages
 
