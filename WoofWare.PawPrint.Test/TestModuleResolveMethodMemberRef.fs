@@ -22,7 +22,10 @@ open WoofWare.PawPrint
 /// Where the parent's instantiation is not its own canonical form (<c>Holder&lt;string&gt;</c>,
 /// whose code CoreCLR shares as <c>Holder&lt;__Canon&gt;</c>), CoreCLR's answer for a generic method
 /// is not the definition: reflection reports it generic, over its own parameter, but not a generic
-/// method definition. PawPrint does not model canonical forms, and refuses those.
+/// method definition. PawPrint does not model canonical forms, and refuses those. Nor is the answer
+/// the definition for a generic virtual method on a value type, even one that is its own canonical
+/// form (<c>SBox&lt;int&gt;</c>), where CoreCLR's method table holds the method's unboxing stub;
+/// PawPrint refuses those too.
 /// </remarks>
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -37,8 +40,17 @@ module TestModuleResolveMethodMemberRef =
 using System;
 using System.Reflection;
 
-public class Holder<T>
+public interface IConvertOnClass { U ConvertVirtualOnClass<U>(); }
+
+public interface IConvertOnStruct
 {
+    U ConvertVirtual<U>();
+    void PlainVirtual();
+}
+
+public class Holder<T> : IConvertOnClass
+{
+    public U ConvertVirtualOnClass<U>() => default!;
     public U ConvertOnInt<U>(T v) => default!;
     public void PlainOnInt() { }
     public U ConvertOnString<U>(T v) => default!;
@@ -46,9 +58,11 @@ public class Holder<T>
     public void PlainInContext() { }
 }
 
-public struct SBox<T>
+public struct SBox<T> : IConvertOnStruct
 {
     public U ConvertOnStruct<U>(T v) => default!;
+    public U ConvertVirtual<U>() => default!;
+    public void PlainVirtual() { }
 }
 
 public static class Program
@@ -60,6 +74,9 @@ public static class Program
         new Holder<int>().PlainOnInt();
         new Holder<string>().ConvertOnString<int>("");
         new SBox<int>().ConvertOnStruct<int>(1);
+        new Holder<int>().ConvertVirtualOnClass<int>();
+        new SBox<int>().ConvertVirtual<int>();
+        new SBox<int>().PlainVirtual();
         InGeneric<long>();
     }
 
@@ -184,6 +201,9 @@ public static class Program
             // The context substitutes into the parent, `Holder<!!0>`.
             "ConvertInContext", "m=int", definitionOnHolderOfInt
             "PlainInContext", "m=int", plainOnHolderOfInt
+            // Virtual methods, generic on a class and non-generic on a struct.
+            "ConvertVirtualOnClass", "none", definitionOnHolderOfInt
+            "PlainVirtual", "none", 3 + 64
         ]
 
     /// The cases where CoreCLR's answer is on a shared canonical form, which PawPrint refuses.
@@ -193,9 +213,14 @@ public static class Program
             "ConvertInContext", "m=string", 2 + 8 + 32
         ]
 
+    /// The case where CoreCLR's answer is a generic virtual method on a value type, which is not the
+    /// definition even on a type that is its own canonical form, and which PawPrint refuses.
+    let private genericVirtualOnStruct : string * string * int =
+        "ConvertVirtual", "none", 3 + 8 + 32
+
     [<Test>]
     let ``The real runtime answers as measured`` () : unit =
-        for name, context, measured in answered @ canonical do
+        for name, context, measured in answered @ canonical @ [ genericVirtualOnStruct ] do
             let token = memberRefToken (image.Force ()) name
             let actual = realRuntime [ "classify" ; string token ; context ]
 
@@ -242,4 +267,20 @@ public static class Program
 
         exn.Message |> shouldContainText "ModuleHandle.ResolveMethod"
         exn.Message |> shouldContainText "System.__Canon"
+        exn.Message |> shouldContainText name
+
+    [<Test>]
+    let ``PawPrint refuses a generic virtual method on a value type`` () : unit =
+        let name, _, _ = genericVirtualOnStruct
+
+        let exn =
+            Assert.Catch (fun () ->
+                underPawPrint
+                    "ModuleResolveMethodMemberRefGenericVirtualOnStruct"
+                    (checkArgs [ genericVirtualOnStruct ])
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "ModuleHandle.ResolveMethod"
+        exn.Message |> shouldContainText "unboxing stub"
         exn.Message |> shouldContainText name
