@@ -45,12 +45,13 @@ module EmitScopeExtension =
     /// Every way in which <paramref name="after"/> fails to extend <paramref name="before"/>.
     /// </summary>
     /// <remarks>
-    /// Empty when <paramref name="after"/> was built from <paramref name="before"/> by appending rows
-    /// and interning entries, none of them for a created type and none sorting before a created type's
-    /// rows in a sorted table. Then an image of <paramref name="after"/> reads back every row, heap
-    /// entry and created type of <paramref name="before"/>'s as <paramref name="before"/>'s image
-    /// does. A history that was rewritten, rather than appended to, is refused even where the image
-    /// happens to read back the same.
+    /// Empty when <paramref name="after"/> was built from <paramref name="before"/> by appending rows,
+    /// interning entries and filling in the implementation flags of methods, none of them for a
+    /// created type and none sorting before a created type's rows in a sorted table. Then an image of
+    /// <paramref name="after"/> reads back every heap entry and created type of
+    /// <paramref name="before"/>'s as <paramref name="before"/>'s image does, and every row but for
+    /// those flags. A history that was otherwise rewritten, rather than appended to, is refused even
+    /// where the image happens to read back the same.
     /// </remarks>
     /// <param name="created">
     /// The types of <paramref name="before"/> the runtime has created, whose members are fixed from
@@ -123,6 +124,36 @@ module EmitScopeExtension =
                             )
             ]
 
+        // Each method of `before` at the same position of `after`. The emitter fills in a method's
+        // implementation flags after adding its row, so a change to that column alone is a fill,
+        // refused only for a created type.
+        let methodsRewritten (beforeRows : ImmutableList<MethodDefRow>) (afterRows : ImmutableList<MethodDefRow>) =
+            [
+                for i in 0 .. beforeRows.Count - 1 do
+                    if i >= afterRows.Count then
+                        yield EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, i + 1)
+                    else
+                        let was = beforeRows.[i]
+                        let row = afterRows.[i]
+
+                        if was = row then
+                            ()
+                        elif
+                            { was with
+                                ImplFlags = row.ImplFlags
+                            } = row
+                        then
+                            if created.Contains was.Owner then
+                                yield
+                                    EmitScopeExtensionViolation.FilledInCreatedType (
+                                        TableIndex.MethodDef,
+                                        i + 1,
+                                        was.Owner
+                                    )
+                        else
+                            yield EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, i + 1)
+            ]
+
         let methodOwner (method : MethodDefRid) : TypeDefRid =
             (EmitScope.methodDefs after).[method.Rid - 1].Owner
 
@@ -142,7 +173,7 @@ module EmitScopeExtension =
                     (EmitScope.fields after)
                     (fun row -> row.Owner)
 
-            yield! rewritten TableIndex.MethodDef (EmitScope.methodDefs before) (EmitScope.methodDefs after)
+            yield! methodsRewritten (EmitScope.methodDefs before) (EmitScope.methodDefs after)
 
             yield!
                 addedToCreated

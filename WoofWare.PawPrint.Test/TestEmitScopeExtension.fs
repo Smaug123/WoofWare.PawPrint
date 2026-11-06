@@ -416,3 +416,52 @@ module TestEmitScopeExtension =
 
         EmitScopeExtension.violations ImmutableHashSet.Empty before after
         |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
+
+    [<Test>]
+    let ``only a method's implementation flags may be filled in, and only while its type is not created`` () : unit =
+        let scope = apply Guid.Empty []
+        let name, scope = EmitScope.internString "M" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0uy ; 0uy ; 1uy |]) scope
+
+        let method (flags : Reflection.MethodAttributes) : MethodDefRow =
+            {
+                Owner = TypeDefRid 1
+                Body = None
+                ImplFlags = Reflection.MethodImplAttributes.IL
+                Flags = flags
+                Name = name
+                Signature = signature
+            }
+
+        let publicStatic =
+            Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static
+
+        let privateStatic =
+            Reflection.MethodAttributes.Private ||| Reflection.MethodAttributes.Static
+
+        let before = EmitScope.addMethodDef (method publicStatic) scope |> snd
+
+        let fill (scope : EmitScope) =
+            EmitScope.setMethodImplFlags (MethodDefRid 1) Reflection.MethodImplAttributes.NoInlining scope
+
+        let filled = fill before
+        let reflagged = EmitScope.addMethodDef (method privateStatic) scope |> snd
+        let both = fill reflagged
+        let created = ImmutableHashSet.Create (TypeDefRid 1)
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before filled
+        |> shouldEqual []
+
+        EmitScopeExtension.violations created before filled
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
+            ]
+
+        // Any other column is fixed once the row is added, filled in alongside or not.
+        for after in [ reflagged ; both ] do
+            for createdTypes in [ ImmutableHashSet.Empty ; created ] do
+                EmitScopeExtension.violations createdTypes before after
+                |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]

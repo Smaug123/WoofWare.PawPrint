@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System
 open System.Collections.Immutable
 open System.Reflection
 
@@ -19,13 +20,17 @@ type TypeDefDefinition =
     | Duplicate of TypeDefRid
 
 /// <summary>
-/// The definitions CoreCLR's emitter adds to a dynamic module's scope, each checked for a duplicate
-/// first, as the emitter checks for duplicate <c>TypeDef</c>s in a dynamic module.
+/// The definitions CoreCLR's emitter adds to a dynamic module's scope: types, each checked for a
+/// duplicate first (<c>MDDupTypeDef</c>), and methods, which are not (<c>MDDupMethodDef</c> is not set).
 /// </summary>
 [<RequireQualifiedAccess>]
 module EmitScopeDefinitions =
     /// `tdReservedMask`: `tdRTSpecialName` and `tdHasSecurity`, which only the emitter sets.
     let private reservedFlags : TypeAttributes = enum<TypeAttributes> 0x00040800
+
+    /// `mdReservedMask`: `mdRTSpecialName`, `mdHasSecurity` and `mdRequireSecObject`, which only the
+    /// emitter sets.
+    let private reservedMethodFlags : MethodAttributes = enum<MethodAttributes> 0xd000
 
     /// <summary>
     /// The top-level <c>TypeDef</c> row with this namespace and name, compared ordinally, as CoreCLR's
@@ -115,11 +120,35 @@ module EmitScopeDefinitions =
         (scope : EmitScope)
         : MethodDefRid * EmitScope
         =
-        failwith "TODO: stub"
+        let special =
+            name = ".ctor"
+            || name = ".cctor"
+            || name.StartsWith ("_VtblGap", StringComparison.Ordinal)
+
+        let flags =
+            (flags &&& ~~~reservedMethodFlags &&& enum<MethodAttributes> 0xFFFF)
+            ||| (if special then
+                     MethodAttributes.RTSpecialName ||| MethodAttributes.SpecialName
+                 else
+                     enum<MethodAttributes> 0)
+
+        let name, scope = EmitScope.internString name scope
+        let signature, scope = EmitScope.internBlob signature scope
+
+        EmitScope.addMethodDef
+            {
+                Owner = owner
+                Body = None
+                ImplFlags = MethodImplAttributes.IL
+                Flags = flags
+                Name = name
+                Signature = signature
+            }
+            scope
 
     /// <summary>
     /// Set a method's implementation flags, as <c>RegMeta::SetMethodImplFlags</c> does: the low 16
     /// bits of <paramref name="flags"/>, the column's width, replacing whatever the row held.
     /// </summary>
     let setMethodImplFlags (method : MethodDefRid) (flags : MethodImplAttributes) (scope : EmitScope) : EmitScope =
-        failwith "TODO: stub"
+        EmitScope.setMethodImplFlags method (flags &&& enum<MethodImplAttributes> 0xFFFF) scope

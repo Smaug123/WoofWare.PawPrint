@@ -577,11 +577,19 @@ module EmitScope =
             Fields = scope.Fields.Add row
         }
 
+    /// A `MethodDef` row's `Flags` and `ImplFlags` columns are two bytes wide.
+    let private requireTwoBytes (operation : string) (column : string) (value : int) : unit =
+        if value < 0 || value > 0xFFFF then
+            invalidArg column $"%s{operation}: a method's %s{column} 0x%x{value} does not fit its column's two bytes"
+
+    /// Add a `MethodDef` row, whose `Flags` and `ImplFlags` must each fit the column's two bytes.
     let addMethodDef (row : MethodDefRow) (scope : EmitScope) : MethodDefRid * EmitScope =
         let operation = "EmitScope.addMethodDef"
         requireRid operation "TypeDef" scope.TypeDefs.Count row.Owner.Rid
         requireString operation scope row.Name
         requireBlob operation scope row.Signature
+        requireTwoBytes operation "Flags" (int row.Flags)
+        requireTwoBytes operation "ImplFlags" (int row.ImplFlags)
 
         match row.Body with
         | Some body when body.IsDefaultOrEmpty ->
@@ -602,7 +610,20 @@ module EmitScope =
     /// The scope has no such method, or <paramref name="flags"/> does not fit the column's two bytes.
     /// </exception>
     let setMethodImplFlags (method : MethodDefRid) (flags : MethodImplAttributes) (scope : EmitScope) : EmitScope =
-        failwith "TODO: stub"
+        let operation = "EmitScope.setMethodImplFlags"
+        requireRid operation "MethodDef" scope.MethodDefs.Count method.Rid
+        requireTwoBytes operation "ImplFlags" (int flags)
+        let index = method.Rid - 1
+
+        { scope with
+            MethodDefs =
+                scope.MethodDefs.SetItem (
+                    index,
+                    { scope.MethodDefs.[index] with
+                        ImplFlags = flags
+                    }
+                )
+        }
 
     let addParam (row : ParamRow) (scope : EmitScope) : ParamRid * EmitScope =
         let operation = "EmitScope.addParam"
