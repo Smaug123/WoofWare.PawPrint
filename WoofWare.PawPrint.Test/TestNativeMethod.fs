@@ -385,6 +385,64 @@ module TestNativeMethod =
                 |> m.SetCustomAttribute
             )
 
+        /// A P/Invoke as `differing` declares one, importing by `convention`, with an
+        /// `[UnmanagedCallConv]` whose `CallConvs` is `callConvs`.
+        let byCallConvs (name : string) (convention : Runtime.InteropServices.CallingConvention) (callConvs : Type[]) =
+            declare name native true CallingConventions.Standard convention [||] typeof<int> [| typeof<int> |]
+            |> fun m ->
+                attribute typeof<Runtime.InteropServices.UnmanagedCallConvAttribute> [||] [ "CallConvs", box callConvs ]
+                |> m.SetCustomAttribute
+
+        let winapi = Runtime.InteropServices.CallingConvention.Winapi
+        byCallConvs "CdeclByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvCdecl> |]
+        byCallConvs "StdcallByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvStdcall> |]
+        byCallConvs "ThiscallByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvThiscall> |]
+        byCallConvs "FastcallByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvFastcall> |]
+        byCallConvs "SwiftByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvSwift> |]
+
+        byCallConvs
+            "MemberFunctionByCallConvs"
+            winapi
+            [|
+                typeof<Runtime.CompilerServices.CallConvCdecl>
+                typeof<Runtime.CompilerServices.CallConvMemberFunction>
+            |]
+
+        byCallConvs "SuppressedByCallConvs" winapi [| typeof<Runtime.CompilerServices.CallConvSuppressGCTransition> |]
+
+        byCallConvs
+            "TwoBasesByCallConvs"
+            winapi
+            [|
+                typeof<Runtime.CompilerServices.CallConvCdecl>
+                typeof<Runtime.CompilerServices.CallConvStdcall>
+            |]
+
+        // CoreCLR passes over a type it does not know as a convention.
+        byCallConvs
+            "UnknownByCallConvs"
+            winapi
+            [|
+                typeof<Runtime.CompilerServices.IsVolatile>
+                typeof<Runtime.CompilerServices.CallConvCdecl>
+            |]
+
+        byCallConvs "NoneByCallConvs" winapi [||]
+        byCallConvs "NullByCallConvs" winapi null
+
+        // An import that names a convention is read before the attribute, which is then not read.
+        byCallConvs
+            "ThiscallByCallConvsUnderCdecl"
+            Runtime.InteropServices.CallingConvention.Cdecl
+            [| typeof<Runtime.CompilerServices.CallConvThiscall> |]
+
+        differing
+            "Suppressed"
+            (fun m ->
+                attribute typeof<Runtime.InteropServices.SuppressGCTransitionAttribute> [||] []
+                |> m.SetCustomAttribute
+            )
+
         let variant (name : string) (header : CallingConventions) convention (returnModifiers : Type[]) =
             declare name native true header convention returnModifiers typeof<int> [| typeof<int> |]
             |> ignore<MethodBuilder>
@@ -478,18 +536,23 @@ module TestNativeMethod =
             [
                 "AutoLaid", None
                 "Cdecl", shim FrameworkShim.SystemNative "Cdecl"
-                "ConventionByAttribute", None
+                "CdeclByCallConvs", shim FrameworkShim.SystemNative "CdeclByCallConvs"
+                "ConventionByAttribute", shim FrameworkShim.SystemNative "ConventionByAttribute"
                 "ConventionByModifier", None
                 "ConvertsLocale", None
                 "FastCall", None
+                "FastcallByCallConvs", None
                 "Foreign", None
                 "Generic", None
                 "Globalization", shim FrameworkShim.GlobalizationNative "Globalization"
                 "HoldsEnum", None
                 "HoldsObject", None
                 "InGenericType", None
+                "MemberFunctionByCallConvs", None
                 "Nested", shim FrameworkShim.SystemNative "Nested"
+                "NoneByCallConvs", shim FrameworkShim.SystemNative "NoneByCallConvs"
                 "Nothing", shim FrameworkShim.SystemNative "Nothing"
+                "NullByCallConvs", None
                 "Numbers", shim FrameworkShim.SystemNative "Numbers"
                 "Overlaid", shim FrameworkShim.SystemNative "Overlaid"
                 "Pointers", shim FrameworkShim.SystemNative "Pointers"
@@ -498,7 +561,11 @@ module TestNativeMethod =
                 "SetsLastError", None
                 "StaticField", shim FrameworkShim.SystemNative "StaticField"
                 "StdCall", shim FrameworkShim.SystemNative "StdCall"
+                "StdcallByCallConvs", shim FrameworkShim.SystemNative "StdcallByCallConvs"
                 "Structure", shim FrameworkShim.SystemNative "Structure"
+                "Suppressed", shim FrameworkShim.SystemNative "Suppressed"
+                "SuppressedByCallConvs", shim FrameworkShim.SystemNative "SuppressedByCallConvs"
+                "SwiftByCallConvs", None
                 "System", None
                 "TakesByref", None
                 "TakesClass", None
@@ -506,7 +573,11 @@ module TestNativeMethod =
                 "TakesObject", None
                 "TakesString", None
                 "ThisCall", None
+                "ThiscallByCallConvs", None
+                "ThiscallByCallConvsUnderCdecl", shim FrameworkShim.SystemNative "ThiscallByCallConvsUnderCdecl"
                 "Translated", None
+                "TwoBasesByCallConvs", None
+                "UnknownByCallConvs", shim FrameworkShim.SystemNative "UnknownByCallConvs"
                 "VarArgs", None
                 "Wide", None
             ]
