@@ -657,14 +657,14 @@ module IlMachineRuntimeMetadata =
         (state : IlMachineState)
         : ManagedHeapAddress * IlMachineState
         =
-        match state.InternedStrings.TryGetValue "" with
-        | true, addr -> addr, state
-        | false, _ ->
+        match ManagedHeap.tryGetInterned "" state.ManagedHeap with
+        | Some addr -> addr, state
+        | None ->
             let addr, state = allocateManagedString loggerFactory baseClassTypes "" state
 
             addr,
             { state with
-                InternedStrings = state.InternedStrings.Add ("", addr)
+                ManagedHeap = ManagedHeap.intern addr state.ManagedHeap
             }
 
     /// Allocate a sentinel 2-entry CastCache backing array shaped to match what the native
