@@ -147,9 +147,9 @@ module internal UnaryStringTokenIlOp =
             | Ok (value, candidate) ->
 
             let addressToLoad, state =
-                match state.InternedStrings.TryGetValue value with
-                | true, v -> v, state
-                | false, _ ->
+                match ManagedHeap.tryGetInterned value state.ManagedHeap with
+                | Some v -> v, state
+                | None ->
                     let addr, state =
                         match candidate with
                         | Some addr -> addr, state
@@ -157,7 +157,7 @@ module internal UnaryStringTokenIlOp =
 
                     addr,
                     { state with
-                        InternedStrings = state.InternedStrings.Add (value, addr)
+                        ManagedHeap = ManagedHeap.intern addr state.ManagedHeap
                     }
 
             let state =

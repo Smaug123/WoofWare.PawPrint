@@ -156,16 +156,16 @@ module NativeString =
 
                 Some empty, state
             else
-                match state.InternedStrings.TryGetValue value, onMiss with
-                | (true, interned), _ -> Some interned, state
-                | (false, _), OnInternMiss.InternIt ->
+                match ManagedHeap.tryGetInterned value state.ManagedHeap, onMiss with
+                | Some interned, _ -> Some interned, state
+                | None, OnInternMiss.InternIt ->
                     // The object itself, not a copy: `GlobalStringLiteralMap::AddInternedString`
                     // (vm/stringliteralmap.cpp) stores the `STRINGREF` it is handed.
                     Some addr,
                     { state with
-                        InternedStrings = state.InternedStrings.Add (value, addr)
+                        ManagedHeap = ManagedHeap.intern addr state.ManagedHeap
                     }
-                | (false, _), OnInternMiss.AnswerNull -> None, state
+                | None, OnInternMiss.AnswerNull -> None, state
 
         let state =
             IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state handle (CliType.ObjectRef answer)

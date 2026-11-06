@@ -360,7 +360,6 @@ module IlMachineThreadState =
                 ManagedHeap = ManagedHeap.empty
                 ThreadState = Map.empty
                 _SyscallSleepers = SyscallSleepers.empty
-                InternedStrings = ImmutableDictionary.Empty
                 EntryAssembly = entryAssembly.Name
                 LatchedExitCode = 0
                 Statics = StaticStorage.empty
