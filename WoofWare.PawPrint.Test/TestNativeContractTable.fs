@@ -107,17 +107,25 @@ module TestNativeContractTable =
         | -1 -> "", declaringType
         | dot -> declaringType.Substring (0, dot), declaringType.Substring (dot + 1)
 
+    /// A method the VM calls through `InvokeThrowing` is an `[UnmanagedCallersOnly]` one, whose last
+    /// parameter is the `Exception*` slot `InvokeThrowing` passes; one it calls directly is not.
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every method a row runs is the CoreLib's one method of its name, taking an argument per spelling``
+    let ``every method a row runs is the CoreLib's one method of its name taking an argument per spelling``
         (which : AuditedCoreLib)
         : unit
         =
         let corelib = TestIntrinsicBody.coreLib which
 
+        let exceptionSlot =
+            match corelib.TryGetTopLevelTypeDef "System" "Exception" with
+            | Some exceptionType -> TypeDefn.Pointer (TypeDefn.FromDefinition (exceptionType.Identity, SignatureTypeKind.Class))
+            | None -> failwith "This CoreLib defines no System.Exception"
+
         for row in rowsUnderTest () do
-            for call in
+            for vmCall in
                 row.Contract.Runs
                 |> List.map (NativeCall.resolve (FrameworkUnderTest.runtime ())) do
+                let call = vmCall.Target
                 let ns, name = namespaceAndName call.DeclaringType
 
                 let declaringType =
@@ -126,20 +134,33 @@ module TestNativeContractTable =
                     | None ->
                         failwith $"%A{row.Native} runs a method of %s{call.DeclaringType}, which this CoreLib lacks"
 
-                match declaringType.Methods |> List.filter (fun method -> method.Name = call.Method) with
+                let arity (method : MethodInfo<_, _, _>) : int =
+                    (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length
+
+                match
+                    declaringType.Methods
+                    |> List.filter (fun method -> method.Name = call.Method && arity method = call.Arguments.Length)
+                with
                 | [ method ] ->
                     declaringType.Generics |> shouldBeEmpty
                     method.Signature.GenericParameterCount |> shouldEqual 0
 
-                    let arity =
-                        (if method.IsStatic then 0 else 1) + method.Signature.ParameterTypes.Length
-
-                    if arity <> call.Arguments.Length then
-                        failwith
-                            $"%A{row.Native} passes %s{call.DeclaringType}::%s{call.Method} %d{call.Arguments.Length} arguments, and it takes %d{arity}"
+                    match vmCall with
+                    | VmCall.Direct _ ->
+                        if MethodInfo.isUnmanagedCallersOnly method then
+                            failwith
+                                $"%A{row.Native} calls %s{call.DeclaringType}::%s{call.Method} directly, and it is [UnmanagedCallersOnly]"
+                    | VmCall.InvokeThrowing _ ->
+                        if
+                            not (MethodInfo.isUnmanagedCallersOnly method)
+                            || not method.IsStatic
+                            || List.tryLast method.Signature.ParameterTypes <> Some exceptionSlot
+                        then
+                            failwith
+                                $"%A{row.Native} calls %s{call.DeclaringType}::%s{call.Method} through InvokeThrowing, and it is not a static [UnmanagedCallersOnly] method whose last parameter is Exception*"
                 | methods ->
                     failwith
-                        $"%A{row.Native} runs %s{call.DeclaringType}::%s{call.Method}, of which this CoreLib has %d{methods.Length}"
+                        $"%A{row.Native} runs %s{call.DeclaringType}::%s{call.Method} of %d{call.Arguments.Length} arguments, of which this CoreLib has %d{methods.Length}"
 
     /// What each `g_*NS` macro of `vm/namespace.h` expands to, by the name between `g_` and `NS`.
     let private bindersNamespaces (namespaceHeader : string) : Map<string, string> =
@@ -219,7 +240,7 @@ module TestNativeContractTable =
             File.ReadAllText (Path.Combine (coreclr runtime, path))
 
         for row in NativeContractTable.rows runtime do
-            for call in row.Contract.Runs |> List.map (NativeCall.resolve runtime) do
+            for call in row.Contract.Runs |> List.map (fun call -> (NativeCall.resolve runtime call).Target) do
                 let binderIds = binderIds runtime call
 
                 if binderIds.IsEmpty then
@@ -630,7 +651,7 @@ module TestNativeContractTable =
     /// target of, rather than the name.
     let private managedCallNames : Text.RegularExpressions.Regex =
         Text.RegularExpressions.Regex
-            @"^(?:MethodDescCallSite|UnmanagedCallersOnlyCaller|PREPARE_\w*CALLSITE\w*|CALL_MANAGED_METHOD\w*|Call(?:_Ret\w+)?)$"
+            @"^(?:MethodDescCallSite|UnmanagedCallersOnlyCaller|InvokeThrowing(?:_Ret)?|PREPARE_\w*CALLSITE\w*|CALL_MANAGED_METHOD\w*|Call(?:_Ret\w+)?)$"
 
     [<TestCaseSource(nameof everyRuntime)>]
     let ``every call a routine a row cites makes is to one the row cites or one vouched for``
@@ -663,20 +684,49 @@ module TestNativeContractTable =
                 + String.concat "\n" uncovered
             )
 
+    /// A call through `UnmanagedCallersOnlyCaller` is one the row says the VM makes through
+    /// `InvokeThrowing`, and the routine invokes it so; any other is one the row says it makes
+    /// directly.
     [<TestCaseSource(nameof everyRuntime)>]
-    let ``every managed call a routine a row cites makes is of a method the row runs``
+    let ``every managed call a routine a row cites makes is of a method the row runs, made as the row says``
         (runtime : EmulatedRuntime)
         : unit
         =
+        let throughCaller =
+            Text.RegularExpressions.Regex @"^UnmanagedCallersOnlyCaller\s+(\w+)\s*\($"
+
         for row in NativeContractTable.rows runtime do
             let runs =
                 row.Contract.Runs
                 |> List.map (NativeCall.resolve runtime)
-                |> List.collect (binderIds runtime)
+                |> List.collect (fun call ->
+                    binderIds runtime call.Target
+                    |> List.map (fun id ->
+                        id,
+                        match call with
+                        | VmCall.Direct _ -> false
+                        | VmCall.InvokeThrowing _ -> true
+                    )
+                )
                 |> Set.ofList
 
             for path, routine in citedRoutines runtime row do
                 for site in managedCall.Matches routine.Text do
+                    let caller = throughCaller.Match site.Value
+
+                    // A caller the routine declares, it invokes by `InvokeThrowing`.
+                    if
+                        caller.Success
+                        && not (
+                            Text.RegularExpressions.Regex.IsMatch (
+                                routine.Text,
+                                $@"\b%s{caller.Groups.[1].Value}\s*\.\s*InvokeThrowing(?:_Ret)?\b"
+                            )
+                        )
+                    then
+                        failwith
+                            $"%A{row.Native} cites %s{path}:%s{routine.Name}, which declares `%s{site.Value}` and does not invoke it by InvokeThrowing"
+
                     let arguments =
                         let start = site.Index + site.Length
                         let finish = routine.Text.IndexOf (')', start)
@@ -691,9 +741,9 @@ module TestNativeContractTable =
                         |> Seq.map (fun id -> id.Value)
                         |> List.ofSeq
 
-                    if ids.IsEmpty || ids |> List.exists (fun id -> not (runs.Contains id)) then
+                    if ids.IsEmpty || ids |> List.exists (fun id -> not (runs.Contains (id, caller.Success))) then
                         failwith
-                            $"%A{row.Native} cites %s{path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}"
+                            $"%A{row.Native} cites %s{path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}, each with whether through InvokeThrowing"
 
     [<TestCaseSource(nameof everyRuntime)>]
     let ``every vouch names code the pinned source defines, which makes no managed call itself``
@@ -1005,6 +1055,11 @@ module TestNativeContractTable =
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?,0)"
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|"
                 replacing 5 "System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)|-"
+                replacing 5 "InvokeThrowing()"
+                replacing 5 "InvokeThrowing(ResourceMessage)"
+                replacing 5 "InvokeThrowing(System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)"
+                replacing 5 "InvokeThrowing(InvokeThrowing(System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)))"
+                replacing 5 "InvokeThrowingSystem.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)"
                 replacing 6 ""
                 replacing 6 "NamedTypes"
                 replacing 6 "NamedTypesLoad|"
@@ -1055,8 +1110,7 @@ module TestNativeContractTable =
         | calls ->
             calls
             |> List.map (fun call ->
-                match call with
-                | NativeCall.Method call ->
+                let spell (call : ManagedCall) : string =
                     let arguments =
                         call.Arguments
                         |> List.map (fun argument ->
@@ -1066,6 +1120,10 @@ module TestNativeContractTable =
                         |> String.concat ","
 
                     $"%s{call.DeclaringType}::%s{call.Method}(%s{arguments})"
+
+                match call with
+                | NativeCall.Calls (VmCall.Direct call) -> spell call
+                | NativeCall.Calls (VmCall.InvokeThrowing call) -> $"InvokeThrowing(%s{spell call})"
                 | NativeCall.ResourceMessage -> "ResourceMessage"
             )
             |> String.concat "|"
@@ -1083,17 +1141,21 @@ module TestNativeContractTable =
 
         let call : Gen<NativeCall> =
             gen {
-                let! declaringType = name
-                let! method = name
+                // A type may have the name of the spelling of a call through `InvokeThrowing`.
+                let! declaringType = Gen.frequency [ 4, name ; 1, Gen.constant "InvokeThrowing" ]
+                let! method = Gen.frequency [ 4, name ; 1, Gen.constant "InvokeThrowing" ]
                 let! arity = Gen.choose (0, 5)
 
-                return
-                    NativeCall.Method
-                        {
-                            DeclaringType = declaringType
-                            Method = method
-                            Arguments = List.replicate arity NativeArgument.Unnamed
-                        }
+                let call =
+                    {
+                        DeclaringType = declaringType
+                        Method = method
+                        Arguments = List.replicate arity NativeArgument.Unnamed
+                    }
+
+                let! throwing = Gen.elements [ false ; true ]
+
+                return NativeCall.Calls (if throwing then VmCall.InvokeThrowing call else VmCall.Direct call)
             }
 
         let property (calls : NativeCall list) : unit =
@@ -1193,29 +1255,34 @@ module TestNativeContractTable =
 
     /// CoreCLR's `ResMgrGetString` (excep.cpp) calls .NET 10's `Environment.GetResourceStringLocal`
     /// through the binder, and .NET 11's `Environment.GetResourceString` as an
-    /// `UnmanagedCallersOnly` method.
+    /// `UnmanagedCallersOnly` method, through `InvokeThrowing`.
     [<TestCaseSource(nameof everyRuntime)>]
     let ``the resource lookup a row runs is the method the runtime's binder names for it``
         (runtime : EmulatedRuntime)
         : unit
         =
         NativeCall.resolve EmulatedRuntime.Net10 NativeCall.ResourceMessage
-        |> shouldEqual
-            {
-                DeclaringType = "System.Environment"
-                Method = "GetResourceStringLocal"
-                Arguments = [ NativeArgument.Unnamed ]
-            }
+        |> shouldEqual (
+            VmCall.Direct
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceStringLocal"
+                    Arguments = [ NativeArgument.Unnamed ]
+                }
+        )
 
         NativeCall.resolve EmulatedRuntime.Net11 NativeCall.ResourceMessage
-        |> shouldEqual
-            {
-                DeclaringType = "System.Environment"
-                Method = "GetResourceString"
-                Arguments = List.replicate 3 NativeArgument.Unnamed
-            }
+        |> shouldEqual (
+            VmCall.InvokeThrowing
+                {
+                    DeclaringType = "System.Environment"
+                    Method = "GetResourceString"
+                    Arguments = List.replicate 3 NativeArgument.Unnamed
+                }
+        )
 
-        let resolved = NativeCall.resolve runtime NativeCall.ResourceMessage
+        let resolvedCall = NativeCall.resolve runtime NativeCall.ResourceMessage
+        let resolved = resolvedCall.Target
 
         let expected =
             match runtime with
@@ -1242,6 +1309,27 @@ module TestNativeContractTable =
         callers
         |> List.forall (fun caller -> caller = "ResMgrGetString" || resMgrGetString.Calls.Contains caller)
         |> shouldEqual true
+
+        // Each caller calls it as `resolve` says.
+        let throughCaller =
+            Text.RegularExpressions.Regex (
+                $@"\bUnmanagedCallersOnlyCaller\s+(\w+)\s*\(\s*%s{expected}\s*\)"
+            )
+
+        for routine in CppSource.definitions excep do
+            if routine.Text.Contains expected then
+                let caller = throughCaller.Match routine.Text
+
+                let invokesThrowing =
+                    caller.Success
+                    && Text.RegularExpressions.Regex.IsMatch (
+                        routine.Text,
+                        $@"\b%s{caller.Groups.[1].Value}\s*\.\s*InvokeThrowing(?:_Ret)?\b"
+                    )
+
+                match resolvedCall with
+                | VmCall.Direct _ -> (routine.Name, caller.Success) |> shouldEqual (routine.Name, false)
+                | VmCall.InvokeThrowing _ -> (routine.Name, invokesThrowing) |> shouldEqual (routine.Name, true)
 
     [<Test>]
     let ``the table's reader reads back the assumptions a row holds under`` () : unit =
