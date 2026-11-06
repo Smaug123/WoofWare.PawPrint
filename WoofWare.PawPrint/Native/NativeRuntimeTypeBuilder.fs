@@ -229,6 +229,13 @@ module NativeRuntimeTypeBuilder =
             let attributes =
                 enum<MethodAttributes> (NativeCall.int32Argument operation instruction.Arguments.[5])
 
+            // `DefinePInvokeMethod` defines the row first and gives it its import afterwards, through
+            // `TypeBuilder_SetPInvokeData`; an image holding a P/Invoke row without an import is not
+            // one `MethodInfo.read` can read.
+            if attributes.HasFlag MethodAttributes.PinvokeImpl then
+                failwith
+                    $"TODO: %s{operation}: %s{name} is a P/Invoke, whose import TypeBuilder_SetPInvokeData writes in an ImplMap row after this; an emit scope has no ImplMap table yet, and MethodInfo.read refuses a P/Invoke row without one"
+
             let method, extended =
                 EmitScopeDefinitions.defineMethod owner name signature attributes held
 
@@ -273,6 +280,22 @@ module NativeRuntimeTypeBuilder =
 
             let attributes =
                 enum<MethodImplAttributes> (NativeCall.int32Argument operation instruction.Arguments.[2])
+
+            // A row with no body is one `MethodInfo.read` reads only as abstract, an InternalCall,
+            // runtime-provided, or managed IL; real .NET holds any of these until `CreateType`.
+            let row = (EmitScope.methodDefs held).[method.Rid - 1]
+            let codeType = attributes &&& MethodImplAttributes.CodeTypeMask
+
+            if
+                row.Body.IsNone
+                && not (row.Flags.HasFlag MethodAttributes.Abstract)
+                && not (attributes.HasFlag MethodImplAttributes.InternalCall)
+                && codeType <> MethodImplAttributes.Runtime
+                && (codeType <> MethodImplAttributes.IL
+                    || attributes &&& MethodImplAttributes.ManagedMask <> MethodImplAttributes.Managed)
+            then
+                failwith
+                    $"TODO: %s{operation}: the implementation flags %O{attributes} for MethodDef 0x%08x{token}, which has no body; real .NET holds such a row until CreateType, but MethodInfo.read refuses a bodiless method that is not managed IL"
 
             let extended = EmitScopeDefinitions.setMethodImplFlags method attributes held
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended

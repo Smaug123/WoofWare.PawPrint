@@ -439,6 +439,11 @@ are read but never run.
 ### 3c: left to later stages
 
 * `SetMethodIL` fills the body, which the extension check must then admit too.
+* Two rows that real .NET holds until `CreateType` are refused, because `MethodInfo.read` cannot read
+  them back from the dynamic image. Each has a parked guest. One is a P/Invoke row before
+  `TypeBuilder_SetPInvokeData` writes its import, as `DefinePInvokeMethod` defines one
+  (`TypeBuilderDefinePInvokeMethod.cs`). The other is a bodiless method given implementation flags
+  that are not managed IL (`TypeBuilderNonIlImplementationFlags.cs`).
 * A method of `<Module>` makes the module's global type loadable by `ModuleHandle_GetModuleType`
   (`NeedsGlobalMethodTable`), which then refuses it as uncreated. In CoreCLR that raises
   `TypeResolve`, and the QCall swallows the failure. No guest reads a dynamic module's global type
