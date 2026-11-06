@@ -1424,6 +1424,34 @@ module NativeRuntimeTypeQCall =
                     }
                 )
 
+            // CoreCLR keeps a value type's virtual methods in its method tables as unboxing stubs. For
+            // a generic one, by MethodDef or by MemberRef, its answer is not the definition, even on
+            // a type that is not generic: measured on `SBox<int>`, `SBox<T>` and a non-generic
+            // struct, reflection reports a generic method which is not a generic method definition,
+            // whose handle is not the definition's, and which is not equal to the `MethodInfo` that
+            // `GetMethod` returns. A non-generic virtual method on a value type is answered with the
+            // definition.
+            let refuseGenericVirtualOnValueType
+                (tokenKind : string)
+                (state : IlMachineState)
+                (method : WoofWare.PawPrint.MethodInfo<'typeGenerics, 'methodGenerics, TypeDefn>)
+                : unit
+                =
+                let declaringType = method.RequiredDeclaringType
+
+                // Classifying the declaring type walks its base chain, which must be loaded already.
+                let isValueType () : bool =
+                    LoadedTypeInfo.signatureTypeKind
+                        ctx.BaseClassTypes
+                        state.TypeSystem._LoadedAssemblies
+                        (state.TypeSystem._LoadedAssemblies
+                            .ByDefinitionName(declaringType.AssemblyFullName)
+                            .TypeDefs.[declaringType.Definition.Get]) = System.Reflection.Metadata.SignatureTypeKind.ValueType
+
+                if not method.Generics.IsEmpty && method.IsVirtual && isValueType () then
+                    failwith
+                        $"TODO: %s{operation} of %s{tokenKind} token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
+
             let state, handleValue =
                 match MetadataToken.ofInt methodToken with
                 | MetadataToken.MethodDef h ->
@@ -1453,12 +1481,8 @@ module NativeRuntimeTypeQCall =
                     // `Closed`, which is the identity the concretising path used to mint for it, so
                     // the registry dedups rather than issuing a second id.
                     //
-                    // Not modelled: for a value type CoreCLR hands back an unboxing stub for a
-                    // virtual (genmeth.cpp:1268), since the typical `S<T>` method table
-                    // canonicalises to `S<__Canon>`. PawPrint has no stub notion, and no guest can
-                    // see the difference -- every managed route to a `MethodBase` normalises
-                    // through this QCall or through the `PopulateMethods`/`PopulateConstructors`
-                    // that mint the same identity, so both sides of any comparison agree.
+                    // A generic virtual method on a value type is the exception: CoreCLR's answer is
+                    // not the definition, and PawPrint refuses it.
                     let method = assembly.Methods.[h]
 
                     let state, declaringTarget =
@@ -1468,6 +1492,8 @@ module NativeRuntimeTypeQCall =
                             assembly
                             method
                             state
+
+                    refuseGenericVirtualOnValueType "MethodDef" state method
 
                     let value, reg =
                         MethodHandleRegistry.getOrAllocateInternalHandle
@@ -1597,17 +1623,7 @@ module NativeRuntimeTypeQCall =
                                 .ByDefinitionName(declaringType.AssemblyFullName)
                                 .TypeDefs.[declaringType.Definition.Get])
 
-                    // CoreCLR keeps a value type's virtual methods in its canonical method table as
-                    // unboxing stubs, and for a generic one the answer is not the definition even on
-                    // a type that is its own canonical form: measured on `SBox<int>`, reflection
-                    // reports it generic over its own parameter, but not a generic method
-                    // definition, and not the `MethodInfo` that `GetMethod` returns.
-                    if
-                        declaringTypeKind = System.Reflection.Metadata.SignatureTypeKind.ValueType
-                        && method.IsVirtual
-                    then
-                        failwith
-                            $"TODO: %s{operation} of MemberRef token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
+                    refuseGenericVirtualOnValueType "MemberRef" state method
 
                     let declaringTypeDefn =
                         let definition = TypeDefn.FromDefinition (declaringType.Identity, declaringTypeKind)
