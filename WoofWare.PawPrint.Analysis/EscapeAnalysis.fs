@@ -658,6 +658,18 @@ type EscapeAnalysisState =
             InstanceFacts : Map<MethodInstance, LocalFacts>
         }
 
+/// What an escape analysis that has loaded a CoreLib and nothing else has worked out, from which
+/// analyses over that CoreLib and other assemblies begin (`EscapeAnalysis.over`) rather than work
+/// it out again. `EscapeAnalysis.ofCoreLib` makes one.
+type CoreLibAnalysis =
+    private
+        {
+            Analysis : EscapeAnalysisState
+        }
+
+    /// The CoreLib the analysis is over: the one a load context it begins an analysis over must hold.
+    member this.CoreLib : DumpedAssembly = this.Analysis.BaseTypes.Corelib
+
 /// <summary>
 /// Which exceptions can escape a method, computed from its IL and that of everything it calls,
 /// across assemblies, without running any of it.
@@ -861,6 +873,63 @@ module EscapeAnalysis =
                     _LoadedAssemblies = assemblies
                 }
         }
+
+    /// What `state` has worked out, to begin analyses over its CoreLib and other assemblies from
+    /// (`over`). `state` must have loaded its CoreLib and no other assembly, and that CoreLib must
+    /// reference no assembly; otherwise this raises `ArgumentException`.
+    let ofCoreLib (state : EscapeAnalysisState) : CoreLibAnalysis =
+        // Every fact the analysis keeps is about a type or method of an assembly it has loaded, and
+        // binding a CoreLib that references no assembly reaches no other. So no fact it holds
+        // depends on which other assemblies a load context holds, and loading more changes none of
+        // them.
+        let corelib = state.BaseTypes.Corelib
+        let loaded = state.TypeSystem._LoadedAssemblies
+
+        match
+            loaded.DefinitionNames
+            |> Seq.filter (fun name -> name <> corelib.DefinitionFullName)
+            |> List.ofSeq
+        with
+        | [] -> ()
+        | others ->
+            let others = String.concat ", " others
+
+            invalidArg
+                (nameof state)
+                $"The analysis has loaded %s{others} besides its CoreLib %s{corelib.DefinitionFullName}"
+
+        match loaded.TryByDefinitionName corelib.DefinitionFullName with
+        | Some held when obj.ReferenceEquals (held, corelib) -> ()
+        | _ ->
+            invalidArg
+                (nameof state)
+                $"The analysis's load context does not hold its own CoreLib %s{corelib.DefinitionFullName}"
+
+        if corelib.AssemblyReferences.Count <> 0 then
+            invalidArg
+                (nameof state)
+                $"The CoreLib %s{corelib.DefinitionFullName} references %d{corelib.AssemblyReferences.Count} assemblies, so what the analysis has worked out may depend on what they bind to"
+
+        {
+            Analysis = state
+        }
+
+    /// An analysis over the assemblies `loaded` holds, beginning from what `corelib` has worked out,
+    /// for the JIT and CPU, and allowed the assumptions, that `corelib`'s analysis was created
+    /// with. It is the analysis `create` would begin over `loaded` with those, once asked what
+    /// `corelib`'s analysis was asked. `loaded` must hold `corelib.CoreLib` itself, not another
+    /// reading of its image; otherwise this raises `ArgumentException`.
+    let over (corelib : CoreLibAnalysis) (loaded : LoadedAssemblies) : EscapeAnalysisState =
+        match loaded.TryByDefinitionName corelib.CoreLib.DefinitionFullName with
+        | Some held when obj.ReferenceEquals (held, corelib.CoreLib) -> withAssemblies corelib.Analysis loaded
+        | Some _ ->
+            invalidArg
+                (nameof loaded)
+                $"The load context holds another reading of %s{corelib.CoreLib.DefinitionFullName} than the one the CoreLib analysis is over"
+        | None ->
+            invalidArg
+                (nameof loaded)
+                $"The load context does not hold %s{corelib.CoreLib.DefinitionFullName}, the CoreLib the analysis is over"
 
     /// The CoreLib type of this namespace and name.
     let private corelibType (state : EscapeAnalysisState) (ns : string) (name : string) : ResolvedTypeIdentity =

@@ -12,6 +12,17 @@ type MalformedArgument =
     | Pointer
     | FunctionPointer
 
+/// Why CoreCLR refuses to create a generic method's instantiation
+/// (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp). It checks both in one condition,
+/// once every argument and the method's declaring type have loaded.
+[<RequireQualifiedAccess>]
+type MethodInstantiationFault =
+    /// The argument at index `argument` is one no instantiation may have.
+    | Argument of argument : int * MalformedArgument
+    /// The method declares `declared` generic parameters, and the instantiation supplies `supplied`
+    /// arguments.
+    | Arity of declared : int * supplied : int
+
 /// <summary>
 /// A type that CoreCLR's class loader refuses to load, whatever kind of type it is, or a generic
 /// method's instantiation it refuses to create, and why.
@@ -29,13 +40,12 @@ type TypeLoadRefusal =
     /// An instantiation of `definition` whose argument at index `argument` is one no instantiation may
     /// have. `TypeLoadException` (`IDS_CLASSLOAD_INVALIDINSTANTIATION`) naming the definition.
     | InvalidInstantiation of definition : ResolvedTypeIdentity * argument : int * MalformedArgument
-    /// An instantiation of the generic method `method` of `declaringType` whose argument at index
-    /// `argument` is one no instantiation may have. `BadImageFormatException`, which names neither.
+    /// An instantiation of the generic method `method` of `declaringType`, refused for `fault`.
+    /// `BadImageFormatException`, which names neither.
     | InvalidMethodInstantiation of
         declaringType : ResolvedTypeIdentity *
         method : string *
-        argument : int *
-        MalformedArgument
+        fault : MethodInstantiationFault
     /// A signature spelled `named` as `spelled`, and the definition is the other kind.
     /// `TypeLoadException` (`BFA_CLASSLOAD_VALUETYPEMISMATCH`) naming `named`.
     | KindMismatch of named : ResolvedTypeIdentity * spelled : SignatureTypeKind
@@ -62,8 +72,15 @@ module TypeLoadRefusal =
         match refusal with
         | TypeLoadRefusal.InvalidInstantiation (definition, argument, malformed) ->
             $"CoreCLR refuses to load an instantiation of %O{definition} with TypeLoadException: its argument %d{argument} is a %O{malformed}, which no instantiation may have"
-        | TypeLoadRefusal.InvalidMethodInstantiation (declaringType, method, argument, malformed) ->
-            $"CoreCLR refuses an instantiation of the generic method %s{method} of %O{declaringType} with BadImageFormatException: its argument %d{argument} is a %O{malformed}, which no instantiation may have"
+        | TypeLoadRefusal.InvalidMethodInstantiation (declaringType, method, fault) ->
+            let why =
+                match fault with
+                | MethodInstantiationFault.Argument (argument, malformed) ->
+                    $"its argument %d{argument} is a %O{malformed}, which no instantiation may have"
+                | MethodInstantiationFault.Arity (declared, supplied) ->
+                    $"the method declares %d{declared} generic parameter(s), and the instantiation names %d{supplied} argument(s)"
+
+            $"CoreCLR refuses an instantiation of the generic method %s{method} of %O{declaringType} with BadImageFormatException: %s{why}"
         | TypeLoadRefusal.KindMismatch (named, spelled) ->
             $"CoreCLR refuses to load %O{named} with TypeLoadException: a signature spells it %O{spelled}, which it is not"
         | TypeLoadRefusal.WrongArity (definition, declared, supplied) ->
