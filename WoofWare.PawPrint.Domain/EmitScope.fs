@@ -432,6 +432,13 @@ module EmitScope =
         else
             None
 
+    /// The `MethodDef` row with this RID, if the scope has one.
+    let tryMethodDefRid (rid : int) (scope : EmitScope) : MethodDefRid option =
+        if rid >= 1 && rid <= scope.MethodDefs.Count then
+            Some (MethodDefRid rid)
+        else
+            None
+
     /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
     /// emitter stores for it, without adding it.
     let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =
@@ -570,11 +577,19 @@ module EmitScope =
             Fields = scope.Fields.Add row
         }
 
+    /// A `MethodDef` row's `Flags` and `ImplFlags` columns are two bytes wide.
+    let private requireTwoBytes (operation : string) (column : string) (value : int) : unit =
+        if value < 0 || value > 0xFFFF then
+            invalidArg column $"%s{operation}: a method's %s{column} 0x%x{value} does not fit its column's two bytes"
+
+    /// Add a `MethodDef` row, whose `Flags` and `ImplFlags` must each fit the column's two bytes.
     let addMethodDef (row : MethodDefRow) (scope : EmitScope) : MethodDefRid * EmitScope =
         let operation = "EmitScope.addMethodDef"
         requireRid operation "TypeDef" scope.TypeDefs.Count row.Owner.Rid
         requireString operation scope row.Name
         requireBlob operation scope row.Signature
+        requireTwoBytes operation "Flags" (int row.Flags)
+        requireTwoBytes operation "ImplFlags" (int row.ImplFlags)
 
         match row.Body with
         | Some body when body.IsDefaultOrEmpty ->
@@ -584,6 +599,30 @@ module EmitScope =
         MethodDefRid (scope.MethodDefs.Count + 1),
         { scope with
             MethodDefs = scope.MethodDefs.Add row
+        }
+
+    /// <summary>
+    /// Set the <c>ImplFlags</c> column of a method already in the scope, the one column of a row that
+    /// CoreCLR's emitter overwrites after adding it (<c>RegMeta::SetMethodImplFlags</c>). Every other
+    /// row, and every heap, is unchanged.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The scope has no such method, or <paramref name="flags"/> does not fit the column's two bytes.
+    /// </exception>
+    let setMethodImplFlags (method : MethodDefRid) (flags : MethodImplAttributes) (scope : EmitScope) : EmitScope =
+        let operation = "EmitScope.setMethodImplFlags"
+        requireRid operation "MethodDef" scope.MethodDefs.Count method.Rid
+        requireTwoBytes operation "ImplFlags" (int flags)
+        let index = method.Rid - 1
+
+        { scope with
+            MethodDefs =
+                scope.MethodDefs.SetItem (
+                    index,
+                    { scope.MethodDefs.[index] with
+                        ImplFlags = flags
+                    }
+                )
         }
 
     let addParam (row : ParamRow) (scope : EmitScope) : ParamRid * EmitScope =

@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -249,8 +249,10 @@ definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineM
 
 * **3a, `ModuleBuilder_GetTypeRef`.** The guest then stops at `TypeBuilder_DefineType`.
 * **3b, `TypeBuilder_DefineType`.** The guest then stops at `TypeBuilder_DefineMethod`.
-* Then methods and their signatures, then the `MemberRef`s and `MethodImpl`, in the
-  order the guest reaches them.
+* **3c, `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl`**, which a `MethodBuilder`'s first
+  `MetadataToken` calls one after the other. The guest then stops in `DefineMethodOverride` at
+  `ModuleBuilder_GetMemberRefOfMethodInfo`, for `IThing.get_Value`.
+* Then the `MemberRef`s and `MethodImpl`, in the order the guest reaches them.
 
 ### 3a: what CoreCLR's emitter writes
 
@@ -377,3 +379,73 @@ CoreCLR that raises `TypeResolve`, and the QCall then swallows the failure.
 * Stage 4's `TypeBuilder_TermCreateClass` must call `WithCreatedType` before it loads the type.
 * A dynamic module's `<Module>` is loadable only once `CreateGlobalFunctions` creates it. Before that,
   modelling CoreCLR needs the `TypeResolve` event.
+
+### 3c: what CoreCLR's emitter writes
+
+Read from `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl` (vm/comdynamic.cpp),
+`RegMeta::DefineMethod`, `_SetMethodProps` and `SetMethodImplFlags` (md/compiler/emit.cpp), and measured
+on .NET 10 through `MethodBuilder.MetadataToken` and, after `CreateType`, reflection over each token:
+
+* A method's token is the next `MethodDef` RID, across types, in the order tokens are first read. The
+  emitter does not check for a duplicate (`Assembly::CreateDynamic` does not set `MDDupMethodDef`),
+  so a type's second method with the same name and signature is a second row. Measured, the same
+  holds for two global methods.
+* The row keeps the flags' low 16 bits without `mdReservedMask`. A method named `.ctor` or `.cctor`,
+  or whose name starts with `_VtblGap`, gains `RTSpecialName` and `SpecialName`; the name is
+  compared as UTF-16, case-sensitively. Its implementation flags are `miIL | miManaged`, and it has
+  no body.
+* A nil parent token (`mdTokenNil` or `mdTypeDefNil`, what `ModuleBuilder`'s global type passes) is
+  the module's `<Module>` (`IsGlobalMethodParent`).
+* `SetMethodImpl` overwrites the row's implementation flags with their low 16 bits. The managed
+  caller calls it straight after `DefineMethod`, and again from `SetImplementationFlags`, which
+  refuses a created type.
+
+### 3c: a row's column filled in later
+
+`SetMethodImpl` changes a row it has already added, which stage 2's extension check refused as a
+rewritten row. **Chosen (2026-11-06): the check admits a fill.** A method row of `before` that differs
+in `after` only in its implementation flags is a fill. That is no violation while the method's type
+is not created, and `FilledInCreatedType` once it is. Any other difference in the row is still
+`RowChanged`. That is CoreCLR's own model: its record is overwritten in place. The alternative was to
+keep the scope append-only by logging each fill as a row of its own and letting the writer apply the
+last. But the image would still read the earlier row back changed, so nothing that reads the image
+would gain, and the scope would have two places for one column. Prefix stability and the history
+properties now leave out that column, and the appending property counts a fill of a created type
+among the changes it must report. `SetMethodIL` will add the body to the fillable columns.
+
+### 3c: a method that has no body yet
+
+A defined method has no body until `SetMethodIL`, and `MethodInfo.read` refused an IL method with RVA
+0, so the dynamic image failed at the first `MetadataToken`. #2132 classifies such a method as
+`MethodBody.MissingIl`, as CoreCLR treats it: the type loads, and only invoking the method fails.
+Nothing loads a type of a dynamic module before `CreateType`, which needs every body, so 3c's rows
+are read but never run.
+
+### 3c: the oracle
+
+* Over generated sequences of definitions and fills, against a model of `DefineMethod` and
+  `SetMethodImplFlags`: names that are and are not special (including `.CTOR`, `_VtblGa` and a lone
+  surrogate after `.ctor`), random 32-bit flags, and repeated names and signatures.
+* `EmitScope.addMethodDef` and `setMethodImplFlags` refuse flags wider than the column.
+* The extension check's appending property, over generated scopes that now fill implementation flags.
+* `TypeBuilderDefineMethod.cs` checks nine tokens against constants measured on .NET 10, which exits
+  0 on it: duplicates, a signature naming a `TypeRef` and a `TypeDef`, the special names, the
+  reserved and high bits, a global method, and a constructor. Its terminal-state check reads each
+  row's owner, name, flags, implementation flags and signature, which .NET 10 reports for each token
+  after `CreateType`.
+* All 19 mutants are caught: of the Domain functions, `EmitScope`'s column checks, the extension
+  check's fill rule, and the two handlers.
+
+### 3c: left to later stages
+
+* `SetMethodIL` fills the body, which the extension check must then admit too.
+* Two rows that real .NET holds until `CreateType` are refused, because `MethodInfo.read` cannot read
+  them back from the dynamic image. Each has a parked guest. One is a P/Invoke row before
+  `TypeBuilder_SetPInvokeData` writes its import, as `DefinePInvokeMethod` defines one
+  (`TypeBuilderDefinePInvokeMethod.cs`). The other is a bodiless method given implementation flags
+  that are not managed IL (`TypeBuilderNonIlImplementationFlags.cs`).
+* A method of `<Module>` makes the module's global type loadable by `ModuleHandle_GetModuleType`
+  (`NeedsGlobalMethodTable`), which then refuses it as uncreated. In CoreCLR that raises
+  `TypeResolve`, and the QCall swallows the failure. No guest reads a dynamic module's global type
+  before `CreateGlobalFunctions` yet.
+

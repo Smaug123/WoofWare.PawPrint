@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
 
 open NativeRuntimeTypeHelpers
@@ -10,6 +11,34 @@ open NativeRuntimeTypeHelpers
 module NativeRuntimeTypeBuilder =
     /// `mdtTypeDef`, the table byte of a `TypeDef` token.
     let private typeDefTable : int = 0x02
+
+    /// `mdtMethodDef`, the table byte of a `MethodDef` token.
+    let private methodDefTable : int = 0x06
+
+    /// The dynamic module's scope, which only a `RuntimeModuleBuilder`'s module has.
+    let private dynamicScope (operation : string) (moduleName : string) (state : IlMachineState) : EmitScope =
+        match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
+        | Some scope -> scope
+        | None ->
+            failwith
+                $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+
+    /// The type a method's parent token names, as `RegMeta::DefineMethod` reads it: a nil token
+    /// (`mdTokenNil` or `mdTypeDefNil`, which `ModuleBuilder`'s global type passes) is the module's
+    /// `<Module>` (`IsGlobalMethodParent`), and any other is a `TypeDef` of the module.
+    let private methodParent (operation : string) (token : int) (scope : EmitScope) : TypeDefRid =
+        let rid =
+            if token = 0 || token = (typeDefTable <<< 24) then
+                1
+            elif token >>> 24 &&& 0xFF = typeDefTable then
+                token &&& 0x00FFFFFF
+            else
+                failwith
+                    $"%s{operation}: the parent 0x%08x{token} is not a TypeDef token, and the managed caller passes only its TypeBuilder's"
+
+        match EmitScope.tryTypeDefRid rid scope with
+        | Some typeDef -> typeDef
+        | None -> failwith $"%s{operation}: the parent 0x%08x{token} names no TypeDef row of the module's scope"
 
     /// The type a `TypeDefOrRef` token names in `scope`. `None` for a nil token (RID 0), as
     /// `IsNilToken` reads one.
@@ -77,12 +106,7 @@ module NativeRuntimeTypeBuilder =
                     state
                     (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
 
-            let held =
-                match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
-                | Some scope -> scope
-                | None ->
-                    failwith
-                        $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+            let held = dynamicScope operation moduleName state
 
             let fullName =
                 match NativeCall.managedPointerOfPointerArgument operation "fullname" instruction.Arguments.[1] with
@@ -157,4 +181,124 @@ module NativeRuntimeTypeBuilder =
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        | "TypeBuilder_DefineMethod",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "MethodAttributes", attributesGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty && attributesGenerics.IsEmpty
+            ->
+            let operation = "TypeBuilder_DefineMethod"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+
+            let owner =
+                methodParent operation (NativeCall.int32Argument operation instruction.Arguments.[1]) held
+
+            let name =
+                match NativeCall.managedPointerOfPointerArgument operation "wszName" instruction.Arguments.[2] with
+                | ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: a null method name; the managed caller refuses a null name"
+                | namePtr -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+
+            // The managed caller passes its signature buffer, which may be longer than the signature.
+            let signature =
+                NativeCall.readCountedBytes
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    (NativeCall.managedPointerOfPointerArgument operation "pSignature" instruction.Arguments.[3])
+                    (NativeCall.int32Argument operation instruction.Arguments.[4])
+                |> ImmutableArray.CreateRange
+
+            let attributes =
+                enum<MethodAttributes> (NativeCall.int32Argument operation instruction.Arguments.[5])
+
+            // `DefinePInvokeMethod` defines the row first and gives it its import afterwards, through
+            // `TypeBuilder_SetPInvokeData`; an image holding a P/Invoke row without an import is not
+            // one `MethodInfo.read` can read.
+            if attributes.HasFlag MethodAttributes.PinvokeImpl then
+                failwith
+                    $"TODO: %s{operation}: %s{name} is a P/Invoke, whose import TypeBuilder_SetPInvokeData writes in an ImplMap row after this; an emit scope has no ImplMap table yet, and MethodInfo.read refuses a P/Invoke row without one"
+
+            let method, extended =
+                EmitScopeDefinitions.defineMethod owner name signature attributes held
+
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 ((methodDefTable <<< 24) ||| method.Rid)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | "TypeBuilder_SetMethodImpl",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "MethodImplAttributes", attributesGenerics) ],
+          MethodReturnType.Void when moduleGenerics.IsEmpty && attributesGenerics.IsEmpty ->
+            let operation = "TypeBuilder_SetMethodImpl"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+            let token = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let method =
+                if token >>> 24 &&& 0xFF <> methodDefTable then
+                    failwith
+                        $"%s{operation}: 0x%08x{token} is not a MethodDef token, and the managed caller passes only its MethodBuilder's"
+
+                match EmitScope.tryMethodDefRid (token &&& 0x00FFFFFF) held with
+                | Some method -> method
+                | None -> failwith $"%s{operation}: 0x%08x{token} names no MethodDef row of the module's scope"
+
+            let attributes =
+                enum<MethodImplAttributes> (NativeCall.int32Argument operation instruction.Arguments.[2])
+
+            // A row with no body is one `MethodInfo.read` reads only as abstract, an InternalCall,
+            // runtime-provided, or managed IL; real .NET holds any of these until `CreateType`.
+            let row = (EmitScope.methodDefs held).[method.Rid - 1]
+            let codeType = attributes &&& MethodImplAttributes.CodeTypeMask
+
+            if
+                row.Body.IsNone
+                && not (row.Flags.HasFlag MethodAttributes.Abstract)
+                && not (attributes.HasFlag MethodImplAttributes.InternalCall)
+                && codeType <> MethodImplAttributes.Runtime
+                && (codeType <> MethodImplAttributes.IL
+                    || attributes &&& MethodImplAttributes.ManagedMask <> MethodImplAttributes.Managed)
+            then
+                failwith
+                    $"TODO: %s{operation}: the implementation flags %O{attributes} for MethodDef 0x%08x{token}, which has no body; real .NET holds such a row until CreateType, but MethodInfo.read refuses a bodiless method that is not managed IL"
+
+            let extended = EmitScopeDefinitions.setMethodImplFlags method attributes held
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

@@ -435,6 +435,7 @@
     <Compile Include="TestEmitScopeExtension.fs" />
     <Compile Include="TestEmitScopeReferences.fs" />
     <Compile Include="TestEmitScopeDefinitions.fs" />
+    <Compile Include="TestEmitScopeMethods.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
