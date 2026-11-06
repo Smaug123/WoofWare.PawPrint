@@ -118,13 +118,23 @@ module TestTypeLoadValidity =
 
     let private int32 : Signature = Signature.Primitive 0x08uy
 
-    /// A generic method `static void M<T0, T1>()` of the fixture's image.
+    /// A method of the fixture's image that a MethodSpec names: the generic `static void M<T0, T1>()`,
+    /// or the non-generic `static void N()`.
     [<RequireQualifiedAccess>]
     type private Callee =
         /// `Calls.M`, of a class that loads.
         | Calls
         /// `Stray.M`, of a class whose base type, CoreLib's `System.Absent`, does not exist.
         | Stray
+        /// `Calls.N`, which declares no generic parameter.
+        | NonGeneric
+
+    /// How many generic parameters the callee declares.
+    let private declaredArity (callee : Callee) : int =
+        match callee with
+        | Callee.Calls
+        | Callee.Stray -> 2
+        | Callee.NonGeneric -> 0
 
     /// A MethodSpec: `callee` at `arguments`, however many there are.
     type private Instantiation =
@@ -141,7 +151,8 @@ module TestTypeLoadValidity =
         }
 
     /// The image: `Holder`1`, `Klass`1`, `Pair`2`, `Plain`, `Outer`1` (enclosing the enum `E`),
-    /// `Ref`, `Orphan`1`, and `Calls` and `Stray`, which each declare `static void M<T0, T1>()`; then
+    /// `Ref`, `Orphan`1`, and `Calls` and `Stray`, which each declare `static void M<T0, T1>()`, and of
+    /// which `Calls` declares `static void N()` too; then
     /// one TypeSpec per signature, and one MethodSpec per instantiation, whose tokens are returned in
     /// order. A `legacy` image's
     /// metadata table stream says it is version 1.0, for which CoreCLR overlooks a mismatched
@@ -261,25 +272,33 @@ module TestTypeLoadValidity =
         let bodies = BlobBuilder ()
         let bodyEncoder = MethodBodyStreamEncoder bodies
 
-        let addM () : MethodDefinitionHandle option =
+        // A static method returning void and taking nothing, generic over `parameters` parameters.
+        let addMethod (name : string) (parameters : int) : MethodDefinitionHandle option =
             if legacy then
                 None
             else
                 let il = InstructionEncoder (BlobBuilder ())
                 il.OpCode ILOpCode.Ret
 
+                let signature =
+                    if parameters = 0 then
+                        [| 0x00uy ; 0uy ; 0x01uy |]
+                    else
+                        [| 0x10uy ; byte parameters ; 0uy ; 0x01uy |]
+
                 let m =
                     md.AddMethodDefinition (
                         MethodAttributes.Public ||| MethodAttributes.Static,
                         MethodImplAttributes.IL,
-                        text "M",
-                        // A generic method of two parameters, returning void and taking nothing.
-                        md.GetOrAddBlob [| 0x10uy ; 2uy ; 0uy ; 0x01uy |],
+                        text name,
+                        md.GetOrAddBlob signature,
                         bodyEncoder.AddMethodBody il,
                         MetadataTokens.ParameterHandle 1
                     )
 
-                parameterOwners.Add (MethodDefinitionHandle.op_Implicit m, 2)
+                if parameters > 0 then
+                    parameterOwners.Add (MethodDefinitionHandle.op_Implicit m, parameters)
+
                 nextMethod <- nextMethod + 1
                 Some m
 
@@ -287,9 +306,10 @@ module TestTypeLoadValidity =
             TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed
 
         addType "Calls" staticClass (core "Object") 0 |> ignore // row 10
-        let callsM = addM ()
+        let callsM = addMethod "M" 2
+        let callsN = addMethod "N" 0
         addType "Stray" staticClass (core "Absent") 0 |> ignore // row 11
-        let strayM = addM ()
+        let strayM = addMethod "M" 2
 
         for owner, parameters in parameterOwners |> Seq.sortBy (fst >> CodedIndex.TypeOrMethodDef) do
             for parameter in 0 .. parameters - 1 do
@@ -368,6 +388,7 @@ module TestTypeLoadValidity =
                     match instantiation.Callee with
                     | Callee.Calls -> callsM
                     | Callee.Stray -> strayM
+                    | Callee.NonGeneric -> callsN
 
                 let handle : EntityHandle =
                     md.AddMethodSpecification (MethodDefinitionHandle.op_Implicit m.Value, md.GetOrAddBlob builder)
@@ -827,7 +848,7 @@ module TestTypeLoadValidity =
 
         assertAgree signatures outcomes
 
-    /// Instantiations of `M<T0, T1>` the host was measured on while designing these checks, with what
+    /// MethodSpecs of `M<T0, T1>` and `N` the host was measured on while designing these checks, with what
     /// it gave under a context of one type parameter (`int`) and one method parameter (`string`).
     /// Every argument is loaded before the instantiation is checked, and the method's declaring type
     /// is loaded too, so an argument or a declaring type that fails to load is the failure wherever
@@ -845,6 +866,12 @@ module TestTypeLoadValidity =
         let stray (arguments : Signature list) : Instantiation =
             {
                 Callee = Callee.Stray
+                Arguments = arguments
+            }
+
+        let nonGeneric (arguments : Signature list) : Instantiation =
+            {
+                Callee = Callee.NonGeneric
                 Arguments = arguments
             }
 
@@ -876,8 +903,15 @@ module TestTypeLoadValidity =
             Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
             calls [ int32 ; int32 ; Signature.Nominal (false, Target.Head Head.Orphan) ], absent
             calls [ Signature.TypeParameter 5 ], Outcome.BadImageFormat
+            // A MethodSpec of no arguments is read, and refused as any other of the wrong arity is.
+            calls [], Outcome.BadImageFormat
+            // A MethodSpec of a non-generic method: no arguments is the method itself.
+            nonGeneric [], Outcome.Loads
+            nonGeneric [ int32 ], Outcome.BadImageFormat
+            nonGeneric [ klass (Signature.Pointer int32) ], Outcome.TypeLoad (Rule.InvalidInstantiation, "Klass`1")
             // A declaring type that does not load.
             stray [ int32 ; int32 ], absent
+            stray [], absent
             stray [ int32 ], absent
             stray [ Signature.Pointer int32 ; int32 ], absent
             stray [ int32 ; int32 ; klass (Signature.Pointer int32) ],
@@ -1026,9 +1060,22 @@ module TestTypeLoadValidity =
 
                 let instantiation =
                     gen {
-                        let! callee = Gen.frequency [ 6, Gen.constant Callee.Calls ; 1, Gen.constant Callee.Stray ]
+                        let! callee =
+                            Gen.frequency
+                                [
+                                    6, Gen.constant Callee.Calls
+                                    1, Gen.constant Callee.Stray
+                                    1, Gen.constant Callee.NonGeneric
+                                ]
 
-                        let! arity = Gen.frequency [ 6, Gen.constant 2 ; 1, Gen.constant 1 ; 1, Gen.constant 3 ]
+                        let! arity =
+                            Gen.frequency
+                                [
+                                    6, Gen.constant (declaredArity callee)
+                                    1, Gen.constant 0
+                                    1, Gen.constant 1
+                                    1, Gen.constant 3
+                                ]
 
                         let! arguments = Gen.listOfLength arity argument
 
@@ -1070,7 +1117,7 @@ module TestTypeLoadValidity =
                     outcome.Host = Outcome.BadImageFormat
                     && not (instantiation.Arguments |> List.exists mentionsParameter)
                 then
-                    if instantiation.Arguments.Length = 2 then
+                    if instantiation.Arguments.Length = declaredArity instantiation.Callee then
                         refusedForAnArgument <- refusedForAnArgument + 1
                     else
                         refusedForArity <- refusedForArity + 1
