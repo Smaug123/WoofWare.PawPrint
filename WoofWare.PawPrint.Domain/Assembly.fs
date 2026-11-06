@@ -1658,6 +1658,7 @@ module Assembly =
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
                     Console.WriteLine $"<runtime-provided: unclassified ({name})>"
                 | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"
+                | MethodBody.MissingIl -> Console.WriteLine "<IL method with no body: RVA 0>"
 
     let resolveTypeIdentityDefinition
         (assy : DumpedAssembly)

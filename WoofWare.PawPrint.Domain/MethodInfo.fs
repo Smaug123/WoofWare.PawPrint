@@ -326,6 +326,16 @@ type MethodBody =
     /// </summary>
     | Abstract
 
+    /// <summary>
+    /// An IL method, not abstract, whose row names no body (its RVA is 0). A dynamic module's method
+    /// is this from <c>TypeBuilder_DefineMethod</c> until <c>TypeBuilder_SetMethodIL</c>; in any
+    /// other image it is malformed. CoreCLR does not refuse it when it loads the type: the method
+    /// fills its slot as any implementation does, reflection lists it with a null
+    /// <c>GetMethodBody()</c>, and a delegate binds to it. Only invoking it fails, with
+    /// <c>BadImageFormatException</c>, when the JIT finds no IL (measured on .NET 10).
+    /// </summary>
+    | MissingIl
+
 [<RequireQualifiedAccess>]
 module MethodBody =
     let tryIl (body : MethodBody) : MethodInstructions option =
@@ -334,7 +344,8 @@ module MethodBody =
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _
-        | MethodBody.Abstract -> None
+        | MethodBody.Abstract
+        | MethodBody.MissingIl -> None
 
 
 /// <summary>
@@ -1380,9 +1391,9 @@ module MethodInfo =
                     // Runtime / InternalCall when RVA = 0, but C# 12+ [UnsafeAccessor] extern
                     // static methods land here too: ImplAttributes is IL, MethodAttributes
                     // doesn't include PinvokeImpl/Abstract, and the body is synthesised by the
-                    // runtime from the attribute. Recognise that case explicitly; anything else
-                    // is genuinely unexpected and we fail loudly so we surface the gap rather
-                    // than silently synthesising an Abstract method.
+                    // runtime from the attribute. Without that attribute, a managed IL method
+                    // has no body at all, which CoreCLR refuses only when it is invoked; any
+                    // other code type is unexpected, and we fail loudly to surface the gap.
                     match tryReadUnsafeAccessor metadataReader methodDef with
                     | Some (rawKind, targetName, hasTypeNameOverrides) ->
                         let kind =
@@ -1403,9 +1414,14 @@ module MethodInfo =
                             MethodBody.RuntimeProvided (
                                 RuntimeBehaviour.UnsafeAccessorInvalidKind (rawKind, hasTypeNameOverrides)
                             )
+                    | None when
+                        implAttrs &&& MethodImplAttributes.CodeTypeMask = MethodImplAttributes.IL
+                        && implAttrs &&& MethodImplAttributes.ManagedMask = MethodImplAttributes.Managed
+                        ->
+                        MethodBody.MissingIl
                     | None ->
                         failwith
-                            $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag and no [UnsafeAccessor] attribute (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"
+                            $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag, no [UnsafeAccessor] attribute, and not managed IL (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"
 
         let declaringTypeGenericParams =
             metadataReader.GetTypeDefinition(declaringType).GetGenericParameters ()

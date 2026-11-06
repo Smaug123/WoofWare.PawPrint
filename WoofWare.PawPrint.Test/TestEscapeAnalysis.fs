@@ -14539,6 +14539,36 @@ public static class Runners
                     }
             )
 
+    /// A method whose row is managed IL with no body has no IL to follow. CoreCLR raises
+    /// `BadImageFormatException` when it is invoked, which the analysis does not model.
+    [<Test>]
+    let ``a method with no IL is opaque for want of a body`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let assembly =
+            Assembly.read
+                loggerFactory
+                (Some $"%s{MethodWithoutIlImage.name}.dll")
+                (new MemoryStream (MethodWithoutIlImage.fabricate ()))
+
+        let analysis = analysisOver [ assembly ] id
+        let key = methodNamed assembly "Holder" "NoBody"
+        let _, escapes = EscapeAnalysis.escapes analysis key
+        escapes.Unknown |> shouldEqual true
+
+        let _, sources = EscapeAnalysis.unknownSources analysis key
+
+        sources
+        |> shouldEqual (
+            Set.singleton
+                {
+                    Method = key
+                    Offset = None
+                    Reason = Opacity.MissingBody
+                    Names = None
+                }
+        )
+
     /// Where the object a `throw` raises comes from, in an emitted method.
     [<RequireQualifiedAccess>]
     type private Raise =

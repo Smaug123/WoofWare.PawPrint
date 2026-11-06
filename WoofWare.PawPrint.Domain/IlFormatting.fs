@@ -501,6 +501,7 @@ module IlFormatting =
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]
         | MethodBody.Abstract -> [ header ; "  // No IL body (abstract)" ]
+        | MethodBody.MissingIl -> [ header ; "  // No IL body (an IL method whose RVA is 0)" ]
         | MethodBody.Il instructions ->
             let localLines =
                 match instructions.LocalVars with

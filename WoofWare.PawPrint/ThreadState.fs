@@ -799,6 +799,9 @@ type ThreadState =
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> None
+        | MethodBody.MissingIl ->
+            failwith
+                $"ThreadState.peekNextOp: reached %s{MethodOwner.describe frame.ExecutingMethod.Owner}.%s{frame.ExecutingMethod.Name}, an IL method whose row names no body; callMethod refuses to push a frame for one."
         | MethodBody.Abstract ->
             failwith
                 $"ThreadState.peekNextOp: reached abstract method %s{MethodOwner.describe frame.ExecutingMethod.Owner}.%s{frame.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override."
