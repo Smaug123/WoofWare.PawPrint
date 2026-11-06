@@ -464,7 +464,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, it stops in `ModuleBuilder.DefineType` at `TypeBuilder_DefineType`; each stage of the plan takes it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing` and the TypeDef of `Thing`, it stops in `TypeBuilder.DefineMethod` at `TypeBuilder_DefineMethod`; each stage of the plan takes it a QCall further."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -1146,6 +1146,56 @@ module TestImpureCases =
                 // Never opened, so the `unlink` itself has to free it.
                 name "plain", file "never opened"
             ]
+
+    /// `TypeBuilderDefineType.cs` has defined five types, none of them created. A guest cannot read a
+    /// TypeDef row's parent, flags or interfaces until `CreateType`, so this checks the rows its
+    /// dynamic module's scope ends with: the TypeRefs are IThing (1), IDisposable (2), object (3)
+    /// and string (4), and each refused definition added nothing.
+    let private assertDefinedTypeRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let typeRef (rid : int) =
+            Some (TypeDefOrRef.TypeRef (TypeRefRid rid))
+
+        EmitScope.typeDefs scope
+        |> Seq.map (fun row ->
+            EmitScope.stringAt row.Namespace scope, EmitScope.stringAt row.Name scope, row.Flags, row.Extends
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                "", "<Module>", System.Reflection.TypeAttributes.NotPublic, None
+                "N", "A", System.Reflection.TypeAttributes.Public, typeRef 3
+                "", "B", System.Reflection.TypeAttributes.NotPublic, typeRef 3
+                "",
+                "I",
+                System.Reflection.TypeAttributes.Public
+                ||| System.Reflection.TypeAttributes.Interface
+                ||| System.Reflection.TypeAttributes.Abstract,
+                None
+                "", "C", System.Reflection.TypeAttributes.Public, Some (TypeDefOrRef.TypeDef (TypeDefRid 2))
+                "D.E",
+                "F",
+                System.Reflection.TypeAttributes.Public
+                ||| System.Reflection.TypeAttributes.Sealed,
+                typeRef 3
+            ]
+
+        EmitScope.interfaceImpls scope
+        |> Seq.map (fun row -> row.Class, row.Interface)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 2)
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                TypeDefRid 5, TypeDefOrRef.TypeDef (TypeDefRid 4)
+            ]
+
+        (EmitScope.typeRefs scope).Count |> shouldEqual 4
 
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
@@ -4358,6 +4408,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
+            }
+            {
+                // `TypeBuilder_DefineType`, through `ModuleBuilder.DefineType`: the TypeDef and
+                // InterfaceImpl rows a dynamic module gains, and the emitter's own duplicate check,
+                // before any type is created; `assertDefinedTypeRows` checks the rows no guest can
+                // read yet. Dynamic-code switch overridden to true like its
+                // siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderDefineType.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertDefinedTypeRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,

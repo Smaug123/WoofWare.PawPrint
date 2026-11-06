@@ -324,6 +324,7 @@ module AllConcreteTypes =
         findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
 
     let private intern
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -332,6 +333,19 @@ module AllConcreteTypes =
 
         if this.ReverseIndex.ContainsKey key then
             failwith $"BUG: %O{ct} is already interned; a caller must look it up before adding it"
+
+        // `ClassLoader::LoadTypeDefThrowing` does not load a type of a dynamic module that is not
+        // yet created: it raises the AppDomain's TypeResolve event, whose handler may name another
+        // assembly that holds a type of that name.
+        if loaded.IsUncreatedDynamicType ct.Identity then
+            let name =
+                if ct.Namespace = "" then
+                    ct.Name
+                else
+                    $"%s{ct.Namespace}.%s{ct.Name}"
+
+            failwith
+                $"TODO: loading %s{name}, TypeDef 0x%08x{Ecma335.MetadataTokens.GetToken (EntityHandle.op_Implicit ct.Identity.TypeDefinition.Get)} of the dynamic assembly %s{ct.Identity.AssemblyFullName}, which CreateType has not created; CoreCLR raises the TypeResolve event for it instead of loading it"
 
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
@@ -384,17 +398,19 @@ module AllConcreteTypes =
     /// arguments must already be interned.
     let add
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : Result<ConcreteTypeHandle * AllConcreteTypes, TypeLoadRefusal>
         =
         match malformedArgument baseClassTypes this ct.Generics with
         | Some (index, malformed) -> Error (TypeLoadRefusal.InvalidInstantiation (ct.Identity, index, malformed))
-        | None -> Ok (intern ct this)
+        | None -> Ok (intern loaded ct this)
 
     /// Intern `ct`, a non-generic type, which must not already be interned. No rule `add` checks
     /// can refuse it.
     let addNonGeneric
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -402,7 +418,7 @@ module AllConcreteTypes =
         if not ct.Generics.IsEmpty then
             failwith $"BUG: %O{ct} is an instantiation; intern it with `add`, which checks its arguments"
 
-        intern ct this
+        intern loaded ct this
 
 // Active patterns for matching concrete types
 
@@ -817,7 +833,7 @@ module TypeConcretization =
             ConcreteType.makeFromIdentity identity ns name ImmutableArray.Empty
 
         let handle, newConcreteTypes =
-            AllConcreteTypes.addNonGeneric concreteType ctx.ConcreteTypes
+            AllConcreteTypes.addNonGeneric ctx.LoadedAssemblies concreteType ctx.ConcreteTypes
 
         let newCtx =
             { ctx with
@@ -870,6 +886,7 @@ module TypeConcretization =
             match
                 AllConcreteTypes.add
                     ctx.BaseTypes
+                    ctx.LoadedAssemblies
                     (ConcreteType.makeFromIdentity identity ns name generics)
                     ctx.ConcreteTypes
             with
@@ -2447,13 +2464,15 @@ module Concretization =
     ///
     /// `typeArgs` instantiates the declaring type and must have exactly one handle per generic
     /// parameter it declares (counting those a nested type inherits from its declaring types);
-    /// `methodArgs` likewise must have exactly one handle per generic parameter of the method.
-    /// Any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
+    /// any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
+    /// `methodArgs` is the method's instantiation, and each of its handles must be interned in `ctx`.
     ///
     /// A type the method names that does not bind is the result's failure, with what was loaded
-    /// and registered before it. So is an instantiation CoreCLR refuses to create, one with a byref,
-    /// `TypedReference`, `void`, pointer or function-pointer argument. Each of `methodArgs` must be
-    /// interned in `ctx`.
+    /// and registered before it. So is an instantiation CoreCLR refuses to create: one with a
+    /// handle other than one per generic parameter of the method, or with a byref,
+    /// `TypedReference`, `void`, pointer or function-pointer argument. A generic method named with
+    /// no instantiation at all is not such an instantiation, and a caller must not pass it here as
+    /// an empty `methodArgs`.
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly : IAssemblyLoad)
@@ -2494,14 +2513,6 @@ module Concretization =
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
             }
-
-        // Checked up front, before the signature is concretized against `methodArgs`: a short list
-        // would otherwise surface as "generic method parameter out of range" from whichever
-        // signature position first mentions the missing parameter, and a long one would not
-        // surface at all.
-        if method.Generics.Length <> methodArgs.Length then
-            failwith
-                $"Method %s{declaringType.Namespace}.%s{declaringType.Name}.%s{method.Name} in %s{declaringType.AssemblyFullName} declares %d{method.Generics.Length} generic parameter(s), but %d{methodArgs.Length} method argument(s) were supplied"
 
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
@@ -2561,12 +2572,20 @@ module Concretization =
 
         // CoreCLR checks the method's instantiation once its arguments and declaring type are loaded,
         // and before it reads the method's signature
-        // (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp).
-        match AllConcreteTypes.malformedArgument baseTypes concCtx.ConcreteTypes methodArgs with
-        | Some (index, malformed) ->
+        // (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp). Both faults raise the
+        // same exception; the arity is tested first, as there.
+        let fault =
+            if method.Generics.Length <> methodArgs.Length then
+                Some (MethodInstantiationFault.Arity (method.Generics.Length, methodArgs.Length))
+            else
+                AllConcreteTypes.malformedArgument baseTypes concCtx.ConcreteTypes methodArgs
+                |> Option.map MethodInstantiationFault.Argument
+
+        match fault with
+        | Some fault ->
             stopped
                 (TypeBindingFailure.Refused (
-                    TypeLoadRefusal.InvalidMethodInstantiation (declaringType.Identity, method.Name, index, malformed)
+                    TypeLoadRefusal.InvalidMethodInstantiation (declaringType.Identity, method.Name, fault)
                 ))
                 concCtx
         | None ->

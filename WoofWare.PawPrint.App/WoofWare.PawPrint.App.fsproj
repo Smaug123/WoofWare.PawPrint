@@ -27,7 +27,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.2" />
-    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.5" />
+    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.8" />
   </ItemGroup>
 
 </Project>

@@ -17,10 +17,10 @@ open System.Numerics
 /// bit-for-bit between libm implementations, so a run recorded on one machine could replay
 /// differently on another — silently, and only in the last bit, which is the worst failure
 /// mode this project has. Everything here is therefore computed in-tree, from integer
-/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling`, `truncate`
-/// and `round` are exceptions to the *motivation* rather than to the rule: all four are exactly
-/// specified, so the host would have agreed anyway. See their own comments for why they are
-/// here.)
+/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling`, `floor`,
+/// `truncate` and `round` are exceptions to the *motivation* rather than to the rule: all five
+/// are exactly specified, so the host would have agreed anyway. See their own comments for why
+/// they are here.)
 ///
 /// The strategy is to carry far more precision than a double needs and round once at the
 /// end. Intermediate reals are held as `BigInteger` fixed-point values scaled by
@@ -158,8 +158,12 @@ module DeterministicMath =
         let result = float rounded * twoPow ulpExponent
         if isNegative then -result else result
 
-    /// log2 of a strictly positive finite `x`, in fixed point.
-    let internal log2 (x : float) : BigInteger =
+    /// A strictly positive finite `x` as `m * 2^e` with `m` in [sqrt(1/2), sqrt 2), returned as
+    /// `(e, ln m)` with `ln m` in fixed point. Centring `m` on 1 rather than taking it from
+    /// [1, 2) is what keeps `ln m` small exactly when `ln x` is: an `x` just below 1 comes out
+    /// as `e = 0` and an `m` just below 1, rather than as `e = -1` and an `m` just below 2,
+    /// whose two contributions would cancel.
+    let private reduceForLogarithm (x : float) : int * BigInteger =
         let mantissa, exponent = decompose x
         let bitLength = int (mantissa.GetBitLength ())
 
@@ -177,7 +181,11 @@ module DeterministicMath =
 
         // ln m = 2 * atanh((m - 1) / (m + 1)), and the ratio is exact in integers.
         let s = ofRatio (mantissa - denominator) (mantissa + denominator)
-        let lnMantissa = BigInteger 2 * atanh s
+        e, BigInteger 2 * atanh s
+
+    /// log2 of a strictly positive finite `x`, in fixed point.
+    let internal log2 (x : float) : BigInteger =
+        let e, lnMantissa = reduceForLogarithm x
 
         // A power of two takes s = 0 exactly, so log2 comes out exactly integral there.
         (BigInteger e <<< fractionBits) + divFixed lnMantissa lnTwo
@@ -411,6 +419,44 @@ module DeterministicMath =
 
         if signIsNegative then -result else result
 
+    /// The natural logarithm of `x`, with the semantics of C99 `log` (C17 F.10.3.7) — which is
+    /// what CoreCLR's `Math.Log` inherits from the platform C library.
+    ///
+    /// Accuracy: `ln x = e ln 2 + ln m` with `m` in [sqrt(1/2), sqrt 2), each term in fixed
+    /// point. `ln m` and `ln 2` each come from an `atanh` series whose truncations cost a few
+    /// hundred units of 2^-`fractionBits`, so under 2^-247 apiece; `|e|` is at most 1075, so
+    /// the sum is off by under 2^-236. Relative to the answer that is under 2^-234 when `e` is
+    /// non-zero, since `|ln x|` is then at least `ln 2 / 2`, and under 2^-194 when `e` is zero,
+    /// since the smallest `|ln x|` of any double other than 1 is about 2^-53, at its
+    /// neighbours. The result is therefore correctly rounded unless the true value lies within
+    /// 2^-194 relative of a midpoint between two doubles. It never lies exactly on one: a
+    /// midpoint is rational, and by Lindemann–Weierstrass the logarithm of a rational other
+    /// than 1 is not. Whether some double comes that close is the table maker's dilemma, which
+    /// an error budget alone cannot settle; heuristically, the expected number of such doubles
+    /// is about 2^-78.
+    let log (x : float) : float =
+        // No case overrides a NaN operand, so as for `cos` no separate signalling test is
+        // needed: `quieted` is the identity on a NaN that is already quiet.
+        if Double.IsNaN x then
+            quieted x
+        elif x = 0.0 then
+            // A pole rather than a domain error, and the same for both zeros: F.10.3.7 gives
+            // log(±0) = -infinity. This must precede the negative case, which -0 would
+            // otherwise fall into.
+            -infinity
+        elif Double.IsNegative x then
+            // Every other negative, including -infinity, is a domain error.
+            quietNaN
+        elif Double.IsPositiveInfinity x then
+            infinity
+        else
+
+        let e, lnMantissa = reduceForLogarithm x
+
+        // x = 1 takes e = 0 and m = 1 exactly, so this is exactly zero there, and
+        // `roundToDouble` gives the +0 that F.10.3.7 asks for.
+        roundToDouble ((BigInteger e * lnTwo) + lnMantissa) -fractionBits
+
     /// The integer square root of a non-negative `n`: the greatest `r` with `r * r <= n`.
     let internal integerSqrt (n : BigInteger) : BigInteger =
         if n.Sign < 0 then
@@ -562,6 +608,56 @@ module DeterministicMath =
             // Exact: `ceiled` is an integer of at most 53 bits, since `exponent < 0` bounds
             // `|x|` below 2^52.
             roundToDouble ceiled 0
+
+    /// The largest integral double at or below `x`, with the semantics of IEEE 754's
+    /// `roundToIntegralTowardNegative` (clause 5.9) — which is what CoreCLR's `Math.Floor`
+    /// inherits from the `roundsd`/`frintm` instruction the JIT emits for it.
+    ///
+    /// Exact, like `ceiling` and for the same reasons: clause 5.9 fixes the result, and every
+    /// double's floor is itself a double (a non-integral double has magnitude below 2^52, so
+    /// subtracting one from its truncation cannot leave the exactly-representable integers).
+    /// There is no error term to budget and nothing for the fixed-point machinery above to do.
+    ///
+    /// The signs of a zero result are specified rather than open, as for `ceiling`: the
+    /// `roundToIntegral` operations take the sign of a zero result from the operand. So the
+    /// floor of an argument strictly between 0 and 1 is *positive* zero, and the floor of a
+    /// negative zero is that same negative zero; an argument strictly between -1 and 0 floors
+    /// to -1, not to a zero. C says the same of `floor` (C17 F.10.6.3), and the hardware obeys,
+    /// so these are asserted against the host in `TestDeterministicMath` rather than merely
+    /// chosen here.
+    let floor (x : float) : float =
+        if Double.IsNaN x then
+            // Both hardware instructions propagate a NaN operand with its sign and payload,
+            // quietening a signalling one -- the same rule as `ceiling`.
+            quieted x
+        elif Double.IsInfinity x || x = 0.0 then
+            // Already integral, and their signs are part of the answer. `x = 0.0` catches -0 as
+            // well as +0, which is exactly what is wanted: both are returned unchanged.
+            x
+        else
+
+        // x = mantissa * 2^exponent exactly, with the sign carried by the mantissa.
+        let mantissa, exponent = decompose x
+
+        if exponent >= 0 then
+            // An integer times a non-negative power of two is already integral.
+            x
+        else
+
+        // `>>>` on a `BigInteger` is an arithmetic shift, so this is the floor of
+        // `mantissa / 2^-exponent` for a negative mantissa as well as a positive one, which is
+        // the whole of the answer.
+        let floored = mantissa >>> -exponent
+
+        if floored.IsZero then
+            // Only reachable from 0 < x < 1, whose floor clause 5.9 gives as +0. Stated rather
+            // than left to `roundToDouble`, which takes the sign from its mantissa and so would
+            // give +0 here only because a `BigInteger` zero carries no sign.
+            0.0
+        else
+            // Exact: `floored` is an integer of at most 53 bits, since `exponent < 0` bounds
+            // `|x|` below 2^52.
+            roundToDouble floored 0
 
     /// `x` with its fractional part discarded, with the semantics of IEEE 754's
     /// `roundToIntegralTowardZero` (clause 5.9) — which is what CoreCLR's `Math.Truncate`

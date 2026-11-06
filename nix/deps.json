@@ -511,8 +511,8 @@
   },
   {
     "pname": "WoofWare.DotnetRuntimeLocator",
-    "version": "0.5.5",
-    "hash": "sha256-NgJvYn+Jr7k0JTVImeQ48aXk1VOJMFCeqEMY0CYI950="
+    "version": "0.5.8",
+    "hash": "sha256-2xBa8rENlurubnrnjF3TH0cggkgDT+q+Xrd51xAwxV0="
   },
   {
     "pname": "WoofWare.Myriad.Plugins",
