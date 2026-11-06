@@ -178,6 +178,7 @@
     <Compile Include="TestNestedClassifier.fs" />
     <Compile Include="TestEntryPointToken.fs" />
     <Compile Include="TestMethodSpecToken.fs" />
+    <Compile Include="TestModuleResolveMethodMemberRef.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestTypeDescProjection.fs" />
     <Compile Include="TestElementOffsetOverflow.fs" />
@@ -427,6 +428,7 @@
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
+    <Compile Include="TestInternedStringWrites.fs" />
     <Compile Include="TestDescriptorBoundRefusal.fs" />
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestEmitScopeImage.fs" />

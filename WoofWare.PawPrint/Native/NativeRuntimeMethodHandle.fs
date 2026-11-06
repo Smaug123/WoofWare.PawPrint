@@ -833,7 +833,7 @@ module NativeRuntimeMethodHandle =
     /// true of a non-generic type, and of an instantiation in which `isSharedTypeArgument` finds no
     /// shared argument, so that CoreCLR compiles its code for it alone. Otherwise the canonical method
     /// table is an instantiation over `System.__Canon`, which PawPrint does not model.
-    let private isOwnCanonicalInstantiation
+    let isOwnCanonicalInstantiation
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)

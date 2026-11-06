@@ -131,9 +131,19 @@ module ManagedHeap =
 
     /// Update one character of the string at `addr`. `charIndex` equal to the string length
     /// addresses the null terminator, which updates the character storage but not the
-    /// logical string value; beyond that is rejected.
+    /// logical string value; beyond that is rejected. Changing a character of an interned
+    /// string is refused (see `intern`).
     val setStringChar :
         addr : ManagedHeapAddress -> charIndex : int -> value : char -> heap : ManagedHeap -> ManagedHeap
+
+    /// The string object CoreCLR's literal map holds for `value`, if it holds one: what `ldstr`,
+    /// `string.Intern` and `string.IsInterned` of `value` find.
+    val tryGetInterned : value : string -> heap : ManagedHeap -> ManagedHeapAddress option
+
+    /// Add the string at `addr` to the literal map under its current contents. Fails if the map
+    /// already holds that value, or if `addr` has no recorded string contents. From then on
+    /// `setStringChar` and `set` refuse to change the object: see `TestInternedStringWrites.fs`.
+    val intern : addr : ManagedHeapAddress -> heap : ManagedHeap -> ManagedHeap
 
     /// Read one character of the string at `addr`. `charIndex` equal to the string length
     /// addresses the null terminator; beyond that is rejected, since it would walk into
@@ -187,7 +197,7 @@ module ManagedHeap =
     val get : alloc : ManagedHeapAddress -> heap : ManagedHeap -> AllocatedNonArrayObject
 
     /// Replace the payload of the non-array object at `alloc`. Fails if `alloc` is not a
-    /// live non-array object.
+    /// live non-array object, and refuses to change an interned string (see `intern`).
     val set : alloc : ManagedHeapAddress -> v : AllocatedNonArrayObject -> heap : ManagedHeap -> ManagedHeap
 
     /// Store `value` into field `field` of the non-array object at `alloc`. Reports "is an
