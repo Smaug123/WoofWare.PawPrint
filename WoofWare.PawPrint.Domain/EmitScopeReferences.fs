@@ -277,3 +277,41 @@ module EmitScopeReferences =
                     Namespace = ns
                 }
                 scope
+
+    /// <summary>
+    /// The <c>MemberRef</c> row with this parent, name and signature, as CoreCLR's
+    /// <c>CMiniMdRW::CompareMemberRefs</c> finds it: the first whose parent is the same, whose name is
+    /// the same UTF-8, and whose signature is the same bytes.
+    /// </summary>
+    let tryFindMemberRef
+        (parent : MemberRefParent)
+        (name : string)
+        (signature : ImmutableArray<byte>)
+        (scope : EmitScope)
+        : MemberRefRid option
+        =
+        failwith "TODO: EmitScopeReferences.tryFindMemberRef"
+
+    /// <summary>
+    /// The <c>MemberRef</c> row for a member of <paramref name="parent"/>: the one
+    /// <c>tryFindMemberRef</c> finds, or a new one, as <c>RegMeta::DefineMemberRef</c> adds it in a
+    /// dynamic module, whose emitter checks for duplicate member references.
+    /// </summary>
+    let defineMemberRef
+        (parent : MemberRefParent)
+        (name : string)
+        (signature : ImmutableArray<byte>)
+        (scope : EmitScope)
+        : MemberRefRid * EmitScope
+        =
+        failwith "TODO: EmitScopeReferences.defineMemberRef"
+
+    /// <summary>
+    /// Whether a method signature (ECMA-335 II.23.2.1) names a type by token anywhere: a class or value
+    /// type, a generic type it instantiates, or a custom modifier, in its return type, its parameters
+    /// or a function pointer among them. CoreCLR's <c>TranslateSigWithScope</c> copies every other
+    /// byte of a signature into a dynamic module unchanged, so a signature that names none is the
+    /// signature a <c>MemberRef</c> to its method holds there.
+    /// </summary>
+    let methodSignatureNamesTypeByToken (signature : ImmutableArray<byte>) : bool =
+        failwith "TODO: EmitScopeReferences.methodSignatureNamesTypeByToken"

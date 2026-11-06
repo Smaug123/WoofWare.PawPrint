@@ -466,6 +466,22 @@ module TestImpureCases =
             },
             """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing` and the MethodDef of `get_Value`, it stops in `TypeBuilder.DefineMethodOverride` at `ModuleBuilder_GetMemberRefOfMethodInfo`, for `IThing.get_Value`; each stage of the plan takes it a QCall further."""
             {
+                FileName = "ModuleBuilderMemberRefTranslatedSignature.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            },
+            """A member reference to a method whose signature names a type by token, a class (`Type.GetType(string)`) and a value type (`Guid.Parse(string)`). Measured on .NET 10 to exit 0. CoreCLR's `TranslateSigWithScope` rewrites each such token to name a TypeRef of the dynamic module, adding TypeRef and AssemblyRef rows of its own, and `ModuleBuilder_GetMemberRefOfMethodInfo` refuses the signature by name until PawPrint does the same."""
+            {
                 FileName = "TypeBuilderDefinePInvokeMethod.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -1304,6 +1320,49 @@ module TestImpureCases =
             ]
 
         (EmitScope.typeRefs scope).Count |> shouldEqual 2
+
+    /// `ModuleBuilderMemberRefOfMethodInfo.cs` has asked for eleven method tokens, and nine distinct
+    /// methods. A guest cannot read a member reference's parent or signature, so this checks the rows its
+    /// dynamic module's scope ends with, which are what .NET 10 reports for each token: each TypeRef is
+    /// the method's declaring type, and each signature the method's own bytes.
+    let private assertMemberRefRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.typeRefs scope
+        |> Seq.map (fun row -> EmitScope.stringAt row.Namespace scope, EmitScope.stringAt row.Name scope)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                "", "IThing"
+                "System", "Object"
+                "System", "String"
+                "", "Base"
+                "", "Other"
+                "System", "Array"
+            ]
+
+        EmitScope.memberRefs scope
+        |> Seq.map (fun row ->
+            row.Parent, EmitScope.stringAt row.Name scope, List.ofSeq (EmitScope.blobAt row.Signature scope)
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                MemberRefParent.TypeRef (TypeRefRid 1), "get_Value", [ 0x20uy ; 0x00uy ; 0x08uy ]
+                MemberRefParent.TypeRef (TypeRefRid 2), ".ctor", [ 0x20uy ; 0x00uy ; 0x01uy ]
+                MemberRefParent.TypeRef (TypeRefRid 3), "ToUpper", [ 0x20uy ; 0x00uy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 3), "ToLower", [ 0x20uy ; 0x00uy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 3), "Concat", [ 0x00uy ; 0x02uy ; 0x0Euy ; 0x0Euy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 3),
+                "Concat",
+                [ 0x00uy ; 0x03uy ; 0x0Euy ; 0x0Euy ; 0x0Euy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 4), "Name", [ 0x20uy ; 0x00uy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 5), "Name", [ 0x20uy ; 0x00uy ; 0x0Euy ]
+                MemberRefParent.TypeRef (TypeRefRid 6), "Empty", [ 0x10uy ; 0x01uy ; 0x00uy ; 0x1Duy ; 0x1Euy ; 0x00uy ]
+            ]
 
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
@@ -4556,6 +4615,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertDefinedMethodRows
+            }
+            {
+                // `ModuleBuilder_GetMemberRefOfMethodInfo`, through
+                // `ModuleBuilder.GetMethodMetadataToken`: the MemberRef rows a dynamic module gains for
+                // methods of other assemblies, found again rather than added a second time;
+                // `assertMemberRefRows` checks the rows no guest can read. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "ModuleBuilderMemberRefOfMethodInfo.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertMemberRefRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,
