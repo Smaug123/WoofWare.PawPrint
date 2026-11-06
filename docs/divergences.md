@@ -152,20 +152,25 @@ long r = ((delegate*<int, long>)p)(3);  // CoreCLR: r == 3. PawPrint: refused at
 
 The empty string is simply true, and it is what the runtime already reports for an app with no assembly files to point at.
 
+**Module names follow**: `Module.FullyQualifiedName` and `Module.Name` come from `RuntimeModule_GetFullyQualifiedName`, which reads the same `PEAssembly::GetPath` and answers `<Unknown>` when it is empty (`commodule.cpp`). So under PawPrint every module that is not Reflection.Emit's reports `<Unknown>` for both, as an `Assembly.Load(byte[])` image does on CoreCLR (measured on .NET 10). A Reflection.Emit module reports `<In Memory Module>` on both runtimes.
+
 **Knock-on effect**: `AppContext.BaseDirectory` is likewise empty. Its fallback `GetBaseDirectoryCore()` computes `Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location)`, and `GetDirectoryName("")` returns `null`, so the fallback returns `string.Empty`. Note this is only the *fallback*: on a real host `BaseDirectory` never reaches it, because `hostpolicy` always supplies the `APP_CONTEXT_BASE_DIRECTORY` property (see CoreCLR's own comment in `gcheaputilities.cpp`, "The APP_CONTEXT_BASE_DIRECTORY is always set by the host"). PawPrint does not yet populate that property; when it does, guests will see a real directory there by the same route a real host uses, and this entry will cover only `Location` itself.
 
 **Observable example**:
 
 ```csharp
-// dotnet app.dll:  "/path/to/app.dll", then "/path/to/"
-// PawPrint:        "",                 then ""
+// dotnet app.dll:  "/path/to/app.dll", then "/path/to/", then "app.dll"
+// PawPrint:        "",                 then "",          then "<Unknown>"
 Console.WriteLine(typeof(Program).Assembly.Location);
 Console.WriteLine(AppContext.BaseDirectory);
+Console.WriteLine(typeof(Program).Module.Name);
 ```
 
 **Testing note**: Cannot be a `sourcesPure` comparison test, since the real runtime is launched from a real `.dll` and reports its path — there is no cross-runtime fact to assert. Covered by the PawPrint-only `sourcesImpure/AssemblyLocationEmpty.cs`, which asserts the empty `Location` for both the guest's own assembly and a framework assembly, the resulting empty `AppContext.BaseDirectory`, and `ReferenceEquals(asm.Location, string.Empty)` — CoreCLR's `StringObject::NewString` hands back the shared empty-string instance for a zero-length string, so allocating a fresh empty string here would be observably wrong.
 
-**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case.
+The module names are covered by the PawPrint-only `sourcesImpure/ModuleFullyQualifiedNameUnknown.cs`, and the Reflection.Emit answer by `sourcesImpure/ModuleBuilderNameInMemory.cs`.
+
+**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetLocation` case, and `NativeRuntimeModule.tryExecuteQCall`, the `RuntimeModule_GetFullyQualifiedName` case.
 
 ## `Assembly.CodeBase` throws, and `AssemblyName.CodeBase` is null
 

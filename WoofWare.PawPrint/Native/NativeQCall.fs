@@ -76,6 +76,8 @@ module NativeQCall =
             "ModuleHandle_GetDynamicMethod", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetDynamicMethod"
             "RuntimeModule_GetTypes", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetTypes"
             "RuntimeModule_GetScopeName", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetScopeName"
+            "RuntimeModule_GetFullyQualifiedName",
+            NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetFullyQualifiedName"
             "Delegate_BindToMethodInfo", NativeDelegate.tryExecuteQCall "Delegate_BindToMethodInfo"
             "Delegate_FindMethodHandle", NativeDelegate.tryExecuteQCall "Delegate_FindMethodHandle"
             "Delegate_CreateMethodInfo", NativeDelegate.tryExecuteQCall "Delegate_CreateMethodInfo"

@@ -273,4 +273,59 @@ module NativeRuntimeModule =
                     (CliType.ObjectRef (Some nameAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeModule_GetFullyQualifiedName",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeModule",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
+          MethodReturnType.Void when qCallModuleGenerics.IsEmpty && stringHandleGenerics.IsEmpty ->
+            // `RuntimeModule_GetFullyQualifiedName` (coreclr/vm/commodule.cpp:628), behind
+            // `Module.FullyQualifiedName` and `Module.Name`. CoreCLR answers
+            // `<In Memory Module>` for a Reflection.Emit module, and otherwise the module's
+            // path, or `<Unknown>` when that path is empty.
+            let operation = "RuntimeModule_GetFullyQualifiedName"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            if (state.LoadedAssembly assemblyFullName).IsNone then
+                failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
+
+            let retString =
+                NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[1]
+
+            // Every image PawPrint loads has an empty path, as `AssemblyNative_GetLocation`
+            // reports: there is no file the guest could open. CoreCLR's `Module::GetPath` is
+            // `PEAssembly::GetPath`, the same string `GetLocation` returns, so a non-emitted
+            // module takes CoreCLR's empty-path branch.
+            let fullyQualifiedName =
+                if state.TypeSystem._LoadedAssemblies.IsDynamic assemblyFullName then
+                    "<In Memory Module>"
+                else
+                    "<Unknown>"
+
+            // Allocated afresh per call: `retString.Set` builds a new string each time, and
+            // CoreCLR does not intern it.
+            let nameAddr, state =
+                IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes fullyQualifiedName state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed retString)
+                    (CliType.ObjectRef (Some nameAddr))
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
