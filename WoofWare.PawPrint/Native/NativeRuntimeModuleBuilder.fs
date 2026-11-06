@@ -186,9 +186,12 @@ module NativeRuntimeModuleBuilder =
             // the emitter's collectible-assembly check never applies.
             let signature = reader.GetBlobContent definition.Signature
 
-            if EmitScopeReferences.methodSignatureNamesTypeByToken signature then
-                failwith
-                    $"TODO: %s{operation}: the signature of %s{described} names a type by token, which CoreCLR's TranslateSigWithScope rewrites to name a TypeRef of %s{moduleName}, adding TypeRef and AssemblyRef rows; PawPrint copies only a signature that names no type by token"
+            let signature =
+                match EmitScopeReferences.importMethodSignature signature with
+                | MethodSignatureImport.Copied imported -> imported
+                | MethodSignatureImport.NamesTypeByToken ->
+                    failwith
+                        $"TODO: %s{operation}: the signature of %s{described} names a type by token, which CoreCLR's TranslateSigWithScope rewrites to name a TypeRef of %s{moduleName}, adding TypeRef and AssemblyRef rows; PawPrint imports only a signature that names no type by token"
 
             let parent =
                 match tr >>> 24 with

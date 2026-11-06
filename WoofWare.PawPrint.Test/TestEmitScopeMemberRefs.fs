@@ -4,6 +4,9 @@ open System
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Emit
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -142,6 +145,28 @@ module TestEmitScopeMemberRefs =
         foundOfTwo |> shouldBeGreaterThan 20
         added |> shouldBeGreaterThan 100
 
+    /// A compressed unsigned integer (ECMA-335 II.23.2) and how many bytes it is encoded in: 1 for its
+    /// shortest form, or an overlong 2 or 4, which CoreCLR's reader accepts as well.
+    type private Compressed =
+        {
+            Value : int
+            Width : int
+        }
+
+    let private overlong (value : int) (width : int) : byte list =
+        match width with
+        | 2 when value < 0x4000 -> [ byte (0x80 ||| (value >>> 8)) ; byte value ]
+        | 4 ->
+            [
+                byte (0xC0 ||| (value >>> 24))
+                byte (value >>> 16)
+                byte (value >>> 8)
+                byte value
+            ]
+        | _ -> EmitScopeGen.compressedUnsigned value
+
+    let private encoded (integer : Compressed) : byte list = overlong integer.Value integer.Width
+
     /// A type in a signature (ECMA-335 II.23.2.12), each token given as its `TypeDefOrRefOrSpecEncoded`
     /// value.
     type private Shape =
@@ -151,18 +176,31 @@ module TestEmitScopeMemberRefs =
         | Pointer of Shape
         | VoidPointer
         | ByRef of Shape
-        | TypeParameter of index : int
-        | MethodParameter of index : int
-        | Instance of valueType : bool * token : int * arguments : Shape list
-        | Array of element : Shape * rank : int * sizes : int list * lowerBounds : int list
+        | TypeParameter of index : Compressed
+        | MethodParameter of index : Compressed
+        | Instance of valueType : bool * token : int * countWidth : int * arguments : Shape list
+        | Array of ArrayShape
         | FunctionPointer of MethodShape
         | Modified of required : bool * token : int * Shape
+
+    /// An `ARRAY`'s element type and shape (ECMA-335 II.23.2.13). Each lower bound is a compressed
+    /// signed integer, whose length is read as an unsigned one's.
+    and private ArrayShape =
+        {
+            Element : Shape
+            Rank : Compressed
+            SizeCountWidth : int
+            Sizes : Compressed list
+            BoundCountWidth : int
+            LowerBounds : Compressed list
+        }
 
     /// A method signature (ECMA-335 II.23.2.1). A return type of `None` is `void`.
     and private MethodShape =
         {
             Header : byte
-            GenericArity : int
+            GenericArity : Compressed
+            ParameterCountWidth : int
             Return : Shape option
             Parameters : Shape list
         }
@@ -179,68 +217,95 @@ module TestEmitScopeMemberRefs =
         | Shape.SzArray inner
         | Shape.Pointer inner
         | Shape.ByRef inner -> namesTypeByToken inner
-        | Shape.Array (element, _, _, _) -> namesTypeByToken element
+        | Shape.Array array -> namesTypeByToken array.Element
         | Shape.FunctionPointer signature -> methodNamesTypeByToken signature
 
     and private methodNamesTypeByToken (signature : MethodShape) : bool =
         Option.exists namesTypeByToken signature.Return
         || List.exists namesTypeByToken signature.Parameters
 
-    let rec private encode (shape : Shape) : byte list =
+    /// A shape's bytes. With `shortestIndices`, a type or method parameter's index and an instantiation's
+    /// argument count are in their shortest form, as CoreCLR's emitter writes them; every other integer
+    /// is encoded as the shape says either way.
+    let rec private encode (shortestIndices : bool) (shape : Shape) : byte list =
+        let index (integer : Compressed) : byte list =
+            if shortestIndices then
+                EmitScopeGen.compressedUnsigned integer.Value
+            else
+                encoded integer
+
         match shape with
         | Shape.Primitive code -> [ code ]
         | Shape.Named (valueType, token) ->
             (if valueType then 0x11uy else 0x12uy) :: EmitScopeGen.compressedUnsigned token
-        | Shape.SzArray inner -> 0x1Duy :: encode inner
-        | Shape.Pointer inner -> 0x0Fuy :: encode inner
+        | Shape.SzArray inner -> 0x1Duy :: encode shortestIndices inner
+        | Shape.Pointer inner -> 0x0Fuy :: encode shortestIndices inner
         | Shape.VoidPointer -> [ 0x0Fuy ; 0x01uy ]
-        | Shape.ByRef inner -> 0x10uy :: encode inner
-        | Shape.TypeParameter index -> 0x13uy :: EmitScopeGen.compressedUnsigned index
-        | Shape.MethodParameter index -> 0x1Euy :: EmitScopeGen.compressedUnsigned index
-        | Shape.Instance (valueType, token, arguments) ->
+        | Shape.ByRef inner -> 0x10uy :: encode shortestIndices inner
+        | Shape.TypeParameter integer -> 0x13uy :: index integer
+        | Shape.MethodParameter integer -> 0x1Euy :: index integer
+        | Shape.Instance (valueType, token, countWidth, arguments) ->
             [
                 yield 0x15uy
                 yield (if valueType then 0x11uy else 0x12uy)
                 yield! EmitScopeGen.compressedUnsigned token
-                yield! EmitScopeGen.compressedUnsigned arguments.Length
+                yield!
+                    index
+                        {
+                            Value = arguments.Length
+                            Width = countWidth
+                        }
                 for argument in arguments do
-                    yield! encode argument
+                    yield! encode shortestIndices argument
             ]
-        | Shape.Array (element, rank, sizes, lowerBounds) ->
+        | Shape.Array array ->
             [
                 yield 0x14uy
-                yield! encode element
-                yield! EmitScopeGen.compressedUnsigned rank
-                yield! EmitScopeGen.compressedUnsigned sizes.Length
-                for size in sizes do
-                    yield! EmitScopeGen.compressedUnsigned size
-                yield! EmitScopeGen.compressedUnsigned lowerBounds.Length
-                // A compressed signed integer below 64 is one byte holding it shifted left once.
-                for bound in lowerBounds do
-                    yield byte (bound <<< 1)
+                yield! encode shortestIndices array.Element
+                yield! encoded array.Rank
+                yield! overlong array.Sizes.Length array.SizeCountWidth
+                for size in array.Sizes do
+                    yield! encoded size
+                yield! overlong array.LowerBounds.Length array.BoundCountWidth
+                for bound in array.LowerBounds do
+                    yield! encoded bound
             ]
-        | Shape.FunctionPointer signature -> 0x1Buy :: encodeMethod signature
+        | Shape.FunctionPointer signature -> 0x1Buy :: encodeMethod shortestIndices signature
         | Shape.Modified (required, token, inner) ->
             [
                 yield (if required then 0x1Fuy else 0x20uy)
                 yield! EmitScopeGen.compressedUnsigned token
-                yield! encode inner
+                yield! encode shortestIndices inner
             ]
 
-    and private encodeMethod (signature : MethodShape) : byte list =
+    and private encodeMethod (shortestIndices : bool) (signature : MethodShape) : byte list =
         [
             yield signature.Header
             if signature.Header &&& 0x10uy <> 0uy then
-                yield! EmitScopeGen.compressedUnsigned signature.GenericArity
-            yield! EmitScopeGen.compressedUnsigned signature.Parameters.Length
+                yield! encoded signature.GenericArity
+            yield! overlong signature.Parameters.Length signature.ParameterCountWidth
             match signature.Return with
             | None -> yield 0x01uy
-            | Some shape -> yield! encode shape
+            | Some shape -> yield! encode shortestIndices shape
             for parameter in signature.Parameters do
-                yield! encode parameter
+                yield! encode shortestIndices parameter
         ]
 
     let private genBool : Gen<bool> = Gen.elements [ false ; true ]
+
+    /// Mostly the shortest form, so that most signatures are not all overlong.
+    let private genWidth : Gen<int> = Gen.elements [ 1 ; 1 ; 2 ; 4 ]
+
+    let private genCompressed (low : int) (high : int) : Gen<Compressed> =
+        Gen.map2
+            (fun value width ->
+                {
+                    Value = value
+                    Width = width
+                }
+            )
+            (Gen.choose (low, high))
+            genWidth
 
     /// The primitive element types, `object`, `string` and `TypedReference` among them.
     let private primitives : byte list =
@@ -254,56 +319,81 @@ module TestEmitScopeMemberRefs =
             (Gen.choose (1, 0x3FFF))
             (Gen.choose (0, (if allowSpec then 2 else 1)))
 
-    let rec private genShape (size : int) : Gen<Shape> =
+    /// A type; one that names no type by token unless `allowTokens`.
+    let rec private genShape (allowTokens : bool) (size : int) : Gen<Shape> =
         let leaf =
-            Gen.oneof
+            Gen.frequency
                 [
-                    Gen.map Shape.Primitive (Gen.elements primitives)
-                    Gen.constant Shape.VoidPointer
-                    Gen.map Shape.TypeParameter (Gen.choose (0, 200))
-                    Gen.map Shape.MethodParameter (Gen.choose (0, 200))
-                    Gen.map2 (fun v t -> Shape.Named (v, t)) genBool (genToken false)
+                    yield 3, Gen.map Shape.Primitive (Gen.elements primitives)
+                    yield 1, Gen.constant Shape.VoidPointer
+                    yield 3, Gen.map Shape.TypeParameter (genCompressed 0 0x5000)
+                    yield 3, Gen.map Shape.MethodParameter (genCompressed 0 0x5000)
+                    if allowTokens then
+                        yield 3, Gen.map2 (fun v t -> Shape.Named (v, t)) genBool (genToken false)
                 ]
 
         if size <= 0 then
             leaf
         else
-            let inner = genShape (size / 2)
+            let inner = genShape allowTokens (size / 2)
 
             Gen.frequency
                 [
-                    3, leaf
-                    1, Gen.map Shape.SzArray inner
-                    1, Gen.map Shape.Pointer inner
-                    1, Gen.map Shape.ByRef inner
-                    1,
-                    Gen.map3
-                        (fun (v, t) count arguments -> Shape.Instance (v, t, List.truncate (max 1 count) arguments))
-                        (Gen.zip genBool (genToken false))
-                        (Gen.choose (1, 3))
-                        (Gen.listOfLength 3 inner)
-                    1,
-                    gen {
-                        let! element = inner
-                        let! rank = Gen.choose (1, 4)
-                        let! sizes = Gen.listOf (Gen.choose (0, 0x5000)) |> Gen.map (List.truncate rank)
-                        let! lowerBounds = Gen.listOf (Gen.choose (0, 63)) |> Gen.map (List.truncate rank)
-                        return Shape.Array (element, rank, sizes, lowerBounds)
-                    }
-                    1, Gen.map Shape.FunctionPointer (genMethod (size / 2) false)
-                    1, Gen.map3 (fun r t s -> Shape.Modified (r, t, s)) genBool (genToken true) inner
+                    yield 3, leaf
+                    yield 1, Gen.map Shape.SzArray inner
+                    yield 1, Gen.map Shape.Pointer inner
+                    yield 1, Gen.map Shape.ByRef inner
+
+                    yield
+                        1,
+                        gen {
+                            let! element = inner
+                            let! rank = genCompressed 1 4
+                            let! sizeCountWidth = genWidth
+                            let! sizes = Gen.listOf (genCompressed 0 0x5000) |> Gen.map (List.truncate rank.Value)
+                            let! boundCountWidth = genWidth
+                            let! bounds = Gen.listOf (genCompressed 0 0x1000) |> Gen.map (List.truncate rank.Value)
+
+                            return
+                                Shape.Array
+                                    {
+                                        Element = element
+                                        Rank = rank
+                                        SizeCountWidth = sizeCountWidth
+                                        Sizes = sizes
+                                        BoundCountWidth = boundCountWidth
+                                        LowerBounds = bounds
+                                    }
+                        }
+
+                    yield 1, Gen.map Shape.FunctionPointer (genMethod allowTokens (size / 2) false)
+
+                    if allowTokens then
+                        yield
+                            1,
+                            gen {
+                                let! valueType = genBool
+                                let! token = genToken false
+                                let! countWidth = genWidth
+                                let! count = Gen.choose (1, 3)
+                                let! arguments = Gen.listOfLength count inner
+                                return Shape.Instance (valueType, token, countWidth, arguments)
+                            }
+
+                        yield 1, Gen.map3 (fun r t s -> Shape.Modified (r, t, s)) genBool (genToken true) inner
                 ]
 
     /// A method signature: a definition's when `allowGeneric`, and so possibly generic; a function
-    /// pointer's otherwise.
-    and private genMethod (size : int) (allowGeneric : bool) : Gen<MethodShape> =
+    /// pointer's otherwise. It names no type by token unless `allowTokens`.
+    and private genMethod (allowTokens : bool) (size : int) (allowGeneric : bool) : Gen<MethodShape> =
         gen {
             let! hasThis = genBool
             let! convention = Gen.elements [ 0x00uy ; 0x05uy ]
             let! generic = if allowGeneric then genBool else Gen.constant false
-            let! arity = Gen.choose (1, 3)
-            let! returns = Gen.optionOf (genShape size)
-            let! parameters = Gen.listOf (genShape size) |> Gen.map (List.truncate 4)
+            let! arity = genCompressed 1 3
+            let! parameterCountWidth = genWidth
+            let! returns = Gen.optionOf (genShape allowTokens size)
+            let! parameters = Gen.listOf (genShape allowTokens size) |> Gen.map (List.truncate 4)
 
             return
                 {
@@ -312,34 +402,59 @@ module TestEmitScopeMemberRefs =
                         ||| (if hasThis then 0x20uy else 0uy)
                         ||| (if generic then 0x10uy else 0uy)
                     GenericArity = arity
+                    ParameterCountWidth = parameterCountWidth
                     Return = returns
                     Parameters = parameters
                 }
         }
 
     [<Test>]
-    let ``a signature names a type by token exactly when a class, value type, instantiation or modifier is in it``
+    let ``a signature is imported with each type parameter's index shortest and every other byte but trailing ones copied, unless it names a type by token``
         ()
         : unit
         =
         let mutable named = 0
-        let mutable unnamed = 0
+        let mutable reencoded = 0
+        let mutable unchanged = 0
 
-        let property (signature : MethodShape) : unit =
-            let expected = methodNamesTypeByToken signature
+        let property (signature : MethodShape) (trailing : byte list) : unit =
+            let input = encodeMethod false signature
 
-            if expected then
-                named <- named + 1
-            else
-                unnamed <- unnamed + 1
+            let expected =
+                if methodNamesTypeByToken signature then
+                    named <- named + 1
+                    MethodSignatureImport.NamesTypeByToken
+                else
+                    let written = encodeMethod true signature
 
-            EmitScopeReferences.methodSignatureNamesTypeByToken (ImmutableArray.CreateRange (encodeMethod signature))
+                    if written = input then
+                        unchanged <- unchanged + 1
+                    else
+                        reencoded <- reencoded + 1
+
+                    MethodSignatureImport.Copied (ImmutableArray.CreateRange written)
+
+            EmitScopeReferences.importMethodSignature (ImmutableArray.CreateRange (input @ trailing))
             |> shouldEqual expected
 
-        let arb = Gen.sized (fun size -> genMethod (min size 12) true) |> Arb.fromGen
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll arb property)
-        named |> shouldBeGreaterThan 20
-        unnamed |> shouldBeGreaterThan 20
+        let arb =
+            Gen.zip
+                (Gen.sized (fun size ->
+                    genBool
+                    |> Gen.bind (fun allowTokens -> genMethod allowTokens (min size 12) true)
+                ))
+                (Gen.listOf (Gen.elements [ 0x00uy ; 0x08uy ; 0x80uy ])
+                 |> Gen.map (List.truncate 2))
+            |> Arb.fromGen
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 2000,
+            Prop.forAll arb (fun (signature, trailing) -> property signature trailing)
+        )
+
+        named |> shouldBeGreaterThan 100
+        reencoded |> shouldBeGreaterThan 100
+        unchanged |> shouldBeGreaterThan 100
 
     /// Every method and constructor CoreLib declares on a type that is neither generic nor nested in a
     /// generic type, so that the parent a dynamic module's reference names is a `TypeRef`.
@@ -363,18 +478,20 @@ module TestEmitScopeMemberRefs =
             ]
 
     [<Test>]
-    let ``real .NET copies a signature that names no type by token, and gives each reference the token defineMemberRef gives``
+    let ``real .NET imports a CoreLib signature that names no type by token unchanged, and gives each reference the token defineMemberRef gives``
         ()
         : unit
         =
         let methods =
             coreLibMethods.Value
             |> List.filter (fun m ->
-                not (
-                    EmitScopeReferences.methodSignatureNamesTypeByToken (
+                match
+                    EmitScopeReferences.importMethodSignature (
                         ImmutableArray.Create<byte> (m.Module.ResolveSignature m.MetadataToken)
                     )
-                )
+                with
+                | MethodSignatureImport.Copied _ -> true
+                | MethodSignatureImport.NamesTypeByToken -> false
             )
 
         // Each method once in order, then each again in reverse, so that half the requests are found.
@@ -417,6 +534,9 @@ module TestEmitScopeMemberRefs =
             token >>> 24 |> shouldEqual 0x0A
             dynamicModule.ResolveSignature token |> shouldEqual definitionSignature
 
+            EmitScopeReferences.importMethodSignature (ImmutableArray.Create<byte> definitionSignature)
+            |> shouldEqual (MethodSignatureImport.Copied (ImmutableArray.Create<byte> definitionSignature))
+
             let parent = dynamicModule.GetTypeMetadataToken m.DeclaringType
             parent >>> 24 |> shouldEqual 0x01
             scope <- withTypeRefs (parent &&& 0xFFFFFF) scope
@@ -432,7 +552,10 @@ module TestEmitScopeMemberRefs =
             scope <- next
 
     [<Test>]
-    let ``an empty name or signature, and a signature with bytes after its last type, are refused`` () : unit =
+    let ``an empty name or signature, a signature that ends early, and one that is not a method's are refused``
+        ()
+        : unit
+        =
         let scope = EmitScope.create "Dyn" Guid.Empty
         let parent = MemberRefParent.TypeDef (TypeDefRid 1)
         let signature = ImmutableArray.Create<byte> [| 0x20uy ; 0x00uy ; 0x01uy |]
@@ -453,20 +576,186 @@ module TestEmitScopeMemberRefs =
         )
         |> ignore
 
-        Assert.Throws<ArgumentException> (fun () ->
-            EmitScopeReferences.methodSignatureNamesTypeByToken ImmutableArray.Empty
-            |> ignore
-        )
-        |> ignore
-
-        // A trailing byte the emitter would not copy.
-        Assert.Throws<ArgumentException> (fun () ->
-            EmitScopeReferences.methodSignatureNamesTypeByToken (
-                ImmutableArray.Create<byte> [| 0x20uy ; 0x00uy ; 0x01uy ; 0x08uy |]
+        let refused (bytes : byte list) : unit =
+            Assert.Throws<ArgumentException> (fun () ->
+                EmitScopeReferences.importMethodSignature (ImmutableArray.CreateRange bytes)
+                |> ignore
             )
             |> ignore
-        )
-        |> ignore
 
-        EmitScopeReferences.methodSignatureNamesTypeByToken signature
-        |> shouldEqual false
+        refused []
+        // One parameter, but no type for it.
+        refused [ 0x20uy ; 0x01uy ; 0x01uy ]
+        // A compressed integer cut short.
+        refused [ 0x20uy ; 0x00uy ; 0x13uy ; 0x80uy ]
+        // A field's signature, and a local signature.
+        refused [ 0x06uy ; 0x08uy ]
+        refused [ 0x07uy ; 0x01uy ; 0x08uy ]
+        // `VALUEARRAY`, and an element type past `ELEMENT_TYPE_MAX`.
+        refused [ 0x00uy ; 0x00uy ; 0x17uy ]
+        refused [ 0x00uy ; 0x00uy ; 0x22uy ]
+
+    /// Method signatures that CoreCLR reads but did not write, each with the bytes .NET 10's emitter
+    /// writes into a dynamic module for it, measured through `Module.ResolveSignature`.
+    let private noncanonicalSignatures : (string * byte list * byte list) list =
+        [
+            "MethodParameterShortest", [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0x00 ], [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0x00 ]
+            "MethodParameterTwoBytes", [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0x80 ; 0x00 ], [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0x00 ]
+            "MethodParameterFourBytes",
+            [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0xC0 ; 0x00 ; 0x00 ; 0x00 ],
+            [ 0x30 ; 0x01 ; 0x00 ; 0x1E ; 0x00 ]
+            "TypeParameterTwoBytes", [ 0x20 ; 0x00 ; 0x13 ; 0x80 ; 0x00 ], [ 0x20 ; 0x00 ; 0x13 ; 0x00 ]
+            "ParameterCountTwoBytes", [ 0x20 ; 0x80 ; 0x01 ; 0x01 ; 0x08 ], [ 0x20 ; 0x80 ; 0x01 ; 0x01 ; 0x08 ]
+            "ArityTwoBytes", [ 0x30 ; 0x80 ; 0x01 ; 0x00 ; 0x01 ], [ 0x30 ; 0x80 ; 0x01 ; 0x00 ; 0x01 ]
+            "ArraySizeTwoBytes",
+            [ 0x20 ; 0x00 ; 0x14 ; 0x08 ; 0x01 ; 0x01 ; 0x80 ; 0x05 ; 0x00 ],
+            [ 0x20 ; 0x00 ; 0x14 ; 0x08 ; 0x01 ; 0x01 ; 0x80 ; 0x05 ; 0x00 ]
+            "VectorOfTypeParameterFourBytes",
+            [ 0x20 ; 0x00 ; 0x1D ; 0x13 ; 0xC0 ; 0x00 ; 0x00 ; 0x00 ],
+            [ 0x20 ; 0x00 ; 0x1D ; 0x13 ; 0x00 ]
+            "FunctionPointerCountTwoBytes",
+            [ 0x20 ; 0x01 ; 0x01 ; 0x1B ; 0x00 ; 0x80 ; 0x00 ; 0x08 ],
+            [ 0x20 ; 0x01 ; 0x01 ; 0x1B ; 0x00 ; 0x80 ; 0x00 ; 0x08 ]
+            "TrailingByte", [ 0x20 ; 0x00 ; 0x08 ; 0x08 ], [ 0x20 ; 0x00 ; 0x08 ]
+            "PointerToTypeParameterTwoBytes",
+            [ 0x20 ; 0x00 ; 0x0F ; 0x13 ; 0x80 ; 0x00 ],
+            [ 0x20 ; 0x00 ; 0x0F ; 0x13 ; 0x00 ]
+        ]
+        |> List.map (fun (name, definition, written) -> name, List.map byte definition, List.map byte written)
+
+    /// An image with an abstract class `C<T>` declaring one abstract method per signature, each named
+    /// as the signature is.
+    let private noncanonicalImage () : byte[] =
+        let metadata = MetadataBuilder ()
+
+        metadata.AddModule (
+            0,
+            metadata.GetOrAddString "Noncanonical.dll",
+            metadata.GetOrAddGuid Guid.Empty,
+            GuidHandle (),
+            GuidHandle ()
+        )
+        |> ignore<ModuleDefinitionHandle>
+
+        metadata.AddAssembly (
+            metadata.GetOrAddString "Noncanonical",
+            Version (1, 0, 0, 0),
+            StringHandle (),
+            BlobHandle (),
+            enum<AssemblyFlags> 0,
+            AssemblyHashAlgorithm.None
+        )
+        |> ignore<AssemblyDefinitionHandle>
+
+        let coreLib = typeof<obj>.Assembly.GetName ()
+
+        let coreLibRef =
+            metadata.AddAssemblyReference (
+                metadata.GetOrAddString coreLib.Name,
+                coreLib.Version,
+                StringHandle (),
+                metadata.GetOrAddBlob (coreLib.GetPublicKeyToken ()),
+                enum<AssemblyFlags> 0,
+                BlobHandle ()
+            )
+
+        let objectRef =
+            metadata.AddTypeReference (
+                AssemblyReferenceHandle.op_Implicit coreLibRef,
+                metadata.GetOrAddString "System",
+                metadata.GetOrAddString "Object"
+            )
+
+        metadata.AddTypeDefinition (
+            enum<TypeAttributes> 0,
+            StringHandle (),
+            metadata.GetOrAddString "<Module>",
+            EntityHandle (),
+            MetadataTokens.FieldDefinitionHandle 1,
+            MetadataTokens.MethodDefinitionHandle 1
+        )
+        |> ignore<TypeDefinitionHandle>
+
+        let c =
+            metadata.AddTypeDefinition (
+                TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Class,
+                StringHandle (),
+                metadata.GetOrAddString "C`1",
+                TypeReferenceHandle.op_Implicit objectRef,
+                MetadataTokens.FieldDefinitionHandle 1,
+                MetadataTokens.MethodDefinitionHandle 1
+            )
+
+        let methodGenerics =
+            [
+                for name, definition, _ in noncanonicalSignatures do
+                    let m =
+                        metadata.AddMethodDefinition (
+                            MethodAttributes.Public
+                            ||| MethodAttributes.Virtual
+                            ||| MethodAttributes.Abstract
+                            ||| MethodAttributes.HideBySig
+                            ||| MethodAttributes.NewSlot,
+                            MethodImplAttributes.IL,
+                            metadata.GetOrAddString name,
+                            metadata.GetOrAddBlob (List.toArray definition),
+                            -1,
+                            MetadataTokens.ParameterHandle 1
+                        )
+
+                    if definition.Head &&& 0x10uy <> 0uy then
+                        yield (MethodDefinitionHandle.op_Implicit m : EntityHandle)
+            ]
+
+        // The GenericParam table is sorted by its owner's TypeOrMethodDef coded index.
+        let coded (owner : EntityHandle) : int =
+            (MetadataTokens.GetRowNumber owner <<< 1)
+            ||| (if owner.Kind = HandleKind.MethodDefinition then 1 else 0)
+
+        for owner in
+            ((TypeDefinitionHandle.op_Implicit c : EntityHandle) :: methodGenerics)
+            |> List.sortBy coded do
+            metadata.AddGenericParameter (owner, GenericParameterAttributes.None, metadata.GetOrAddString "T", 0)
+            |> ignore<GenericParameterHandle>
+
+        let image = BlobBuilder ()
+
+        ManagedPEBuilder(
+            PEHeaderBuilder (imageCharacteristics = Characteristics.Dll),
+            MetadataRootBuilder metadata,
+            BlobBuilder ()
+        )
+            .Serialize
+            image
+        |> ignore<BlobContentId>
+
+        image.ToArray ()
+
+    [<Test>]
+    let ``real .NET imports a signature it did not write as importMethodSignature says`` () : unit =
+        let image = noncanonicalImage ()
+        let loaded = Runtime.Loader.AssemblyLoadContext ("Noncanonical", true)
+
+        try
+            let c = loaded.LoadFromStream(new IO.MemoryStream (image)).GetType ("C`1", true)
+
+            let dynamicModule =
+                AssemblyBuilder
+                    .DefineDynamicAssembly(AssemblyName "NoncanonicalOracle", AssemblyBuilderAccess.RunAndCollect)
+                    .DefineDynamicModule
+                    "NoncanonicalOracle"
+
+            for name, definition, written in noncanonicalSignatures do
+                let m = c.GetMethod (name, BindingFlags.Public ||| BindingFlags.Instance)
+
+                m.Module.ResolveSignature m.MetadataToken
+                |> List.ofArray
+                |> shouldEqual definition
+
+                let token = dynamicModule.GetMethodMetadataToken m
+                dynamicModule.ResolveSignature token |> List.ofArray |> shouldEqual written
+
+                EmitScopeReferences.importMethodSignature (ImmutableArray.CreateRange definition)
+                |> shouldEqual (MethodSignatureImport.Copied (ImmutableArray.CreateRange written))
+        finally
+            loaded.Unload ()

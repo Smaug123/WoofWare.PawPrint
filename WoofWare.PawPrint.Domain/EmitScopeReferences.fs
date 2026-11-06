@@ -1,7 +1,5 @@
 namespace WoofWare.PawPrint
 
-#nowarn "9"
-
 open System
 open System.Collections.Immutable
 open System.Reflection
@@ -73,6 +71,16 @@ module AssemblyRefRequest =
                 else
                     definition.Flags &&& ~~~AssemblyFlags.PublicKey
         }
+
+/// What CoreCLR's emitter writes into a dynamic module for a method signature read from another module
+/// (<c>TranslateSigWithScope</c>).
+[<RequireQualifiedAccess>]
+type MethodSignatureImport =
+    /// The signature names no type by token, and these are the bytes the emitter writes for it.
+    | Copied of ImmutableArray<byte>
+    /// The signature names a type by token, which the emitter rewrites to name a <c>TypeRef</c> of the
+    /// dynamic module, adding <c>TypeRef</c> and <c>AssemblyRef</c> rows of its own.
+    | NamesTypeByToken
 
 /// <summary>
 /// The references CoreCLR's emitter adds to a dynamic module's scope, each found among the rows the
@@ -342,60 +350,164 @@ module EmitScopeReferences =
                 }
                 scope
 
-    /// A signature type provider whose type is whether that type names a type by token.
-    let private typeTokenProvider : ISignatureTypeProvider<bool, unit> =
-        { new ISignatureTypeProvider<bool, unit> with
-            member _.GetPrimitiveType (_ : PrimitiveTypeCode) : bool = false
-            member _.GetTypeFromDefinition (_ : MetadataReader, _ : TypeDefinitionHandle, _ : byte) : bool = true
-            member _.GetTypeFromReference (_ : MetadataReader, _ : TypeReferenceHandle, _ : byte) : bool = true
-
-            member _.GetTypeFromSpecification
-                (_ : MetadataReader, _ : unit, _ : TypeSpecificationHandle, _ : byte)
-                : bool
-                =
-                true
-
-            member _.GetSZArrayType (element : bool) : bool = element
-            member _.GetArrayType (element : bool, _ : ArrayShape) : bool = element
-            member _.GetByReferenceType (element : bool) : bool = element
-            member _.GetPointerType (element : bool) : bool = element
-            member _.GetPinnedType (element : bool) : bool = element
-            // The instantiated generic type is itself named by token.
-            member _.GetGenericInstantiation (_ : bool, _ : ImmutableArray<bool>) : bool = true
-            member _.GetGenericMethodParameter (_ : unit, _ : int) : bool = false
-            member _.GetGenericTypeParameter (_ : unit, _ : int) : bool = false
-            // So is a custom modifier.
-            member _.GetModifiedType (_ : bool, _ : bool, _ : bool) : bool = true
-
-            member _.GetFunctionPointerType (signature : System.Reflection.Metadata.MethodSignature<bool>) : bool =
-                signature.ReturnType || Seq.exists id signature.ParameterTypes
-        }
+    /// The bytes of a compressed unsigned integer (ECMA-335 II.23.2) in its shortest form.
+    let private compressed (value : int) : byte list =
+        if value < 0x80 then
+            [ byte value ]
+        elif value < 0x4000 then
+            [ byte (0x80 ||| (value >>> 8)) ; byte value ]
+        else
+            [
+                byte (0xC0 ||| (value >>> 24))
+                byte (value >>> 16)
+                byte (value >>> 8)
+                byte value
+            ]
 
     /// <summary>
-    /// Whether a method signature (ECMA-335 II.23.2.1) names a type by token anywhere: a class or value
-    /// type, a generic type it instantiates, or a custom modifier, in its return type, its parameters
-    /// or a function pointer among them. CoreCLR's <c>TranslateSigWithScope</c> copies every other
-    /// byte of a signature into a dynamic module unchanged, so a signature that names none is the
-    /// signature a <c>MemberRef</c> to its method holds there.
+    /// What <c>TranslateSigWithScope</c> writes into a dynamic module for a method signature (ECMA-335
+    /// II.23.2.1) of another module, walking it as <c>ImportHelper::MergeUpdateTokenInSig</c> does. A
+    /// class or value type, a generic type it instantiates, or a custom modifier names a type by token,
+    /// which the emitter rewrites. Of the rest, the index of a type or method parameter is written in
+    /// its shortest form, every other byte is copied, and bytes after the signature's last type are
+    /// dropped.
     /// </summary>
-    /// <exception cref="ArgumentException">The signature is empty, or has bytes after its last type.</exception>
-    /// <exception cref="BadImageFormatException">The signature is not a method signature.</exception>
-    let methodSignatureNamesTypeByToken (signature : ImmutableArray<byte>) : bool =
+    /// <exception cref="ArgumentException">
+    /// The signature is empty, ends early, is not a method signature, or holds an element type the
+    /// emitter refuses.
+    /// </exception>
+    let importMethodSignature (signature : ImmutableArray<byte>) : MethodSignatureImport =
         if signature.IsDefaultOrEmpty then
             invalidArg (nameof signature) "a method signature is never empty"
 
-        let bytes : byte[] = Seq.toArray signature
-        use pinned = fixed bytes
-        let mutable reader = BlobReader (pinned, bytes.Length)
+        let output = ResizeArray<byte> ()
+        let position = ref 0
 
-        let decoded : System.Reflection.Metadata.MethodSignature<bool> =
-            Ecma335.SignatureDecoder<bool, unit>(typeTokenProvider, null, ()).DecodeMethodSignature &reader
-
-        // `TranslateSigWithScope` copies only the bytes it reads, so a signature with more is not the
-        // one a reference to its method would hold.
-        if reader.RemainingBytes <> 0 then
+        let fail (reason : string) : 'a =
             invalidArg
                 (nameof signature)
-                $"a method signature ends after its last type, but %d{reader.RemainingBytes} bytes follow it"
+                $"%s{reason} at byte %d{position.Value} of the method signature %A{List.ofSeq signature}"
 
-        decoded.ReturnType || Seq.exists id decoded.ParameterTypes
+        let readCompressed () : int =
+            let at = position.Value
+
+            if at >= signature.Length then
+                fail "the signature ends early"
+
+            let first = int signature.[at]
+
+            let length =
+                if first &&& 0x80 = 0 then 1
+                elif first &&& 0xC0 = 0x80 then 2
+                elif first &&& 0xE0 = 0xC0 then 4
+                else fail "a compressed integer has no valid length"
+
+            if at + length > signature.Length then
+                fail "the signature ends early"
+
+            position.Value <- at + length
+
+            match length with
+            | 1 -> first
+            | 2 -> ((first &&& 0x3F) <<< 8) ||| int signature.[at + 1]
+            | _ ->
+                ((first &&& 0x1F) <<< 24)
+                ||| (int signature.[at + 1] <<< 16)
+                ||| (int signature.[at + 2] <<< 8)
+                ||| int signature.[at + 3]
+
+        let copyFrom (start : int) : unit =
+            for i in start .. position.Value - 1 do
+                output.Add signature.[i]
+
+        // `CorIsModifierElementType`: `PTR`, `BYREF`, and every element type with bit 0x40, such as
+        // `SENTINEL` and `PINNED`.
+        let isModifier (element : int) : bool =
+            element = 0x0F || element = 0x10 || element &&& 0x40 <> 0
+
+        // Each returns false, as soon as it meets one, for a type named by token.
+        let rec methodSignature () : bool =
+            let start = position.Value
+            let header = readCompressed ()
+
+            match header &&& 0x0F with
+            // `FIELD`, `LOCAL_SIG`, `PROPERTY`, `GENERICINST`, and kinds past the last.
+            | 0x06
+            | 0x07
+            | 0x08
+            | 0x0A -> fail $"calling convention 0x%02x{header} is not a method's"
+            | kind when kind > 0x0B -> fail $"calling convention 0x%02x{header} is not a method's"
+            | _ -> ()
+
+            if header &&& 0x10 <> 0 then
+                readCompressed () |> ignore<int>
+
+            let count = readCompressed ()
+            // The calling convention and the counts are copied as they are encoded.
+            copyFrom start
+
+            let rec parameters (remaining : int) : bool =
+                remaining = 0 || (fieldType () && parameters (remaining - 1))
+
+            fieldType () && parameters count
+
+        and fieldType () : bool =
+            let start = position.Value
+            let mutable element = readCompressed ()
+
+            while isModifier element do
+                element <- readCompressed ()
+
+            copyFrom start
+
+            match element with
+            // `SZARRAY`
+            | 0x1D -> fieldType ()
+            // `GENERICINST`, whose argument count is written in its shortest form.
+            | 0x15 ->
+                fieldType ()
+                && (let count = readCompressed ()
+                    output.AddRange (compressed count)
+
+                    let rec arguments (remaining : int) : bool =
+                        remaining = 0 || (fieldType () && arguments (remaining - 1))
+
+                    arguments count)
+            // `VAR` and `MVAR`
+            | 0x13
+            | 0x1E ->
+                output.AddRange (compressed (readCompressed ()))
+                true
+            // `ARRAY`, whose shape is copied as it is encoded. A rank of 0 is all of the shape the
+            // emitter reads.
+            | 0x14 ->
+                fieldType ()
+                && (let start = position.Value
+
+                    if readCompressed () <> 0 then
+                        for _ in 1 .. readCompressed () do
+                            readCompressed () |> ignore<int>
+
+                        // A compressed signed integer's length is read as an unsigned one's.
+                        for _ in 1 .. readCompressed () do
+                            readCompressed () |> ignore<int>
+
+                    copyFrom start
+                    true)
+            // `FNPTR`
+            | 0x1B -> methodSignature ()
+            // `VALUETYPE`, `CLASS`, `CMOD_REQD` and `CMOD_OPT`
+            | 0x11
+            | 0x12
+            | 0x1F
+            | 0x20 -> false
+            // `ELEMENT_TYPE_MAX` and past it, and `VALUEARRAY`, which the emitter refuses as a bad
+            // signature.
+            | 0x17 -> fail $"element type 0x%02x{element} is refused"
+            | _ when element >= 0x22 -> fail $"element type 0x%02x{element} is refused"
+            | _ -> true
+
+        if methodSignature () then
+            MethodSignatureImport.Copied (ImmutableArray.CreateRange output)
+        else
+            MethodSignatureImport.NamesTypeByToken
