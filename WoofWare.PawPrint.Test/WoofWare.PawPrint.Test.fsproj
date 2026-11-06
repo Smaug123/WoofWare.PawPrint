@@ -274,6 +274,7 @@
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestAssemblyLoadEvent.fs" />
     <Compile Include="TestExceptionTargetSiteRefusal.fs" />
+    <Compile Include="TestGetCurrentMethodRefusal.fs" />
     <Compile Include="TestForwarderResolutionOutcomes.fs" />
     <Compile Include="TestCaseInsensitiveTypeLookup.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
