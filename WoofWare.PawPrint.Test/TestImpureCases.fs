@@ -2095,6 +2095,40 @@ module TestImpureCases =
             // truncating to 16 bits is caught here.
             processIdCase (Some 4194303)
             {
+                FileName = "SysLogDebugWrite.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        let entry (level : SystemLogLevel) (message : string) : SystemLogLevel * byte list =
+                            level, List.ofArray (Text.Encoding.UTF8.GetBytes message)
+
+                        state.Kernel.SystemLog
+                        |> Seq.map (fun e -> e.Level, List.ofSeq (UnixByteString.toBytes e.Message))
+                        |> List.ofSeq
+                        |> shouldEqual
+                            [
+                                entry SystemLogLevel.Debug "plain"
+                                entry SystemLogLevel.Debug "line\n"
+                                // `Debug.IndentSize` defaults to four.
+                                entry SystemLogLevel.Debug "    indented"
+                                entry SystemLogLevel.Debug "\n"
+                                entry SystemLogLevel.Debug ""
+                                entry SystemLogLevel.Error "raw error"
+                                entry SystemLogLevel.Emergency "raw emergency"
+                                entry SystemLogLevel.Informational "raw info"
+                                SystemLogLevel.Debug, [ byte 'r' ; byte 'a' ; byte 'w' ; byte ' ' ; 0xFFuy ; 0xE9uy ]
+                            ]
+
+                        // syslog(3) writes to neither standard stream unless
+                        // `openlog` asked for LOG_PERROR, which CoreLib never does.
+                        state.Kernel.OutputLog |> Seq.toList |> shouldEqual []
+                    )
+            }
+            {
                 // A thread's id is minted when it is started: the never-started
                 // thread takes none, and the two workers, started in the reverse
                 // of their construction order, take the ids after the pid in

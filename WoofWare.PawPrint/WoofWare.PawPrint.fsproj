@@ -87,6 +87,7 @@
     <Compile Include="Native\EnvironmentPal.fs" />
     <Compile Include="Native\ClrConfigEnvironment.fs" />
     <Compile Include="StandardStreams.fs" />
+    <Compile Include="SystemLog.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />
@@ -181,6 +182,7 @@
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\SocketOptionPal.fs" />
     <Compile Include="Native\OsThreadIdPal.fs" />
+    <Compile Include="Native\SysLogPriorityPal.fs" />
     <Compile Include="Native\MinipalRandom.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeLibc.fs" />

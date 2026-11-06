@@ -722,6 +722,10 @@ type EmulatedKernel =
         /// PawPrint drains, labelled by stream, newest first so that appending is
         /// a cons. Appended only by `recordDelivery`.
         _OutputLogNewestFirst : OutputLogEntry list
+        /// What this process handed to syslog(3), one entry per call, newest
+        /// first so that appending is a cons. Appended only by
+        /// `recordSystemLog`.
+        _SystemLogNewestFirst : SystemLogEntry list
     }
 
     /// What the guest wrote to its standard output and error, one entry per
@@ -730,6 +734,14 @@ type EmulatedKernel =
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
         let builder = ImmutableArray.CreateBuilder<OutputLogEntry> ()
         builder.AddRange (List.rev this._OutputLogNewestFirst)
+        builder.ToImmutable ()
+
+    /// What this process handed to syslog(3), one entry per call, in the order
+    /// it made them. Nothing in the machine reads it back: on a real system the
+    /// messages leave the process for the system logger.
+    member this.SystemLog : ImmutableArray<SystemLogEntry> =
+        let builder = ImmutableArray.CreateBuilder<SystemLogEntry> ()
+        builder.AddRange (List.rev this._SystemLogNewestFirst)
         builder.ToImmutable ()
 
     /// Every task the kernel knows about, by the thread that is it.
@@ -933,6 +945,13 @@ module EmulatedKernel =
         entry,
         { kernel with
             _OutputLogNewestFirst = entry :: kernel._OutputLogNewestFirst
+        }
+
+    /// Record one syslog(3) call by this kernel's process: append `entry` to
+    /// `SystemLog`.
+    let recordSystemLog (entry : SystemLogEntry) (kernel : EmulatedKernel) : EmulatedKernel =
+        { kernel with
+            _SystemLogNewestFirst = entry :: kernel._SystemLogNewestFirst
         }
 
     /// Apply an operation to this kernel's POSIX system. Those operations live
@@ -1217,6 +1236,7 @@ module EmulatedKernel =
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
             _OutputLogNewestFirst = []
+            _SystemLogNewestFirst = []
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty

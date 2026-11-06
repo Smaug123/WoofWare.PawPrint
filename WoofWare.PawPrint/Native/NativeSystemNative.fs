@@ -188,6 +188,19 @@ module NativeSystemNative =
         | NamedType concreteTypes ("", "Error", generics) when generics.IsEmpty -> Some ()
         | _ -> None
 
+    /// The `priority` parameter of `SystemNative_SysLog`: `int32_t` in the C,
+    /// `Interop.Sys.SysLogPriority` in CoreLib's import. Matched by shape for
+    /// the reason `PalErrorReturn` gives.
+    let private (|SysLogPriorityParameter|_|)
+        (concreteTypes : AllConcreteTypes)
+        (handle : ConcreteTypeHandle)
+        : unit option
+        =
+        match handle with
+        | ConcretePrimitive concreteTypes PrimitiveType.Int32 -> Some ()
+        | NamedType concreteTypes ("", "SysLogPriority", generics) when generics.IsEmpty -> Some ()
+        | _ -> None
+
     /// What a read did: the bytes it moved into the caller's buffer, however
     /// the kernel describes them, or the errno it failed with.
     let private (|Moved|ReadFailed|) (answer : ReadAnswer) : Choice<ImmutableArray<byte>, UnixError> =
@@ -2657,6 +2670,79 @@ module NativeSystemNative =
                 SocketShimPal.supportsDualModeIPv4PacketInfo state.Kernel.UnixPlatform
 
             pushInt32 (if supported then 1 else 0) ctx |> Some
+        | Some "SystemNative_SysLog",
+          [ SysLogPriorityParameter state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Void ->
+            // `void SystemNative_SysLog(SysLogPriority priority, const char*
+            // message, const char* arg1)` (pal_process.c) is `syslog((int)(LOG_USER
+            // | priority), message, arg1)`. CoreLib calls it only from
+            // `DebugProvider.WriteToDebugger`, with LOG_DEBUG and the format
+            // "%s", which is how every `Debug.Write` reaches it when no debugger
+            // is logging.
+            //
+            // syslog(3) returns nothing and reports no error, and what it sends
+            // leaves the process, so no guest can observe the call; PawPrint
+            // records the message in `EmulatedKernel.SystemLog` for the host.
+            let operation = "SystemNative_SysLog"
+
+            let priority = NativeCall.int32Argument operation instruction.Arguments.[0]
+
+            let level =
+                match SysLogPriorityPal.toLevel priority with
+                | Some level -> level
+                | None ->
+                    failwith
+                        $"%s{operation}: refusing priority %d{priority}, which is none of the PAL's eight `SysLogPriority` levels. The shim would hand syslog(3) `LOG_USER | %d{priority}`, whose facility or unknown bits PawPrint does not model; no caller in the BCL passes one."
+
+            // A pointer naming no storage, null included, is refused rather than
+            // modelled: syslog(3) would fault on it, or print glibc's "(null)"
+            // for a null `arg1`.
+            let storage (parameter : string) (index : int) : ManagedPointerSource =
+                match
+                    bufferPointerArgument operation parameter instruction.Arguments.[index]
+                    |> BufferPointer.dereferenceable
+                with
+                | Some pointer -> pointer
+                | None ->
+                    failwith
+                        $"%s{operation}: `%s{parameter}` names no storage. CoreLib always passes a marshalled string; PawPrint does not model what syslog(3) does with any other pointer."
+
+            // The format is printf's, which PawPrint does not implement: it
+            // accepts only the "%s" CoreLib passes. Scanning three bytes is
+            // enough to tell "%s" from anything else.
+            let format =
+                NativeCall.readNullTerminatedBytesWithin operation ctx.BaseClassTypes state (storage "message" 1) 3
+
+            if format <> [| byte '%' ; byte 's' |] then
+                failwith
+                    $"%s{operation}: refusing the format %A{format} (its first bytes): PawPrint implements only the format \"%%s\", the one CoreLib passes, and not printf's other conversions."
+
+            // syslog(3) bounds no message length, so neither does this scan: it
+            // stops at the NUL, or fails where the storage ends.
+            let message =
+                NativeCall.readNullTerminatedBytesWithin
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    (storage "arg1" 2)
+                    System.Int32.MaxValue
+
+            let message =
+                match UnixByteString.ofBytes (ImmutableArray.CreateRange message) with
+                | Ok message -> message
+                | Error (UnixByteStringDefect.ContainsNul offset) ->
+                    failwith
+                        $"%s{operation}: the bytes read for `arg1` hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
+
+            state.MapKernel (
+                EmulatedKernel.recordSystemLog
+                    {
+                        Level = level
+                        Message = message
+                    }
+            )
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetErrNo",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
