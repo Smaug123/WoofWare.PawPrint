@@ -334,6 +334,19 @@ module AllConcreteTypes =
         if this.ReverseIndex.ContainsKey key then
             failwith $"BUG: %O{ct} is already interned; a caller must look it up before adding it"
 
+        // `ClassLoader::LoadTypeDefThrowing` does not load a type of a dynamic module that is not
+        // yet created: it raises the AppDomain's TypeResolve event, whose handler may name another
+        // assembly that holds a type of that name.
+        if loaded.IsUncreatedDynamicType ct.Identity then
+            let name =
+                if ct.Namespace = "" then
+                    ct.Name
+                else
+                    $"%s{ct.Namespace}.%s{ct.Name}"
+
+            failwith
+                $"TODO: loading %s{name}, TypeDef 0x%08x{Ecma335.MetadataTokens.GetToken (EntityHandle.op_Implicit ct.Identity.TypeDefinition.Get)} of the dynamic assembly %s{ct.Identity.AssemblyFullName}, which CreateType has not created; CoreCLR raises the TypeResolve event for it instead of loading it"
+
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
 

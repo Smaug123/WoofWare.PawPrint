@@ -154,7 +154,16 @@ type LoadedAssemblies =
     /// the <c>TypeResolve</c> event instead.
     /// </summary>
     member this.IsUncreatedDynamicType (identity : ResolvedTypeIdentity) : bool =
-        failwith "TODO: LoadedAssemblies.IsUncreatedDynamicType"
+        match this.Dynamic.TryGetValue identity.AssemblyFullName with
+        | false, _ -> false
+        | true, content ->
+            let rid = MetadataTokens.GetRowNumber identity.TypeDefinition.Get
+
+            match EmitScope.tryTypeDefRid rid content.Scope with
+            | Some typeDef -> not (content.Created.Contains typeDef)
+            | None ->
+                failwith
+                    $"BUG: TypeDef %d{rid} of the dynamic assembly %s{identity.AssemblyFullName} is not in its scope, from which its image was written"
 
     /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.

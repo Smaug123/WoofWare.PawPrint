@@ -23,13 +23,27 @@ type TypeDefDefinition =
 /// </summary>
 [<RequireQualifiedAccess>]
 module EmitScopeDefinitions =
+    /// `tdReservedMask`: `tdRTSpecialName` and `tdHasSecurity`, which only the emitter sets.
+    let private reservedFlags : TypeAttributes = enum<TypeAttributes> 0x00040800
+
     /// <summary>
     /// The top-level <c>TypeDef</c> row with this namespace and name, compared ordinally, as CoreCLR's
     /// <c>ImportHelper::FindTypeDefByName</c> finds it with no enclosing type: the first row whose
     /// visibility is not nested.
     /// </summary>
     let tryFindTopLevelTypeDef (ns : string) (name : string) (scope : EmitScope) : TypeDefRid option =
-        failwith "TODO: EmitScopeDefinitions.tryFindTopLevelTypeDef"
+        // Equal strings are one heap entry, so a row matches exactly when it holds these offsets.
+        match EmitScope.tryStringOffset ns scope, EmitScope.tryStringOffset name scope with
+        | Some ns, Some name ->
+            EmitScope.typeDefs scope
+            |> Seq.tryFindIndex (fun row ->
+                // `IsTdNested`: a row of any nested visibility is not a top-level type.
+                (row.Flags &&& TypeAttributes.VisibilityMask) < TypeAttributes.NestedPublic
+                && row.Name = name
+                && row.Namespace = ns
+            )
+            |> Option.map (fun index -> TypeDefRid (index + 1))
+        | _ -> None
 
     /// <summary>
     /// Define a type that no other type encloses, as <c>RegMeta::DefineTypeDef</c> does: the full name
@@ -48,4 +62,33 @@ module EmitScopeDefinitions =
         (scope : EmitScope)
         : TypeDefDefinition
         =
-        failwith "TODO: EmitScopeDefinitions.defineTopLevelTypeDef"
+        let ns, name = EmitScopeReferences.splitTypeName fullName
+
+        match tryFindTopLevelTypeDef ns name scope with
+        | Some existing -> TypeDefDefinition.Duplicate existing
+        | None ->
+            let name, scope = EmitScope.internString name scope
+            let ns, scope = EmitScope.internString ns scope
+
+            let typeDef, scope =
+                EmitScope.addTypeDef
+                    {
+                        Flags = flags &&& ~~~reservedFlags
+                        Name = name
+                        Namespace = ns
+                        Extends = extends
+                    }
+                    scope
+
+            let scope =
+                (scope, interfaces)
+                ||> List.fold (fun scope target ->
+                    EmitScope.addInterfaceImpl
+                        {
+                            Class = typeDef
+                            Interface = target
+                        }
+                        scope
+                )
+
+            TypeDefDefinition.Defined (typeDef, scope)

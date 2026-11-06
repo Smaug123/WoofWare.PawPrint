@@ -329,6 +329,7 @@ module TestEmitScopeDefinitions =
             message |> shouldContainText "TODO"
             message |> shouldContainText "TypeResolve"
             message |> shouldContainText fullName
+            message |> shouldContainText "Thing, TypeDef 0x02000002"
 
         let created = loaded.WithCreatedType fullName thing
 
