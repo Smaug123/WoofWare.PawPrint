@@ -72,6 +72,7 @@ module NativeQCall =
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"
             "ModuleHandle_GetToken", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetToken"
+            "ModuleHandle_GetModuleType", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetModuleType"
             "ModuleHandle_GetDynamicMethod", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetDynamicMethod"
             "RuntimeModule_GetTypes", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetTypes"
             "RuntimeModule_GetScopeName", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetScopeName"
@@ -150,6 +151,7 @@ module NativeQCall =
             "AppDomain_CreateDynamicAssembly",
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
             "ModuleBuilder_GetTypeRef", NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTypeRef"
+            "TypeBuilder_DefineType", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_DefineType"
             "AssemblyNative_InitializeAssemblyLoadContext",
             NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_InitializeAssemblyLoadContext"
             "AssemblyNative_GetLoadContextForAssembly",

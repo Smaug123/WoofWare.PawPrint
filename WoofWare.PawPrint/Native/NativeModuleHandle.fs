@@ -16,9 +16,9 @@ type PEKindAndMachine =
 
 /// <summary>
 /// QCalls on <c>System.ModuleHandle</c> that do not resolve a metadata token out of the
-/// module: two that answer questions about its image, and one that mints a method scoped to
-/// it. The <c>ModuleHandle_Resolve*</c> entry points live in <c>NativeRuntimeTypeQCall</c>
-/// instead, next to the type-resolution machinery they share.
+/// module: those that answer questions about its image, one that hands out its global type, and
+/// one that mints a method scoped to it. The <c>ModuleHandle_Resolve*</c> entry points live in
+/// <c>NativeRuntimeTypeQCall</c> instead, next to the type-resolution machinery they share.
 /// </summary>
 [<RequireQualifiedAccess>]
 module NativeModuleHandle =
@@ -208,6 +208,52 @@ module NativeModuleHandle =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "ModuleHandle_GetModuleType",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "QCallModule",
+                                                        qCallModuleGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        handleGenerics) ],
+          MethodReturnType.Void when qCallModuleGenerics.IsEmpty && handleGenerics.IsEmpty ->
+            let operation = "ModuleHandle_GetModuleType"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[1]
+
+            // A module with no global type leaves `retType` null. CoreCLR also swallows a failure
+            // to load the global type; the one load PawPrint refuses is a dynamic module's
+            // `<Module>` before it is created, which CoreCLR resolves through the TypeResolve event,
+            // and that refusal is left to crash.
+            let state =
+                match
+                    NativeRuntimeTypeHelpers.tryGetOrAllocateGlobalRuntimeType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        assemblyFullName
+                        state
+                with
+                | None, state -> state
+                | Some moduleType, state ->
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed retType)
+                        (CliType.ObjectRef (Some moduleType))
 
             NativeHandlerResult.completed state |> Some
         | "ModuleHandle_GetPEKind",
