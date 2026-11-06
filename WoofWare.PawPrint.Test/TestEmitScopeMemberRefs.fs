@@ -588,9 +588,12 @@ module TestEmitScopeMemberRefs =
         refused [ 0x20uy ; 0x01uy ; 0x01uy ]
         // A compressed integer cut short.
         refused [ 0x20uy ; 0x00uy ; 0x13uy ; 0x80uy ]
-        // A field's signature, and a local signature.
-        refused [ 0x06uy ; 0x08uy ]
-        refused [ 0x07uy ; 0x01uy ; 0x08uy ]
+        // A field's, a local, a property's and an instantiation's signature, each of which would
+        // otherwise be read whole as a method's.
+        refused [ 0x06uy ; 0x00uy ; 0x08uy ]
+        refused [ 0x07uy ; 0x00uy ; 0x08uy ]
+        refused [ 0x08uy ; 0x00uy ; 0x08uy ]
+        refused [ 0x0Auy ; 0x00uy ; 0x08uy ]
         // `VALUEARRAY`, and an element type past `ELEMENT_TYPE_MAX`.
         refused [ 0x00uy ; 0x00uy ; 0x17uy ]
         refused [ 0x00uy ; 0x00uy ; 0x22uy ]
