@@ -17,10 +17,10 @@ open System.Numerics
 /// bit-for-bit between libm implementations, so a run recorded on one machine could replay
 /// differently on another — silently, and only in the last bit, which is the worst failure
 /// mode this project has. Everything here is therefore computed in-tree, from integer
-/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling`, `truncate`
-/// and `round` are exceptions to the *motivation* rather than to the rule: all four are exactly
-/// specified, so the host would have agreed anyway. See their own comments for why they are
-/// here.)
+/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling`, `floor`,
+/// `truncate` and `round` are exceptions to the *motivation* rather than to the rule: all five
+/// are exactly specified, so the host would have agreed anyway. See their own comments for why
+/// they are here.)
 ///
 /// The strategy is to carry far more precision than a double needs and round once at the
 /// end. Intermediate reals are held as `BigInteger` fixed-point values scaled by
@@ -608,6 +608,56 @@ module DeterministicMath =
             // Exact: `ceiled` is an integer of at most 53 bits, since `exponent < 0` bounds
             // `|x|` below 2^52.
             roundToDouble ceiled 0
+
+    /// The largest integral double at or below `x`, with the semantics of IEEE 754's
+    /// `roundToIntegralTowardNegative` (clause 5.9) — which is what CoreCLR's `Math.Floor`
+    /// inherits from the `roundsd`/`frintm` instruction the JIT emits for it.
+    ///
+    /// Exact, like `ceiling` and for the same reasons: clause 5.9 fixes the result, and every
+    /// double's floor is itself a double (a non-integral double has magnitude below 2^52, so
+    /// subtracting one from its truncation cannot leave the exactly-representable integers).
+    /// There is no error term to budget and nothing for the fixed-point machinery above to do.
+    ///
+    /// The signs of a zero result are specified rather than open, as for `ceiling`: the
+    /// `roundToIntegral` operations take the sign of a zero result from the operand. So the
+    /// floor of an argument strictly between 0 and 1 is *positive* zero, and the floor of a
+    /// negative zero is that same negative zero; an argument strictly between -1 and 0 floors
+    /// to -1, not to a zero. C says the same of `floor` (C17 F.10.6.3), and the hardware obeys,
+    /// so these are asserted against the host in `TestDeterministicMath` rather than merely
+    /// chosen here.
+    let floor (x : float) : float =
+        if Double.IsNaN x then
+            // Both hardware instructions propagate a NaN operand with its sign and payload,
+            // quietening a signalling one -- the same rule as `ceiling`.
+            quieted x
+        elif Double.IsInfinity x || x = 0.0 then
+            // Already integral, and their signs are part of the answer. `x = 0.0` catches -0 as
+            // well as +0, which is exactly what is wanted: both are returned unchanged.
+            x
+        else
+
+        // x = mantissa * 2^exponent exactly, with the sign carried by the mantissa.
+        let mantissa, exponent = decompose x
+
+        if exponent >= 0 then
+            // An integer times a non-negative power of two is already integral.
+            x
+        else
+
+        // `>>>` on a `BigInteger` is an arithmetic shift, so this is the floor of
+        // `mantissa / 2^-exponent` for a negative mantissa as well as a positive one, which is
+        // the whole of the answer.
+        let floored = mantissa >>> -exponent
+
+        if floored.IsZero then
+            // Only reachable from 0 < x < 1, whose floor clause 5.9 gives as +0. Stated rather
+            // than left to `roundToDouble`, which takes the sign from its mantissa and so would
+            // give +0 here only because a `BigInteger` zero carries no sign.
+            0.0
+        else
+            // Exact: `floored` is an integer of at most 53 bits, since `exponent < 0` bounds
+            // `|x|` below 2^52.
+            roundToDouble floored 0
 
     /// `x` with its fractional part discarded, with the semantics of IEEE 754's
     /// `roundToIntegralTowardZero` (clause 5.9) — which is what CoreCLR's `Math.Truncate`
