@@ -416,7 +416,7 @@ among the changes it must report. `SetMethodIL` will add the body to the fillabl
 ### 3c: a method that has no body yet
 
 A defined method has no body until `SetMethodIL`, and `MethodInfo.read` refused an IL method with RVA
-0, so the dynamic image failed at the first `MetadataToken`. MISSINGIL_PR classifies such a method as
+0, so the dynamic image failed at the first `MetadataToken`. #2132 classifies such a method as
 `MethodBody.MissingIl`, as CoreCLR treats it: the type loads, and only invoking the method fails.
 Nothing loads a type of a dynamic module before `CreateType`, which needs every body, so 3c's rows
 are read but never run.
