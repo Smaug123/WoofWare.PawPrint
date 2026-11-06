@@ -13,7 +13,8 @@
 #            or ResourceMessage, CoreCLR's lookup of a resource string by name (ResMgrGetString), which calls
 #            .NET 10's Environment.GetResourceStringLocal(?) and .NET 11's Environment.GetResourceString(?,?,?)
 #   assumes  the claims all the above holds under, separated by |; - for none. NamedTypesLoad: every type it loads is found without the program's assembly resolution handlers, is intact, and is defined as its name says; MetadataWellFormed: the metadata of every loaded image is well formed, so no metadata reader fails, and none of the exceptions CoreCLR makes of a reader's failing HRESULT arises
-#   sources  path:symbol under src/coreclr, each a function or assembly routine the file defines, separated by |, the function it is bound to first
+#   sources  path:symbol under src/coreclr, each a function or assembly routine the file defines, separated by |, the function it is bound to first;
+#            a QCall that vm/qcallentrypoints.cpp binds to the C library's function of its name cites it first as -:symbol
 #   reason   why, in a sentence
 FCall	System.Runtime.InteropServices.Marshal::GetLastPInvokeError	-	returns	none	-	-	vm/marshalnative.cpp:MarshalNative::GetLastPInvokeError	Reads a thread-local integer.
 FCall	System.Runtime.InteropServices.Marshal::SetLastPInvokeError	-	returns	none	-	-	vm/marshalnative.cpp:MarshalNative::SetLastPInvokeError	Writes a thread-local integer.
@@ -37,3 +38,5 @@ InstanceFCall	System.Runtime.CompilerServices.MethodTable::GetNumInstanceFieldBy
 InstanceFCall	System.Runtime.CompilerServices.MethodTable::GetPrimitiveCorElementType	-	returns	none	-	-	vm/comutilnative.cpp:MethodTableNative::GetPrimitiveCorElementType	Reads the element type of a primitive or an enum from its EEClass.
 InstanceFCall	System.Runtime.CompilerServices.MethodTable::InstantiationArg0	-	returns	none	-	-	vm/comutilnative.cpp:MethodTableNative::InstantiationArg0	Reads the method table of the type's first type argument from its instantiation.
 QCall	ThrowInvalidCastException	System.InvalidCastException|System.OutOfMemoryException	never	none	-	-	vm/jithelpers.cpp:ThrowInvalidCastException	Throws an InvalidCastException whose message it formats from the two types' names, which can run out of memory.
+QCall	memmove	-	returns	none	-	-	-:memmove	Copies the bytes by the C library's memmove, which reports no failure.
+QCall	memset	-	returns	none	-	-	-:memset	Fills the bytes by the C library's memset, which reports no failure.
