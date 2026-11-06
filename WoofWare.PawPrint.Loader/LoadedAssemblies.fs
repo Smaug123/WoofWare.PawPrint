@@ -15,13 +15,17 @@ open Microsoft.FSharp.Core
 
 /// <summary>
 /// What the load context holds for a dynamic assembly beyond its <c>DumpedAssembly</c>: the emit scope
-/// that assembly's image is written from, and which of its types the runtime has created.
+/// that assembly's image is written from, which of its types the runtime has created, and which loaded
+/// assembly each of its <c>AssemblyRef</c> rows was emitted for.
 /// </summary>
 [<NoEquality ; NoComparison>]
 type private DynamicAssemblyContent =
     {
         Scope : EmitScope
         Created : ImmutableHashSet<TypeDefRid>
+        /// The definition identity of the assembly each recorded row names, as CoreCLR's module keeps
+        /// it in its rid map (<c>ForceStoreAssemblyRef</c>).
+        AssemblyRefTargets : ImmutableDictionary<AssemblyRefRid, string>
     }
 
 /// <summary>
@@ -157,8 +161,34 @@ type LoadedAssemblies =
     ///
     /// A dynamic assembly is never found this way. CoreCLR's binder does not consult dynamic
     /// assemblies, so a reference that names one is bound, if at all, to an image on disk.
+    ///
+    /// A row of a dynamic assembly that its emitter recorded (<c>WithAssemblyRefTarget</c>) resolves
+    /// to the assembly it was emitted for, before any of that: CoreCLR's module looks a reference up
+    /// in its rid map before it asks the binder.
     /// </remarks>
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
+        let recorded =
+            match this.Dynamic.TryGetValue reference.ReferencingAssemblyFullName with
+            | false, _ -> None
+            | true, content ->
+                let row =
+                    MetadataTokens.GetRowNumber (
+                        AssemblyReferenceHandle.op_Implicit (fst reference.Handle) : EntityHandle
+                    )
+
+                match EmitScope.tryAssemblyRefRid row content.Scope with
+                | None ->
+                    failwith
+                        $"TryResolveReference: %s{reference.ReferencingAssemblyFullName} has no AssemblyRef row %d{row} in its scope, but its image holds a reference there"
+                | Some row ->
+                    match content.AssemblyRefTargets.TryGetValue row with
+                    | true, target -> Some target
+                    | false, _ -> None
+
+        match recorded with
+        | Some target -> Some this.ByDefinition.[target]
+        | None ->
+
         let refFullName = reference.FullName
 
         match this.Bindings.TryGetValue refFullName with
@@ -300,6 +330,7 @@ type LoadedAssemblies =
                 {
                     Scope = scope
                     Created = ImmutableHashSet.Empty
+                    AssemblyRefTargets = ImmutableDictionary.Empty
                 }
 
             ({ this with
@@ -382,6 +413,54 @@ type LoadedAssemblies =
                     }
                 )
         }
+
+    /// <summary>
+    /// Record that the <c>AssemblyRef</c> row <paramref name="assemblyRef"/> of the dynamic assembly with
+    /// this definition identity was emitted for <paramref name="target"/>, as CoreCLR's
+    /// <c>ModuleBuilder_GetTypeRef</c> records it in the module's rid map. From then on
+    /// <c>TryResolveReference</c> resolves that row of that assembly to <paramref name="target"/>, a
+    /// dynamic assembly included, whatever the binder would do with its name.
+    /// </summary>
+    /// <remarks>
+    /// A row already recorded keeps its first target, as CoreCLR's does: the emitter can hand one row to
+    /// two assemblies, since it does not compare the build and revision of <c>mscorlib</c>. Crashes
+    /// unless <paramref name="target"/> is the loaded assembly with its identity and
+    /// <paramref name="assemblyRef"/> is a row that <c>EmitScopeReferences.defineAssemblyRef</c> could
+    /// have returned for a reference to <paramref name="target"/> (<c>isAssemblyRefFor</c>).
+    /// </remarks>
+    member this.WithAssemblyRefTarget
+        (fullName : string)
+        (assemblyRef : AssemblyRefRid)
+        (target : DumpedAssembly)
+        : LoadedAssemblies
+        =
+        let operation = "WithAssemblyRefTarget"
+        let content = this.DynamicContent operation fullName
+
+        match this.ByDefinition.TryGetValue target.DefinitionFullName with
+        | true, loaded when Object.ReferenceEquals (loaded, target) -> ()
+        | _ ->
+            failwith
+                $"%s{operation}: %s{target.DefinitionFullName} is not the loaded assembly with that identity, so no row of %s{fullName} can have been emitted for it"
+
+        let request = AssemblyRefRequest.ofDefinition (target.PeReader.GetMetadataReader ())
+
+        if not (EmitScopeReferences.isAssemblyRefFor request assemblyRef content.Scope) then
+            failwith
+                $"%s{operation}: AssemblyRef row %d{assemblyRef.Rid} of %s{fullName} is not a row its emitter would find or add for a reference to %s{target.DefinitionFullName}"
+
+        if content.AssemblyRefTargets.ContainsKey assemblyRef then
+            this
+        else
+            { this with
+                Dynamic =
+                    this.Dynamic.SetItem (
+                        fullName,
+                        { content with
+                            AssemblyRefTargets = content.AssemblyRefTargets.Add (assemblyRef, target.DefinitionFullName)
+                        }
+                    )
+            }
 
 [<RequireQualifiedAccess>]
 module LoadedAssemblies =

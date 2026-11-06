@@ -743,6 +743,7 @@ public class MarshalShapes
                     fixture.BaseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     (ImmutableArray.CreateRange arguments)
                     None
             with

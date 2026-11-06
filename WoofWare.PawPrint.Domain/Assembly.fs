@@ -1140,7 +1140,7 @@ module Assembly =
             let builder = ImmutableDictionary.CreateBuilder ()
 
             for ref in metadataReader.AssemblyReferences do
-                builder.Add (ref, AssemblyReference.make (ref, assy.Name) (metadataReader.GetAssemblyReference ref))
+                builder.Add (ref, AssemblyReference.make ref assy (metadataReader.GetAssemblyReference ref))
 
             builder.ToImmutable ()
 

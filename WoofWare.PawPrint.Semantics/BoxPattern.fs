@@ -35,7 +35,7 @@ module BoxPattern =
     /// Every offset of `body` at which a basic block starts, beyond its entry: where control lands
     /// other than by falling through (`ControlFlow.landedOn`), and where a protected block or a
     /// handler starts or ends (`fgFindBasicBlocks`, fgbasic.cpp).
-    let private blockStarts (body : MethodInstructions<'methodVars>) : Set<int> =
+    let private blockStarts (body : MethodInstructions) : Set<int> =
         let regionBounds =
             body.ExceptionRegions
             |> Seq.collect (fun region ->
@@ -62,7 +62,7 @@ module BoxPattern =
     ///
     /// A prefix after an `isinst` is `Other`, although the JIT reads past it: no prefix may come
     /// before a `brtrue`, `brfalse` or `unbox.any`, and the JIT refuses the method over it anyway.
-    let follower (body : MethodInstructions<'methodVars>) (boxOffset : int) : BoxFollower<MetadataOperand> =
+    let follower (body : MethodInstructions) (boxOffset : int) : BoxFollower<MetadataOperand> =
         let starts = blockStarts body
 
         // The instruction after the one at `offset`, with its offset, where it is in the same block.

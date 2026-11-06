@@ -104,7 +104,7 @@ module TestSignalHandler =
     [<Test>]
     let ``setHandler then handler round-trips the installed handler`` () : unit =
         let state, method = concretizeObjectMethod (baseState ()) "GetHashCode"
-        let handler = SignalHandler.ofMethodInfo method
+        let handler = SignalHandler.ofMethodInfo method ImmutableArray.Empty
 
         let installed =
             PosixSignalShim.initial
@@ -124,8 +124,8 @@ module TestSignalHandler =
         let state, methodA = concretizeObjectMethod (baseState ()) "GetHashCode"
         let _, methodB = concretizeObjectMethod state "GetHashCode"
 
-        let handlerA = SignalHandler.ofMethodInfo methodA
-        let handlerB = SignalHandler.ofMethodInfo methodB
+        let handlerA = SignalHandler.ofMethodInfo methodA ImmutableArray.Empty
+        let handlerB = SignalHandler.ofMethodInfo methodB ImmutableArray.Empty
 
         handlerA |> shouldEqual handlerB
         hash handlerA |> shouldEqual (hash handlerB)
@@ -135,15 +135,15 @@ module TestSignalHandler =
         let state, getHashCode = concretizeObjectMethod (baseState ()) "GetHashCode"
         let _, toString = concretizeObjectMethod state "ToString"
 
-        let handlerA = SignalHandler.ofMethodInfo getHashCode
-        let handlerB = SignalHandler.ofMethodInfo toString
+        let handlerA = SignalHandler.ofMethodInfo getHashCode ImmutableArray.Empty
+        let handlerB = SignalHandler.ofMethodInfo toString ImmutableArray.Empty
 
         handlerA |> shouldNotEqual handlerB
 
     [<Test>]
     let ``SignalHandler equals returns false against a non-SignalHandler value`` () : unit =
         let _, method = concretizeObjectMethod (baseState ()) "GetHashCode"
-        let handler = SignalHandler.ofMethodInfo method
+        let handler = SignalHandler.ofMethodInfo method ImmutableArray.Empty
 
         handler.Equals (box "not a handler") |> shouldEqual false
         handler.Equals (box 42) |> shouldEqual false
@@ -161,12 +161,12 @@ module TestSignalHandler =
         let stateA =
             PosixSignalShim.initial
             |> PosixSignalShim.markInitialized (ThreadId 42) somePipe
-            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodA)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodA ImmutableArray.Empty)
 
         let stateB =
             PosixSignalShim.initial
             |> PosixSignalShim.markInitialized (ThreadId 42) somePipe
-            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodB)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo methodB ImmutableArray.Empty)
 
         stateA |> shouldEqual stateB
         hash stateA |> shouldEqual (hash stateB)
@@ -178,11 +178,11 @@ module TestSignalHandler =
 
         let stateA =
             PosixSignalShim.initial
-            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo getHashCode)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo getHashCode ImmutableArray.Empty)
 
         let stateB =
             PosixSignalShim.initial
-            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo toString)
+            |> PosixSignalShim.setHandler (SignalHandler.ofMethodInfo toString ImmutableArray.Empty)
 
         stateA |> shouldNotEqual stateB
 
@@ -195,8 +195,8 @@ module TestSignalHandler =
         let state, getHashCode = concretizeObjectMethod (baseState ()) "GetHashCode"
         let _, toString = concretizeObjectMethod state "ToString"
 
-        let handlerA = SignalHandler.ofMethodInfo getHashCode
-        let handlerB = SignalHandler.ofMethodInfo toString
+        let handlerA = SignalHandler.ofMethodInfo getHashCode ImmutableArray.Empty
+        let handlerB = SignalHandler.ofMethodInfo toString ImmutableArray.Empty
 
         let installed =
             PosixSignalShim.initial
@@ -221,9 +221,9 @@ module TestSignalHandler =
 
         let handlers : SignalHandler array =
             [|
-                SignalHandler.ofMethodInfo getHashCode
-                SignalHandler.ofMethodInfo toString
-                SignalHandler.ofMethodInfo getHashCodeAgain
+                SignalHandler.ofMethodInfo getHashCode ImmutableArray.Empty
+                SignalHandler.ofMethodInfo toString ImmutableArray.Empty
+                SignalHandler.ofMethodInfo getHashCodeAgain ImmutableArray.Empty
             |]
 
         let handlerAt (i : int) : SignalHandler =

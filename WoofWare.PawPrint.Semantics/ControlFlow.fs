@@ -79,7 +79,7 @@ module ControlFlow =
     /// Every offset in `body` control can arrive at other than by falling through to it: the
     /// targets of branches, `switch` and `leave`, and the entries of handlers and filters. The
     /// instruction at any other offset is entered only from the one before it.
-    let landedOn (body : MethodInstructions<'methodVars>) : Set<int> =
+    let landedOn (body : MethodInstructions) : Set<int> =
         let fromInstructions =
             body.Instructions
             |> List.collect (fun (instruction, offset) ->
@@ -98,7 +98,7 @@ module ControlFlow =
 
     /// The entries of the handlers and filters that the instruction at `offset` enters if it raises:
     /// those of every exception region whose protected block holds it.
-    let handlersEntered (body : MethodInstructions<'methodVars>) (offset : int) : int list =
+    let handlersEntered (body : MethodInstructions) (offset : int) : int list =
         body.ExceptionRegions
         |> Seq.collect (fun region ->
             let offsets, handlerEntries = entries region
@@ -120,7 +120,7 @@ module ControlFlow =
     /// each such instruction that nothing else lands on, whatever instruction is there; only a
     /// <c>brtrue</c> or <c>brfalse</c> reads it.
     /// </remarks>
-    let decidedBranches (body : MethodInstructions<'methodVars>) (constants : Map<int, bool>) : Map<int, bool> =
+    let decidedBranches (body : MethodInstructions) (constants : Map<int, bool>) : Map<int, bool> =
         let landedOn = landedOn body
 
         constants
@@ -169,7 +169,7 @@ module ControlFlow =
     /// The offsets control reaches from the entry of `body` when the instruction at each offset
     /// goes on to `successors offset instruction`, and to the handlers it enters if it raises
     /// (`handlersEntered`). A successor that is not an instruction of the body is ignored.
-    let reachable (body : MethodInstructions<'methodVars>) (successors : int -> IlOp -> int list) : Set<int> =
+    let reachable (body : MethodInstructions) (successors : int -> IlOp -> int list) : Set<int> =
         let seen = System.Collections.Generic.HashSet<int> ()
         let worklist = System.Collections.Generic.Queue<int> ()
 
@@ -206,5 +206,5 @@ module ControlFlow =
     /// every handler, this is what a run can execute; it over-approximates that, and never omits
     /// an offset a run executes.
     /// </remarks>
-    let mayExecute (body : MethodInstructions<'methodVars>) (constants : Map<int, bool>) : Set<int> =
+    let mayExecute (body : MethodInstructions) (constants : Map<int, bool>) : Set<int> =
         reachable body (successorsDecided (decidedBranches body constants))

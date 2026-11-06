@@ -223,7 +223,7 @@ module IntrinsicBody =
     let private callsItself
         (assembly : DumpedAssembly)
         (method : MethodDefinitionHandle)
-        (body : MethodInstructions<TypeDefn>)
+        (body : MethodInstructions)
         : bool
         =
         if assembly.Methods.[method].IsVirtual then
@@ -238,7 +238,7 @@ module IntrinsicBody =
                 | _ -> false
             )
 
-    let private canReturn (body : MethodInstructions<TypeDefn>) : bool =
+    let private canReturn (body : MethodInstructions) : bool =
         StackFlow.reachable body
         |> Set.exists (fun offset ->
             match body.Locations.[offset] with
@@ -466,11 +466,7 @@ module IntrinsicBody =
     ///
     /// A method whose own IL works is given its own IL here even when the VM substitutes it, so
     /// this is what runs, not what CoreCLR runs; `VmSubstitution.unsafeStub` answers the latter.
-    let substitutedBody
-        (assembly : DumpedAssembly)
-        (method : MethodDefinitionHandle)
-        : MethodInstructions<TypeDefn> option
-        =
+    let substitutedBody (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : MethodInstructions option =
         if isIntrinsic assembly method then
             match classify assembly method with
             | IntrinsicBody.VmSubstitution -> VmSubstitution.unsafeStub assembly method

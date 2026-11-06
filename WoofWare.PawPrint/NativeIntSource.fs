@@ -280,7 +280,7 @@ module FunctionPointerTarget =
         | FunctionPointerTarget.Dynamic handle ->
             // Distinct from the case above: this target *does* have a body -- `MethodHandleRegistry`
             // recorded it when `ModuleHandle_GetDynamicMethod` minted the method -- but it is a
-            // `MethodInstructions<TypeDefn>` with no MethodDef row and no declaring type to
+            // `MethodInstructions` with no MethodDef row and no declaring type to
             // concretise against, so it is not yet something a frame can be pushed for. Executing
             // one is issue #849's next stage; until then this is the boundary, and it is here
             // rather than at the binding site so that binding a delegate to a dynamic method

@@ -29,46 +29,58 @@ module TestOpenFlagsPal =
 
     // ------------------------------------------------------------ the PAL values
 
+    /// `pal_io.h`'s open flags are one enum with the pipe flags, so a runtime's header defines
+    /// the pipe-only values too; `PipeFlagsPal` holds those, and `ConvertOpenFlags` refuses them.
     [<Test>]
     let ``every PAL value is the one the pinned header defines`` () : unit =
-        Net11Frontier.park
-            ".NET 11's `pal_io.h` defines two open flags .NET 10's does not, `PAL_O_NONBLOCK_READ` (1024) and `PAL_O_NONBLOCK_WRITE` (2048), which `OpenFlagsPal` does not convert. Un-park when the PAL conversion follows each runtime's flags."
+        for runtime in EmulatedRuntime.supported do
+            let path =
+                Path.Combine (
+                    FrameworkUnderTest.requireRuntimeSourceOf runtime,
+                    "src",
+                    "native",
+                    "libs",
+                    "System.Native",
+                    "pal_io.h"
+                )
 
-        let path =
-            Path.Combine (
-                FrameworkUnderTest.requireRuntimeSource (),
-                "src",
-                "native",
-                "libs",
-                "System.Native",
-                "pal_io.h"
+            let pinned =
+                Regex.Matches (
+                    File.ReadAllText path,
+                    @"^\s+PAL_O_(?<name>[A-Z_]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+),",
+                    RegexOptions.Multiline
+                )
+                |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
+                |> Map.ofSeq
+
+            let pipeOnly =
+                match runtime with
+                | EmulatedRuntime.Net10 -> []
+                | EmulatedRuntime.Net11 ->
+                    [
+                        "NONBLOCK_READ", PipeFlagsPal.NonBlockingRead
+                        "NONBLOCK_WRITE", PipeFlagsPal.NonBlockingWrite
+                    ]
+
+            (runtime, pinned)
+            |> shouldEqual (
+                runtime,
+                Map.ofList (
+                    [
+                        "RDONLY", OpenFlagsPal.ReadOnly
+                        "WRONLY", OpenFlagsPal.WriteOnly
+                        "RDWR", OpenFlagsPal.ReadWrite
+                        "ACCESS_MODE_MASK", OpenFlagsPal.AccessModeMask
+                        "CLOEXEC", OpenFlagsPal.CloseOnExec
+                        "CREAT", OpenFlagsPal.Create
+                        "EXCL", OpenFlagsPal.Exclusive
+                        "TRUNC", OpenFlagsPal.Truncate
+                        "SYNC", OpenFlagsPal.Synchronous
+                        "NOFOLLOW", OpenFlagsPal.NoFollow
+                    ]
+                    @ pipeOnly
+                )
             )
-
-        let pinned =
-            Regex.Matches (
-                File.ReadAllText path,
-                @"^\s+PAL_O_(?<name>[A-Z_]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+),",
-                RegexOptions.Multiline
-            )
-            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
-            |> Map.ofSeq
-
-        pinned
-        |> shouldEqual (
-            Map.ofList
-                [
-                    "RDONLY", OpenFlagsPal.ReadOnly
-                    "WRONLY", OpenFlagsPal.WriteOnly
-                    "RDWR", OpenFlagsPal.ReadWrite
-                    "ACCESS_MODE_MASK", OpenFlagsPal.AccessModeMask
-                    "CLOEXEC", OpenFlagsPal.CloseOnExec
-                    "CREAT", OpenFlagsPal.Create
-                    "EXCL", OpenFlagsPal.Exclusive
-                    "TRUNC", OpenFlagsPal.Truncate
-                    "SYNC", OpenFlagsPal.Synchronous
-                    "NOFOLLOW", OpenFlagsPal.NoFollow
-                ]
-        )
 
     // -------------------------------------------------------- the platform numbers
 
