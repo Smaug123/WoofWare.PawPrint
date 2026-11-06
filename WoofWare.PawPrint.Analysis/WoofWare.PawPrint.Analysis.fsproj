@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>net8.0</TargetFramework>
@@ -9,7 +9,7 @@
         <Copyright>Copyright (c) Patrick Stevens 2026</Copyright>
         <Description>Questions about a .NET method answered without running it, starting with which exceptions can escape it. Built on WoofWare.PawPrint.Loader and WoofWare.PawPrint.Semantics, never on the interpreter.</Description>
         <RepositoryType>git</RepositoryType>
-        <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
+        <RepositoryUrl>https://github.com/WoofWare/WoofWare.PawPrint</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageIcon>light.png</PackageIcon>
