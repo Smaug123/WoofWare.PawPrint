@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+#nowarn "9"
+
 open System
 open System.Collections.Immutable
 open System.Reflection
@@ -278,11 +280,22 @@ module EmitScopeReferences =
                 }
                 scope
 
+    /// `CompareMemberRefs` skips the name or the signature when it is empty, and the linear search
+    /// `FindMemberRef` falls back to differs from the hashed one there; a method's name and signature
+    /// are never empty, so neither is admitted.
+    let private requireMemberRefKey (operation : string) (name : string) (signature : ImmutableArray<byte>) : unit =
+        if String.IsNullOrEmpty name then
+            invalidArg (nameof name) $"%s{operation}: a member reference's name is never empty"
+
+        if signature.IsDefaultOrEmpty then
+            invalidArg (nameof signature) $"%s{operation}: a member reference's signature is never empty"
+
     /// <summary>
     /// The <c>MemberRef</c> row with this parent, name and signature, as CoreCLR's
     /// <c>CMiniMdRW::CompareMemberRefs</c> finds it: the first whose parent is the same, whose name is
     /// the same UTF-8, and whose signature is the same bytes.
     /// </summary>
+    /// <exception cref="ArgumentException">The name or the signature is empty.</exception>
     let tryFindMemberRef
         (parent : MemberRefParent)
         (name : string)
@@ -290,13 +303,24 @@ module EmitScopeReferences =
         (scope : EmitScope)
         : MemberRefRid option
         =
-        failwith "TODO: EmitScopeReferences.tryFindMemberRef"
+        requireMemberRefKey "EmitScopeReferences.tryFindMemberRef" name signature
+
+        // Equal strings, and equal blobs, are one heap entry each, so a row matches exactly when it
+        // holds these offsets.
+        match EmitScope.tryStringOffset name scope, EmitScope.tryBlobOffset signature scope with
+        | Some name, Some signature ->
+            EmitScope.memberRefs scope
+            |> Seq.tryFindIndex (fun row -> row.Parent = parent && row.Name = name && row.Signature = signature)
+            |> Option.map (fun index -> MemberRefRid (index + 1))
+        | _ -> None
 
     /// <summary>
     /// The <c>MemberRef</c> row for a member of <paramref name="parent"/>: the one
     /// <c>tryFindMemberRef</c> finds, or a new one, as <c>RegMeta::DefineMemberRef</c> adds it in a
-    /// dynamic module, whose emitter checks for duplicate member references.
+    /// dynamic module, whose emitter checks for duplicate member references. A new row interns the
+    /// name before the signature.
     /// </summary>
+    /// <exception cref="ArgumentException">The name or the signature is empty.</exception>
     let defineMemberRef
         (parent : MemberRefParent)
         (name : string)
@@ -304,7 +328,48 @@ module EmitScopeReferences =
         (scope : EmitScope)
         : MemberRefRid * EmitScope
         =
-        failwith "TODO: EmitScopeReferences.defineMemberRef"
+        match tryFindMemberRef parent name signature scope with
+        | Some row -> row, scope
+        | None ->
+            let name, scope = EmitScope.internString name scope
+            let signature, scope = EmitScope.internBlob signature scope
+
+            EmitScope.addMemberRef
+                {
+                    Parent = parent
+                    Name = name
+                    Signature = signature
+                }
+                scope
+
+    /// A signature type provider whose type is whether that type names a type by token.
+    let private typeTokenProvider : ISignatureTypeProvider<bool, unit> =
+        { new ISignatureTypeProvider<bool, unit> with
+            member _.GetPrimitiveType (_ : PrimitiveTypeCode) : bool = false
+            member _.GetTypeFromDefinition (_ : MetadataReader, _ : TypeDefinitionHandle, _ : byte) : bool = true
+            member _.GetTypeFromReference (_ : MetadataReader, _ : TypeReferenceHandle, _ : byte) : bool = true
+
+            member _.GetTypeFromSpecification
+                (_ : MetadataReader, _ : unit, _ : TypeSpecificationHandle, _ : byte)
+                : bool
+                =
+                true
+
+            member _.GetSZArrayType (element : bool) : bool = element
+            member _.GetArrayType (element : bool, _ : ArrayShape) : bool = element
+            member _.GetByReferenceType (element : bool) : bool = element
+            member _.GetPointerType (element : bool) : bool = element
+            member _.GetPinnedType (element : bool) : bool = element
+            // The instantiated generic type is itself named by token.
+            member _.GetGenericInstantiation (_ : bool, _ : ImmutableArray<bool>) : bool = true
+            member _.GetGenericMethodParameter (_ : unit, _ : int) : bool = false
+            member _.GetGenericTypeParameter (_ : unit, _ : int) : bool = false
+            // So is a custom modifier.
+            member _.GetModifiedType (_ : bool, _ : bool, _ : bool) : bool = true
+
+            member _.GetFunctionPointerType (signature : System.Reflection.Metadata.MethodSignature<bool>) : bool =
+                signature.ReturnType || Seq.exists id signature.ParameterTypes
+        }
 
     /// <summary>
     /// Whether a method signature (ECMA-335 II.23.2.1) names a type by token anywhere: a class or value
@@ -313,5 +378,24 @@ module EmitScopeReferences =
     /// byte of a signature into a dynamic module unchanged, so a signature that names none is the
     /// signature a <c>MemberRef</c> to its method holds there.
     /// </summary>
+    /// <exception cref="ArgumentException">The signature is empty, or has bytes after its last type.</exception>
+    /// <exception cref="BadImageFormatException">The signature is not a method signature.</exception>
     let methodSignatureNamesTypeByToken (signature : ImmutableArray<byte>) : bool =
-        failwith "TODO: EmitScopeReferences.methodSignatureNamesTypeByToken"
+        if signature.IsDefaultOrEmpty then
+            invalidArg (nameof signature) "a method signature is never empty"
+
+        let bytes : byte[] = Seq.toArray signature
+        use pinned = fixed bytes
+        let mutable reader = BlobReader (pinned, bytes.Length)
+
+        let decoded : System.Reflection.Metadata.MethodSignature<bool> =
+            Ecma335.SignatureDecoder<bool, unit>(typeTokenProvider, null, ()).DecodeMethodSignature &reader
+
+        // `TranslateSigWithScope` copies only the bytes it reads, so a signature with more is not the
+        // one a reference to its method would hold.
+        if reader.RemainingBytes <> 0 then
+            invalidArg
+                (nameof signature)
+                $"a method signature ends after its last type, but %d{reader.RemainingBytes} bytes follow it"
+
+        decoded.ReturnType || Seq.exists id decoded.ParameterTypes
