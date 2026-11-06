@@ -64,9 +64,9 @@ module internal UnaryStringTokenIlOp =
 
                     Ok (value, None)
                 | StringOperand.FromDynamicScope scopeIndex ->
-                    // The decoder established at mint that this index held a string, so anything
-                    // else here means the guest rewrote `m_scope.m_tokens` afterwards, and real
-                    // .NET's answer is a *catchable* exception rather than a rejected method.
+                    // Nothing about the entry was checked when the method was minted, and anything
+                    // but a string here is real .NET's *catchable* exception at the first
+                    // invocation rather than a rejected method: `CreateDelegate` compiles nothing.
                     //
                     // Which exception is measured for `ldstr` specifically, and it is *not* the
                     // type path's answer. `DynamicScope.GetString` is `this[token] as string`

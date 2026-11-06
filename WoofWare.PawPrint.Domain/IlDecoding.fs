@@ -22,9 +22,14 @@ open System.Reflection.Metadata
 [<RequireQualifiedAccess>]
 module IlDecoding =
     /// The index a `DynamicScope` token names. `DynamicScope`'s indexer masks with `0x00FFFFFF`
-    /// and then ignores the tag entirely (`DynamicILGenerator.cs:976-987`), so the tag is *not*
-    /// authoritative about what the entry is; the entry itself is. Mirror that here rather than
-    /// cross-checking the tag, or a token the real runtime resolves happily would be refused.
+    /// and reads the entry there whatever the tag says (`DynamicILGenerator.cs:976-987`).
+    ///
+    /// The tag still matters to CoreCLR, which checks it against the kind of handle the entry
+    /// resolves to (`jitinterface.cpp:897-941`). PawPrint reproduces that check only for `ldtoken`,
+    /// whose tag decides which kind it asks for (see `readMetadataToken`). `ILGenerator` always
+    /// writes a tag of the same kind as the entry it adds, so for any other opcode the tag check can
+    /// fail where the opcode's own check passes only once a guest has rewritten an entry to a
+    /// different kind from the one it was emitted as; PawPrint does not raise that failure.
     ///
     /// Public because instruction operands are not the only scope tokens in a dynamic method: a
     /// `catch` clause's type arrives as one too, in a field of `__ExceptionInfo` rather than in the
@@ -38,9 +43,10 @@ module IlDecoding =
     /// the default arm happened to be.
     ///
     /// Public because it is the single authority on the question, and two places ask it: the decoder
-    /// below, which refuses a body it could never execute, and the executor, which must know whether
-    /// to read the named entry as a type or as a method before it dispatches to an op. A second
-    /// derivation of the same fact would drift from this one.
+    /// below, which refuses a body naming a scope entry from an opcode PawPrint cannot yet resolve
+    /// one for, and the executor, which must know whether to read the named entry as a type or as a
+    /// method before it dispatches to an op. A second derivation of the same fact would drift from
+    /// this one.
     [<RequireQualifiedAccess>]
     type ScopeOperandKind =
         /// A boxed `RuntimeTypeHandle`, narrowed to the closed type it names. Every opcode that
@@ -132,9 +138,8 @@ module IlDecoding =
         | UnaryMetadataTokenIlOp.Stelem ->
             ScopeOperandKind.NotYetSupported
                 "ldelem/stelem resolve their element type through a separate path that yields a TypeInfo rather than a ConcreteTypeHandle; note that the nullary forms (ldelem.i4 and friends) need no operand at all"
-        // `ldtoken` also accepts field and method entries, which the table below refuses by name
-        // rather than treating as wrong-kind: real .NET resolves both, so they are gaps, not
-        // errors.
+        // `ldtoken` also accepts field and method entries when its token is tagged as one, which the
+        // decoder refuses by that tag: real .NET resolves both, so they are gaps, not errors.
         | UnaryMetadataTokenIlOp.Ldtoken -> ScopeOperandKind.AnyType
         | UnaryMetadataTokenIlOp.Constrained ->
             // Its operand is a type entry, but a `callvirt` naming a scope entry does not yet apply
@@ -157,100 +162,58 @@ module IlDecoding =
 
         match universe with
         | IlTokenUniverse.Metadata assembly -> MetadataOperand.FromMetadata (SourcedMetadataToken.ofInt assembly value)
-        | IlTokenUniverse.DynamicScope entries ->
+        | IlTokenUniverse.DynamicScope ->
             // Deliberately never builds a `SourcedMetadataToken` for this universe: one naming an
             // assembly whose tables it does not index is a well-formed value that would execute
             // against the wrong rows if any path ever failed to refuse it. There is no such value
             // to leak if it is never built.
             let index = scopeIndexOf value
 
-            // Two refusals, deliberately worded apart. "Not wired" and "wrong kind" want completely
-            // different responses from whoever hits them, and a guest that trips either just gets
-            // parked — so this message is the only diagnostic anyone gets.
-            // What this opcode wants against what the entry holds *now*. The latter is not
-            // necessarily what it will hold when the instruction runs, so this establishes only that
-            // the body has some chance of executing — a body that never could is refused when it is
-            // minted rather than deep inside a run. The entry is read again, from the live scope,
-            // when the instruction actually executes, which is where the answer is taken from.
-            let entry =
-                Map.tryFind index entries
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which does not exist; the scope holds %d{entries.Count} entr(y/ies)"
-                )
-
-            let refuse (wanted : string) (held : string) : MetadataOperand =
-                failwith
-                    $"a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{held} rather than %s{wanted}"
-
-            match scopeOperandKind op, entry with
-            | ScopeOperandKind.NotYetSupported missing, _ ->
+            // Nothing about the entry is read here (see `IlTokenUniverse.DynamicScope`), so nothing
+            // refused here depends on it: only the opcode and the tag, which no guest can change once
+            // the body is minted. Whether the entry suits the instruction is decided when the
+            // instruction executes, against the live scope, where an unsuitable one is the guest
+            // exception real .NET raises at the first invocation.
+            match scopeOperandKind op with
+            | ScopeOperandKind.NotYetSupported missing ->
                 failwith
                     $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), but %s{missing}"
-            | ScopeOperandKind.Type, DynamicScopeEntry.TypeHandle
-            | ScopeOperandKind.AnyType, DynamicScopeEntry.TypeHandle
-            | ScopeOperandKind.Method, DynamicScopeEntry.DynamicMethod
-            // `Emit(OpCode, MethodInfo)` and `EmitCall` differ only in whether the entry is wrapped;
-            // both are ordinary ways to spell the same call, so both are accepted here.
-            | ScopeOperandKind.Method, DynamicScopeEntry.VarArgMethod
-            // A reflected method, wrapped with its declaring type when that type is generic or an
-            // array; `ResolveToken` answers both with the method.
-            | ScopeOperandKind.Method, DynamicScopeEntry.MethodHandle
-            | ScopeOperandKind.Method, DynamicScopeEntry.GenericMethodInfo
-            // `Emit(OpCode, FieldInfo)` and `DynamicILInfo.GetTokenFor` differ only in whether the
-            // handle is wrapped with the declaring type it was observed on; both name a field.
-            | ScopeOperandKind.Field, DynamicScopeEntry.GenericFieldInfo
-            | ScopeOperandKind.Field, DynamicScopeEntry.FieldHandle -> MetadataOperand.FromDynamicScope index
-            | ScopeOperandKind.Type, held -> refuse "a type handle" (DynamicScopeEntry.describe held)
-            | ScopeOperandKind.Method, held -> refuse "a method" (DynamicScopeEntry.describe held)
-            | ScopeOperandKind.Field, held -> refuse "a field" (DynamicScopeEntry.describe held)
-            // Not `refuse`: `ldtoken` of a field or of a method is legal IL that real .NET resolves
-            // (measured, against a type-shaped control that runs), so the entry is not the wrong
-            // kind — PawPrint has not wired these two up. A field entry needs a *non-narrowing*
-            // field walk, because `ldtoken` of a field on an open generic definition runs where
-            // `ldfld` of the same field is an InvalidProgramException; a method entry needs
-            // `RuntimeMethodHandle::GetMethodDef` like every other reflected member.
-            | ScopeOperandKind.AnyType, (DynamicScopeEntry.GenericFieldInfo | DynamicScopeEntry.FieldHandle) ->
-                failwith
-                    $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a field; ldtoken of a field is legal and PawPrint does not resolve it yet, because it needs a field walk that does not narrow to a closed declaring type as DynamicScopeOperand.field does"
-            | ScopeOperandKind.AnyType, held ->
-                failwith
-                    $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{DynamicScopeEntry.describe held}; ldtoken accepts type, field and method entries, and PawPrint resolves only type entries so far"
+            | ScopeOperandKind.Type
+            | ScopeOperandKind.Method
+            | ScopeOperandKind.Field -> MetadataOperand.FromDynamicScope index
+            | ScopeOperandKind.AnyType ->
+                // `ldtoken` accepts all three kinds, and its tag is what decides which it asks for.
+                // Measured: a type-tagged `ldtoken` whose slot holds a field or method handle is a
+                // BadImageFormatException, and so is a field- or method-tagged one whose slot holds a
+                // type handle. A type-tagged one reads its entry as a type when it executes, which
+                // raises on anything else exactly as CoreCLR's tag check does. A field- or
+                // method-tagged one is legal and resolves on real .NET; PawPrint has not wired those
+                // up. A field needs a *non-narrowing* field walk, because `ldtoken` of a field on an
+                // open generic definition runs where `ldfld` of the same field is an
+                // InvalidProgramException; a method needs `RuntimeMethodHandle::GetMethodDef` like
+                // every other reflected member. Any other tag raises on real .NET whatever the slot
+                // holds, which PawPrint does not reproduce either.
+                match
+                    LanguagePrimitives.EnumOfValue<byte, System.Reflection.Metadata.Ecma335.TableIndex> (
+                        byte ((uint32 value) >>> 24)
+                    )
+                with
+                | System.Reflection.Metadata.Ecma335.TableIndex.TypeDef
+                | System.Reflection.Metadata.Ecma335.TableIndex.TypeRef -> MetadataOperand.FromDynamicScope index
+                | _ ->
+                    failwith
+                        $"TODO: a dynamic method's %O{op} names DynamicScope entry %d{index} (token 0x%08x{value}), whose tag names no type; real .NET resolves a field- or method-tagged ldtoken and raises on any other tag, and PawPrint resolves only type-tagged ldtoken operands so far"
 
     let private readStringToken (universe : IlTokenUniverse) (reader : byref<BlobReader>) : StringOperand =
         let value = reader.ReadUInt32 () |> int
 
         match universe with
         | IlTokenUniverse.Metadata assembly -> StringOperand.FromMetadata (SourcedStringToken.ofInt assembly value)
-        | IlTokenUniverse.DynamicScope entries ->
-            let index = scopeIndexOf value
-
-            // The entry is looked up but its characters are discarded: this establishes *now* that
-            // the index names a string, so a body that could never resolve is refused when it is
-            // minted rather than when it runs, while leaving the value to be read at execution.
-            match Map.tryFind index entries with
-            | Some (DynamicScopeEntry.String _) -> StringOperand.FromDynamicScope index
-            | Some DynamicScopeEntry.TypeHandle ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a type handle rather than a string"
-            | Some DynamicScopeEntry.DynamicMethod
-            | Some DynamicScopeEntry.VarArgMethod ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a dynamic method rather than a string"
-            | Some DynamicScopeEntry.FieldHandle
-            | Some DynamicScopeEntry.GenericFieldInfo ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a field rather than a string"
-            | Some DynamicScopeEntry.MethodHandle
-            | Some DynamicScopeEntry.GenericMethodInfo ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds a reflected method rather than a string"
-            | Some (DynamicScopeEntry.Unsupported description) ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which holds %s{description} rather than a string"
-            | None ->
-                failwith
-                    $"a dynamic method's ldstr names DynamicScope entry %d{index} (token 0x%08x{value}), which does not exist; the scope holds %d{entries.Count} resolvable entr(y/ies)"
+        | IlTokenUniverse.DynamicScope ->
+            // Neither the entry nor the tag is read. `DynamicScope.GetString` is `this[token] as
+            // string` (`DynamicILGenerator.cs:994`), which consults no tag, and the entry is read
+            // from the live scope when the instruction executes.
+            StringOperand.FromDynamicScope (scopeIndexOf value)
 
     // TODO: each opcode probably ought to store how many bytes it takes, so we can advance the program counter?
     let private readOpCode (reader : byref<BlobReader>) : ILOpCode =

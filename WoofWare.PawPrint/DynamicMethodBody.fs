@@ -92,135 +92,6 @@ module internal DynamicMethodBody =
         readNamedByteArray operation what state addr
         |> Array.mapi (fun i b -> UInt8Source.value $"%s{operation}: %s{what}[%d{i}]" b)
 
-    /// <summary>
-    /// The entries of the <c>DynamicScope</c> reachable from this resolver: what each one is, so
-    /// the decoder can decide which operands are resolvable against it, and where the guest object
-    /// holding it lives, so the instruction that names it can read the object when it runs.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The scope is <c>List&lt;object?&gt; m_tokens</c> (<c>DynamicILGenerator.cs:972</c>), seeded
-    /// with a single <c>null</c> so that index 0 is never a real entry, and appended to by
-    /// <c>GetTokenFor</c>, which returns <c>m_tokens.Count - 1 ||| tag</c>.
-    /// </para>
-    /// <para>
-    /// Classification is *total*: an entry whose kind PawPrint cannot resolve becomes
-    /// <c>Unsupported</c> rather than an error.
-    /// <c>DynamicILGenerator</c>'s constructor calls <c>m_scope.GetTokenFor(methodSignature)</c>
-    /// before any user code runs, so every dynamic method's scope has a signature blob at index 1
-    /// which no instruction ever names — <c>GetCallableMethod</c> reads it out by field. Refusing
-    /// at read time on an unsupported entry would refuse every dynamic method there is, including
-    /// one whose whole body is <c>ldstr; ret</c>.
-    /// </para>
-    /// </remarks>
-    let private readScope
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (resolver : ManagedHeapAddress)
-        : Map<int, DynamicScopeEntry>
-        =
-        // Read _items[0 .. _size) and not the whole backing array: List over-allocates, and the
-        // slots past _size hold whatever was last there.
-        let items, size = DynamicScopeOperand.tokenList operation state resolver
-
-        // Classify on the entry's *type*, not on whether string contents happen to be recorded for
-        // it. The two differ on exactly the case that matters: a `System.String` whose contents
-        // were never recorded is a bug in whatever allocated it, and reading the type first turns
-        // that into a loud failure here instead of a silent demotion to `Unsupported`, which would
-        // surface much later as "this ldstr names a signature blob".
-        // Rendered structurally rather than by handle, because the entries that reach `Unsupported`
-        // are mostly arrays -- the signature blob at index 1 above all -- and a `ConcreteTypeHandle`
-        // renders an array as its element's integer id followed by `[]`, which names nothing a
-        // reader of the failure could act on.
-        let rec describeType (handle : ConcreteTypeHandle) : string =
-            match handle with
-            | ConcreteTypeHandle.Concrete _ ->
-                match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
-                | Some ty -> $"%s{ty.Namespace}.%s{ty.Name}"
-                | None -> $"an unconcretized type %O{handle}"
-            | ConcreteTypeHandle.OneDimArrayZero element -> $"%s{describeType element}[]"
-            | ConcreteTypeHandle.Array (element, rank) ->
-                let inside = if rank <= 1 then "*" else System.String (',', rank - 1)
-                $"%s{describeType element}[%s{inside}]"
-            | ConcreteTypeHandle.Pointer element -> $"%s{describeType element}*"
-            | ConcreteTypeHandle.Byref element -> $"%s{describeType element}&"
-            | ConcreteTypeHandle.FunctionPointer _ -> $"a function pointer %O{handle}"
-
-        let mutable entries = Map.empty
-
-        for i in 0 .. size - 1 do
-            let entry =
-                match
-                    ManagedHeap.getArrayValue items i state.ManagedHeap
-                    |> CliType.unwrapPrimitiveLikeDeep
-                with
-                | CliType.ObjectRef None ->
-                    // Index 0 always. Nothing else should be null, but a null anywhere is an
-                    // entry no instruction may name.
-                    DynamicScopeEntry.Unsupported "the null every DynamicScope is seeded with at index 0"
-                | CliType.ObjectRef (Some addr) ->
-                    match ManagedHeap.tryGetObjectConcreteType addr state.ManagedHeap with
-                    | None -> DynamicScopeEntry.Unsupported $"an object at %O{addr} that is not on the heap"
-                    | Some concreteType ->
-                        if DynamicScopeOperand.isCorelibType baseClassTypes.String state concreteType then
-                            let contents =
-                                ManagedHeap.getStringContents addr state.ManagedHeap
-                                |> Option.defaultWith (fun () ->
-                                    failwith
-                                        $"%s{operation}: DynamicScope entry %d{i} is a System.String at %O{addr} whose contents were never recorded; every string the guest can hand to ILGenerator.Emit was allocated through allocateManagedString, which records them"
-                                )
-
-                            DynamicScopeEntry.String contents
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeTypeHandle state concreteType then
-                            // Which type it names is *not* read here. `DynamicResolver.ResolveToken`
-                            // reads `m_scope[token]` at JIT, and a guest that replaces this entry
-                            // between minting the method and first invoking it is measured to see
-                            // the new type — so a target resolved now would be a snapshot that can
-                            // go stale, exactly as a string's characters can.
-                            DynamicScopeEntry.TypeHandle
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.DynamicMethod state concreteType then
-                            // Likewise not read now, and here the deferral is doing more than
-                            // mirroring CoreCLR: which method this entry names is carried by the
-                            // object's `_methodHandle`, which `DynamicMethod.GetMethodDescriptor`
-                            // assigns when the *target* is minted. For a body that names itself that
-                            // has not happened yet, so there is nothing here to read.
-                            DynamicScopeEntry.DynamicMethod
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.VarArgMethod state concreteType then
-                            // `EmitCall` wraps *every* operand it is given, vararg call site or not.
-                            // Whether the wrapper holds a dynamic method or a reflected one is read
-                            // when the instruction runs, along with everything else about it.
-                            DynamicScopeEntry.VarArgMethod
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeFieldHandle state concreteType then
-                            // A bare boxed handle: the module-global shape of
-                            // `Emit(OpCode, FieldInfo)`, and what `DynamicILInfo.GetTokenFor`
-                            // produces for any field. Which field it names is read live, for the
-                            // reason `TypeHandle` gives.
-                            DynamicScopeEntry.FieldHandle
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.GenericFieldInfo state concreteType then
-                            // The ordinary shape, despite the name: `Emit(OpCode, FieldInfo)` wraps
-                            // whenever the field has a declaring type, which everything reachable
-                            // through `Type.GetField` does.
-                            DynamicScopeEntry.GenericFieldInfo
-                        elif
-                            DynamicScopeOperand.isCorelibType baseClassTypes.RuntimeMethodHandle state concreteType
-                        then
-                            // A reflected method whose declaring type is neither generic nor an
-                            // array. Which method it names is read live, for the reason
-                            // `TypeHandle` gives.
-                            DynamicScopeEntry.MethodHandle
-                        elif DynamicScopeOperand.isCorelibType baseClassTypes.GenericMethodInfo state concreteType then
-                            // A reflected method on a generic type or an array, paired with that
-                            // type. Read live, like the rest.
-                            DynamicScopeEntry.GenericMethodInfo
-                        else
-                            DynamicScopeEntry.Unsupported $"a %s{describeType concreteType}"
-                | other -> failwith $"%s{operation}: expected DynamicScope entry %d{i} to be a reference, got %O{other}"
-
-            entries <- Map.add i entry entries
-
-        entries
-
     /// An `int` field of a guest object.
     let private readInt32Field
         (operation : string)
@@ -488,34 +359,20 @@ module internal DynamicMethodBody =
                 failwith
                     $"%s{operation}: the resolver's m_code is null, but DynamicResolver's constructor assigns it from BakeByteArray and DynamicMethod.GetMethodDescriptor refuses an empty ILGenerator before reaching this QCall"
 
-        // Decoded against the scope, not against `scopeAssembly`. A
-        // token here names an entry in `m_tokens`; decoding it against the assembly's tables would
-        // silently resolve it to an unrelated real row, because the bit patterns are the same.
-        let scopeEntries = readScope operation baseClassTypes state resolver
+        // Decoded against the scope, not against `scopeAssembly`. A token here names an entry in
+        // `m_tokens`; decoding it against the assembly's tables would silently resolve it to an
+        // unrelated real row, because the bit patterns are the same. The entries themselves are not
+        // read now, for an instruction's operand or for a catch clause's type: CoreCLR reads both
+        // when it compiles the method at its first invocation, and a guest can rewrite the scope
+        // before then. `DynamicMethodExecution.concretize` resolves the clause types at that point.
+        let instructions = IlDecoding.decodeInstructions IlTokenUniverse.DynamicScope code
 
-        let instructions =
-            IlDecoding.decodeInstructions (IlTokenUniverse.DynamicScope scopeEntries) code
-
-        // A catch clause's type is checked against the scope for the same reason, and to exactly
-        // the same standard, as an instruction's operand: a body that could never resolve is
-        // refused when the method is minted rather than deep inside a run. Like that check, this
-        // establishes only that the body has *some* chance of executing. The entry is read again,
-        // from the live scope, when the method is first prepared, and that later read is the one
-        // whose answer is used — a guest may replace the slot in between.
         for region in exceptionRegions do
             match region with
-            | ExceptionRegion.Catch (ExceptionCatchType.FromDynamicScope index, _) ->
-                match Map.tryFind index scopeEntries with
-                | Some DynamicScopeEntry.TypeHandle -> ()
-                | Some held ->
-                    failwith
-                        $"a dynamic method's catch clause names DynamicScope entry %d{index}, which holds %s{DynamicScopeEntry.describe held} rather than a type handle"
-                | None ->
-                    failwith
-                        $"a dynamic method's catch clause names DynamicScope entry %d{index}, which does not exist; the scope holds %d{scopeEntries.Count} entr(y/ies)"
             | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, _) ->
                 failwith
                     $"BUG: %s{operation} decoded a catch clause carrying the metadata token %O{token}; a dynamic method's clause types come from its DynamicScope"
+            | ExceptionRegion.Catch (ExceptionCatchType.FromDynamicScope _, _)
             | ExceptionRegion.Filter _
             | ExceptionRegion.Finally _
             | ExceptionRegion.Fault _ -> ()

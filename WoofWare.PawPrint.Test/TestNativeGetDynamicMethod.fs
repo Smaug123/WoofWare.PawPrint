@@ -548,22 +548,21 @@ public class Box<T>
         | TypeHandle of target : RuntimeTypeHandleTarget
         /// A `System.Reflection.Emit.VarArgMethod`, as `GetMemberRefToken` adds for *every*
         /// `EmitCall`, vararg call site or not. Every field zeroed, `m_dynamicMethod` included,
-        /// which is all decoding needs: decoding classifies by type and unwrapping happens when the
-        /// instruction runs.
+        /// which is all minting needs: minting reads nothing out of an entry, and unwrapping happens
+        /// when the instruction runs.
         | VarArgMethodObject
         /// A `System.Reflection.Emit.DynamicMethod`, as `GetTokenFor(DynamicMethod)` adds for
         /// `Emit(OpCode, MethodInfo)` when the operand is itself a dynamic method.
         ///
         /// Every field zeroed, `_methodHandle` included, which is what a target that has not been
-        /// minted looks like — and is all decoding needs, since decoding classifies the entry by its
-        /// *type* and reads nothing out of it. Which method it names is read when the instruction
+        /// minted looks like — and is all minting needs, since minting reads nothing out of an
+        /// entry. Which method it names is read when the instruction
         /// runs, by which time `GetMethodDescriptor` has assigned that field.
         | DynamicMethodObject
         /// A boxed `System.RuntimeFieldHandle`, as `DynamicScope.GetTokenFor(RuntimeFieldHandle)`
         /// adds — the shape a module-level global, or `DynamicILInfo.GetTokenFor`, produces.
         ///
-        /// Zeroed, `m_ptr` included, which is all *decoding* needs: it classifies the entry by its
-        /// type and reads nothing out of it. Which field it names is read when the instruction runs.
+        /// Zeroed, `m_ptr` included, which is all *minting* needs: it reads nothing out of an entry. Which field it names is read when the instruction runs.
         | FieldHandleObject
         /// A `System.Reflection.Emit.GenericFieldInfo`, as
         /// `DynamicScope.GetTokenFor(RuntimeFieldHandle, RuntimeTypeHandle)` adds — the shape
@@ -670,8 +669,7 @@ public class Box<T>
         }
 
     /// A `newarr` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
-    /// `GetTokenFor(RuntimeTypeHandle)` applies, which `DynamicScope`'s indexer masks off and
-    /// ignores; the entry is what decides whether this resolves.
+    /// `GetTokenFor(RuntimeTypeHandle)` applies (TypeDef).
     let private newarrBody (index : int) (scope : ScopeEntry list) =
         { doublingBody with
             Code =
@@ -686,8 +684,7 @@ public class Box<T>
         }
 
     /// A `ldsfld` naming scope entry <paramref name="index"/>, then `ret`. The tag is the one
-    /// `GetTokenFor(RuntimeFieldHandle)` applies (FieldDef), and is likewise not what decides the
-    /// resolution: the entry is.
+    /// `GetTokenFor(RuntimeFieldHandle)` applies (FieldDef).
     let private ldsfldBody (index : int) (scope : ScopeEntry list) =
         { doublingBody with
             Code =
@@ -911,7 +908,7 @@ public class Box<T>
             )
 
         // Fill the spare capacity with something a reader that ignored `_size` would trip over: a
-        // string, so it would be classified as a resolvable entry rather than merely refused.
+        // string, so it would find a perfectly good entry there.
         let state =
             (state, [ List.length entries .. List.length entries + spareCapacity - 1 ])
             ||> List.fold (fun state i ->
@@ -1581,23 +1578,6 @@ public class Box<T>
             | _ -> None
         )
 
-    /// A `DynamicScope`
-    /// operand is a well-formed `MethodDef`/`TypeDef` token that names an unrelated *real* row, so
-    /// a body carrying one must not be stored: decoded as-is it would execute against whatever
-    /// happened to sit at that index in the scope assembly.
-    [<Test>]
-    let ``a body carrying a metadata token is refused`` () : unit =
-        // ldnull; call 0x06000001; ret
-        let body =
-            { doublingBody with
-                Code = [| 0x14uy ; 0x28uy ; 0x01uy ; 0x00uy ; 0x00uy ; 0x06uy ; 0x2Auy |]
-            }
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "DynamicScope"
-        message |> shouldContainText "0x06000001"
-
     /// The scope entry an `ldstr` names becomes the operand's value.
     [<Test>]
     let ``an ldstr resolves against the DynamicScope`` () : unit =
@@ -1638,10 +1618,10 @@ public class Box<T>
 
         scopeStringOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
 
-    /// `DynamicScope`'s indexer masks the tag off and never looks at it again
-    /// (`DynamicILGenerator.cs:976-987`), so a token tagged `MethodDef` whose low bits name a string
-    /// entry resolves happily on real .NET. Refusing it on the strength of its tag would reject a
-    /// program the real runtime runs — the *entry* is authoritative, not the tag.
+    /// `ldstr` reads its entry through `DynamicScope.GetString`, which is `this[token] as string`
+    /// and never looks at the tag (`DynamicILGenerator.cs:976-994`), so a token tagged `MethodDef`
+    /// whose low bits name a string entry resolves happily on real .NET. Refusing it on the strength
+    /// of its tag would reject a program the real runtime runs.
     [<Test>]
     let ``the tag bits of a scope token are not consulted`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -1662,50 +1642,26 @@ public class Box<T>
 
     /// `List<T>` over-allocates, so `_items` is longer than the list. A reader that walked the
     /// backing array rather than `_size` would see slots holding whatever was last there — here,
-    /// strings, so they would be classified as perfectly good entries rather than merely refused.
+    /// strings, so it would find a perfectly good entry at each.
     [<Test>]
     let ``scope entries past _size are not read`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
         let body =
             { ldstrBody 3 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "real" ] with
                 ScopeSpareCapacity = 4
             }
 
-        let message = mintExpectingFailure body
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
 
-        message |> shouldContainText "does not exist"
-        message |> shouldContainText "entry 3"
+        let handle, _ = definitionBehindStub state stubAddress
 
-    [<Test>]
-    let ``an ldstr naming an entry of an unsupported kind is refused`` () : unit =
-        let body =
-            ldstrBody 1 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
+        DynamicScopeOperand.entryObject "test" 3 state handle
+        |> shouldEqual ScopeEntryLookup.PastEnd
 
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "entry 1"
-        message |> shouldContainText "System.Byte"
-        message |> shouldContainText "rather than a string"
-
-    /// Index 0 is the `null` `DynamicScope` seeds `m_tokens` with. Distinguishable in the message
-    /// from "no such entry", because the two mean different things about the emitted IL.
-    [<Test>]
-    let ``an ldstr naming the scope's seeded null is refused`` () : unit =
-        let body =
-            ldstrBody 0 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "unused" ]
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "entry 0"
-        message |> shouldContainText "null"
-
-    [<Test>]
-    let ``an ldstr naming a nonexistent entry is refused`` () : unit =
-        let body = ldstrBody 7 baselineScope
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "entry 7"
-        message |> shouldContainText "does not exist"
+        DynamicScopeOperand.entryObject "test" 4 state handle
+        |> shouldEqual ScopeEntryLookup.Absent
 
     /// The `DynamicScope` index every `newarr` in a body names. Projected rather than compared as a
     /// `MetadataOperand`, for the same reason `scopeStringOperands` is: the other case carries an
@@ -1740,6 +1696,29 @@ public class Box<T>
             | _ -> None
         )
 
+    /// A `DynamicScope` operand is a well-formed `MethodDef`/`TypeDef` token that names an unrelated
+    /// *real* row, so it must be decoded as an index into the scope and never as a metadata token:
+    /// decoded as-is it would execute against whatever happened to sit at that row in the scope
+    /// assembly. Index 1 is the signature blob, which no call can resolve, and that makes no
+    /// difference to what the operand is.
+    [<Test>]
+    let ``a scope token is never decoded as a metadata token`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        // ldnull; call 0x06000001; ret
+        let body =
+            { doublingBody with
+                Code = [| 0x14uy ; 0x28uy ; 0x01uy ; 0x00uy ; 0x00uy ; 0x06uy ; 0x2Auy |]
+            }
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" minimalSignature body state
+
+        let _, definition = definitionBehindStub state stubAddress
+
+        // `scopeMethodOperands` fails on a metadata operand rather than dropping it.
+        scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 1 ]
+
     /// A closed `RuntimeTypeHandleTarget` to hang a scope entry on. `System.Int32` rather than
     /// anything more exotic because what is under test is the walk to the target, not the target.
     let private closedInt32
@@ -1760,9 +1739,7 @@ public class Box<T>
 
         RuntimeTypeHandleTarget.Closed handle, state
 
-    /// The scope entry a `newarr` names becomes the operand, exactly as an `ldstr`'s does — the
-    /// *tag* in the token (0x02, TypeDef) is not what decided it. `DynamicScope`
-    /// masks the tag off and ignores it, so the entry is the only authority on what an index holds.
+    /// The scope entry a `newarr` names becomes the operand, exactly as an `ldstr`'s does.
     [<Test>]
     let ``a newarr resolves against the DynamicScope`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -1789,20 +1766,6 @@ public class Box<T>
         // the live `m_scope.m_tokens` when the instruction runs, because a guest can replace a slot
         // between minting and first invocation and real .NET compiles against the replacement.
         minted.LocalVars |> Option.map Seq.toList |> shouldEqual (Some [])
-
-    /// A `newarr` whose index holds a
-    /// string is a program CoreCLR would reject at JIT; PawPrint rejects it when the method is
-    /// minted, as it does for the mirror-image `ldstr`.
-    [<Test>]
-    let ``a newarr naming a string entry is refused`` () : unit =
-        let body =
-            newarrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; ScopeEntry.Str "not a type" ]
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "Newarr"
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "rather than a type handle"
 
     /// The `DynamicScope` index every `ldsfld` in a body names. The sibling of
     /// `scopeTypeOperands`, and separate for the same reason.
@@ -1866,55 +1829,9 @@ public class Box<T>
 
         scopeFieldOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
 
-    /// The kind check is real in field position too, and the message says "a field" rather than
-    /// borrowing the type-shaped one.
-    [<Test>]
-    let ``a ldsfld naming a type handle entry is refused`` () : unit =
-        let loggerFactory, prepared, state = loadFixture ()
-        let target, state = closedInt32 loggerFactory prepared state
-
-        let body =
-            ldsfldBody
-                2
-                [
-                    ScopeEntry.Null
-                    ScopeEntry.Blob [| 0x00uy |]
-                    ScopeEntry.TypeHandle target
-                ]
-
-        let message =
-            try
-                mintOne loggerFactory prepared "Probe" doublingSignature body state |> ignore
-                failwith "expected minting to fail"
-            with e ->
-                e.ToString ()
-
-        message |> shouldContainText "Ldsfld"
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "rather than a field"
-
-    [<Test>]
-    let ``a newarr naming the method's own signature blob is refused`` () : unit =
-        let body = newarrBody 1 baselineScope
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "entry 1"
-        message |> shouldContainText "System.Byte[]"
-        message |> shouldContainText "rather than a type handle"
-
-    [<Test>]
-    let ``a newarr naming a nonexistent entry is refused`` () : unit =
-        let body = newarrBody 7 baselineScope
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "entry 7"
-        message |> shouldContainText "does not exist"
-
     /// A `ldtoken` naming scope entry <paramref name="index"/>, then `ret`. The tag is the TypeDef
-    /// one `GetTokenFor(RuntimeTypeHandle)` applies, and as everywhere else it is not what decides
-    /// the resolution: the entry is.
+    /// one `GetTokenFor(RuntimeTypeHandle)` applies, which is what makes this `ldtoken` ask for a
+    /// type.
     let private ldtokenBody (index : int) (scope : ScopeEntry list) =
         { doublingBody with
             Code =
@@ -1963,77 +1880,93 @@ public class Box<T>
 
         scopeLdtokenOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
 
-    /// `ldtoken` of a field is legal IL that real .NET resolves — measured, against a type-shaped
-    /// control that runs — so the refusal must read as "not wired up", not as "wrong kind". Getting
-    /// that backwards would send whoever hits it looking for a bug in their own emitted IL. The
-    /// gap is real: a field walk that does not narrow to a closed declaring type, because `ldtoken`
-    /// of a field on an open generic definition runs where `ldfld` of it is InvalidProgramException.
+    /// `ldtoken` accepts all three kinds of entry, and its token's tag decides which it asks for:
+    /// CoreCLR checks the tag against what the entry resolves to. A field- or method-tagged one is
+    /// legal IL that real .NET resolves, so the refusal must read as "not wired up", not as
+    /// "wrong kind"; and it is decided by the tag alone, because the entry can be rewritten before
+    /// the method is first invoked. Every entry below — a type handle included — is refused alike.
     [<Test>]
-    let ``a ldtoken naming a field entry is refused as unsupported rather than as wrong-kind`` () : unit =
-        let body =
-            ldtokenBody
-                2
+    let ``a ldtoken whose tag names no type is refused as unsupported whatever its entry holds`` () : unit =
+        // FieldDef, MethodDef, MemberRef (which names a field or a method), and a string's tag.
+        for tag in [ 0x04000000 ; 0x06000000 ; 0x0A000000 ; 0x70000000 ] do
+            for entry in
                 [
-                    ScopeEntry.Null
-                    ScopeEntry.Blob [| 0x00uy |]
                     ScopeEntry.GenericFieldInfoObject
-                ]
-
-        let message = mintExpectingFailure body
-
-        message |> shouldContainText "Ldtoken"
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "TODO"
-        message |> shouldContainText "does not narrow"
-        // The wrong-kind phrasing `refuse` would have produced.
-        message |> shouldNotContainText "rather than"
-
-    /// Likewise for a method entry, which additionally needs `RuntimeMethodHandle::GetMethodDef`.
-    [<Test>]
-    let ``a ldtoken naming a method entry is refused as unsupported rather than as wrong-kind`` () : unit =
-        let body =
-            ldtokenBody
-                2
-                [
-                    ScopeEntry.Null
-                    ScopeEntry.Blob [| 0x00uy |]
+                    ScopeEntry.FieldHandleObject
                     ScopeEntry.DynamicMethodObject
-                ]
+                    ScopeEntry.MethodHandleObject None
+                    ScopeEntry.Str "not a type"
+                    ScopeEntry.Null
+                ] do
+                let loggerFactory, prepared, state = loadFixture ()
 
-        let message = mintExpectingFailure body
+                let body =
+                    { doublingBody with
+                        Code = Array.concat [ [| 0xD0uy |] ; System.BitConverter.GetBytes (2 ||| tag) ; [| 0x2Auy |] ]
+                        Scope = [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
+                    }
 
-        message |> shouldContainText "Ldtoken"
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "TODO"
-        message |> shouldContainText "resolves only type entries"
-        message |> shouldNotContainText "rather than"
+                let message = mintExpectingFailureIn loggerFactory prepared body state
 
-    /// The mirror image of the check above: `ldstr` must not accept a type entry either.
+                message |> shouldContainText "Ldtoken"
+                message |> shouldContainText "entry 2"
+                message |> shouldContainText "TODO"
+                message |> shouldContainText "whose tag names no type"
+
+        // A type handle, which a type-tagged ldtoken would resolve, is refused under these tags too.
+        let loggerFactory, prepared, state = loadFixture ()
+        let target, state = closedInt32 loggerFactory prepared state
+
+        for tag in [ 0x04000000 ; 0x06000000 ] do
+            let body =
+                { ldtokenBody
+                      2
+                      [
+                          ScopeEntry.Null
+                          ScopeEntry.Blob [| 0x00uy |]
+                          ScopeEntry.TypeHandle target
+                      ] with
+                    Code = Array.concat [ [| 0xD0uy |] ; System.BitConverter.GetBytes (2 ||| tag) ; [| 0x2Auy |] ]
+                }
+
+            mintExpectingFailureIn loggerFactory prepared body state
+            |> shouldContainText "whose tag names no type"
+
+    /// CoreCLR's type check accepts a TypeRef tag as well as a TypeDef one, so a TypeRef-tagged
+    /// `ldtoken` reads its entry as a type exactly as a TypeDef-tagged one does.
     [<Test>]
-    let ``an ldstr naming a type entry is refused`` () : unit =
+    let ``a ldtoken tagged TypeRef is minted like a TypeDef one`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
         let target, state = closedInt32 loggerFactory prepared state
 
         let body =
-            ldstrBody
-                2
-                [
-                    ScopeEntry.Null
-                    ScopeEntry.Blob [| 0x00uy |]
-                    ScopeEntry.TypeHandle target
-                ]
+            { ldtokenBody
+                  2
+                  [
+                      ScopeEntry.Null
+                      ScopeEntry.Blob [| 0x00uy |]
+                      ScopeEntry.TypeHandle target
+                  ] with
+                Code =
+                    Array.concat
+                        [
+                            [| 0xD0uy |]
+                            System.BitConverter.GetBytes (2 ||| 0x01000000)
+                            [| 0x2Auy |]
+                        ]
+            }
 
-        let message = mintExpectingFailureIn loggerFactory prepared body state
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" doublingSignature body state
 
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "type handle rather than a string"
+        let _, definition = definitionBehindStub state stubAddress
 
-    /// "This opcode is not wired for scope operands yet" and "this entry is the wrong kind" are
-    /// different facts and must read differently: a guest that trips either just gets parked, so the
-    /// message is the only diagnostic anyone gets. A method-shaped opcode naming a perfectly good
-    /// *method* entry is the case that separates them, and `newobj` is the one to use, since `call`
-    /// and `callvirt` are wired: real .NET answers a `newobj` naming a `DynamicMethod` with
-    /// InvalidProgramException (measured) rather than by constructing anything.
+        scopeLdtokenOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
+
+    /// An opcode not yet wired for scope operands is refused at mint, by the opcode alone: here a
+    /// `newobj` naming a perfectly good *method* entry. The message is the only diagnostic a guest
+    /// that trips it gets, so it says what real .NET does: answers a `newobj` naming a
+    /// `DynamicMethod` with InvalidProgramException (measured) rather than constructing anything.
     [<Test>]
     let ``a newobj naming a dynamic-method entry is refused as unsupported rather than as wrong-kind`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
@@ -2059,16 +1992,14 @@ public class Box<T>
         let message = mintExpectingFailureIn loggerFactory prepared body state
 
         message |> shouldContainText "Newobj"
+        message |> shouldContainText "TODO"
         message |> shouldContainText "InvalidProgramException"
-        // Not the wrong-kind wording ("... which holds X rather than Y"): the entry is fine, the
-        // opcode is what is missing.
-        message |> shouldNotContainText "which holds"
 
     /// `call` and `callvirt` accept every entry `ResolveToken` resolves in method position: a
     /// `DynamicMethod`, bare or in the `VarArgMethod` wrapper `EmitCall` stores, and a reflected
     /// method, bare or in the `GenericMethodInfo` stored for a generic or array declaring type.
-    /// Decoding classifies each by its type alone, so zeroed objects are enough here; what each
-    /// names is read when the instruction runs.
+    /// Decoding reads nothing out of an entry, so zeroed objects are enough here; what each names is
+    /// read when the instruction runs.
     [<Test>]
     let ``call and callvirt naming any method entry are minted`` () : unit =
         for opcode, opcodeName in [ 0x28uy, "call" ; 0x6Fuy, "callvirt" ] do
@@ -2104,37 +2035,93 @@ public class Box<T>
                 if operands <> [ 2 ] then
                     failwith $"%s{opcodeName} naming %A{entry} decoded to scope operands %A{operands}"
 
-    /// The other half of that distinction:
-    /// `call` is wired, so a `call` naming a type entry is a wrong-kind refusal rather than
-    /// an unsupported-opcode one.
+    /// Minting reads none of the scope's entries. CoreCLR reads them only when it compiles the
+    /// method, at its first invocation, and a guest can rewrite the scope before then (measured: a
+    /// slot nulled before `CreateDelegate` and restored before the first invocation runs), so what
+    /// an entry holds at mint decides nothing. Every operand position is minted naming every kind
+    /// of entry, the seeded null, the signature blob, and an index past the end, with the index as
+    /// its operand; whether the entry suits the instruction is settled when the instruction runs.
     [<Test>]
-    let ``a call naming a type entry is refused as wrong-kind`` () : unit =
+    let ``every scope operand is minted whatever its entry holds`` () : unit =
         let loggerFactory, prepared, state = loadFixture ()
         let target, state = closedInt32 loggerFactory prepared state
 
-        // ldnull; call <scope 2>; ret
-        let body =
+        // ldnull; call <scope index>; ret
+        let callBody (index : int) (scope : ScopeEntry list) : ResolverBody =
             { doublingBody with
                 Code =
                     Array.concat
                         [
                             [| 0x14uy ; 0x28uy |]
-                            System.BitConverter.GetBytes (2 ||| 0x0A000000)
+                            System.BitConverter.GetBytes (index ||| 0x06000000)
                             [| 0x2Auy |]
                         ]
-                Scope =
-                    [
-                        ScopeEntry.Null
-                        ScopeEntry.Blob [| 0x00uy |]
-                        ScopeEntry.TypeHandle target
-                    ]
+                Scope = scope
             }
 
-        let message = mintExpectingFailureIn loggerFactory prepared body state
+        let bodies : (string * (int -> ScopeEntry list -> ResolverBody)) list =
+            [
+                "ldstr", ldstrBody
+                "newarr", newarrBody
+                "ldsfld", ldsfldBody
+                "ldtoken", ldtokenBody
+                "call", callBody
+            ]
 
-        message |> shouldContainText "Call"
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "a type handle rather than a method"
+        let entries =
+            [
+                ScopeEntry.Str "a string"
+                ScopeEntry.TypeHandle target
+                ScopeEntry.DynamicMethodObject
+                ScopeEntry.VarArgMethodObject
+                ScopeEntry.FieldHandleObject
+                ScopeEntry.GenericFieldInfoObject
+                ScopeEntry.MethodHandleObject None
+                ScopeEntry.GenericMethodInfoObject (None, None)
+            ]
+
+        let scopeOperands (body : MintedDynamicMethodBody) : int list =
+            body.Instructions
+            |> List.map fst
+            |> List.choose (fun op ->
+                match op with
+                | IlOp.UnaryMetadataToken (_, MetadataOperand.FromDynamicScope index)
+                | IlOp.UnaryStringToken (_, StringOperand.FromDynamicScope index) -> Some index
+                | IlOp.UnaryMetadataToken (_, MetadataOperand.FromMetadata token) ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+                | IlOp.UnaryStringToken (_, StringOperand.FromMetadata token) ->
+                    failwith $"expected a dynamic-scope operand, got the metadata token %O{token.Token}"
+                | _ -> None
+            )
+
+        let cases =
+            [
+                for name, makeBody in bodies do
+                    for entry in entries do
+                        // The entry itself, the seeded null, the signature blob, and past the end.
+                        for index in [ 2 ; 0 ; 1 ; 7 ] do
+                            yield
+                                name,
+                                entry,
+                                index,
+                                makeBody index [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
+            ]
+
+        (state, cases)
+        ||> List.fold (fun state (name, entry, index, body) ->
+            let stubAddress, _, state =
+                mintOne loggerFactory prepared "Probe" doublingSignature body state
+
+            let _, definition = definitionBehindStub state stubAddress
+            let operands = scopeOperands (definition.GetBody ())
+
+            if operands <> [ index ] then
+                failwith
+                    $"%s{name} of entry %d{index}, with %A{entry} at entry 2, decoded to scope operands %A{operands}"
+
+            state
+        )
+        |> ignore<IlMachineState>
 
     /// The accepting direction: a `call` naming a `DynamicMethod`
     /// entry is a body PawPrint will mint. Nothing is read out of the entry here — the method it
@@ -2201,21 +2188,6 @@ public class Box<T>
         let _, definition = definitionBehindStub state stubAddress
 
         scopeMethodOperands (definition.GetBody ()) |> shouldEqual [ 2 ]
-
-    /// Nor a reflected method, in either of the shapes `Emit` stores one.
-    [<Test>]
-    let ``an ldstr naming a reflected-method entry is refused`` () : unit =
-        for entry in
-            [
-                ScopeEntry.MethodHandleObject None
-                ScopeEntry.GenericMethodInfoObject (None, None)
-            ] do
-            let message =
-                ldstrBody 2 [ ScopeEntry.Null ; ScopeEntry.Blob [| 0x00uy |] ; entry ]
-                |> mintExpectingFailure
-
-            message |> shouldContainText "entry 2"
-            message |> shouldContainText "a reflected method rather than a string"
 
     /// A method of the guest, by its declaring type's name and its own.
     let private guestMethod
@@ -2476,25 +2448,6 @@ public class Box<T>
             why |> shouldContainText "m_value is null"
         | other -> failwith $"expected BadImageFormatException, got %A{other}"
 
-    /// The mirror image, as for type entries: `ldstr` must not accept a method entry either.
-    [<Test>]
-    let ``an ldstr naming a dynamic-method entry is refused`` () : unit =
-        let loggerFactory, prepared, state = loadFixture ()
-
-        let body =
-            ldstrBody
-                2
-                [
-                    ScopeEntry.Null
-                    ScopeEntry.Blob [| 0x00uy |]
-                    ScopeEntry.DynamicMethodObject
-                ]
-
-        let message = mintExpectingFailureIn loggerFactory prepared body state
-
-        message |> shouldContainText "entry 2"
-        message |> shouldContainText "a dynamic method rather than a string"
-
     /// The regions a body was minted with.
     let private regionsOf
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
@@ -2503,7 +2456,7 @@ public class Box<T>
         (infos : ExceptionInfoSpec list)
         : ExceptionRegion list
         =
-        // Entry 2 is the catch clauses' type in every fixture below. Only its *kind* is read at
+        // Entry 2 is the catch clauses' type in every fixture below. Nothing about it is read at
         // mint, so any closed type serves.
         let target, state = closedInt32 loggerFactory prepared state
 
@@ -2792,39 +2745,51 @@ public class Box<T>
         )
         |> shouldEqual [ 11 ; 24 ]
 
-    /// A clause whose scope entry is not a type handle is refused when the method is minted, for
-    /// the same reason and to the same standard as an instruction operand naming the wrong kind:
-    /// the body could never execute, and finding that out during exception dispatch is far too
-    /// late. Entry 1 is the signature blob every scope carries.
+    /// A clause's type is read when the method is first prepared, not when it is minted, because
+    /// the scope can be rewritten in between (measured on real .NET: a clause slot nulled before
+    /// `CreateDelegate` and restored before the first invocation runs). So a clause naming the
+    /// seeded null, the signature blob, or an index past the end is minted like any other.
     [<Test>]
-    let ``a catch clause naming a non-type entry is refused`` () : unit =
-        let body =
-            { doublingBody with
-                Exceptions =
-                    Some
-                        [
-                            {
-                                StartAddr = 0
-                                EndAddr = 11
-                                EndFinally = -1
-                                SpareCapacity = 3
-                                Clauses =
-                                    [
-                                        {
-                                            Flags = 0
-                                            FilterAddrOrToken = 0x02000001
-                                            HandlerStart = 11
-                                            HandlerEnd = 20
-                                        }
-                                    ]
-                            }
-                        ]
-            }
+    let ``a catch clause is minted whatever its entry holds`` () : unit =
+        for index in [ 0 ; 1 ; 7 ] do
+            let loggerFactory, prepared, state = loadFixture ()
 
-        let message = mintExpectingFailure body
+            let body =
+                { doublingBody with
+                    Exceptions =
+                        Some
+                            [
+                                {
+                                    StartAddr = 0
+                                    EndAddr = 11
+                                    EndFinally = -1
+                                    SpareCapacity = 3
+                                    Clauses =
+                                        [
+                                            {
+                                                Flags = 0
+                                                FilterAddrOrToken = index ||| 0x02000000
+                                                HandlerStart = 11
+                                                HandlerEnd = 20
+                                            }
+                                        ]
+                                }
+                            ]
+                }
 
-        message |> shouldContainText "catch clause"
-        message |> shouldContainText "entry 1"
+            let stubAddress, _, state =
+                mintOne loggerFactory prepared "Probe" minimalSignature body state
+
+            let _, definition = definitionBehindStub state stubAddress
+
+            (definition.GetBody ()).ExceptionRegions
+            |> Seq.toList
+            |> List.map (fun region ->
+                match region with
+                | ExceptionRegion.Catch (ExceptionCatchType.FromDynamicScope clauseIndex, _) -> clauseIndex
+                | other -> failwith $"expected a catch clause naming a scope entry, got %O{other}"
+            )
+            |> shouldEqual [ index ]
 
     /// An empty `m_exceptions` array is not a clause and must not be refused: `ILGenerator`
     /// produces one for a method that opened no `try`, and refusing it would reject most bodies.
