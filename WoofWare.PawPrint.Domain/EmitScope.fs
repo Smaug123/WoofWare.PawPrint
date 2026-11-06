@@ -425,6 +425,13 @@ module EmitScope =
         else
             None
 
+    /// The `TypeDef` row with this RID, if the scope has one.
+    let tryTypeDefRid (rid : int) (scope : EmitScope) : TypeDefRid option =
+        if rid >= 1 && rid <= scope.TypeDefs.Count then
+            Some (TypeDefRid rid)
+        else
+            None
+
     /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
     /// emitter stores for it, without adding it.
     let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =

@@ -71,6 +71,34 @@ type ConcreteMethodKey =
         MethodGenerics : ConcreteTypeHandle list
     }
 
+[<RequireQualifiedAccess>]
+module ConcreteMethodKey =
+    /// The key of `method`'s definition instantiated at `typeGenerics` and `methodGenerics`;
+    /// `None` for a dynamic method, which has no declaring type.
+    let ofMethod
+        (method : WoofWare.PawPrint.MethodInfo<'ty, 'methodGenerics, 'methodVars>)
+        (typeGenerics : ConcreteTypeHandle seq)
+        (methodGenerics : ConcreteTypeHandle seq)
+        : ConcreteMethodKey option
+        =
+        match method.Owner with
+        | MethodOwner.DynamicMethodsClass _ -> None
+        | MethodOwner.DeclaredOn declaringType ->
+            let row, synthesised = method.IdentityKey
+
+            Some
+                {
+                    DeclaringType = declaringType.Identity
+                    MethodRow =
+                        row
+                        |> Option.map (fun h ->
+                            Ecma335.MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit h : EntityHandle)
+                        )
+                    Synthesised = synthesised
+                    TypeGenerics = List.ofSeq typeGenerics
+                    MethodGenerics = List.ofSeq methodGenerics
+                }
+
 /// `MethodConcretisation.concretizeMethodWithAllGenerics`'s answer for a `ConcreteMethodKey`.
 type ConcretisedMethod =
     {
@@ -155,6 +183,12 @@ type TypeSystemState =
         ///
         /// Add through `WithConcretisedMethod`, never by assignment.
         _ConcretisedMethods : Map<ConcreteMethodKey, ConcretisedMethod>
+        /// `MethodConcretisation.concretizeLocals`'s answers: the concrete types of the locals of
+        /// each method instantiation a frame has been created for. A hit and a miss agree for the
+        /// reason `_ConcretisedMethods` gives.
+        ///
+        /// Add through `WithConcretisedLocals`, never by assignment.
+        _ConcretisedLocals : Map<ConcreteMethodKey, ImmutableArray<ConcreteTypeHandle>>
         /// Every concrete type instantiated so far, each identified by its handle.
         ConcreteTypes : AllConcreteTypes
     }
@@ -167,6 +201,7 @@ type TypeSystemState =
             _InterfaceDispatchMaps = Map.empty
             _MemberResolutions = Map.empty
             _ConcretisedMethods = Map.empty
+            _ConcretisedLocals = Map.empty
             ConcreteTypes = AllConcreteTypes.Empty
         }
 
@@ -188,6 +223,11 @@ type TypeSystemState =
     member this.WithConcretisedMethod (key : ConcreteMethodKey) (concretised : ConcretisedMethod) =
         { this with
             _ConcretisedMethods = this._ConcretisedMethods |> Map.add key concretised
+        }
+
+    member this.WithConcretisedLocals (key : ConcreteMethodKey) (locals : ImmutableArray<ConcreteTypeHandle>) =
+        { this with
+            _ConcretisedLocals = this._ConcretisedLocals |> Map.add key locals
         }
 
     /// Register an assembly under its own definition identity. Idempotent: if an assembly with
@@ -261,7 +301,7 @@ module TypeSystemState =
         match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes concrete.Identity concrete.Generics with
         | Some handle -> state, Ok handle
         | None ->
-            match AllConcreteTypes.add baseClassTypes concrete state.ConcreteTypes with
+            match AllConcreteTypes.add baseClassTypes state._LoadedAssemblies concrete state.ConcreteTypes with
             | Error refusal -> state, Error (TypeBindingFailure.Refused refusal)
             | Ok (handle, concreteTypes) ->
                 { state with

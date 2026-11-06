@@ -1398,10 +1398,20 @@ public static class SR
         | Runtime.InteropServices.Architecture.X64 -> JitTarget.X64
         | other -> failwith $"No JIT table describes the host's architecture, %O{other}"
 
-    /// An analysis over `corelib` and `assemblies`, with `bind` applied to the load context, loading
-    /// any other assembly from `runtimeDirs`, for the JIT compiling for `target` on a CPU `profile`
-    /// describes, allowed `assumptions`.
-    let private analysisOf
+    /// What a `CoreLibAnalysis` the tests share was created with.
+    type private CoreLibAnalysisKey =
+        {
+            CoreLib : Guid
+            RuntimeDirs : string list
+            Target : JitTarget
+            Profile : HardwareIntrinsicsProfile
+            Assumptions : Set<Assumption>
+        }
+
+    /// A new analysis over `corelib` and `assemblies`, with `bind` applied to the load context,
+    /// loading any other assembly from `runtimeDirs`, for the JIT compiling for `target` on a CPU
+    /// `profile` describes, allowed `assumptions`.
+    let private freshAnalysisOf
         (corelib : DumpedAssembly)
         (runtimeDirs : string seq)
         (target : JitTarget)
@@ -1426,6 +1436,75 @@ public static class SR
                 LoadedAssemblies = loaded
                 BaseTypes = baseClassTypes
             }
+
+    /// The CoreLib analysis each test begins from, one per CoreLib image and settings, so that what
+    /// CoreLib's own code lets escape is worked out once per run rather than once per test. Each is
+    /// made the same way whichever test asks first, so no test's answers depend on which others ran.
+    let private coreLibAnalyses =
+        Collections.Concurrent.ConcurrentDictionary<CoreLibAnalysisKey, Lazy<CoreLibAnalysis>> ()
+
+    /// The shared analysis over `corelib` alone (`freshAnalysisOf`), having asked what its
+    /// `TypeLoadException(string, string, string, int)` constructor lets escape: the runtime runs
+    /// it to make the exception of a type that fails to bind, and summarising it summarises the
+    /// constructors of the other exceptions the runtime makes by itself.
+    let private coreLibAnalysisOf
+        (corelib : DumpedAssembly)
+        (runtimeDirs : string seq)
+        (target : JitTarget)
+        (profile : HardwareIntrinsicsProfile)
+        (assumptions : Set<Assumption>)
+        : CoreLibAnalysis
+        =
+        let key =
+            {
+                CoreLib = corelib.ModuleVersionId
+                RuntimeDirs = List.ofSeq runtimeDirs
+                Target = target
+                Profile = profile
+                Assumptions = assumptions
+            }
+
+        let make () : CoreLibAnalysis =
+            let analysis =
+                freshAnalysisOf corelib key.RuntimeDirs target profile assumptions [] id
+
+            let typeLoad =
+                match corelib.TryGetTopLevelTypeDef "System" "TypeLoadException" with
+                | None -> failwith "CoreLib defines no System.TypeLoadException"
+                | Some ty ->
+                    ty.Methods
+                    |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.Length = 4)
+                    |> Seq.exactlyOne
+                    |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+
+            EscapeAnalysis.escapes analysis typeLoad |> fst |> EscapeAnalysis.ofCoreLib
+
+        coreLibAnalyses.GetOrAdd(key, (fun _ -> lazy (make ()))).Value
+
+    /// An analysis over `corelib` and `assemblies`, with `bind` applied to the load context, loading
+    /// any other assembly from `runtimeDirs`, for the JIT compiling for `target` on a CPU `profile`
+    /// describes, allowed `assumptions`. Allowed every assumption, it begins from the shared
+    /// analysis of `corelib` (`coreLibAnalysisOf`), whose own reading of the CoreLib image the load
+    /// context then holds; otherwise it is new (`freshAnalysisOf`).
+    let private analysisOf
+        (corelib : DumpedAssembly)
+        (runtimeDirs : string seq)
+        (target : JitTarget)
+        (profile : HardwareIntrinsicsProfile)
+        (assumptions : Set<Assumption>)
+        (assemblies : DumpedAssembly list)
+        (bind : LoadedAssemblies -> LoadedAssemblies)
+        : EscapeAnalysisState
+        =
+        // Nearly every analysis is allowed every assumption. Each of the few allowed fewer is used
+        // by a test or two, many of which never ask about TypeLoadException's constructor, and
+        // allowed fewer assumptions that constructor's summary reaches far more of CoreLib: sharing
+        // one made those tests seconds or minutes slower than beginning new.
+        if assumptions = Assumption.all then
+            let shared = coreLibAnalysisOf corelib runtimeDirs target profile assumptions
+            EscapeAnalysis.over shared (LoadedAssemblies.ofAssemblies (shared.CoreLib :: assemblies) |> bind)
+        else
+            freshAnalysisOf corelib runtimeDirs target profile assumptions assemblies bind
 
     let private hostCoreLib () : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -1528,6 +1607,57 @@ public static class SR
         : EscapeAnalysisState
         =
         analysisUnder HardwareIntrinsicsProfile.ScalarOnly assemblies bind
+
+    /// What an analysis has worked out once it has loaded an assembly besides CoreLib may depend on
+    /// that assembly, so it is not one to begin analyses over other assemblies from.
+    [<Test>]
+    let ``an analysis that has loaded an assembly besides CoreLib is not a CoreLib analysis`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let other =
+            Roslyn.compileAssembly "Other" OutputKind.DynamicallyLinkedLibrary [] [ "public class C { }" ]
+            |> fun image -> Assembly.read loggerFactory (Some "Other.dll") (new MemoryStream (image))
+
+        let analysis =
+            freshAnalysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                [ other ]
+                id
+
+        Assert.Throws<ArgumentException> (fun () -> EscapeAnalysis.ofCoreLib analysis |> ignore<CoreLibAnalysis>)
+        |> ignore<ArgumentException>
+
+    /// A load context an analysis begins from a CoreLib analysis over must hold that analysis's own
+    /// reading of CoreLib: another reading of the same image, or none, is refused.
+    [<Test>]
+    let ``an analysis begins from a CoreLib analysis only over a load context holding its CoreLib`` () : unit =
+        let shared =
+            coreLibAnalysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+
+        let rereading = hostCoreLib ()
+        rereading.ModuleVersionId |> shouldEqual shared.CoreLib.ModuleVersionId
+
+        for loaded in
+            [
+                LoadedAssemblies.ofAssemblies [ rereading ]
+                LoadedAssemblies.ofAssemblies []
+            ] do
+            Assert.Throws<ArgumentException> (fun () ->
+                EscapeAnalysis.over shared loaded |> ignore<EscapeAnalysisState>
+            )
+            |> ignore<ArgumentException>
+
+        EscapeAnalysis.over shared (LoadedAssemblies.ofAssemblies [ shared.CoreLib ])
+        |> ignore<EscapeAnalysisState>
 
     /// How `analysis`'s answers for `fixture` fail `expectations`, and the analysis to ask next.
     let private unmet
@@ -1722,6 +1852,72 @@ public static class SR
             |> List.ofSeq
 
         match sourcesDisagree analysis [ corelib ] methods with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// How `warm`'s answers for `methods`, asked in order, differ from `fresh`'s: in what escapes,
+    /// whether it is unknown, what it assumes, or the places that make it unknown.
+    let private disagreements
+        (fresh : EscapeAnalysisState)
+        (warm : EscapeAnalysisState)
+        (methods : MethodKey list)
+        : string list
+        =
+        let shown (analysis : EscapeAnalysisState) (key : MethodKey) =
+            let analysis, escapes = EscapeAnalysis.escapes analysis key
+            let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+            analysis,
+            (render analysis escapes, escapes.Unknown, escapes.Assumes, sources |> Set.map (renderSite analysis))
+
+        ((fresh, warm, []), methods)
+        ||> List.fold (fun (fresh, warm, failures) key ->
+            let fresh, expected = shown fresh key
+            let warm, actual = shown warm key
+
+            let failures =
+                if expected = actual then
+                    failures
+                else
+                    $"%s{EscapeAnalysis.methodName fresh key}: a new analysis says %A{expected}, one begun from the shared CoreLib analysis %A{actual}"
+                    :: failures
+
+            fresh, warm, failures
+        )
+        |> fun (_, _, failures) -> List.rev failures
+
+    /// The tests allowed every assumption begin their analyses from a shared CoreLib analysis
+    /// (`analysisOf`), which has already summarised what CoreLib's code lets escape; this checks
+    /// that they then answer as a new analysis does, so that what they test is what a new analysis
+    /// says.
+    [<Test>]
+    let ``an analysis begun from the shared CoreLib analysis answers as a new one does`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let corelib = hostCoreLib ()
+
+        let methods =
+            fixture.Methods
+            |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make fixture handle)
+            |> List.ofSeq
+
+        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+        let target = hostTarget ()
+        let profile = HardwareIntrinsicsProfile.ScalarOnly
+
+        let failures =
+            disagreements
+                (freshAnalysisOf corelib runtimeDirs target profile Assumption.all [ fixture ] id)
+                (analysisOf corelib runtimeDirs target profile Assumption.all [ fixture ] id)
+                methods
+
+        match failures with
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 

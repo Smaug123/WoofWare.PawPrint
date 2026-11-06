@@ -930,8 +930,6 @@ module IlMachineStateExecution =
                     | IntrinsicBody.VmSubstitution ->
                         match VmSubstitution.unsafeStub declaringAssy handle with
                         | Some stub ->
-                            let stub = MethodInstructions.setLocalVars<TypeDefn, ConcreteTypeHandle> None stub
-
                             methodToCall
                             |> MethodInfo.setMethodVars (MethodBody.Il stub) methodToCall.Signature
                             |> fun methodToCall -> IntrinsicOutcome.RunBody (state, methodToCall)
@@ -1082,6 +1080,9 @@ module IlMachineStateExecution =
                         ExceptionEscape = exceptionEscape
                     }
 
+            let state, localTypes =
+                ExecutionConcretization.concretizeLocals loggerFactory baseClassTypes methodToCall state
+
             match
                 MethodState.Empty
                     state.TypeSystem.ConcreteTypes
@@ -1090,6 +1091,7 @@ module IlMachineStateExecution =
                     declaringAssy
                     methodToCall
                     methodGenerics
+                    localTypes
                     args
                     returnInfo
             with
@@ -1406,45 +1408,12 @@ module IlMachineStateExecution =
                         // no method generics for cctor
                         ImmutableArray.Empty
 
-                // Convert method instructions (local variables)
-                let state, convertedBody =
-                    match cctorMethodWithMethodGenerics.Body with
-                    | MethodBody.Il methodInstr ->
-                        let state, convertedLocalVars =
-                            match methodInstr.LocalVars with
-                            | None -> state, None
-                            | Some localVars ->
-                                // Concretize each local variable type. The result is indexed by
-                                // local-variable slot, so it must preserve the declaration order
-                                // of `localVars`.
-                                let state, convertedVars =
-                                    ((state, ImmutableArray.CreateBuilder<ConcreteTypeHandle> ()), localVars)
-                                    ||> Seq.fold (fun (state, acc) typeDefn ->
-                                        let state, handle =
-                                            IlMachineState.concretizeType
-                                                loggerFactory
-                                                baseClassTypes
-                                                state
-                                                concreteType.AssemblyFullName
-                                                concreteType.Generics
-                                                ImmutableArray.Empty // no method generics for cctor
-                                                typeDefn
-
-                                        acc.Add handle
-                                        state, acc
-                                    )
-                                    |> Tuple.rmap (fun builder -> builder.ToImmutable ())
-
-                                state, Some convertedVars
-
-                        state, MethodBody.Il (MethodInstructions.setLocalVars convertedLocalVars methodInstr)
-                    | MethodBody.InternalCall -> state, MethodBody.InternalCall
-                    | MethodBody.PInvoke -> state, MethodBody.PInvoke
-                    | MethodBody.RuntimeProvided rb -> state, MethodBody.RuntimeProvided rb
-                    | MethodBody.Abstract -> state, MethodBody.Abstract
 
                 let fullyConvertedMethod =
-                    MethodInfo.setMethodVars convertedBody convertedSignature cctorMethodWithMethodGenerics
+                    MethodInfo.setMethodVars
+                        cctorMethodWithMethodGenerics.Body
+                        convertedSignature
+                        cctorMethodWithMethodGenerics
 
                 callMethod
                     loggerFactory

@@ -92,6 +92,11 @@ module TestKernelConfigSplit =
             )
         )
         |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn)
+        |> machine (fun image ->
+            match config.HostName with
+            | None -> image
+            | Some name -> UnixBootImage.withHostName name image
+        )
         |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace)
         |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace)
         |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax)
@@ -196,6 +201,16 @@ module TestKernelConfigSplit =
             let! ports = Gen.elements [ None ; Some (40000us, 40100us) ]
             let! soMaxConn = Gen.elements [ None ; Some 17 ]
 
+            let! hostName =
+                Gen.elements [ None ; Some "pawprint.example" ]
+                |> Gen.map (
+                    Option.map (fun name ->
+                        match UnixByteString.ofString name with
+                        | Ok name -> name
+                        | Error defect -> failwith $"test bug: %O{defect}"
+                    )
+                )
+
             let! tcpSendSpace =
                 match flavour with
                 | SimulatedUnixFlavour.Linux -> Gen.constant None
@@ -259,6 +274,7 @@ module TestKernelConfigSplit =
                     Mount = None
                     EphemeralPortRange = ports
                     SoMaxConn = soMaxConn
+                    HostName = hostName
                     TcpSendSpace = tcpSendSpace
                     TcpReceiveSpace = tcpReceiveSpace
                     TcpSendSpaceMax = tcpSendSpaceMax

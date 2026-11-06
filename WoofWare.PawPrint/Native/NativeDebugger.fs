@@ -30,6 +30,21 @@ module NativeDebugger =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 isAttached)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "DebugDebugger_IsLoggingHelper",
+          "System.Private.CoreLib",
+          "System.Diagnostics",
+          "Debugger",
+          "IsLoggingInternal",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // QCall backing Debugger.IsLogging. Returns nonzero when an attached debugger
+            // has logging enabled.
+            let isLogging = if DebuggerState.isLogging state.Debugger then 1 else 0
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 isLogging)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =

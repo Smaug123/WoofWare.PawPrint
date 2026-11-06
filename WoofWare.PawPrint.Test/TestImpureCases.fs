@@ -363,6 +363,42 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `HostNameConfigured.cs` on `platform`, with
+    /// `KernelConfig.HostName` set to `name` (or left at the kernel's default for
+    /// `None`). The guest prints `Dns.GetHostName()` and `Environment.MachineName`
+    /// a line each, so the assertion pins the whole chain
+    /// (`KernelConfig.HostName` -> `UnixBootImage.withHostName` ->
+    /// `SystemNative_GetHostName` -> CoreLib's 256-byte `stackalloc` -> both
+    /// properties) to exact bytes.
+    let private hostNameCase (platform : SimulatedUnixPlatform) (name : string option) : EndToEndTestCase =
+        let expected = defaultArg name "localhost"
+        let machine = expected.Split('.').[0]
+
+        {
+            FileName = "HostNameConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    HostName =
+                        name
+                        |> Option.map (fun name ->
+                            match UnixByteString.ofString name with
+                            | Ok name -> name
+                            | Error defect -> failwith $"test bug: %O{defect}"
+                        )
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual (Text.Encoding.UTF8.GetBytes (expected + "\n" + machine + "\n"))
+                )
+        }
+
     /// A directory whose UTF-8 encoding exceeds the 256 bytes CoreLib's
     /// `Interop.Sys.GetCwd()` stackallocs, so that the first `SystemNative_GetCwd`
     /// must fail with ERANGE and the guest must take its ArrayPool
@@ -428,7 +464,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, it stops in `ModuleBuilder.DefineType` at `TypeBuilder_DefineType`; each stage of the plan takes it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing` and the TypeDef of `Thing`, it stops in `TypeBuilder.DefineMethod` at `TypeBuilder_DefineMethod`; each stage of the plan takes it a QCall further."""
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -1111,6 +1147,56 @@ module TestImpureCases =
                 name "plain", file "never opened"
             ]
 
+    /// `TypeBuilderDefineType.cs` has defined five types, none of them created. A guest cannot read a
+    /// TypeDef row's parent, flags or interfaces until `CreateType`, so this checks the rows its
+    /// dynamic module's scope ends with: the TypeRefs are IThing (1), IDisposable (2), object (3)
+    /// and string (4), and each refused definition added nothing.
+    let private assertDefinedTypeRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let typeRef (rid : int) =
+            Some (TypeDefOrRef.TypeRef (TypeRefRid rid))
+
+        EmitScope.typeDefs scope
+        |> Seq.map (fun row ->
+            EmitScope.stringAt row.Namespace scope, EmitScope.stringAt row.Name scope, row.Flags, row.Extends
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                "", "<Module>", System.Reflection.TypeAttributes.NotPublic, None
+                "N", "A", System.Reflection.TypeAttributes.Public, typeRef 3
+                "", "B", System.Reflection.TypeAttributes.NotPublic, typeRef 3
+                "",
+                "I",
+                System.Reflection.TypeAttributes.Public
+                ||| System.Reflection.TypeAttributes.Interface
+                ||| System.Reflection.TypeAttributes.Abstract,
+                None
+                "", "C", System.Reflection.TypeAttributes.Public, Some (TypeDefOrRef.TypeDef (TypeDefRid 2))
+                "D.E",
+                "F",
+                System.Reflection.TypeAttributes.Public
+                ||| System.Reflection.TypeAttributes.Sealed,
+                typeRef 3
+            ]
+
+        EmitScope.interfaceImpls scope
+        |> Seq.map (fun row -> row.Class, row.Interface)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 2)
+                TypeDefRid 2, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                TypeDefRid 5, TypeDefOrRef.TypeDef (TypeDefRid 4)
+            ]
+
+        (EmitScope.typeRefs scope).Count |> shouldEqual 4
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -1741,6 +1827,15 @@ module TestImpureCases =
             // constant rather than reading `Kernel.ProcessPath` fails one of
             // them. An apphost-shaped path and a muxer-shaped one, which are the
             // two things a real `Environment.ProcessPath` actually reports.
+            // The kernel's default, which is part of the replay contract; then
+            // configured names on each flavour, among them the longest each
+            // flavour's kernel holds (64 bytes on Linux; 255 on Darwin, which
+            // with its terminator fills CoreLib's 256-byte buffer exactly).
+            hostNameCase SimulatedUnixPlatform.linuxX64 None
+            hostNameCase SimulatedUnixPlatform.linuxX64 (Some "pawprint-test.example.org")
+            hostNameCase SimulatedUnixPlatform.linuxX64 (Some (String.replicate 64 "h"))
+            hostNameCase SimulatedUnixPlatform.macOsArm64 (Some "pawprint-mac.local")
+            hostNameCase SimulatedUnixPlatform.macOsArm64 (Some (String.replicate 251 "h" + ".lan"))
             processPathCase "/home/pawprint/work/Guest"
             processPathCase "/usr/share/dotnet/dotnet"
             // A path whose UTF-8 encoding is longer than its character count, so
@@ -2588,6 +2683,19 @@ module TestImpureCases =
                 // kernel the host runs. The guest's comment says how it makes
                 // sure the wait is interrupted on the real runtime.
                 FileName = "SignalInterruptsSocketEventWait.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Always
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A callback installed with SystemNative_SetPosixSignalHandler
+                // names System.Collections only in a local, which is loaded,
+                // and announced to an AssemblyLoad handler, when the callback
+                // is compiled. Compared on every host.
+                FileName = "SignalCallbackLocalsAnnounced.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
@@ -4300,6 +4408,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
+            }
+            {
+                // `TypeBuilder_DefineType`, through `ModuleBuilder.DefineType`: the TypeDef and
+                // InterfaceImpl rows a dynamic module gains, and the emitter's own duplicate check,
+                // before any type is created; `assertDefinedTypeRows` checks the rows no guest can
+                // read yet. Dynamic-code switch overridden to true like its
+                // siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderDefineType.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertDefinedTypeRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,
