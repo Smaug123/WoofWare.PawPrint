@@ -112,10 +112,6 @@ module NativeMethod =
     let private disableRuntimeMarshalling : string =
         "System.Runtime.CompilerServices.DisableRuntimeMarshallingAttribute"
 
-    /// The attribute that sets a P/Invoke's calling convention when its import says `WinApi`.
-    let private unmanagedCallConv : string =
-        "System.Runtime.InteropServices.UnmanagedCallConvAttribute"
-
     /// The attribute that has a P/Invoke pass the current culture's locale ID as an extra argument.
     let private lcidConversion : string =
         "System.Runtime.InteropServices.LCIDConversionAttribute"
@@ -186,9 +182,11 @@ module NativeMethod =
     /// Whether CoreCLR builds the stub for `method`, a P/Invoke of `assembly`, which disables runtime
     /// marshalling, without throwing for what it declares besides the types it passes: the method
     /// returns its own result (`PreserveSig`), takes a fixed argument list, sets no last error,
-    /// converts no locale argument (`LCIDConversion`), and calls by a convention that takes no
-    /// `this` and that its import alone gives (no `UnmanagedCallConv`, and no modifier on its
-    /// return type, from which CoreCLR would read a convention).
+    /// converts no locale argument (`LCIDConversion`), and calls by Cdecl or Stdcall, which take no
+    /// `this`: as its import names, or, where its import names none, as its `[UnmanagedCallConv]`
+    /// names or by the platform's default (`UnmanagedCallingConvention.ofPInvoke`), with the GC
+    /// transition suppressed or not but not as a member function, and with no modifier on its
+    /// return type, from which CoreCLR would read a convention.
     let private hasPlainStub (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : bool =
         let definition = assembly.Methods.[method]
 
@@ -204,13 +202,25 @@ module NativeMethod =
             && (convention = System.Reflection.MethodImportAttributes.CallingConventionWinApi
                 || convention = System.Reflection.MethodImportAttributes.CallingConventionCDecl
                 || convention = System.Reflection.MethodImportAttributes.CallingConventionStdCall)
-            && (NamedAttribute.ofMethod unmanagedCallConv assembly method).IsEmpty
             && (NamedAttribute.ofMethod lcidConversion assembly method).IsEmpty
             && (
                 match definition.Signature.ReturnType with
                 | MethodReturnType.Returns (TypeDefn.Modified _) -> false
                 | MethodReturnType.Returns _
                 | MethodReturnType.Void -> true
+            )
+            && not (UnmanagedCallingConvention.describingRefuses assembly method)
+            && (
+                match UnmanagedCallingConvention.ofPInvoke assembly method with
+                | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Cdecl, modifiers)
+                | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Stdcall, modifiers) ->
+                    not (modifiers.Contains UnmanagedCallConvModifier.MemberFunction)
+                | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Thiscall, _)
+                | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Fastcall, _)
+                | UnmanagedConventionRead.Reads (UnmanagedCallConvBase.Swift, _)
+                | UnmanagedConventionRead.MultipleBases
+                | UnmanagedConventionRead.Unreadable _
+                | UnmanagedConventionRead.NullArray -> false
             )
         | MethodInfo.Synthesised _, _
         | _, None -> false

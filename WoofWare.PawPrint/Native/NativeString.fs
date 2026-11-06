@@ -97,3 +97,108 @@ module NativeString =
             |> fun state -> NativeHandlerResult.completed state
             |> Some
         | _ -> None
+
+    /// What a lookup in the intern table does when no string of the value is interned.
+    [<RequireQualifiedAccess>]
+    type private OnInternMiss =
+        /// Intern the object that was looked up, and answer it (`String_Intern`).
+        | InternIt
+        /// Answer null and leave the table alone (`String_IsInterned`).
+        | AnswerNull
+
+    /// <c>String_Intern</c> and <c>String_IsInterned</c> (coreclr/vm/appdomainnative.cpp), behind
+    /// <c>string.Intern</c> and <c>string.IsInterned</c>, once the caller has checked the call's
+    /// shape: the one native argument is the <c>StringHandleOnStack</c> through which the string
+    /// arrives and the answer is returned. The table is the one <c>ldstr</c> interns literals into,
+    /// so a literal and an interned non-literal of the same value are one object.
+    let private lookUpInterned
+        (operation : string)
+        (onMiss : OnInternMiss)
+        (ctx : NativeCallContext)
+        : NativeHandlerResult
+        =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        if instruction.Arguments.Length <> 1 then
+            failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+        let handle =
+            NativeCall.stringHandleOnStackTarget operation state "str" instruction.Arguments.[0]
+            |> ManagedPointerSource.requireAddressed
+
+        let addr =
+            match IlMachineState.readManagedByref ctx.BaseClassTypes state handle with
+            | CliType.ObjectRef (Some addr) -> addr
+            | CliType.ObjectRef None ->
+                // CoreCLR dereferences the string unchecked; it is the managed wrapper's
+                // `ArgumentNullException.ThrowIfNull` that keeps null out.
+                failwith $"%s{operation}: the string handle holds null, which the managed wrapper rejects first"
+            | other -> failwith $"%s{operation}: expected the string handle to hold a string reference, got %O{other}"
+
+        // Read now rather than trusted from anywhere earlier: a guest can rewrite a string's
+        // characters in place through an unsafe pointer, and CoreCLR hashes the characters the
+        // object holds when it is asked.
+        let value =
+            match ManagedHeap.getStringContents addr state.ManagedHeap with
+            | Some value -> value
+            | None ->
+                failwith
+                    $"%s{operation}: %O{addr} has no recorded string contents; every string reaching the heap goes through allocateManagedString, which records them"
+
+        let answer, state =
+            if value.Length = 0 then
+                // CoreCLR interns `string.Empty` under "" when it starts, before any guest code runs,
+                // so "" is never a miss and its object is always `string.Empty`. PawPrint makes that
+                // object on first use.
+                let empty, state =
+                    IlMachineState.internCanonicalEmptyString ctx.LoggerFactory ctx.BaseClassTypes state
+
+                Some empty, state
+            else
+                match state.InternedStrings.TryGetValue value, onMiss with
+                | (true, interned), _ -> Some interned, state
+                | (false, _), OnInternMiss.InternIt ->
+                    // The object itself, not a copy: `GlobalStringLiteralMap::AddInternedString`
+                    // (vm/stringliteralmap.cpp) stores the `STRINGREF` it is handed.
+                    Some addr,
+                    { state with
+                        InternedStrings = state.InternedStrings.Add (value, addr)
+                    }
+                | (false, _), OnInternMiss.AnswerNull -> None, state
+
+        let state =
+            IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state handle (CliType.ObjectRef answer)
+
+        NativeHandlerResult.completed state
+
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
+        let state = ctx.State
+
+        match
+            entryPoint,
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            ctx.Instruction.ExecutingMethod.Signature.ParameterTypes,
+            ctx.Instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "String_Intern",
+          "System.Private.CoreLib",
+          "System",
+          "String",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
+          MethodReturnType.Void when stringHandleGenerics.IsEmpty ->
+            lookUpInterned "String_Intern" OnInternMiss.InternIt ctx |> Some
+        | "String_IsInterned",
+          "System.Private.CoreLib",
+          "System",
+          "String",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StringHandleOnStack",
+                                                        stringHandleGenerics) ],
+          MethodReturnType.Void when stringHandleGenerics.IsEmpty ->
+            lookUpInterned "String_IsInterned" OnInternMiss.AnswerNull ctx |> Some
+        | _ -> None

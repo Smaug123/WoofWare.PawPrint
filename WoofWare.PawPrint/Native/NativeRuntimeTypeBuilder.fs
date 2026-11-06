@@ -1,0 +1,160 @@
+namespace WoofWare.PawPrint
+
+open System.Reflection
+
+open NativeRuntimeTypeHelpers
+
+/// QCalls declared on `System.Reflection.Emit.RuntimeTypeBuilder`, each of which adds to a dynamic
+/// module's metadata what CoreCLR's emitter adds (vm/comdynamic.cpp), and hands back the token.
+[<RequireQualifiedAccess>]
+module NativeRuntimeTypeBuilder =
+    /// `mdtTypeDef`, the table byte of a `TypeDef` token.
+    let private typeDefTable : int = 0x02
+
+    /// The type a `TypeDefOrRef` token names in `scope`. `None` for a nil token (RID 0), as
+    /// `IsNilToken` reads one.
+    let private typeDefOrRef
+        (operation : string)
+        (what : string)
+        (token : int)
+        (scope : EmitScope)
+        : TypeDefOrRef option
+        =
+        let rid = token &&& 0x00FFFFFF
+
+        if rid = 0 then
+            None
+        else
+
+        let target =
+            match token >>> 24 &&& 0xFF with
+            | 0x01 -> EmitScope.tryTypeRefRid rid scope |> Option.map TypeDefOrRef.TypeRef
+            | 0x02 -> EmitScope.tryTypeDefRid rid scope |> Option.map TypeDefOrRef.TypeDef
+            | 0x1B ->
+                failwith
+                    $"TODO: %s{operation}: %s{what} is the TypeSpec 0x%08x{token}, which ModuleBuilder_GetTokenFromTypeSpec hands out, and an emit scope has no TypeSpec table yet"
+            | _ ->
+                failwith
+                    $"%s{operation}: %s{what} 0x%08x{token} is not a TypeDef, TypeRef or TypeSpec token, which the managed caller's GetTypeTokenInternal alone hands out"
+
+        match target with
+        | Some target -> Some target
+        | None -> failwith $"%s{operation}: %s{what} 0x%08x{token} names no row of the module's scope"
+
+    let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        match
+            entryPoint,
+            ctx.TargetAssembly.Name.Name,
+            ctx.TargetType.Namespace,
+            ctx.TargetType.Name,
+            instruction.ExecutingMethod.Signature.ParameterTypes,
+            instruction.ExecutingMethod.Signature.ReturnType
+        with
+        | "TypeBuilder_DefineType",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "TypeAttributes", attributesGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty && attributesGenerics.IsEmpty
+            ->
+            let operation = "TypeBuilder_DefineType"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held =
+                match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
+                | Some scope -> scope
+                | None ->
+                    failwith
+                        $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+
+            let fullName =
+                match NativeCall.managedPointerOfPointerArgument operation "fullname" instruction.Arguments.[1] with
+                | ManagedPointerSource.Null ->
+                    failwith
+                        $"%s{operation}: a null type name; the managed caller has already read the name's first character"
+                | namePtr -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+
+            let parent =
+                typeDefOrRef operation "the parent" (NativeCall.int32Argument operation instruction.Arguments.[2]) held
+
+            let attributes =
+                enum<TypeAttributes> (NativeCall.int32Argument operation instruction.Arguments.[3])
+
+            let enclosing = NativeCall.int32Argument operation instruction.Arguments.[4]
+
+            if enclosing &&& 0x00FFFFFF <> 0 then
+                failwith
+                    $"TODO: %s{operation}: %s{fullName} is nested in 0x%08x{enclosing}, which CoreCLR's DefineNestedType records in a NestedClass row, and an emit scope has no NestedClass table yet"
+
+            // The managed caller passes its interface tokens with one nil token after them, or no
+            // array at all for a type with no interfaces; `_SetImplements` reads up to the first nil.
+            let interfaces =
+                match
+                    NativeCall.managedPointerOfPointerArgument operation "interfaceTokens" instruction.Arguments.[5]
+                with
+                | ManagedPointerSource.Null -> []
+                | tokens ->
+                    let int32Type =
+                        AllConcreteTypes.findExistingNonGenericConcreteType
+                            state.TypeSystem.ConcreteTypes
+                            ctx.BaseClassTypes.Int32.Identity
+                        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Int32 is not concretized")
+
+                    let rec read (index : int) (acc : TypeDefOrRef list) : TypeDefOrRef list =
+                        // The managed array holds one token for each of a type's interfaces, and a
+                        // type with this many has been refused long before.
+                        if index > 0xFFFF then
+                            failwith $"%s{operation}: no nil token among the first %d{index} interface tokens"
+
+                        let token =
+                            int32AtPointer
+                                operation
+                                ctx.BaseClassTypes
+                                state
+                                (ManagedPointerByteView.addByteOffset state int32Type (index * 4) tokens)
+
+                        match typeDefOrRef operation $"interface %d{index}" token held with
+                        | None -> List.rev acc
+                        | Some target -> read (index + 1) (target :: acc)
+
+                    read 0 []
+
+            match EmitScopeDefinitions.defineTopLevelTypeDef fullName attributes parent interfaces held with
+            | TypeDefDefinition.Duplicate _ ->
+                // `COMDynamicWrite::DefineType` raises `Argument_DuplicateTypeName` for the
+                // emitter's `META_S_DUPLICATE`.
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.ArgumentException
+                    (Some "Duplicate type name within an assembly.")
+                    state
+                |> Some
+            | TypeDefDefinition.Defined (typeDef, extended) ->
+                // `AddAvailableClassDontHaveLock` makes the type findable by name; the image read
+                // back from the scope holds it, and the type system refuses to load it until it is
+                // created.
+                let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+                state
+                |> IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 ((typeDefTable <<< 24) ||| typeDef.Rid)))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+        | _ -> None

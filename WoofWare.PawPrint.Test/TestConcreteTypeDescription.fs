@@ -48,7 +48,7 @@ module TestConcreteTypeDescription =
         : ConcreteTypeHandle * AllConcreteTypes
         =
         ConcreteType.makeFromIdentity ti.Identity ti.Namespace ti.Name (ImmutableArray.CreateRange args)
-        |> fun ct -> AllConcreteTypes.add bct ct concreteTypes
+        |> fun ct -> AllConcreteTypes.add bct assemblies ct concreteTypes
         |> function
             | Ok added -> added
             | Error refusal -> failwith (TypeLoadRefusal.describe refusal)

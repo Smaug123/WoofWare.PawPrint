@@ -324,6 +324,7 @@ module AllConcreteTypes =
         findExistingNonGenericConcreteType allConcreteTypes ty.Identity |> Option.get
 
     let private intern
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -332,6 +333,19 @@ module AllConcreteTypes =
 
         if this.ReverseIndex.ContainsKey key then
             failwith $"BUG: %O{ct} is already interned; a caller must look it up before adding it"
+
+        // `ClassLoader::LoadTypeDefThrowing` does not load a type of a dynamic module that is not
+        // yet created: it raises the AppDomain's TypeResolve event, whose handler may name another
+        // assembly that holds a type of that name.
+        if loaded.IsUncreatedDynamicType ct.Identity then
+            let name =
+                if ct.Namespace = "" then
+                    ct.Name
+                else
+                    $"%s{ct.Namespace}.%s{ct.Name}"
+
+            failwith
+                $"TODO: loading %s{name}, TypeDef 0x%08x{Ecma335.MetadataTokens.GetToken (EntityHandle.op_Implicit ct.Identity.TypeDefinition.Get)} of the dynamic assembly %s{ct.Identity.AssemblyFullName}, which CreateType has not created; CoreCLR raises the TypeResolve event for it instead of loading it"
 
         let id = this.NextHandle
         let toRet = ConcreteTypeHandle.Concrete id
@@ -384,17 +398,19 @@ module AllConcreteTypes =
     /// arguments must already be interned.
     let add
         (baseClassTypes : BaseClassTypes<'corelib>)
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : Result<ConcreteTypeHandle * AllConcreteTypes, TypeLoadRefusal>
         =
         match malformedArgument baseClassTypes this ct.Generics with
         | Some (index, malformed) -> Error (TypeLoadRefusal.InvalidInstantiation (ct.Identity, index, malformed))
-        | None -> Ok (intern ct this)
+        | None -> Ok (intern loaded ct this)
 
     /// Intern `ct`, a non-generic type, which must not already be interned. No rule `add` checks
     /// can refuse it.
     let addNonGeneric
+        (loaded : LoadedAssemblies)
         (ct : ConcreteType<ConcreteTypeHandle>)
         (this : AllConcreteTypes)
         : ConcreteTypeHandle * AllConcreteTypes
@@ -402,7 +418,7 @@ module AllConcreteTypes =
         if not ct.Generics.IsEmpty then
             failwith $"BUG: %O{ct} is an instantiation; intern it with `add`, which checks its arguments"
 
-        intern ct this
+        intern loaded ct this
 
 // Active patterns for matching concrete types
 
@@ -817,7 +833,7 @@ module TypeConcretization =
             ConcreteType.makeFromIdentity identity ns name ImmutableArray.Empty
 
         let handle, newConcreteTypes =
-            AllConcreteTypes.addNonGeneric concreteType ctx.ConcreteTypes
+            AllConcreteTypes.addNonGeneric ctx.LoadedAssemblies concreteType ctx.ConcreteTypes
 
         let newCtx =
             { ctx with
@@ -870,6 +886,7 @@ module TypeConcretization =
             match
                 AllConcreteTypes.add
                     ctx.BaseTypes
+                    ctx.LoadedAssemblies
                     (ConcreteType.makeFromIdentity identity ns name generics)
                     ctx.ConcreteTypes
             with

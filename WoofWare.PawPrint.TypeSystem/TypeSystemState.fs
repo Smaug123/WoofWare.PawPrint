@@ -301,7 +301,7 @@ module TypeSystemState =
         match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes concrete.Identity concrete.Generics with
         | Some handle -> state, Ok handle
         | None ->
-            match AllConcreteTypes.add baseClassTypes concrete state.ConcreteTypes with
+            match AllConcreteTypes.add baseClassTypes state._LoadedAssemblies concrete state.ConcreteTypes with
             | Error refusal -> state, Error (TypeBindingFailure.Refused refusal)
             | Ok (handle, concreteTypes) ->
                 { state with

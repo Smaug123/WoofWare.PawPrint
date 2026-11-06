@@ -1715,44 +1715,55 @@ module NativeRuntimeTypeHelpers =
 
             addr, state
 
-    let getOrAllocateModuleRuntimeType
+    /// The `RuntimeType` of the module's global type, as `ModuleHandle_GetModuleType` hands it out
+    /// (CoreCLR's `Module::GetGlobalMethodTable`): `<Module>`, loaded, if it has a method or a field
+    /// (`Module::NeedsGlobalMethodTable`), and otherwise `None`. Loading a dynamic module's `<Module>`
+    /// is refused until the runtime creates it.
+    let tryGetOrAllocateGlobalRuntimeType
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (assemblyFullName : string)
         (state : IlMachineState)
-        : ManagedHeapAddress * IlMachineState
+        : ManagedHeapAddress option * IlMachineState
         =
         let assembly =
             state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () ->
-                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyFullName} for module type is not loaded"
+                failwith
+                    $"tryGetOrAllocateGlobalRuntimeType: assembly %s{assemblyFullName} for module type is not loaded"
             )
 
         let moduleTypeInfo =
             assembly.TypeDefs.Values
             |> Seq.tryFind (fun typeInfo -> typeInfo.Namespace = "" && typeInfo.Name = "<Module>")
             |> Option.defaultWith (fun () ->
-                failwith $"RuntimeTypeHandle.GetModule: assembly %s{assemblyFullName} has no <Module> type"
+                failwith $"tryGetOrAllocateGlobalRuntimeType: assembly %s{assemblyFullName} has no <Module> type"
             )
 
-        let stk =
-            LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies moduleTypeInfo
+        if moduleTypeInfo.Methods.IsEmpty && moduleTypeInfo.Fields.IsEmpty then
+            None, state
+        else
+            let stk =
+                LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies moduleTypeInfo
 
-        let state, moduleTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                moduleTypeInfo.AssemblyFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
+            let state, moduleTypeHandle =
+                IlMachineState.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    moduleTypeInfo.AssemblyFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (moduleTypeInfo.Identity, stk))
 
-        IlMachineState.getOrAllocateType
-            loggerFactory
-            baseClassTypes
-            (RuntimeTypeHandleTarget.Closed moduleTypeHandle)
-            state
+            let address, state =
+                IlMachineState.getOrAllocateType
+                    loggerFactory
+                    baseClassTypes
+                    (RuntimeTypeHandleTarget.Closed moduleTypeHandle)
+                    state
+
+            Some address, state
 
     let getOrAllocateRuntimeModule
         (loggerFactory : ILoggerFactory)
@@ -1768,9 +1779,6 @@ module NativeRuntimeTypeHelpers =
             let runtimeAssemblyAddr, state =
                 getOrAllocateRuntimeAssembly loggerFactory baseClassTypes assemblyFullName state
 
-            let moduleRuntimeTypeAddr, state =
-                getOrAllocateModuleRuntimeType loggerFactory baseClassTypes assemblyFullName state
-
             let state, runtimeModuleTypeInfo, runtimeModuleTypeHandle =
                 concretizeNonGenericCorelibType loggerFactory baseClassTypes state "System.Reflection" "RuntimeModule"
 
@@ -1782,13 +1790,11 @@ module NativeRuntimeTypeHelpers =
                     runtimeModuleTypeInfo
                     runtimeModuleTypeHandle
 
+            // `m_runtimeType` stays null: `RuntimeModule.RuntimeType` fills it from
+            // `ModuleHandle.GetModuleType` the first time it is read, which loads `<Module>`.
             let updatedObj =
                 let runtimeAssemblyField =
                     FieldIdentity.requiredOwnInstanceField runtimeModuleTypeInfo "m_runtimeAssembly"
-                    |> FieldIdentity.fieldId runtimeModuleTypeHandle
-
-                let runtimeTypeField =
-                    FieldIdentity.requiredOwnInstanceField runtimeModuleTypeInfo "m_runtimeType"
                     |> FieldIdentity.fieldId runtimeModuleTypeHandle
 
                 let pDataField =
@@ -1799,9 +1805,6 @@ module NativeRuntimeTypeHelpers =
                 |> AllocatedNonArrayObject.SetFieldById
                     runtimeAssemblyField
                     (CliType.ObjectRef (Some runtimeAssemblyAddr))
-                |> AllocatedNonArrayObject.SetFieldById
-                    runtimeTypeField
-                    (CliType.ObjectRef (Some moduleRuntimeTypeAddr))
                 |> AllocatedNonArrayObject.SetFieldById
                     pDataField
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ModuleHandle assemblyFullName)))
