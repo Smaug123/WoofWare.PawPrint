@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -254,7 +254,9 @@ definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineM
   `ModuleBuilder_GetMemberRefOfMethodInfo`, for `IThing.get_Value`.
 * **3d, `ModuleBuilder_GetMemberRefOfMethodInfo`**, for a method whose signature names no type by
   token. The guest then stops in `DefineMethodOverride` at `TypeBuilder_DefineMethodImpl`.
-* Then the `MethodImpl`, and the rest in the order the guest reaches them.
+* **3e, `TypeBuilder_DefineMethodImpl`.** The guest then stops in `CreateType` at
+  `TypeBuilder_SetParentType`.
+* Then the rest in the order the guest reaches them.
 
 ### 3a: what CoreCLR's emitter writes
 
@@ -523,3 +525,39 @@ because `ModuleBuilder_GetTokenFromTypeSpec` is not implemented.
   duplicate.
 * A reference to a method of the dynamic module itself, which needs `CreateType` (stage 4).
 * A parent `TypeSpec`, with `ModuleBuilder_GetTokenFromTypeSpec`.
+
+### 3e: what CoreCLR's emitter writes
+
+Read from `TypeBuilder_DefineMethodImpl` (vm/comdynamic.cpp), `RegMeta::DefineMethodImpl`
+(md/compiler/emit.cpp) and `DefineMethodOverrideCore` (RuntimeTypeBuilder.cs):
+
+* The managed caller refuses a created type, and a body whose declaring type is not its own
+  `TypeBuilder`, before it asks for any token. It then passes its own `TypeDef` token, and the body's
+  and declaration's tokens from `GetMethodMetadataToken`: a `MethodDef` for a method of the module, a
+  `MemberRef` for any other (stage 3d).
+* `DefineMethodImpl` looks for a duplicate only under `MDDupMethodDef`, which a dynamic module's
+  emitter does not set (`MDDupDefault` lacks it), so each call adds a row, even for an override already
+  defined. It checks nothing else about the tokens beyond debug assertions.
+* The row holds the class, the body and the declaration. The emitter's table is in the order rows are
+  added, and the image sorts it stably by class, as the writer already does.
+
+Nothing about a `MethodImpl` row is visible to a guest before `CreateType`, so 3e needs no design
+decision: the handler decodes the three tokens and appends the row with `EmitScope.addMethodImpl`.
+
+### 3e: the oracle
+
+* `TypeBuilderDefineMethodImpl.cs`, which exits 0 on .NET 10, defines five overrides: a declaration of
+  the module (a `MethodDef`) and of another assembly (a `MemberRef`), an interface's method and a
+  class's virtual method, the same override twice, and a type defined later whose row comes first. It
+  also reaches the managed caller's two refusals. Its terminal-state check reads each row's class,
+  body and declaration in the order they were added, and the `MemberRef` rows they name.
+* Each mutant of the handler is caught: body and declaration swapped, the wrong class, a `MemberRef`
+  or `MethodDef` RID off by one, a duplicate check, and the scope not replaced.
+
+### 3e: left to later stages
+
+* The image sorts `MethodImpl` by class, where CoreCLR's table stays in the order rows were added. So
+  once stage 4 creates a type, an override defined afterwards for a type with a lower `TypeDef` RID
+  moves the created type's rows, which the extension check refuses as `SortedRowMoved`, while real
+  .NET accepts it. `InterfaceImpl` has the same property, through `TypeBuilder_AddInterfaceImpl`.
+  Stage 4 must decide how to admit it.

@@ -70,6 +70,23 @@ module NativeRuntimeTypeBuilder =
         | Some target -> Some target
         | None -> failwith $"%s{operation}: %s{what} 0x%08x{token} names no row of the module's scope"
 
+    /// The method a `MethodDef` or `MemberRef` token names in `scope`, which is what the managed
+    /// caller's `GetMethodMetadataToken` hands out for a method.
+    let private methodDefOrRef (operation : string) (what : string) (token : int) (scope : EmitScope) : MethodDefOrRef =
+        let rid = token &&& 0x00FFFFFF
+
+        let target =
+            match token >>> 24 &&& 0xFF with
+            | 0x06 -> EmitScope.tryMethodDefRid rid scope |> Option.map MethodDefOrRef.MethodDef
+            | 0x0A -> EmitScope.tryMemberRefRid rid scope |> Option.map MethodDefOrRef.MemberRef
+            | _ ->
+                failwith
+                    $"%s{operation}: %s{what} 0x%08x{token} is not a MethodDef or MemberRef token, which the managed caller's GetMethodMetadataToken alone hands out"
+
+        match target with
+        | Some target -> target
+        | None -> failwith $"%s{operation}: %s{what} 0x%08x{token} names no row of the module's scope"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -298,6 +315,64 @@ module NativeRuntimeTypeBuilder =
                     $"TODO: %s{operation}: the implementation flags %O{attributes} for MethodDef 0x%08x{token}, which has no body; real .NET holds such a row until CreateType, but MethodInfo.read refuses a bodiless method that is not managed IL"
 
             let extended = EmitScopeDefinitions.setMethodImplFlags method attributes held
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            NativeHandlerResult.completed state |> Some
+        | "TypeBuilder_DefineMethodImpl",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void when moduleGenerics.IsEmpty ->
+            let operation = "TypeBuilder_DefineMethodImpl"
+
+            if instruction.Arguments.Length <> 4 then
+                failwith $"%s{operation}: expected four native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+            let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            // The managed caller passes its TypeBuilder's own token; only `ModuleBuilder`'s global
+            // type has a nil one, and nothing reaches `DefineMethodOverride` on it.
+            let owner =
+                if typeToken >>> 24 &&& 0xFF <> typeDefTable || typeToken &&& 0x00FFFFFF = 0 then
+                    failwith
+                        $"%s{operation}: 0x%08x{typeToken} is not a non-nil TypeDef token, and the managed caller passes only its TypeBuilder's"
+
+                match EmitScope.tryTypeDefRid (typeToken &&& 0x00FFFFFF) held with
+                | Some owner -> owner
+                | None -> failwith $"%s{operation}: 0x%08x{typeToken} names no TypeDef row of the module's scope"
+
+            let body =
+                methodDefOrRef operation "the body" (NativeCall.int32Argument operation instruction.Arguments.[2]) held
+
+            let declaration =
+                methodDefOrRef
+                    operation
+                    "the declaration"
+                    (NativeCall.int32Argument operation instruction.Arguments.[3])
+                    held
+
+            // `RegMeta::DefineMethodImpl` looks for a duplicate only under `MDDupMethodDef`, which a
+            // dynamic module's emitter does not set, so each call is a new row.
+            let extended =
+                EmitScope.addMethodImpl
+                    {
+                        Class = owner
+                        Body = body
+                        Declaration = declaration
+                    }
+                    held
+
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
 
             NativeHandlerResult.completed state |> Some

@@ -464,7 +464,7 @@ module TestImpureCases =
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value` and the MemberRef of `IThing.get_Value`, it stops in `TypeBuilder.DefineMethodOverride` at `TypeBuilder_DefineMethodImpl`; each stage of the plan takes it a QCall further."""
+            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value`, the MemberRef of `IThing.get_Value` and the MethodImpl between them, it stops in `TypeBuilder.CreateType` at `TypeBuilder_SetParentType`; each stage of the plan takes it a QCall further."""
             {
                 FileName = "ModuleBuilderMemberRefTranslatedSignature.cs"
                 ExpectedReturnCode = 0
@@ -1362,6 +1362,47 @@ module TestImpureCases =
                 MemberRefParent.TypeRef (TypeRefRid 4), "Name", [ 0x20uy ; 0x00uy ; 0x0Euy ]
                 MemberRefParent.TypeRef (TypeRefRid 5), "Name", [ 0x20uy ; 0x00uy ; 0x0Euy ]
                 MemberRefParent.TypeRef (TypeRefRid 6), "Empty", [ 0x10uy ; 0x01uy ; 0x00uy ; 0x1Duy ; 0x1Euy ; 0x00uy ]
+            ]
+
+    /// `TypeBuilderDefineMethodImpl.cs` has defined five method overrides, none of them of a created
+    /// type. A guest cannot read a MethodImpl row, so this checks the rows its dynamic module's scope
+    /// ends with, in the order the guest defined them: the types are I (2), A (3) and B (4), and the
+    /// methods I.M (1), B.M (2), A.get_Value (3), A.M (4) and A.ToString (5).
+    let private assertMethodImplRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let typeRefName (rid : TypeRefRid) =
+            let row = (EmitScope.typeRefs scope).[rid.Rid - 1]
+            EmitScope.stringAt row.Namespace scope, EmitScope.stringAt row.Name scope
+
+        EmitScope.memberRefs scope
+        |> Seq.map (fun row ->
+            match row.Parent with
+            | MemberRefParent.TypeRef parent -> typeRefName parent, EmitScope.stringAt row.Name scope
+            | parent -> failwith $"the guest's member references are all of TypeRefs, but one is of %O{parent}"
+        )
+        |> List.ofSeq
+        |> shouldEqual [ ("", "IThing"), "get_Value" ; ("System", "Object"), "ToString" ]
+
+        let methodDef (rid : int) =
+            MethodDefOrRef.MethodDef (MethodDefRid rid)
+
+        let memberRef (rid : int) =
+            MethodDefOrRef.MemberRef (MemberRefRid rid)
+
+        EmitScope.methodImpls scope
+        |> Seq.map (fun row -> row.Class.Rid, row.Body, row.Declaration)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                4, methodDef 2, methodDef 1
+                3, methodDef 3, memberRef 1
+                3, methodDef 4, methodDef 1
+                3, methodDef 3, memberRef 1
+                3, methodDef 5, memberRef 2
             ]
 
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
@@ -4635,6 +4676,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertMemberRefRows
+            }
+            {
+                // `TypeBuilder_DefineMethodImpl`, through `TypeBuilder.DefineMethodOverride`: the
+                // MethodImpl rows a dynamic module gains, one for each call, duplicates included;
+                // `assertMethodImplRows` checks the rows no guest can read. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderDefineMethodImpl.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertMethodImplRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,

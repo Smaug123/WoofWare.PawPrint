@@ -439,6 +439,13 @@ module EmitScope =
         else
             None
 
+    /// The `MemberRef` row with this RID, if the scope has one.
+    let tryMemberRefRid (rid : int) (scope : EmitScope) : MemberRefRid option =
+        if rid >= 1 && rid <= scope.MemberRefs.Count then
+            Some (MemberRefRid rid)
+        else
+            None
+
     /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
     /// emitter stores for it, without adding it.
     let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =
