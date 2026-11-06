@@ -1589,20 +1589,28 @@ module NativeRuntimeTypeQCall =
 
                     let declaringType = method.RequiredDeclaringType
 
-                    let declaringTypeDefn =
-                        let typeDef =
+                    let declaringTypeKind =
+                        LoadedTypeInfo.signatureTypeKind
+                            ctx.BaseClassTypes
                             state.TypeSystem._LoadedAssemblies
+                            (state.TypeSystem._LoadedAssemblies
                                 .ByDefinitionName(declaringType.AssemblyFullName)
-                                .TypeDefs.[declaringType.Definition.Get]
+                                .TypeDefs.[declaringType.Definition.Get])
 
-                        let definition =
-                            TypeDefn.FromDefinition (
-                                declaringType.Identity,
-                                LoadedTypeInfo.signatureTypeKind
-                                    ctx.BaseClassTypes
-                                    state.TypeSystem._LoadedAssemblies
-                                    typeDef
-                            )
+                    // CoreCLR keeps a value type's virtual methods in its canonical method table as
+                    // unboxing stubs, and for a generic one the answer is not the definition even on
+                    // a type that is its own canonical form: measured on `SBox<int>`, reflection
+                    // reports it generic over its own parameter, but not a generic method
+                    // definition, and not the `MethodInfo` that `GetMethod` returns.
+                    if
+                        declaringTypeKind = System.Reflection.Metadata.SignatureTypeKind.ValueType
+                        && method.IsVirtual
+                    then
+                        failwith
+                            $"TODO: %s{operation} of MemberRef token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
+
+                    let declaringTypeDefn =
+                        let definition = TypeDefn.FromDefinition (declaringType.Identity, declaringTypeKind)
 
                         if extractedTypeArgs.IsEmpty then
                             definition
