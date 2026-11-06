@@ -432,6 +432,13 @@ module EmitScope =
         else
             None
 
+    /// The `MethodDef` row with this RID, if the scope has one.
+    let tryMethodDefRid (rid : int) (scope : EmitScope) : MethodDefRid option =
+        if rid >= 1 && rid <= scope.MethodDefs.Count then
+            Some (MethodDefRid rid)
+        else
+            None
+
     /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
     /// emitter stores for it, without adding it.
     let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =
@@ -585,6 +592,17 @@ module EmitScope =
         { scope with
             MethodDefs = scope.MethodDefs.Add row
         }
+
+    /// <summary>
+    /// Set the <c>ImplFlags</c> column of a method already in the scope, the one column of a row that
+    /// CoreCLR's emitter overwrites after adding it (<c>RegMeta::SetMethodImplFlags</c>). Every other
+    /// row, and every heap, is unchanged.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The scope has no such method, or <paramref name="flags"/> does not fit the column's two bytes.
+    /// </exception>
+    let setMethodImplFlags (method : MethodDefRid) (flags : MethodImplAttributes) (scope : EmitScope) : EmitScope =
+        failwith "TODO: stub"
 
     let addParam (row : ParamRow) (scope : EmitScope) : ParamRid * EmitScope =
         let operation = "EmitScope.addParam"

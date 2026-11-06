@@ -1197,6 +1197,82 @@ module TestImpureCases =
 
         (EmitScope.typeRefs scope).Count |> shouldEqual 4
 
+    /// `TypeBuilderDefineMethod.cs` has defined nine methods, none of them of a created type. A guest
+    /// cannot read a method row's flags, implementation flags or signature until `CreateType`, so this
+    /// checks the rows its dynamic module's scope ends with, which are what .NET 10 reports for each
+    /// token once the types are created. The TypeRefs are `object` (1) and `Version` (2).
+    let private assertDefinedMethodRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let rtSpecial =
+            System.Reflection.MethodAttributes.RTSpecialName
+            ||| System.Reflection.MethodAttributes.SpecialName
+
+        let publicStatic =
+            System.Reflection.MethodAttributes.Public
+            ||| System.Reflection.MethodAttributes.Static
+
+        EmitScope.methodDefs scope
+        |> Seq.map (fun row ->
+            row.Body |> shouldEqual None
+
+            row.Owner.Rid,
+            EmitScope.stringAt row.Name scope,
+            row.Flags,
+            row.ImplFlags,
+            List.ofSeq (EmitScope.blobAt row.Signature scope)
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                3,
+                "M",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "M",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "M",
+                System.Reflection.MethodAttributes.Family,
+                System.Reflection.MethodImplAttributes.NoInlining,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "N",
+                publicStatic,
+                System.Reflection.MethodImplAttributes.AggressiveInlining,
+                [ 0x00uy ; 0x02uy ; 0x08uy ; 0x12uy ; 0x09uy ; 0x12uy ; 0x0Cuy ]
+                2,
+                ".ctor",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x01uy ; 0x01uy ; 0x08uy ]
+                2,
+                "_VtblGap1_2",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                2,
+                "Reserved",
+                System.Reflection.MethodAttributes.Public,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x00uy ; 0x01uy ]
+                1, "G", publicStatic, System.Reflection.MethodImplAttributes.IL, [ 0x00uy ; 0x00uy ; 0x01uy ]
+                2,
+                ".ctor",
+                System.Reflection.MethodAttributes.Public ||| rtSpecial,
+                System.Reflection.MethodImplAttributes.IL,
+                [ 0x20uy ; 0x01uy ; 0x01uy ; 0x0Euy ]
+            ]
+
+        (EmitScope.typeRefs scope).Count |> shouldEqual 2
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -4428,6 +4504,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertDefinedTypeRows
+            }
+            {
+                // `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl`, through
+                // `MethodBuilder.MetadataToken`: the MethodDef rows a dynamic module gains, before any
+                // type is created; `assertDefinedMethodRows` checks the rows no guest can read yet.
+                // Dynamic-code switch overridden to true like its siblings; verified by hand to exit
+                // 0 on real .NET 10.
+                FileName = "TypeBuilderDefineMethod.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertDefinedMethodRows
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,

@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection
 
 /// <summary>
@@ -92,3 +93,33 @@ module EmitScopeDefinitions =
                 )
 
             TypeDefDefinition.Defined (typeDef, scope)
+
+    /// <summary>
+    /// Define a method of <paramref name="owner"/>, as <c>RegMeta::DefineMethod</c> does in a dynamic
+    /// module, whose emitter does not check for a duplicate <c>MethodDef</c> (<c>MDDupMethodDef</c>
+    /// is not set): a new row, at the next RID, however many of its type's methods share its name and
+    /// signature.
+    /// </summary>
+    /// <remarks>
+    /// The row keeps the low 16 bits of <paramref name="flags"/>, the column's width, without the
+    /// reserved bits (<c>mdReservedMask</c>), which the emitter keeps for itself. A method named
+    /// <c>.ctor</c> or <c>.cctor</c>, or whose name starts with <c>_VtblGap</c>, compared ordinally,
+    /// gains <c>RTSpecialName</c> and <c>SpecialName</c>. The row has no body, and its implementation
+    /// flags are <c>IL</c>, until later calls fill them in.
+    /// </remarks>
+    let defineMethod
+        (owner : TypeDefRid)
+        (name : string)
+        (signature : ImmutableArray<byte>)
+        (flags : MethodAttributes)
+        (scope : EmitScope)
+        : MethodDefRid * EmitScope
+        =
+        failwith "TODO: stub"
+
+    /// <summary>
+    /// Set a method's implementation flags, as <c>RegMeta::SetMethodImplFlags</c> does: the low 16
+    /// bits of <paramref name="flags"/>, the column's width, replacing whatever the row held.
+    /// </summary>
+    let setMethodImplFlags (method : MethodDefRid) (flags : MethodImplAttributes) (scope : EmitScope) : EmitScope =
+        failwith "TODO: stub"

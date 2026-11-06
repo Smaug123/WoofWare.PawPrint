@@ -534,7 +534,10 @@ module TestEmitScopeImage =
         message |> shouldContainText "not managed IL"
 
     [<Test>]
-    let ``extending a scope leaves every row and heap entry it had where it was`` () : unit =
+    let ``extending a scope leaves every row and heap entry it had where it was, but for columns filled in later``
+        ()
+        : unit
+        =
         let property (mvid : Guid) (ops : Op list) (split : int) : unit =
             let prefix = apply mvid (List.take (split % (ops.Length + 1)) ops)
             let extended = apply mvid ops
@@ -543,8 +546,9 @@ module TestEmitScopeImage =
             let extendedPe, extendedReader = readImage (EmitScopeImage.write extended)
             use _ = extendedPe
 
-            let before = describeRows prefixReader
-            let after = describeRows extendedReader
+            // An extension may fill in a column of an earlier row, so those columns are left out.
+            let before = withoutFilledColumns (describeRows prefixReader)
+            let after = withoutFilledColumns (describeRows extendedReader)
 
             for KeyValue (key, row) in before do
                 after.TryFind key |> shouldEqual (Some row)

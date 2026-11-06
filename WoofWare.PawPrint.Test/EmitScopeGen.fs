@@ -44,6 +44,8 @@ module EmitScopeGen =
         /// A local signature; never empty.
         | StandAloneSig of locals : int list
         | MethodImpl of cls : int * body : int * declaration : int
+        /// Overwrite the implementation flags of a method already in the scope, if it has any.
+        | SetMethodImplFlags of method : int * flags : int
 
     type private Applied =
         {
@@ -108,6 +110,14 @@ module EmitScopeGen =
             ||| MethodAttributes.Virtual
             ||| MethodAttributes.Abstract
             ||| MethodAttributes.NewSlot
+        ]
+
+    let methodImplFlagChoices : MethodImplAttributes list =
+        [
+            MethodImplAttributes.IL
+            MethodImplAttributes.NoInlining
+            MethodImplAttributes.AggressiveInlining ||| MethodImplAttributes.NoOptimization
+            MethodImplAttributes.Synchronized
         ]
 
     let paramFlagChoices : ParameterAttributes list =
@@ -198,6 +208,7 @@ module EmitScopeGen =
                 |> Gen.bind Gen.subListOf
                 |> Gen.map2 (fun first rest -> Op.StandAloneSig (first :: List.ofSeq rest)) choice
                 2, Gen.map3 (fun c b d -> Op.MethodImpl (c, b, d)) choice choice choice
+                2, Gen.map2 (fun m f -> Op.SetMethodImplFlags (m, f)) choice choice
             ]
 
     let pick (choice : int) (items : 'a list) : 'a option =
@@ -518,6 +529,13 @@ module EmitScopeGen =
 
                 withScope (EmitScope.addMethodImpl row applied.Scope) applied
             | _ -> applied
+        | Op.SetMethodImplFlags (methodChoice, flags) ->
+            if methodCount = 0 then
+                applied
+            else
+                let method = MethodDefRid (methodChoice % methodCount + 1)
+                let flags = (pick flags methodImplFlagChoices).Value
+                withScope (EmitScope.setMethodImplFlags method flags applied.Scope) applied
 
     let emptyScope (mvid : Guid) : EmitScope =
         let scope = EmitScope.create "RefEmit_InMemoryManifestModule" mvid
@@ -621,3 +639,18 @@ module EmitScopeGen =
                 yield (TableIndex.StandAloneSig, i), box (blob r.Signature)
         ]
         |> Map.ofList
+
+    /// `describeRows` without the columns the emitter fills in after adding a row (a method's
+    /// implementation flags), which an extension of a scope may change while the row's type is not
+    /// created.
+    let withoutFilledColumns (rows : Map<TableIndex * int, obj>) : Map<TableIndex * int, obj> =
+        rows
+        |> Map.map (fun (table, _) row ->
+            if table = TableIndex.MethodDef then
+                let attributes, _, name, signature, owner =
+                    unbox<MethodAttributes * MethodImplAttributes * int * int * int> row
+
+                box (attributes, name, signature, owner)
+            else
+                row
+        )

@@ -28,6 +28,11 @@ type EmitScopeExtensionViolation =
     /// method impls.
     | AddedToCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
+    /// A row of the earlier scope differs in the later one only in a column the emitter fills in after
+    /// adding the row (a method's implementation flags), and the row is a member of a type already
+    /// created.
+    | FilledInCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
+
     /// A row of a created type, in a table the image sorts, has a different RID in the later image
     /// than in the earlier one, because the later scope added a row for a type that sorts before it.
     | SortedRowMoved of table : TableIndex * position : int * createdType : TypeDefRid * before : int * after : int
