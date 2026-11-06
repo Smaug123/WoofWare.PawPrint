@@ -12,6 +12,10 @@ open NUnit.Framework
 /// list. A fixture carrying none of those categories never runs in CI, and nothing reports that;
 /// one carrying two runs twice. A fixture carrying one but not `[<Explicit>]` runs in the default
 /// suite as well.
+///
+/// The `build` job runs the default suite in two parts, `FullyQualifiedName~.TestEscapeAnalysis`
+/// and its negation. The positive filter explicitly matches any `[<Explicit>]` test whose name it
+/// matches, so CI would run such a test although a bare `dotnet test` skips it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestCiSelectsEveryExplicitFixture =
@@ -50,11 +54,16 @@ module TestCiSelectsEveryExplicitFixture =
             if not (Regex.IsMatch (category, "^[A-Za-z]+$")) then
                 failwith $"expected each category in ci.yaml's `category` list to be a plain name, found %s{category}"
 
-        // The list means nothing unless the guest runners filter on it, and by nothing else.
+        // The list means nothing unless the guest runners filter on it, and by nothing else; the
+        // default suite's runners filter by a clause or by its negation.
         Regex.Matches (workflow, "--filter \"(?<filter>[^\"]*)\"")
         |> Seq.map (fun m -> m.Groups.["filter"].Value)
         |> List.ofSeq
-        |> shouldEqual [ "TestCategory=${{ matrix.category }}" ]
+        |> shouldEqual
+            [
+                "FullyQualifiedName${op}.TestEscapeAnalysis"
+                "TestCategory=${{ matrix.category }}"
+            ]
 
         let distinct = Set.ofList categories
         distinct.Count |> shouldEqual categories.Length
@@ -105,3 +114,39 @@ module TestCiSelectsEveryExplicitFixture =
             |> fun carried ->
                 if not carried then
                     failwith $"no fixture carries %s{category}, which ci.yaml runs a runner for"
+
+    [<Test>]
+    let ``no Explicit test is named as the default suite's escape-analysis part selects`` () : unit =
+        let types = Assembly.GetExecutingAssembly().GetTypes ()
+
+        let selected (name : string) : bool = name.Contains ".TestEscapeAnalysis"
+
+        // Guards against the predicate matching nothing, which would pass vacuously.
+        types
+        |> Array.filter (fun t -> selected t.FullName)
+        |> Array.length
+        |> shouldBeGreaterThan 0
+
+        let explicitFixtures =
+            types
+            |> Array.filter (fun t -> selected t.FullName && t.IsDefined (typeof<ExplicitAttribute>, false))
+            |> Array.map (fun t -> t.FullName)
+
+        let explicitMethods =
+            types
+            |> Array.collect (fun t ->
+                t.GetMethods (
+                    BindingFlags.Public
+                    ||| BindingFlags.NonPublic
+                    ||| BindingFlags.Static
+                    ||| BindingFlags.Instance
+                    ||| BindingFlags.DeclaredOnly
+                )
+            )
+            |> Array.filter (fun m ->
+                selected $"%s{m.DeclaringType.FullName}.%s{m.Name}"
+                && m.IsDefined (typeof<ExplicitAttribute>, false)
+            )
+            |> Array.map (fun m -> $"%s{m.DeclaringType.FullName}.%s{m.Name}")
+
+        Array.append explicitFixtures explicitMethods |> Array.sort |> shouldBeEmpty
