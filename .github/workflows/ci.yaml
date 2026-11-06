@@ -111,6 +111,9 @@ jobs:
           *) echo "no filter for part ${{ matrix.part }}" >&2; exit 1 ;;
         esac
         projects="$(python3 scripts/footprint.py test-projects)"
+        mkdir -p TestResults
+        (while true; do echo "== $(date -u +%H:%M:%S)"; free -m; top -b -n1 -o %CPU -w 200 | head -15; sleep 5; done) > TestResults/probe-top.log 2>&1 &
+        vmstat -t 5 > TestResults/probe-vmstat.log 2>&1 &
         for project in $projects; do
           nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --filter "FullyQualifiedName${op}.TestEscapeAnalysis" --logger "trx;LogFilePrefix=default" --results-directory TestResults
         done
@@ -119,7 +122,9 @@ jobs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: test-results-${{ matrix.part }}-${{ matrix.runtime }}
-        path: ${{ runner.temp }}/footprint/TestResults/*.trx
+        path: |
+          ${{ runner.temp }}/footprint/TestResults/*.trx
+          ${{ runner.temp }}/footprint/TestResults/probe-*.log
 
   # The guest-running fixtures, which take longer than the rest of the suite put
   # together. They build for themselves rather than downloading `build`'s binaries: the
