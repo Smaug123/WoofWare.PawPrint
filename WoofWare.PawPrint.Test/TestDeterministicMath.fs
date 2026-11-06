@@ -2316,6 +2316,330 @@ module TestDeterministicMath =
         )
         |> reportFailures
 
+    /// ln 2 to `referenceBits` places by the series `sum over k >= 1 of 1/(k 2^k)` —
+    /// deliberately not the `2 atanh(1/3)` the implementation uses, so that a wrong constant
+    /// in either shows up as a disagreement rather than being shared by both.
+    let private referenceLnTwo : BigInteger =
+        let mutable power = referenceScale >>> 1
+        let mutable acc = BigInteger.Zero
+        let mutable k = 1
+
+        while not power.IsZero do
+            acc <- acc + power / BigInteger k
+            power <- power >>> 1
+            k <- k + 1
+
+        acc
+
+    /// `floor (a / b)` for a positive `b`. `BigInteger.Divide` truncates towards zero, which is
+    /// the floor only for a non-negative quotient.
+    let private floorDivide (a : BigInteger) (b : BigInteger) : BigInteger =
+        let quotient, remainder = BigInteger.DivRem (a, b)
+
+        if remainder.Sign < 0 then
+            quotient - BigInteger.One
+        else
+            quotient
+
+    /// The sign of `x - e^t`, for a strictly positive finite double `x` and a real `t` given
+    /// exactly as a fixed-point value with `referenceBits` fractional bits. `e^t` is computed
+    /// by the Taylor series of `exp` after reducing `t` modulo `referenceLnTwo`, which shares
+    /// nothing with the implementation's logarithm but `decompose`.
+    ///
+    /// Fails rather than guessing when the two are too close to tell apart at this precision:
+    /// the reference is good to about 2^-1380 relative, so that bound is 2^-1300.
+    let private compareWithExp (x : float) (t : BigInteger) : int =
+        // t = k ln 2 + r with r in [-ln 2 / 2, ln 2 / 2), so that the series converges fast.
+        let k = floorDivide (t + (referenceLnTwo >>> 1)) referenceLnTwo
+        let r = t - k * referenceLnTwo
+
+        let mutable term = referenceScale
+        let mutable expR = BigInteger.Zero
+        let mutable n = 1
+
+        while not term.IsZero do
+            expR <- expR + term
+            term <- referenceMultiply term r / BigInteger n
+            n <- n + 1
+
+        // e^t = expR * 2^(k - referenceBits), and x = mantissa * 2^exponent; bring x to the
+        // same scale as `expR` and compare the integers.
+        let mantissa, exponent = DeterministicMath.decompose x
+        let shift = exponent - int k + referenceBits
+
+        let lhs, rhs =
+            if shift >= 0 then
+                mantissa <<< shift, expR
+            else
+                mantissa, expR <<< -shift
+
+        let difference = lhs - rhs
+
+        if BigInteger.Abs difference <= (rhs >>> 1300) then
+            failwith $"compareWithExp: %.17g{x} is within 2^-1300 of the exponential; the reference cannot decide"
+
+        difference.Sign
+
+    /// Whether `y` is the double nearest to the natural logarithm of the strictly positive finite
+    /// `x`, decided without reference to any other logarithm: `y` is nearest exactly when `x` lies
+    /// strictly between the exponentials of the two midpoints bracketing `y`, since `exp` is
+    /// increasing. The midpoints are dyadic rationals and are formed exactly.
+    ///
+    /// No tie can occur. `ln x` is a midpoint only if it is rational, and by Lindemann–Weierstrass
+    /// the logarithm of a rational other than 1 is not; `ln 1 = 0` is a double, not a midpoint.
+    let private isCorrectlyRoundedLog (x : float) (y : float) : bool =
+        // One octave below the smallest subnormal, so that both neighbours of `y` and their
+        // midpoints are exact integer counts of 2^(fixedPoint - 1).
+        let fixedPoint = -1080
+
+        let midpoint (neighbour : float) : BigInteger =
+            // (y + neighbour) / 2, counted in units of 2^(fixedPoint - 1), then rescaled to
+            // `referenceBits` fractional bits. Both shifts are exact.
+            (atExponent fixedPoint y + atExponent fixedPoint neighbour)
+            <<< (referenceBits + fixedPoint - 1)
+
+        Double.IsFinite y
+        && compareWithExp x (midpoint (Math.BitDecrement y)) > 0
+        && compareWithExp x (midpoint (Math.BitIncrement y)) < 0
+
+    /// Doubles in [1/2, 2), uniformly within each of the two binades, and doubles within 2^40 ulps
+    /// of 1. This is where `ln x` is smallest relative to `x`, so where cancellation between an
+    /// exponent's contribution and a mantissa's would cost the most bits; a uniform draw over the
+    /// whole exponent range lands here about one time in a thousand.
+    let private genNearOneDouble : Gen<float> =
+        let binade =
+            gen {
+                let! biasedExponent = Gen.choose (1022, 1023)
+                let! fraction = Gen.choose64 (0L, 0xF_FFFF_FFFF_FFFFL)
+                return BitConverter.UInt64BitsToDouble ((uint64 biasedExponent <<< 52) ||| uint64 fraction)
+            }
+
+        let offset =
+            gen {
+                // Stepping the bit pattern steps through adjacent doubles, so this is a count of
+                // ulps whichever side of 1 it lands, and the ulps below 1 are half the size of
+                // those above it.
+                let! magnitudeBits = Gen.choose (0, 40)
+                let! steps = Gen.choose64 (1L, 1L <<< magnitudeBits)
+                let! sign = Gen.elements [ 1L ; -1L ]
+                return BitConverter.Int64BitsToDouble (BitConverter.DoubleToInt64Bits 1.0 + sign * steps)
+            }
+
+        Gen.frequency [ 1, binade ; 1, offset ]
+
+    [<Test>]
+    let ``log is correctly rounded`` () : unit =
+        // The real specification of `log`: the result is the double nearest the exact logarithm,
+        // decided by bracketing `x` between exponentials rather than by comparing against a
+        // second logarithm.
+        let property (x : float) : bool =
+            isCorrectlyRoundedLog x (DeterministicMath.log x)
+
+        for generator in [ genPositiveFiniteDouble ; genNearOneDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``log is correctly rounded at the ends of the range and next to one`` () : unit =
+        // The arguments a random draw is least likely to produce: the extreme subnormal and
+        // normal values, every power of two (where the implementation's mantissa logarithm is
+        // exactly zero and the whole answer is the exponent's), and the doubles adjacent to 1
+        // (where the answer is as small as it ever gets).
+        let nextToOne =
+            [ 1..64 ]
+            |> List.collect (fun n ->
+                let one = BitConverter.DoubleToInt64Bits 1.0
+
+                [
+                    BitConverter.Int64BitsToDouble (one + int64 n)
+                    BitConverter.Int64BitsToDouble (one - int64 n)
+                ]
+            )
+
+        let powersOfTwo = [ -1074 .. 1023 ] |> List.map (fun k -> Math.ScaleB (1.0, k))
+
+        let ends =
+            [
+                Double.Epsilon
+                Math.BitIncrement Double.Epsilon
+                Math.BitDecrement 2.2250738585072014e-308
+                2.2250738585072014e-308
+                Double.MaxValue
+                Math.BitDecrement Double.MaxValue
+                // sqrt 2 rounded each way: the boundary at which the implementation halves its
+                // mantissa.
+                1.4142135623730950
+                Math.BitIncrement 1.4142135623730950
+                Math.BitDecrement 1.4142135623730950
+                0.70710678118654757
+                Math.BitIncrement 0.70710678118654757
+                Math.BitDecrement 0.70710678118654757
+            ]
+
+        nextToOne @ powersOfTwo @ ends
+        |> List.choose (fun x ->
+            let actual = DeterministicMath.log x
+
+            if isCorrectlyRoundedLog x actual then
+                None
+            else
+                Some
+                    $"log(%.17g{x}) = %.17g{actual} (bits %016x{BitConverter.DoubleToUInt64Bits actual}) is not correctly rounded"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``the log oracle rejects the neighbours of the right answer`` () : unit =
+        // `isCorrectlyRoundedLog` is what every other log test leans on, so check it is not
+        // vacuous: of a correctly rounded answer and its two neighbours, it accepts exactly one.
+        let property (x : float) : bool =
+            let y = DeterministicMath.log x
+
+            isCorrectlyRoundedLog x y
+            && not (isCorrectlyRoundedLog x (Math.BitIncrement y))
+            && not (isCorrectlyRoundedLog x (Math.BitDecrement y))
+
+        for generator in [ genPositiveFiniteDouble ; genNearOneDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``the two independently computed values of ln 2 agree`` () : unit =
+        // The series for ln 2 against the implementation's `log` of 2, which takes the
+        // `2 atanh(1/3)` route; correctly rounding the reference must give the same double.
+        DeterministicMath.roundToDouble referenceLnTwo -referenceBits
+        |> shouldEqual (DeterministicMath.log 2.0)
+
+    [<Test>]
+    let ``log agrees with the host libm to within one ulp`` () : unit =
+        // A sanity check rather than a specification: the host's `log` is not guaranteed
+        // correctly rounded, so where the two disagree it is PawPrint that is expected to be
+        // right, and `log is correctly rounded` is what says so. Measured on macOS/Arm over
+        // 20 000 draws from the two generators below, the two agreed on every one.
+        let property (x : float) : bool =
+            ulpDistance (DeterministicMath.log x) (Math.Log x) <= 1.0
+
+        for generator in [ genPositiveFiniteDouble ; genNearOneDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``log is monotone`` () : unit =
+        // Correct rounding of an increasing function gives a non-decreasing one; stated on its
+        // own because it is the property a caller comparing two logarithms relies on.
+        let property (a : float, b : float) : bool =
+            let smaller, larger = if a <= b then a, b else b, a
+            DeterministicMath.log smaller <= DeterministicMath.log larger
+
+        for generator in [ genPositiveFiniteDouble ; genNearOneDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip generator generator)) property)
+
+    [<Test>]
+    let ``log of every negative argument is the positive quiet NaN`` () : unit =
+        // A domain error for every x < 0, -infinity included; the payload of the NaN it
+        // generates is PawPrint's choice, as for every other generated NaN in this module.
+        let property (x : float) : bool =
+            let negative = -(abs x)
+
+            if negative = 0.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.log negative) = BitConverter.DoubleToUInt64Bits
+                    DeterministicMath.quietNaN
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``log is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = BitConverter.DoubleToUInt64Bits (DeterministicMath.log x)
+            first = BitConverter.DoubleToUInt64Bits (DeterministicMath.log x)
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    /// The C17 Annex F (F.10.3.7) `log` special cases, as a table of (x, expected bits).
+    let private logSpecialCases : (float * uint64) list =
+        let ofBits (bits : uint64) : float = BitConverter.UInt64BitsToDouble bits
+        let positiveNaN = 0x7FF8000000000000UL
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // log(1) is +0: the sign of this zero is specified.
+            1.0, 0x0000000000000000UL
+            // log(±0) is -infinity, a pole: both zeros alike.
+            0.0, BitConverter.DoubleToUInt64Bits -infinity
+            -0.0, BitConverter.DoubleToUInt64Bits -infinity
+            infinity, BitConverter.DoubleToUInt64Bits infinity
+            // Every negative argument, -infinity included, is a domain error.
+            -1.0, positiveNaN
+            -Double.Epsilon, positiveNaN
+            Double.MinValue, positiveNaN
+            -infinity, positiveNaN
+            // A NaN propagates with its payload and sign intact, quieted if it was signalling,
+            // as for `sin` and `cos`. `Double.NaN` is the *negative* quiet NaN.
+            nan, negativeNaN
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``log matches the C99 special cases`` () : unit =
+        logSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.log x)
+
+            if actual = expected then
+                None
+            else
+                Some $"log(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    /// The rows of `logSpecialCases` on which the host is allowed to disagree, with the one other
+    /// answer it may give. Every row here is a NaN's payload or sign; the zeros and infinities
+    /// admit no alternative, because Annex F fixes them.
+    let private logHostAlternatives : Map<uint64, uint64> =
+        let negativeNaN = 0xFFF8000000000000UL
+
+        [
+            // The payload of a *freshly generated* NaN is the hardware's: glibc computes it as
+            // `(x - x) / (x - x)`, for which x86 produces the negative quiet NaN, and macOS/Arm's
+            // libm returns the positive one.
+            BitConverter.DoubleToUInt64Bits -1.0, negativeNaN
+            BitConverter.DoubleToUInt64Bits -Double.Epsilon, negativeNaN
+            BitConverter.DoubleToUInt64Bits Double.MinValue, negativeNaN
+            BitConverter.DoubleToUInt64Bits -infinity, negativeNaN
+            // macOS/Arm's libm hands a *signalling* NaN back unquietened, as its `modf` does
+            // (see `truncate`), where IEEE 754 clause 7.2 asks for the quiet one. Measured; its
+            // quiet NaNs it returns unchanged, sign included, so they need no row here.
+            0x7FF0000000000123UL, 0x7FF0000000000123UL
+            0xFFF0000000000123UL, 0xFFF0000000000123UL
+            0x7FF0000000000001UL, 0x7FF0000000000001UL
+        ]
+        |> Map.ofList
+
+    [<Test>]
+    let ``the host agrees about the log special cases`` () : unit =
+        logSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Log x)
+            let key = BitConverter.DoubleToUInt64Bits x
+
+            let permitted =
+                match Map.tryFind key logHostAlternatives with
+                | None -> [ expected ]
+                | Some alternative -> [ expected ; alternative ]
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host log(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
+
     /// Every double bit pattern, so NaNs of both signs, signalling and quiet, with payloads,
     /// arrive as operands at about the rate of any other exponent.
     let private genAnyDouble : Gen<float> =

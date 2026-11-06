@@ -158,8 +158,12 @@ module DeterministicMath =
         let result = float rounded * twoPow ulpExponent
         if isNegative then -result else result
 
-    /// log2 of a strictly positive finite `x`, in fixed point.
-    let internal log2 (x : float) : BigInteger =
+    /// A strictly positive finite `x` as `m * 2^e` with `m` in [sqrt(1/2), sqrt 2), returned as
+    /// `(e, ln m)` with `ln m` in fixed point. Centring `m` on 1 rather than taking it from
+    /// [1, 2) is what keeps `ln m` small exactly when `ln x` is: an `x` just below 1 comes out
+    /// as `e = 0` and an `m` just below 1, rather than as `e = -1` and an `m` just below 2,
+    /// whose two contributions would cancel.
+    let private reduceForLogarithm (x : float) : int * BigInteger =
         let mantissa, exponent = decompose x
         let bitLength = int (mantissa.GetBitLength ())
 
@@ -177,7 +181,11 @@ module DeterministicMath =
 
         // ln m = 2 * atanh((m - 1) / (m + 1)), and the ratio is exact in integers.
         let s = ofRatio (mantissa - denominator) (mantissa + denominator)
-        let lnMantissa = BigInteger 2 * atanh s
+        e, BigInteger 2 * atanh s
+
+    /// log2 of a strictly positive finite `x`, in fixed point.
+    let internal log2 (x : float) : BigInteger =
+        let e, lnMantissa = reduceForLogarithm x
 
         // A power of two takes s = 0 exactly, so log2 comes out exactly integral there.
         (BigInteger e <<< fractionBits) + divFixed lnMantissa lnTwo
@@ -410,6 +418,44 @@ module DeterministicMath =
                 powOfPositiveViaLogarithm magnitude y
 
         if signIsNegative then -result else result
+
+    /// The natural logarithm of `x`, with the semantics of C99 `log` (C17 F.10.3.7) — which is
+    /// what CoreCLR's `Math.Log` inherits from the platform C library.
+    ///
+    /// Accuracy: `ln x = e ln 2 + ln m` with `m` in [sqrt(1/2), sqrt 2), each term in fixed
+    /// point. `ln m` and `ln 2` each come from an `atanh` series whose truncations cost a few
+    /// hundred units of 2^-`fractionBits`, so under 2^-247 apiece; `|e|` is at most 1075, so
+    /// the sum is off by under 2^-236. Relative to the answer that is under 2^-234 when `e` is
+    /// non-zero, since `|ln x|` is then at least `ln 2 / 2`, and under 2^-194 when `e` is zero,
+    /// since the smallest `|ln x|` of any double other than 1 is about 2^-53, at its
+    /// neighbours. The result is therefore correctly rounded unless the true value lies within
+    /// 2^-194 relative of a midpoint between two doubles. It never lies exactly on one: a
+    /// midpoint is rational, and by Lindemann–Weierstrass the logarithm of a rational other
+    /// than 1 is not. Whether some double comes that close is the table maker's dilemma, which
+    /// an error budget alone cannot settle; heuristically, the expected number of such doubles
+    /// is about 2^-78.
+    let log (x : float) : float =
+        // No case overrides a NaN operand, so as for `cos` no separate signalling test is
+        // needed: `quieted` is the identity on a NaN that is already quiet.
+        if Double.IsNaN x then
+            quieted x
+        elif x = 0.0 then
+            // A pole rather than a domain error, and the same for both zeros: F.10.3.7 gives
+            // log(±0) = -infinity. This must precede the negative case, which -0 would
+            // otherwise fall into.
+            -infinity
+        elif Double.IsNegative x then
+            // Every other negative, including -infinity, is a domain error.
+            quietNaN
+        elif Double.IsPositiveInfinity x then
+            infinity
+        else
+
+        let e, lnMantissa = reduceForLogarithm x
+
+        // x = 1 takes e = 0 and m = 1 exactly, so this is exactly zero there, and
+        // `roundToDouble` gives the +0 that F.10.3.7 asks for.
+        roundToDouble ((BigInteger e * lnTwo) + lnMantissa) -fractionBits
 
     /// The integer square root of a non-negative `n`: the greatest `r` with `r * r <= n`.
     let internal integerSqrt (n : BigInteger) : BigInteger =
