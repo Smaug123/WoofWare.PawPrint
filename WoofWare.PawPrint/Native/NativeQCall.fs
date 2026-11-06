@@ -194,6 +194,8 @@ module NativeQCall =
             // case-insensitive list type through `MdUtf8String.EqualsCaseInsensitive`.
             "MdUtf8String_EqualsCaseInsensitive",
             NativeMdUtf8String.tryExecuteQCall "MdUtf8String_EqualsCaseInsensitive"
+            "String_Intern", NativeString.tryExecuteQCall "String_Intern"
+            "String_IsInterned", NativeString.tryExecuteQCall "String_IsInterned"
             // The CoreLib source is a Kernel32 LibraryImport, but the runtime
             // assembly we execute presents this PAL entry point through QCall
             // import metadata.
