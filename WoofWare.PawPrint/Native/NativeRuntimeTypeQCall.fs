@@ -1409,9 +1409,10 @@ module NativeRuntimeTypeQCall =
             // SigTypeContext(Instantiation(typeArgs, ...), Instantiation(methodArgs, ...)): the
             // arrays substitute any GenericTypeParameter / GenericMethodParameter references the
             // token's signatures contain. Decoded per token kind rather than up front, because
-            // only the MemberRef arm consumes them and decoding narrows each element to a closed
-            // type: a MethodDef whose caller passed `typeof(G<>)` as a method-generic argument is
-            // one CoreCLR answers (it never looks), and reading the array here would refuse it.
+            // only the MemberRef and MethodSpec arms consume them and decoding narrows each element
+            // to a closed type: a MethodDef whose caller passed `typeof(G<>)` as a method-generic
+            // argument is one CoreCLR answers (it never looks), and reading the array here would
+            // refuse it.
             let decodeInstantiation
                 (pointer : ManagedPointerSource)
                 (count : int)
@@ -1451,6 +1452,89 @@ module NativeRuntimeTypeQCall =
                 if not method.Generics.IsEmpty && method.IsVirtual && isValueType () then
                     failwith
                         $"TODO: %s{operation} of %s{tokenKind} token 0x%08x{methodToken}, the generic virtual method %s{method.Name} on the value type %s{declaringType.Name}: CoreCLR answers with a method reached through its unboxing stub, which is not the method's definition and which PawPrint does not model"
+
+            // The method MemberRef row `h` names, resolved in the caller's substitution context, with
+            // the arguments of its declaring type as the row's parent spells them, concretized.
+            let resolveMemberReference
+                (typeInstantiation : ImmutableArray<ConcreteTypeHandle>)
+                (methodInstantiation : ImmutableArray<ConcreteTypeHandle>)
+                (h : System.Reflection.Metadata.MemberReferenceHandle)
+                (state : IlMachineState)
+                : IlMachineState *
+                  WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn> *
+                  ImmutableArray<TypeDefn> *
+                  ImmutableArray<ConcreteTypeHandle>
+                =
+                // Surface typeInstantiation/methodInstantiation as TypeDefn arrays so the
+                // MemberRef resolver can substitute any GenericTypeParameter /
+                // GenericMethodParameter appearing in the TypeSpec parent or member
+                // signature.
+                let typeGenericsAsTypeDefn =
+                    typeInstantiation
+                    |> Seq.map (fun handle ->
+                        Concretization.concreteHandleToTypeDefn
+                            ctx.BaseClassTypes
+                            handle
+                            state.TypeSystem.ConcreteTypes
+                            state.TypeSystem._LoadedAssemblies
+                    )
+                    |> ImmutableArray.CreateRange
+
+                let methodGenericsAsTypeDefn =
+                    methodInstantiation
+                    |> Seq.map (fun handle ->
+                        Concretization.concreteHandleToTypeDefn
+                            ctx.BaseClassTypes
+                            handle
+                            state.TypeSystem.ConcreteTypes
+                            state.TypeSystem._LoadedAssemblies
+                    )
+                    |> ImmutableArray.CreateRange
+
+                let state, resolvedResult =
+                    IlMachineState.resolveMemberWithGenerics
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.Thread
+                        assembly
+                        typeGenericsAsTypeDefn
+                        methodGenericsAsTypeDefn
+                        h
+                        state
+
+                let _, resolved, extractedTypeArgs =
+                    TokenBindingStop.memberReference assembly h resolvedResult
+
+                let method =
+                    match resolved with
+                    | Choice1Of2 m -> m
+                    | Choice2Of2 _field ->
+                        failwith
+                            $"%s{operation} of token 0x%08x{methodToken}: its MemberRef %O{h} resolved to a field, but ResolveMethod expects a method"
+
+                // `extractedTypeArgs` are the TypeDefn args of the method's declaring type, read
+                // from the parent TypeSpec already substituted via the caller-supplied
+                // type/method instantiation context above. They are therefore closed and can
+                // be concretized with an empty substitution context.
+                let state, declaringTypeGenerics =
+                    ((state, ImmutableArray.CreateBuilder ()), extractedTypeArgs)
+                    ||> Seq.fold (fun (state, acc) ty ->
+                        let state, handle =
+                            IlMachineState.concretizeType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                state
+                                method.DeclaringAssemblyFullName
+                                ImmutableArray.Empty
+                                ImmutableArray.Empty
+                                ty
+
+                        acc.Add handle
+                        state, acc
+                    )
+                    |> Tuple.rmap (fun b -> b.ToImmutable ())
+
+                state, method, extractedTypeArgs, declaringTypeGenerics
 
             let state, handleValue =
                 match MetadataToken.ofInt methodToken with
@@ -1513,74 +1597,8 @@ module NativeRuntimeTypeQCall =
 
                     let methodInstantiation = decodeInstantiation methodInstArgsPtr methodInstCount
 
-                    // Surface typeInstantiation/methodInstantiation as TypeDefn arrays so the
-                    // MemberRef resolver can substitute any GenericTypeParameter /
-                    // GenericMethodParameter appearing in the TypeSpec parent or member
-                    // signature.
-                    let typeGenericsAsTypeDefn =
-                        typeInstantiation
-                        |> Seq.map (fun handle ->
-                            Concretization.concreteHandleToTypeDefn
-                                ctx.BaseClassTypes
-                                handle
-                                state.TypeSystem.ConcreteTypes
-                                state.TypeSystem._LoadedAssemblies
-                        )
-                        |> ImmutableArray.CreateRange
-
-                    let methodGenericsAsTypeDefn =
-                        methodInstantiation
-                        |> Seq.map (fun handle ->
-                            Concretization.concreteHandleToTypeDefn
-                                ctx.BaseClassTypes
-                                handle
-                                state.TypeSystem.ConcreteTypes
-                                state.TypeSystem._LoadedAssemblies
-                        )
-                        |> ImmutableArray.CreateRange
-
-                    let state, resolvedResult =
-                        IlMachineState.resolveMemberWithGenerics
-                            ctx.LoggerFactory
-                            ctx.BaseClassTypes
-                            ctx.Thread
-                            assembly
-                            typeGenericsAsTypeDefn
-                            methodGenericsAsTypeDefn
-                            h
-                            state
-
-                    let _, resolved, extractedTypeArgs =
-                        TokenBindingStop.memberReference assembly h resolvedResult
-
-                    let method =
-                        match resolved with
-                        | Choice1Of2 m -> m
-                        | Choice2Of2 _field ->
-                            failwith
-                                $"%s{operation}: MemberRef token 0x%08x{methodToken} resolved to a field, but ResolveMethod expects a method"
-
-                    // `extractedTypeArgs` are the TypeDefn args of the method's declaring type, read
-                    // from the parent TypeSpec already substituted via the caller-supplied
-                    // type/method instantiation context above. They are therefore closed and can
-                    // be concretized with an empty substitution context.
-                    let state, declaringTypeGenerics =
-                        ((state, ImmutableArray.CreateBuilder ()), extractedTypeArgs)
-                        ||> Seq.fold (fun (state, acc) ty ->
-                            let state, handle =
-                                IlMachineState.concretizeType
-                                    ctx.LoggerFactory
-                                    ctx.BaseClassTypes
-                                    state
-                                    method.DeclaringAssemblyFullName
-                                    ImmutableArray.Empty
-                                    ImmutableArray.Empty
-                                    ty
-
-                            acc.Add handle
-                            state, acc
-                        )
-                        |> Tuple.rmap (fun b -> b.ToImmutable ())
+                    let state, method, extractedTypeArgs, declaringTypeGenerics =
+                        resolveMemberReference typeInstantiation methodInstantiation h state
 
                     // The caller's method instantiation is a substitution context, never the
                     // method's instantiation: with `strictMetadataChecks` unset for a MemberRef,
@@ -1673,12 +1691,121 @@ module NativeRuntimeTypeQCall =
                         MethodHandles = reg
                     },
                     value
-                | MetadataToken.MethodSpecification _ ->
-                    // MethodSpec encodes its method-generic instantiation in the spec itself
-                    // rather than via the caller-supplied methodInstantiation buffer, so this
-                    // case needs a separate concretization path. Leave unimplemented until a
-                    // test exercises it.
-                    failwith $"TODO: %s{operation} does not yet handle MethodSpec tokens (token 0x%08x{methodToken})"
+                | MetadataToken.MethodSpecification h ->
+                    // `MemberLoader::GetMethodDescFromMethodSpec` (memberload.cpp:790-883) reads the
+                    // spec's arguments in the caller's context, resolves the method the spec names as
+                    // the MethodDef and MemberRef arms do, and instantiates it at those arguments with
+                    // `allowInstParam` unset, so the instantiation is exact, never canonical.
+                    // `FindOrCreateAssociatedMethodDescForReflection` then adds the unboxing stub a
+                    // value type's virtual method needs, as it does for `MakeGenericMethod`: measured,
+                    // the answer is the very `MethodInfo` that `MakeGenericMethod` returns, so this
+                    // mints the handle that `RuntimeMethodHandle.GetStubIfNeededSlow` mints.
+                    let spec = assembly.MethodSpecs.[h]
+                    let typeInstantiation = decodeInstantiation typeInstArgsPtr typeInstCount
+                    let methodInstantiation = decodeInstantiation methodInstArgsPtr methodInstCount
+
+                    for argument in spec.Signature do
+                        if
+                            IlMachineState.containsUnboundGenericParameter
+                                typeInstantiation
+                                methodInstantiation
+                                argument
+                        then
+                            failwith
+                                $"TODO: %s{operation} of MethodSpec token 0x%08x{methodToken}: its argument %O{argument} names a generic parameter that the caller's context (%d{typeInstantiation.Length} type arguments, %d{methodInstantiation.Length} method arguments) does not supply; CoreCLR raises ArgumentException wrapping BadImageFormatException, which PawPrint does not model"
+
+                    let state, methodGenerics =
+                        ((state, ImmutableArray.CreateBuilder ()), spec.Signature)
+                        ||> Seq.fold (fun (state, acc) argument ->
+                            let state, handle =
+                                IlMachineState.concretizeType
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    state
+                                    assembly.DefinitionFullName
+                                    typeInstantiation
+                                    methodInstantiation
+                                    argument
+
+                            acc.Add handle
+                            state, acc
+                        )
+                        |> Tuple.rmap (fun b -> b.ToImmutable ())
+
+                    let state, method, declaringTypeGenerics =
+                        match spec.Method with
+                        | MetadataToken.MethodDef d ->
+                            let method = assembly.Methods.[d]
+
+                            if not method.DeclaringTypeGenerics.IsEmpty then
+                                // CoreCLR binds the method on its declaring type's typical
+                                // instantiation. No compiler emits this shape: a generic type's
+                                // member is referenced through a MemberRef whose TypeSpec parent
+                                // spells the instantiation.
+                                failwith
+                                    $"TODO: %s{operation} of MethodSpec token 0x%08x{methodToken}: it names the MethodDef of %s{method.Name} on the generic type %s{MethodOwner.describe method.Owner}, which CoreCLR binds on that type's typical instantiation and which this has not been taught"
+
+                            state,
+                            method
+                            |> MethodInfo.mapTypeGenerics (fun (par, _) ->
+                                TypeDefn.GenericTypeParameter par.SequenceNumber
+                            ),
+                            ImmutableArray.Empty
+                        | MetadataToken.MemberReference r ->
+                            let state, method, _, declaringTypeGenerics =
+                                resolveMemberReference typeInstantiation methodInstantiation r state
+
+                            state, method, declaringTypeGenerics
+                        | other ->
+                            failwith
+                                $"%s{operation}: MethodSpec token 0x%08x{methodToken} names %O{other}, which is neither a MethodDef nor a MemberRef"
+
+                    if methodGenerics.Length <> method.Generics.Length then
+                        failwith
+                            $"TODO: %s{operation} of MethodSpec token 0x%08x{methodToken}: it instantiates %s{method.Name}, which declares %d{method.Generics.Length} generic parameters, at %d{methodGenerics.Length} arguments; CoreCLR's answer to that has not been measured"
+
+                    // CoreCLR checks the method's constraints as it instantiates it
+                    // (`FindOrCreateInstantiatedMethodDesc`, genmeth.cpp:430-442).
+                    let state, constraintViolation =
+                        NativeRuntimeTypeHelpers.validateConstraintsOn
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            state
+                            $"%s{MethodOwner.describe method.Owner}.%s{method.Name}"
+                            method.DeclaringAssemblyFullName
+                            (ReflectedTypeTarget.ReflectionVariableBinding.Bound declaringTypeGenerics)
+                            methodGenerics
+                            method.Generics
+                            (List.ofSeq methodGenerics)
+
+                    match constraintViolation with
+                    | Some violation ->
+                        failwith
+                            $"TODO: %s{operation} of MethodSpec token 0x%08x{methodToken}: its instantiation of %s{method.Name} violates a constraint (%s{violation}); CoreCLR raises VerificationException, which PawPrint does not model"
+                    | None ->
+
+                    let state, concretizedResult =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            declaringTypeGenerics
+                            method
+                            methodGenerics
+                            state
+
+                    let concretized, _ = BindingStop.bound concretizedResult
+
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                            ctx.BaseClassTypes
+                            state.TypeSystem.ConcreteTypes
+                            concretized
+                            state.MethodHandles
+
+                    { state with
+                        MethodHandles = reg
+                    },
+                    value
                 | other ->
                     failwith
                         $"%s{operation}: unexpected metadata token kind %O{other} from token 0x%08x{methodToken}; the managed wrapper should only forward MethodDef/MemberReference/MethodSpec"
