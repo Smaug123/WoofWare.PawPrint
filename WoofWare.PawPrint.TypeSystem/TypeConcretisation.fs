@@ -2447,13 +2447,15 @@ module Concretization =
     ///
     /// `typeArgs` instantiates the declaring type and must have exactly one handle per generic
     /// parameter it declares (counting those a nested type inherits from its declaring types);
-    /// `methodArgs` likewise must have exactly one handle per generic parameter of the method.
-    /// Any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
+    /// any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
+    /// `methodArgs` is the method's instantiation, and each of its handles must be interned in `ctx`.
     ///
     /// A type the method names that does not bind is the result's failure, with what was loaded
-    /// and registered before it. So is an instantiation CoreCLR refuses to create, one with a byref,
-    /// `TypedReference`, `void`, pointer or function-pointer argument. Each of `methodArgs` must be
-    /// interned in `ctx`.
+    /// and registered before it. So is an instantiation CoreCLR refuses to create: one with a
+    /// handle other than one per generic parameter of the method, or with a byref,
+    /// `TypedReference`, `void`, pointer or function-pointer argument. A generic method named with
+    /// no instantiation at all is not such an instantiation, and a caller must not pass it here as
+    /// an empty `methodArgs`.
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly : IAssemblyLoad)
@@ -2494,14 +2496,6 @@ module Concretization =
                 TypeConcretization.ConcretizationContext.LoadedAssemblies = assemblies
                 TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
             }
-
-        // Checked up front, before the signature is concretized against `methodArgs`: a short list
-        // would otherwise surface as "generic method parameter out of range" from whichever
-        // signature position first mentions the missing parameter, and a long one would not
-        // surface at all.
-        if method.Generics.Length <> methodArgs.Length then
-            failwith
-                $"Method %s{declaringType.Namespace}.%s{declaringType.Name}.%s{method.Name} in %s{declaringType.AssemblyFullName} declares %d{method.Generics.Length} generic parameter(s), but %d{methodArgs.Length} method argument(s) were supplied"
 
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
@@ -2561,12 +2555,20 @@ module Concretization =
 
         // CoreCLR checks the method's instantiation once its arguments and declaring type are loaded,
         // and before it reads the method's signature
-        // (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp).
-        match AllConcreteTypes.malformedArgument baseTypes concCtx.ConcreteTypes methodArgs with
-        | Some (index, malformed) ->
+        // (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp). Both faults raise the
+        // same exception; the arity is tested first, as there.
+        let fault =
+            if method.Generics.Length <> methodArgs.Length then
+                Some (MethodInstantiationFault.Arity (method.Generics.Length, methodArgs.Length))
+            else
+                AllConcreteTypes.malformedArgument baseTypes concCtx.ConcreteTypes methodArgs
+                |> Option.map MethodInstantiationFault.Argument
+
+        match fault with
+        | Some fault ->
             stopped
                 (TypeBindingFailure.Refused (
-                    TypeLoadRefusal.InvalidMethodInstantiation (declaringType.Identity, method.Name, index, malformed)
+                    TypeLoadRefusal.InvalidMethodInstantiation (declaringType.Identity, method.Name, fault)
                 ))
                 concCtx
         | None ->
