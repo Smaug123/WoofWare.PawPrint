@@ -65,9 +65,19 @@ module TestEmitScopeMemberRefs =
     [<Test>]
     let ``a member reference is the first row with its parent, name and signature, or else a new row`` () : unit =
         let mutable found = 0
+        let mutable foundOfTwo = 0
         let mutable added = 0
 
-        let property (start : EmitScope) (requests : Request list) : unit =
+        let property (generated : EmitScope) (duplicate : int option) (requests : Request list) : unit =
+            // The emitter never adds a row it would find, but a scope may hold two alike all the same:
+            // the first of them is the one found.
+            let start =
+                match duplicate with
+                | Some row when (EmitScope.memberRefs generated).Count > 0 ->
+                    let rows = EmitScope.memberRefs generated
+                    EmitScope.addMemberRef rows.[row % rows.Count] generated |> snd
+                | _ -> generated
+
             let candidates = parents start
             let mutable model = EmitScope.memberRefs start |> Seq.map (held start) |> List.ofSeq
             let mutable scope = start
@@ -89,6 +99,10 @@ module TestEmitScopeMemberRefs =
                 match List.tryFindIndex ((=) key) model with
                 | Some index ->
                     found <- found + 1
+
+                    if List.filter ((=) key) model |> List.length > 1 then
+                        foundOfTwo <- foundOfTwo + 1
+
                     rid |> shouldEqual (MemberRefRid (index + 1))
                     Object.ReferenceEquals (next, scope) |> shouldEqual true
 
@@ -115,14 +129,17 @@ module TestEmitScopeMemberRefs =
 
                 scope <- next
 
-        let arb = Gen.zip EmitScopeGen.genScope (Gen.listOf genRequest) |> Arb.fromGen
+        let arb =
+            Gen.zip3 EmitScopeGen.genScope (Gen.optionOf EmitScopeGen.choice) (Gen.listOf genRequest)
+            |> Arb.fromGen
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 300,
-            Prop.forAll arb (fun (start, requests) -> property start requests)
+            Prop.forAll arb (fun (start, duplicate, requests) -> property start duplicate requests)
         )
 
         found |> shouldBeGreaterThan 100
+        foundOfTwo |> shouldBeGreaterThan 20
         added |> shouldBeGreaterThan 100
 
     /// A type in a signature (ECMA-335 II.23.2.12), each token given as its `TypeDefOrRefOrSpecEncoded`
