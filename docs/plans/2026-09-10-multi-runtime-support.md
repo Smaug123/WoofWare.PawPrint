@@ -915,9 +915,10 @@ mutation-testing skill applies to each table/classifier they introduce.
      VM to throw again after preserving its stack trace. A row names such a call
      `InvokeThrowing(Type::Method(...))` (`VmCall.InvokeThrowing`), and the escape analysis lets
      escape there what the method's catch and filter clauses catch, and what preserving the stack
-     trace raises. Still open: the resource lookup, which RC1 makes the same way, and which the
-     methods an exception's making runs cannot yet name so; then the escape analysis's
-     resource-lookup assumption (`Environment.GetResourceStringLocal` is gone);
+     trace raises. RC1 looks up an exception's message by resource name the same way, and what
+     the runtime runs to make an exception (`RuntimeRun`) says so, in a body, outside it, or
+     where the JIT inlines it. Still open: the escape analysis's resource-lookup assumption
+     (`Environment.GetResourceStringLocal` is gone);
    * **(landed)** the escape analysis's helpers around a synchronized method, per runtime: RC1's
      JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
      `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
