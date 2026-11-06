@@ -566,7 +566,13 @@ module ManagedHeap =
         match heap.NonArrayObjects.TryGetValue alloc with
         | false, _ -> failwith $"set: %O{alloc} is not a live managed heap allocation of non-array kind"
         | true, existing ->
-            if existing <> v && heap.InternedAddresses.Contains alloc then
+            // Compared by byte image, which is what the guest can observe: a field store records
+            // when it happened even if it stores the value the field already held.
+            if
+                heap.InternedAddresses.Contains alloc
+                && (existing.ConcreteType <> v.ConcreteType
+                    || CliValueType.ToBytes existing.Contents <> CliValueType.ToBytes v.Contents)
+            then
                 refuseInternedWrite alloc (requireStringContents "set" alloc heap) "change the fields"
 
         { heap with
