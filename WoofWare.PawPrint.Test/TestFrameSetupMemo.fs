@@ -7,7 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `IlMachineState._ConcretisedMethods` and `_ZeroValues` each claim that a hit answers what a
+/// `IlMachineState._ConcretisedMethods`, `_ConcretisedLocals` and `_ZeroValues` each claim that a hit answers what a
 /// miss would have. Nothing downstream can tell a wrong entry from a right one, so this checks
 /// the claims directly: run a guest that calls methods under several instantiations and
 /// allocates value types of several shapes, then recompute every memoised entry from scratch
@@ -196,6 +196,64 @@ static class Program
 
                 // The registry is compared whole: the fresh walk must mint no handle.
                 (concreteTypes = state.TypeSystem.ConcreteTypes) |> shouldEqual true
+
+    [<Test>]
+    let ``Every memoised method's locals agree with concretising them afresh`` () =
+        let state = runGuest ()
+        let baseClassTypes = baseClassTypesOf state
+        let entries = state.TypeSystem._ConcretisedLocals |> Map.toList
+
+        let withLocals = entries |> List.filter (fun (_, locals) -> not locals.IsEmpty)
+
+        let withGenerics =
+            entries
+            |> List.filter (fun (key, locals) ->
+                not locals.IsEmpty
+                && (not key.TypeGenerics.IsEmpty || not key.MethodGenerics.IsEmpty)
+            )
+
+        if withLocals.Length < 20 || withGenerics.Length < 5 then
+            failwith
+                $"the guest memoised the locals of %d{entries.Length} methods, %d{withLocals.Length} with any and %d{withGenerics.Length} of those generic; it is not exercising the memo"
+
+        for key, memoised in entries do
+            match key.MethodRow with
+            | None ->
+                // The runtime synthesises such a method's behaviour; it has no IL, so no locals.
+                memoised.IsEmpty |> shouldEqual true
+            | Some row ->
+
+            let assy =
+                state.TypeSystem._LoadedAssemblies.ByDefinitionName key.DeclaringType.AssemblyFullName
+
+            let definition =
+                assy.Methods.[MetadataTokens.MethodDefinitionHandle row]
+                |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
+
+            let method, _, _ =
+                Concretization.concretizeMethod
+                    state.TypeSystem.ConcreteTypes
+                    (IlMachineState.loader state.LoggerFactory state)
+                    state.TypeSystem._LoadedAssemblies
+                    baseClassTypes
+                    definition
+                    (ImmutableArray.CreateRange key.TypeGenerics)
+                    (ImmutableArray.CreateRange key.MethodGenerics)
+
+            let fresh, concreteTypes, assemblies =
+                Concretization.concretizeLocals
+                    state.TypeSystem.ConcreteTypes
+                    (IlMachineState.loader state.LoggerFactory state)
+                    state.TypeSystem._LoadedAssemblies
+                    baseClassTypes
+                    (BindingResult.value method)
+
+            List.ofSeq (BindingResult.value fresh) |> shouldEqual (List.ofSeq memoised)
+
+            List.ofSeq assemblies.DefinitionNames
+            |> shouldEqual (List.ofSeq state.TypeSystem._LoadedAssemblies.DefinitionNames)
+
+            (concreteTypes = state.TypeSystem.ConcreteTypes) |> shouldEqual true
 
     [<Test>]
     let ``Every memoised zero value agrees with building it afresh`` () =

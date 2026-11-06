@@ -302,6 +302,29 @@ type IlMachineState =
     member this.LoadedAssembly (definitionFullName : string) : DumpedAssembly option =
         this.TypeSystem.LoadedAssembly definitionFullName
 
+    /// Replace a dynamic assembly by the image of an extension of its scope; see
+    /// `LoadedAssemblies.WithEmitScope`.
+    member this.WithEmitScope
+        (loggerFactory : ILoggerFactory)
+        (fullName : string)
+        (scope : EmitScope)
+        : IlMachineState * DumpedAssembly
+        =
+        let typeSystem, assembly =
+            this.TypeSystem.WithEmitScope loggerFactory fullName scope
+
+        this.WithTypeSystem typeSystem, assembly
+
+    /// Record which assembly a dynamic assembly's `AssemblyRef` row was emitted for; see
+    /// `LoadedAssemblies.WithAssemblyRefTarget`.
+    member this.WithAssemblyRefTarget
+        (fullName : string)
+        (assemblyRef : AssemblyRefRid)
+        (target : DumpedAssembly)
+        : IlMachineState
+        =
+        this.WithTypeSystem (this.TypeSystem.WithAssemblyRefTarget fullName assemblyRef target)
+
     member this.ActiveAssembly (thread : ThreadId) =
         let active = this.ThreadState.[thread].ActiveAssemblyFullName
 

@@ -149,6 +149,7 @@ module NativeQCall =
             "MetadataImport_GetMarshalAs", NativeMetadataImport.tryExecuteQCall "MetadataImport_GetMarshalAs"
             "AppDomain_CreateDynamicAssembly",
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
+            "ModuleBuilder_GetTypeRef", NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTypeRef"
             "AssemblyNative_InitializeAssemblyLoadContext",
             NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_InitializeAssemblyLoadContext"
             "AssemblyNative_GetLoadContextForAssembly",

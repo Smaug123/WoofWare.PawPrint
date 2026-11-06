@@ -561,6 +561,7 @@ public sealed class TypeAttribute : System.Attribute
                     fixture.Corelib
                     fixture.QCallMethod
                     ImmutableArray.Empty
+                    ImmutableArray.Empty
                     methodArgs
                     None
             with
@@ -1041,6 +1042,7 @@ public sealed class TypeAttribute : System.Attribute
                     state.TypeSystem._LoadedAssemblies
                     fixture.Corelib
                     fixture.NamedArgQCallMethod
+                    ImmutableArray.Empty
                     ImmutableArray.Empty
                     methodArgs
                     None

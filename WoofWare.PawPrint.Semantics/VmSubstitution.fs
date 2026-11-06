@@ -228,7 +228,7 @@ module VmSubstitution =
     ///
     /// CoreCLR substitutes whether or not the IL CoreLib ships is a placeholder: for a method whose
     /// shipped IL is a working implementation, the stub is what actually runs.
-    let unsafeStub (corelib : DumpedAssembly) (method : MethodDefinitionHandle) : MethodInstructions<TypeDefn> option =
+    let unsafeStub (corelib : DumpedAssembly) (method : MethodDefinitionHandle) : MethodInstructions option =
         let definition = corelib.Methods.[method]
 
         let declaringType =

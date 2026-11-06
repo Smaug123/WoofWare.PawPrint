@@ -15,10 +15,9 @@ module ExecutionConcretization =
     /// <remarks>
     /// <para>
     /// Built here rather than read out of a table because there is nothing to read: what
-    /// <c>ModuleHandle_GetDynamicMethod</c> recorded is a name, a signature *blob*, and an IL body
-    /// whose local types are <see cref="TypeDefn"/>s. Turning those into the
-    /// <c>ConcreteTypeHandle</c>-flavoured <see cref="MethodInfo"/> the interpreter runs on is
-    /// this function's whole job, and it is the same decode-then-concretise pair
+    /// <c>ModuleHandle_GetDynamicMethod</c> recorded is a name, a signature *blob*, and an IL body.
+    /// Turning those into the <c>ConcreteTypeHandle</c>-flavoured <see cref="MethodInfo"/> the
+    /// interpreter runs on is this function's whole job, and it is the same decode-then-concretise pair
     /// <c>NativeDelegate</c> performs when it decides whether a delegate may bind at all.
     /// </para>
     /// <para>
@@ -60,16 +59,6 @@ module ExecutionConcretization =
                 failwith $"%s{operation}: the scope assembly %s{scopeAssemblyFullName} is not loaded"
             )
 
-        let concretise (state : IlMachineState) (typeDefn : TypeDefn) : IlMachineState * ConcreteTypeHandle =
-            IlMachineState.concretizeType
-                loggerFactory
-                baseClassTypes
-                state
-                scopeAssembly.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                typeDefn
-
         let state, signature =
             definition.GetSignature ()
             |> IlMachineState.concretizeMethodSignature
@@ -83,28 +72,11 @@ module ExecutionConcretization =
         let body =
             definition.GetBody () |> MintedDynamicMethodBody.withLocalsInit localsInit
 
-        // The locals were decoded at mint time, like the signature; concretise them the same way. `None` means the method
-        // declared none, which is distinct from declaring zero of them only in that the frame has
-        // no locals array to build.
-        let state, localVars =
-            match body.LocalVars with
-            | None -> state, None
-            | Some vars ->
-                let mutable state = state
-                let handles = ImmutableArray.CreateBuilder vars.Length
-
-                for var in vars do
-                    let newState, handle = concretise state var
-                    state <- newState
-                    handles.Add handle
-
-                state, Some (handles.ToImmutable ())
-
         let core =
             {
                 Owner = MethodOwner.DynamicMethodsClass scopeAssembly.DefinitionFullName
                 Name = definition.GetName ()
-                Body = MethodBody.Il (MethodInstructions.setLocalVars localVars body)
+                Body = MethodBody.Il body
                 Generics = ImmutableArray.Empty
                 Signature = signature
                 IsStatic = true
@@ -138,6 +110,26 @@ module ExecutionConcretization =
                 state.TypeSystem
 
         state.WithTypeSystem typeSystem, methodResult
+
+    /// `MethodConcretisation.concretizeLocals` against the machine's type system: the concrete types
+    /// of the locals of `method`, for a frame of it about to be created. Stops where a local does not
+    /// bind: CoreCLR raises `TypeLoadException` compiling the method, which PawPrint does not model.
+    let concretizeLocals
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * ImmutableArray<ConcreteTypeHandle>
+        =
+        let typeSystem, locals =
+            MethodConcretisation.concretizeLocals
+                loggerFactory
+                state.DotnetRuntimeDirs
+                baseClassTypes
+                method
+                state.TypeSystem
+
+        state.WithTypeSystem typeSystem, BindingStop.bound locals
 
     /// `MethodConcretisation.concretizeMethodWithTypeGenerics` against the machine's type system.
     let concretizeMethodWithTypeGenerics
