@@ -2636,7 +2636,9 @@ public static class Unguarded
         let mutable analysis = analysisOver [ fixture ] id
 
         let escapesOf (typeName : string) (name : string) : Escapes =
-            let next, escapes = EscapeAnalysis.escapes analysis (methodNamed fixture typeName name)
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (methodNamed fixture typeName name)
+
             analysis <- next
             escapes
 
@@ -2649,16 +2651,20 @@ public static class Unguarded
 
         // A clause catching every exception hands back what escapes its block.
         for name in [ "ThrowsMine" ; "ThrowsEither" ; "ThrowsMade" ; "Asks" ; "Nothing" ] do
-            (name, handedBackBy name) |> shouldEqual (name, escapesOf "HandBack.Unguarded" name)
+            (name, handedBackBy name)
+            |> shouldEqual (name, escapesOf "HandBack.Unguarded" name)
 
         // A filter may admit anything.
-        handedBackBy "Filters" |> shouldEqual (escapesOf "HandBack.Unguarded" "ThrowsEither")
+        handedBackBy "Filters"
+        |> shouldEqual (escapesOf "HandBack.Unguarded" "ThrowsEither")
 
         // A clause of a type hands back only what is of it, and the rest escapes.
         let catchesMine = handedBackBy "CatchesMine"
         render analysis catchesMine |> shouldEqual (set [ "=HandBack.Mine" ])
         catchesMine.Unknown |> shouldEqual false
-        render analysis (escapesOf "HandBack.Wrappers" "CatchesMine") |> shouldContain "=HandBack.Other"
+
+        render analysis (escapesOf "HandBack.Wrappers" "CatchesMine")
+        |> shouldContain "=HandBack.Other"
 
         // Nor is anything handed back without a clause.
         handedBackBy "CatchesNothing" |> shouldEqual Escapes.none

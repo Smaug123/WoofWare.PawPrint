@@ -62,39 +62,58 @@ type ManagedCall =
         Arguments : NativeArgument list
     }
 
+/// How the VM calls a method of CoreLib's from native code.
+[<RequireQualifiedAccess>]
+type VmCall =
+    /// It calls the method, and what the method raises escapes in place.
+    | Direct of ManagedCall
+    /// It calls this `[UnmanagedCallersOnly]` method through
+    /// `UnmanagedCallersOnlyCaller::InvokeThrowing` (callhelpers.h), passing after its arguments a
+    /// slot, the method's last parameter, for an exception. What the method stores there, the VM
+    /// throws again (`COMPlusThrow`), first running `Exception.InternalPreserveStackTrace` on it.
+    | InvokeThrowing of ManagedCall
+
+    /// The method called, and what the VM passes it.
+    member this.Target : ManagedCall =
+        match this with
+        | VmCall.Direct call
+        | VmCall.InvokeThrowing call -> call
+
 /// Managed code a native method can call, whose exceptions escape the native method to its caller.
 [<RequireQualifiedAccess>]
 type NativeCall =
-    /// A call of this method of CoreLib's.
-    | Method of ManagedCall
+    /// A call of a method of CoreLib's.
+    | Calls of VmCall
     /// CoreCLR's lookup of one of CoreLib's resource strings by name (`ResMgrGetString`, excep.cpp),
     /// by which it gives the message to an exception it throws with a resource name, as
     /// `COMPlusThrow(kind, W("name"))` does. The CoreLib method it calls differs between runtimes:
     /// .NET 10's `Environment.GetResourceStringLocal(string)`, .NET 11's
-    /// `Environment.GetResourceString(char*, string*, Exception*)`.
+    /// `Environment.GetResourceString(char*, string*, Exception*)` through `InvokeThrowing`.
     | ResourceMessage
 
 [<RequireQualifiedAccess>]
 module NativeCall =
 
-    /// The CoreLib method a call runs on `runtime`.
-    let resolve (runtime : EmulatedRuntime) (call : NativeCall) : ManagedCall =
+    /// The call of a CoreLib method that a call makes on `runtime`.
+    let resolve (runtime : EmulatedRuntime) (call : NativeCall) : VmCall =
         match call with
-        | NativeCall.Method call -> call
+        | NativeCall.Calls call -> call
         | NativeCall.ResourceMessage ->
             match runtime with
             | EmulatedRuntime.Net10 ->
-                {
-                    DeclaringType = "System.Environment"
-                    Method = "GetResourceStringLocal"
-                    Arguments = [ NativeArgument.Unnamed ]
-                }
+                VmCall.Direct
+                    {
+                        DeclaringType = "System.Environment"
+                        Method = "GetResourceStringLocal"
+                        Arguments = [ NativeArgument.Unnamed ]
+                    }
             | EmulatedRuntime.Net11 ->
-                {
-                    DeclaringType = "System.Environment"
-                    Method = "GetResourceString"
-                    Arguments = List.replicate 3 NativeArgument.Unnamed
-                }
+                VmCall.InvokeThrowing
+                    {
+                        DeclaringType = "System.Environment"
+                        Method = "GetResourceString"
+                        Arguments = List.replicate 3 NativeArgument.Unnamed
+                    }
 
 /// A claim about the program under which a native method's contract holds, and which an analyser
 /// must be allowed to make before it relies on the contract.
@@ -240,12 +259,7 @@ module NativeContractTable =
                 match runs with
                 | "-" -> []
                 | runs ->
-                    runs.Split '|'
-                    |> Array.map (fun call ->
-                        if call = "ResourceMessage" then
-                            NativeCall.ResourceMessage
-                        else
-
+                    let managedCall (call : string) : ManagedCall =
                         let opening = call.IndexOf '('
 
                         if opening < 0 || not (call.EndsWith ')') then
@@ -272,12 +286,27 @@ module NativeContractTable =
                                 )
                                 |> List.ofArray
 
-                        NativeCall.Method
-                            {
-                                DeclaringType = declaringType
-                                Method = method
-                                Arguments = arguments
-                            }
+                        {
+                            DeclaringType = declaringType
+                            Method = method
+                            Arguments = arguments
+                        }
+
+                    // A method's spelling has `::` before its first `(`, so none starts
+                    // `InvokeThrowing(`.
+                    let throwing = "InvokeThrowing("
+
+                    runs.Split '|'
+                    |> Array.map (fun call ->
+                        if call = "ResourceMessage" then
+                            NativeCall.ResourceMessage
+                        elif call.StartsWith throwing && call.EndsWith ')' then
+                            call.Substring (throwing.Length, call.Length - throwing.Length - 1)
+                            |> managedCall
+                            |> VmCall.InvokeThrowing
+                            |> NativeCall.Calls
+                        else
+                            NativeCall.Calls (VmCall.Direct (managedCall call))
                     )
                     |> List.ofArray
 

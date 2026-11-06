@@ -118,7 +118,10 @@ module TestNativeContractTable =
 
         let exceptionSlot =
             match corelib.TryGetTopLevelTypeDef "System" "Exception" with
-            | Some exceptionType -> TypeDefn.Pointer (TypeDefn.FromDefinition (exceptionType.Identity, SignatureTypeKind.Class))
+            | Some exceptionType ->
+                TypeDefn.Pointer (
+                    TypeDefn.FromDefinition (exceptionType.Identity, System.Reflection.Metadata.SignatureTypeKind.Class)
+                )
             | None -> failwith "This CoreLib defines no System.Exception"
 
         for row in rowsUnderTest () do
@@ -240,7 +243,9 @@ module TestNativeContractTable =
             File.ReadAllText (Path.Combine (coreclr runtime, path))
 
         for row in NativeContractTable.rows runtime do
-            for call in row.Contract.Runs |> List.map (fun call -> (NativeCall.resolve runtime call).Target) do
+            for call in
+                row.Contract.Runs
+                |> List.map (fun call -> (NativeCall.resolve runtime call).Target) do
                 let binderIds = binderIds runtime call
 
                 if binderIds.IsEmpty then
@@ -741,7 +746,10 @@ module TestNativeContractTable =
                         |> Seq.map (fun id -> id.Value)
                         |> List.ofSeq
 
-                    if ids.IsEmpty || ids |> List.exists (fun id -> not (runs.Contains (id, caller.Success))) then
+                    if
+                        ids.IsEmpty
+                        || ids |> List.exists (fun id -> not (runs.Contains (id, caller.Success)))
+                    then
                         failwith
                             $"%A{row.Native} cites %s{path}:%s{routine.Name}, which calls managed code at `%s{site.Value}%s{arguments}`, and runs %A{runs}, each with whether through InvokeThrowing"
 
@@ -1058,8 +1066,9 @@ module TestNativeContractTable =
                 replacing 5 "InvokeThrowing()"
                 replacing 5 "InvokeThrowing(ResourceMessage)"
                 replacing 5 "InvokeThrowing(System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)"
-                replacing 5 "InvokeThrowing(InvokeThrowing(System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)))"
-                replacing 5 "InvokeThrowingSystem.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)"
+                replacing
+                    5
+                    "InvokeThrowing(InvokeThrowing(System.Threading.SynchronizationContext::InvokeWaitMethodHelper(?)))"
                 replacing 6 ""
                 replacing 6 "NamedTypes"
                 replacing 6 "NamedTypesLoad|"
@@ -1155,7 +1164,13 @@ module TestNativeContractTable =
 
                 let! throwing = Gen.elements [ false ; true ]
 
-                return NativeCall.Calls (if throwing then VmCall.InvokeThrowing call else VmCall.Direct call)
+                return
+                    NativeCall.Calls (
+                        if throwing then
+                            VmCall.InvokeThrowing call
+                        else
+                            VmCall.Direct call
+                    )
             }
 
         let property (calls : NativeCall list) : unit =
@@ -1312,9 +1327,7 @@ module TestNativeContractTable =
 
         // Each caller calls it as `resolve` says.
         let throughCaller =
-            Text.RegularExpressions.Regex (
-                $@"\bUnmanagedCallersOnlyCaller\s+(\w+)\s*\(\s*%s{expected}\s*\)"
-            )
+            Text.RegularExpressions.Regex ($@"\bUnmanagedCallersOnlyCaller\s+(\w+)\s*\(\s*%s{expected}\s*\)")
 
         for routine in CppSource.definitions excep do
             if routine.Text.Contains expected then
