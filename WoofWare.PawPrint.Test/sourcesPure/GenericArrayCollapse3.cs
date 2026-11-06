@@ -3,8 +3,7 @@
 // When walking the type hierarchy (e.g., for isinst/castclass), the
 // interpreter calls resolveBaseConcreteType, which calls resolveBaseTypeInfo.
 // For a base type encoded as a TypeSpec (generic base with array arg),
-// resolveBaseTypeInfo calls resolveTypeFromSpecConcrete + typeInfoToTypeDefn,
-// collapsing int[] to System.Array.
+// a round-trip through TypeInfo collapses int[] to System.Array.
 //
 // This produces the wrong concrete type handle for the base class,
 // causing type compatibility checks to fail: the runtime thinks the
