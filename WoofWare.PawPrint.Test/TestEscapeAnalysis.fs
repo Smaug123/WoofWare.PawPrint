@@ -2475,8 +2475,11 @@ public static class SR
         let _ =
             (analysis, tabulated)
             ||> List.fold (fun analysis (key, row) ->
+                let analysis, preserving =
+                    EscapeAnalysis.escapes analysis (internalPreserveStackTrace corelib)
+
                 let analysis, made =
-                    ((analysis, Set.empty), row.Contract.Raises)
+                    ((analysis, []), row.Contract.Raises)
                     ||> List.fold (fun (analysis, made) name ->
                         let analysis, escapes =
                             EscapeAnalysis.escapes
@@ -2484,36 +2487,58 @@ public static class SR
                                 (parameterlessConstructor corelib name.Namespace name.Name)
 
                         escapes.Unknown |> shouldEqual false
-                        analysis, made |> Set.add ("=" + name.FullName) |> Set.union (render analysis escapes)
+                        analysis, escapes :: made
                     )
 
-                let analysis, (made, unknown) =
-                    ((analysis, (made, false)), row.Contract.Runs)
-                    ||> List.fold (fun (analysis, (made, unknown)) call ->
-                        let analysis, ran =
-                            match NativeCall.resolve (FrameworkUnderTest.runtime ()) call with
-                            | VmCall.Direct call ->
-                                let analysis, escapes = EscapeAnalysis.escapes analysis (methodTaking corelib call)
-                                analysis, [ escapes ]
-                            | VmCall.InvokeThrowing call ->
-                                // What escapes the method, what it hands back, and what the VM runs
-                                // on that to throw it again.
-                                let key = methodTaking corelib call
-                                let analysis, escapes = EscapeAnalysis.escapes analysis key
-                                let analysis, handedBack = EscapeAnalysis.handedBack analysis key
+                // On .NET 11 the VM throws what such a constructor raises again, which preserves
+                // its stack trace (`ExceptionMaking.vmMakingRaise`).
+                let made =
+                    match FrameworkUnderTest.runtime (), made with
+                    | EmulatedRuntime.Net10, made
+                    | EmulatedRuntime.Net11, ([] as made) -> made
+                    | EmulatedRuntime.Net11, made -> preserving :: made
 
-                                let analysis, preserving =
-                                    EscapeAnalysis.escapes analysis (internalPreserveStackTrace corelib)
-
-                                analysis, [ escapes ; handedBack ; preserving ]
-
-                        let shown = ran |> List.map (render analysis) |> Set.unionMany
-                        analysis, (Set.union made shown, unknown || ran |> List.exists (fun ran -> ran.Unknown))
+                let analysis, ran =
+                    ((analysis, []), row.Contract.Runs)
+                    ||> List.fold (fun (analysis, ran) call ->
+                        match NativeCall.resolve (FrameworkUnderTest.runtime ()) call with
+                        | VmCall.Direct call ->
+                            let analysis, escapes = EscapeAnalysis.escapes analysis (methodTaking corelib call)
+                            analysis, escapes :: ran
+                        | VmCall.InvokeThrowing call ->
+                            // What escapes the method, what it hands back, and what the VM runs on
+                            // that to throw it again.
+                            let key = methodTaking corelib call
+                            let analysis, escapes = EscapeAnalysis.escapes analysis key
+                            let analysis, handedBack = EscapeAnalysis.handedBack analysis key
+                            analysis, escapes :: handedBack :: preserving :: ran
                     )
+
+                let expected = (Escapes.none, made @ ran) ||> List.fold Escapes.union
 
                 let analysis, escapes = EscapeAnalysis.escapes analysis key
-                render analysis escapes |> shouldEqual made
-                escapes.Unknown |> shouldEqual unknown
+
+                render analysis escapes
+                |> shouldEqual (
+                    row.Contract.Raises
+                    |> List.map (fun name -> "=" + name.FullName)
+                    |> Set.ofList
+                    |> Set.union (render analysis expected)
+                )
+
+                escapes.Unknown |> shouldEqual expected.Unknown
+
+                // What the row holds under, and what the native's own body relies on of no thread
+                // being aborted.
+                escapes.Assumes
+                |> shouldEqual (
+                    row.Contract.Assumes
+                    |> List.map Assumption.ofNative
+                    |> Set.ofList
+                    |> Set.add Assumption.NoThreadAborts
+                    |> Set.union expected.Assumes
+                )
+
                 analysis
             )
 
