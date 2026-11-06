@@ -20,6 +20,9 @@ module EmitScopeGen =
         | Tiny of nops : int
         /// `locals` picks a `StandAloneSig` to name as the local signature, if the scope has any.
         | Fat of nops : int * maxStack : uint16 * locals : int option
+        /// No body at all, for a method that is not abstract: an IL method whose RVA is 0, as a
+        /// dynamic module's method is until `SetMethodIL`.
+        | NoBody
 
     /// One definition, its references given as choices that `apply` resolves against the rows the
     /// scope has so far, so that every generated list of operations makes a valid scope.
@@ -119,6 +122,7 @@ module EmitScopeGen =
         Gen.oneof
             [
                 Gen.choose (0, 60) |> Gen.map BodyShape.Tiny
+                Gen.constant BodyShape.NoBody
                 gen {
                     let! nops = Gen.choose (0, 100)
                     let! maxStack = Gen.choose (0, 20) |> Gen.map uint16
@@ -250,8 +254,9 @@ module EmitScopeGen =
         ]
         |> ImmutableArray.CreateRange
 
-    let body (scope : EmitScope) (shape : BodyShape) : ImmutableArray<byte> =
+    let body (scope : EmitScope) (shape : BodyShape) : ImmutableArray<byte> option =
         match shape with
+        | BodyShape.NoBody -> None
         | BodyShape.Tiny nops ->
             [
                 yield byte (((nops + 1) <<< 2) ||| 0x2)
@@ -259,6 +264,7 @@ module EmitScopeGen =
                 yield 0x2Auy
             ]
             |> ImmutableArray.CreateRange
+            |> Some
         | BodyShape.Fat (nops, maxStack, locals) ->
             let localsToken =
                 match locals with
@@ -278,6 +284,7 @@ module EmitScopeGen =
                 yield 0x2Auy
             ]
             |> ImmutableArray.CreateRange
+            |> Some
 
     let private intern (value : string) (applied : Applied) : StringOffset * Applied =
         let offset, scope = EmitScope.internString value applied.Scope
@@ -401,7 +408,7 @@ module EmitScopeGen =
                         if flags.HasFlag MethodAttributes.Abstract then
                             None
                         else
-                            Some (body scope shape)
+                            body scope shape
                     ImplFlags = MethodImplAttributes.IL
                     Flags = flags
                     Name = name

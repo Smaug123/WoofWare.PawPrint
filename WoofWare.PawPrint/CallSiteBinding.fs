@@ -250,6 +250,7 @@ module internal CallSiteBinding =
         match concretized.Body with
         | MethodBody.Abstract -> state, CallSiteBinding.CompilationFails CompilationFailure.NamesAbstractMethod
         | MethodBody.Il _
+        | MethodBody.MissingIl
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _ -> state, CallSiteBinding.Method concretized

@@ -1071,6 +1071,7 @@ module ConcreteVirtualDispatch =
 
                 state, Ok (VirtualImplementation.Reabstracted candidate.Body)
             | MethodBody.Il _
+            | MethodBody.MissingIl
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->
