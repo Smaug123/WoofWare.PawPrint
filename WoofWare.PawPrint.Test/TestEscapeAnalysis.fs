@@ -1536,6 +1536,20 @@ public static class SR
     let private making (analysis : EscapeAnalysisState) (fullName : string) : EscapeAnalysisState * Set<string> =
         makingIn (hostCoreLib ()) analysis fullName
 
+    /// What may escape the runtime's lookup of an exception's message by resource name
+    /// (`NativeCall.ResourceMessage`) on the runtime under test: what escapes the method it calls,
+    /// and, where it calls it through `InvokeThrowing`, what that method hands back.
+    let private resourceLookupEscapes (analysis : EscapeAnalysisState) : EscapeAnalysisState * Escapes =
+        let corelib = hostCoreLib ()
+
+        match NativeCall.resolve (FrameworkUnderTest.runtime ()) NativeCall.ResourceMessage with
+        | VmCall.Direct call -> EscapeAnalysis.escapes analysis (methodTaking corelib call)
+        | VmCall.InvokeThrowing call ->
+            let key = methodTaking corelib call
+            let analysis, escapes = EscapeAnalysis.escapes analysis key
+            let analysis, handedBack = EscapeAnalysis.handedBack analysis key
+            analysis, Escapes.union escapes handedBack
+
     /// `corelib`'s `TypeLoadException(string, string, string, int)` constructor, which the runtime
     /// runs to make the exception of a type that fails to bind.
     let private typeLoadConstructorIn (corelib : DumpedAssembly) : MethodKey =
@@ -8162,6 +8176,15 @@ public static class Uco
         (render analysis escapes).Contains "=System.InvalidProgramException"
         |> shouldEqual true
 
+        // Making it looks up its message by resource name, whose raises escape too.
+        let analysis, lookup = resourceLookupEscapes analysis
+
+        Set.isSubset (render analysis lookup) (render analysis escapes)
+        |> shouldEqual true
+
+        Set.isSubset lookup.Assumes escapes.Assumes |> shouldEqual true
+        (lookup.Unknown && not escapes.Unknown) |> shouldEqual false
+
     /// CoreCLR matches a copy-constructor modifier on a pointer's pointee by its namespace and name
     /// joined with a dot, however the metadata splits the two (`IsTypeRefOrDef`).
     [<Test>]
@@ -14087,9 +14110,6 @@ public static class Runners
     /// the calls are emitted directly.
     [<Test>]
     let ``a multidimensional array constructor taking lower bounds can reject them`` () : unit =
-        Net11Frontier.park
-            "On .NET 11's CoreLib, `EscapeAnalysis.resourceMessageLookup` finds no `Environment.GetResourceStringLocal(string)`, the method its resource-lookup assumption (`ResourceLookup`) names, so the analysis stops: \"expected System.Private.CoreLib, Version=11.0.0.0 ... to define one Environment.GetResourceStringLocal(string), found 0\". Un-park when the assumption names each runtime's resource lookup."
-
         let _, loggerFactory = LoggerFactory.makeTest ()
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
@@ -14285,11 +14305,7 @@ public static class Runners
         // The runtime looks up the message of the `ArgumentOutOfRangeException` by its resource name
         // once its constructor has run.
         let lookup =
-            let next, escapes =
-                EscapeAnalysis.escapes
-                    analysis
-                    (methodNamed (hostCoreLib ()) "System.Environment" "GetResourceStringLocal")
-
+            let next, escapes = resourceLookupEscapes analysis
             analysis <- next
             render analysis escapes
 

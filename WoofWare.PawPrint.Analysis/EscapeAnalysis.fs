@@ -129,6 +129,22 @@ type internal SpelledArgument =
     /// runs other code (`LocalValues.held`).
     | Pointer of location : PrimitiveType * holds : Set<SpelledInteger>
 
+/// A method of CoreLib's that the runtime runs by itself, and how it calls it.
+[<RequireQualifiedAccess>]
+type internal RuntimeRun =
+    /// It calls the method, and what the method raises escapes in place.
+    | Calls of MethodKey
+    /// It calls this `[UnmanagedCallersOnly]` method through `InvokeThrowing`
+    /// (`VmCall.InvokeThrowing`): what the method's catch and filter clauses catch, it hands back,
+    /// and that escapes too, as the VM throws it again.
+    | InvokesThrowing of MethodKey
+
+    /// The method run.
+    member this.Method : MethodKey =
+        match this with
+        | RuntimeRun.Calls method
+        | RuntimeRun.InvokesThrowing method -> method
+
 /// Something that happens outside a method's body, so that none of its own handlers can catch it.
 [<RequireQualifiedAccess>]
 type internal OutsideBodyFact =
@@ -141,7 +157,7 @@ type internal OutsideBodyFact =
     /// activates the module, or what the runtime runs to throw that initializer's own exception
     /// again, or the constructor it runs to make the exception a failure to bind raises, or what
     /// the JIT runs to take and release a synchronized method's monitor.
-    | Runs of MethodKey * passes : SpelledArgument list
+    | Runs of RuntimeRun * passes : SpelledArgument list
 
 /// How a call's token instantiates the method it names, as the calling body spells it.
 [<RequireQualifiedAccess>]
@@ -580,6 +596,16 @@ type internal Pending =
     /// What the writers of this field store in it.
     | Field of FieldKey
 
+/// Where in what an instance of a method runs a call is (`InstanceCalls`).
+[<RequireQualifiedAccess>]
+type internal CallPlace =
+    /// At this IL offset of the body, among `InstanceCalls.Callees`.
+    | Body of offset : int
+    /// Outside the body, past all its handlers, among `InstanceCalls.Outside`.
+    | OutsideBody
+    /// Wherever the JIT compiles the body's code, among `InstanceCalls.RaisedWhereInlined`.
+    | WhereInlined
+
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
 /// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
 /// does not decide. A `constrained. ldftn` counts as a call here, though it reaches nothing.
@@ -592,10 +618,11 @@ type internal InstanceCalls =
         Undecided : (int * Opacity * MethodKey option) list
         /// What the runtime runs outside the body (`OutsideBodyFact.Runs`), past all its handlers.
         Outside : MethodInstance list
-        /// Of `Callees`, each `[UnmanagedCallersOnly]` method the instance calls through
-        /// `InvokeThrowing` (`CallSite.InvokeThrowing`), whose handlers' catches escape at the
-        /// offset too.
-        HandsBack : (int * MethodInstance) list
+        /// Each `[UnmanagedCallersOnly]` method the instance runs through `InvokeThrowing`
+        /// (`CallSite.InvokeThrowing`, `RuntimeRun.InvokesThrowing`), also among `Callees`,
+        /// `Outside` or `RaisedWhereInlined` as `CallPlace` says: what its handlers catch escapes
+        /// there too.
+        HandsBack : (CallPlace * MethodInstance) list
         /// Of `Outside`, what the runtime runs for what compiling the body raises wherever the JIT
         /// compiles its code (`LocalFacts.RaisedWhereInlined`).
         RaisedWhereInlined : MethodInstance list
@@ -1009,15 +1036,12 @@ module EscapeAnalysis =
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %s{call.DeclaringType}::%s{call.Method}, without type variables, of %d{call.Arguments.Length} arguments, found %d{found.Length} of that name and arity"
 
-    /// The method CoreCLR runs to look up the message of an exception it makes with one by resource
-    /// name (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
-    let private resourceMessageLookup (state : EscapeAnalysisState) : MethodKey =
+    /// What CoreCLR runs to look up the message of an exception it makes with one by resource name
+    /// (`ExceptionMaking.ResourceMessage`): that runtime's `NativeCall.ResourceMessage`.
+    let private resourceMessageLookup (state : EscapeAnalysisState) : RuntimeRun =
         match NativeCall.resolve state.Runtime NativeCall.ResourceMessage with
-        | VmCall.Direct call -> nativeCall state call |> fst
-        // TODO: the VM hands back what this method catches and throws it again, which the
-        // methods an exception's making runs (`runtimeRaisesNamed`) cannot yet say, so what the
-        // lookup raises is hidden in its handler.
-        | VmCall.InvokeThrowing call -> nativeCall state call |> fst
+        | VmCall.Direct call -> RuntimeRun.Calls (nativeCall state call |> fst)
+        | VmCall.InvokeThrowing call -> RuntimeRun.InvokesThrowing (nativeCall state call |> fst)
 
     /// Whether the analysis's caller allows `assumption`.
     let internal allows (state : EscapeAnalysisState) (assumption : Assumption) : bool =
@@ -1215,16 +1239,21 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (name : ExceptionName)
         (making : ExceptionMaking)
-        : ThrownType * MethodKey list
+        : ThrownType * RuntimeRun list
         =
         let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
+        let calls (made : MethodKey list) : RuntimeRun list = List.map RuntimeRun.Calls made
 
         match making with
-        | ExceptionMaking.ThrownByIl -> thrown, [ parameterlessConstructor state name ]
-        | ExceptionMaking.VmConstructor -> thrown, vmRuns state [ parameterlessConstructor state name ]
+        | ExceptionMaking.ThrownByIl -> thrown, calls [ parameterlessConstructor state name ]
+        | ExceptionMaking.VmConstructor -> thrown, calls (vmRuns state [ parameterlessConstructor state name ])
         | ExceptionMaking.ResourceMessage ->
-            thrown, vmRuns state [ parameterlessConstructor state name ; resourceMessageLookup state ]
-        | ExceptionMaking.TypeLoadConstructor -> thrown, vmRuns state [ typeLoadConstructor state name ]
+            // Throwing again what the lookup hands back, should it run through `InvokeThrowing`,
+            // runs what the VM runs on what the constructor raises.
+            thrown,
+            calls (vmRuns state [ parameterlessConstructor state name ])
+            @ [ resourceMessageLookup state ]
+        | ExceptionMaking.TypeLoadConstructor -> thrown, calls (vmRuns state [ typeLoadConstructor state name ])
         | ExceptionMaking.Preallocated -> thrown, []
         | ExceptionMaking.InitializerFailure ->
             failwith
@@ -1236,7 +1265,7 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (fullName : string)
         (making : ExceptionMaking)
-        : ThrownType * MethodKey list
+        : ThrownType * RuntimeRun list
         =
         match ExceptionName.parse fullName with
         | Some name -> runtimeRaisesNamed state name making
@@ -1250,15 +1279,18 @@ module EscapeAnalysis =
         (name : ExceptionName)
         : (MethodKey * SpelledArgument list) list
         =
-        runtimeRaisesNamed state name ExceptionMaking.VmConstructor
-        |> snd
+        vmRuns state [ parameterlessConstructor state name ]
         |> List.map (fun made -> made, [])
 
     /// What the runtime raises where the VM raises the CoreLib exception of this full name by
     /// itself, making it by running its parameterless constructor (`EEException::CreateThrowable`):
     /// the exception, and what that making runs whose raises escape (`runtimeRaises`).
     let private constructedRaise (state : EscapeAnalysisState) (fullName : string) : ThrownType * MethodKey list =
-        runtimeRaises state fullName ExceptionMaking.VmConstructor
+        match ExceptionName.parse fullName with
+        | Some name ->
+            ThrownType.Exactly (corelibType state name.Namespace name.Name),
+            vmRuns state [ parameterlessConstructor state name ]
+        | None -> failwith $"EscapeAnalysis: %s{fullName} is not an exception type's full name"
 
     /// What the JIT's own call of `RuntimeTypeHandle.GetRuntimeTypeFromHandle` raises, which the
     /// analysis takes in place of the method's IL: the `OutOfMemoryException` of allocating the
@@ -1286,7 +1318,7 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (op : IlOp)
         (fault : OpcodeFault)
-        : ThrownType * MethodKey list
+        : ThrownType * RuntimeRun list
         =
         runtimeRaises state (OpcodeFault.typeName fault) (ExceptionMaking.ofOpcodeFault op fault)
 
@@ -1298,18 +1330,29 @@ module EscapeAnalysis =
                 Spelling = CalleeSpelling.Fixed
             }
 
+    /// A method the runtime runs by itself, which has no type variables, called as `run` says.
+    let private runSite (run : RuntimeRun) : CallSite =
+        match run with
+        | RuntimeRun.Calls method -> runtimeRuns method
+        | RuntimeRun.InvokesThrowing method ->
+            CallSite.InvokeThrowing
+                {
+                    Callee = method
+                    Spelling = CalleeSpelling.Fixed
+                }
+
     /// What `runtimeRaises` says the runtime raises at `offset`, as raises and as calls to the
     /// methods it runs to make them.
     let private raisedAt
         (offset : int)
-        (raised : (ThrownType * MethodKey list) list)
+        (raised : (ThrownType * RuntimeRun list) list)
         : (int * ThrownType) list * (int * CallSite * SpelledArgument list) list
         =
         let raises = raised |> List.map (fun (thrown, _) -> offset, thrown)
 
         let calls =
             raised
-            |> List.collect (fun (_, made) -> made |> List.map (fun method -> offset, runtimeRuns method, []))
+            |> List.collect (fun (_, made) -> made |> List.map (fun run -> offset, runSite run, []))
 
         raises, calls
 
@@ -1931,7 +1974,7 @@ module EscapeAnalysis =
         (state : EscapeAnalysisState)
         (arrayType : TypeDefn)
         (accessor : ArrayAccessor)
-        : (ThrownType * MethodKey list) list
+        : (ThrownType * RuntimeRun list) list
         =
         ExceptionMaking.ofArrayMethod arrayType accessor
         |> List.map (fun (fullName, making) -> runtimeRaises state fullName making)
@@ -2445,7 +2488,7 @@ module EscapeAnalysis =
                         let thrown, made = constructedRaise state "System.MissingMethodException"
 
                         OutsideBodyFact.Raises thrown
-                        :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
+                        :: List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, [])) made
                     | CallTarget.TypeMissing -> raisesOf (Some BindFailure.TypeAbsent)
                     | CallTarget.AssemblyMissing -> raisesOf (Some BindFailure.AssemblyUnavailable)
                     | CallTarget.DependsOnInstantiation -> [ dependsOnInstantiation ]
@@ -2471,7 +2514,7 @@ module EscapeAnalysis =
                     state,
                     TokenReferent.Other,
                     OutsideBodyFact.Raises thrown
-                    :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
+                    :: List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, [])) made
                 | FieldReferenceTarget.ParentTypeMissing _ ->
                     state, TokenReferent.Other, raisesOf (Some BindFailure.TypeAbsent)
                 | FieldReferenceTarget.ParentAssemblyUnavailable _
@@ -2532,7 +2575,7 @@ module EscapeAnalysis =
             let thrown, made = constructedRaise state "System.InvalidProgramException"
 
             OutsideBodyFact.Raises thrown
-            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
+            :: List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, [])) made
         | Error typeRef ->
             failwith
                 $"BUG: %O{typeRef} in %s{assembly.DefinitionFullName} bound, loading what it names, but does not resolve against the loaded assemblies"
@@ -3727,7 +3770,7 @@ module EscapeAnalysis =
     let private contractRaises
         (state : EscapeAnalysisState)
         (contract : IntrinsicContract)
-        : (ThrownType * MethodKey list) list
+        : (ThrownType * RuntimeRun list) list
         =
         contract.Raises
         |> List.map (fun (fault, _) ->
@@ -3744,7 +3787,7 @@ module EscapeAnalysis =
     let private instructionRaises
         (state : EscapeAnalysisState)
         (fault : InstructionFault)
-        : (ThrownType * MethodKey list) option
+        : (ThrownType * RuntimeRun list) option
         =
         let made (fullName : string) =
             ExceptionMaking.ofInstructionFault fault
@@ -4086,10 +4129,7 @@ module EscapeAnalysis =
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
 
             state,
-            contracted
-                (List.map fst raised)
-                []
-                (raised |> List.collect snd |> List.map (fun method -> runtimeRuns method, []))
+            contracted (List.map fst raised) [] (raised |> List.collect snd |> List.map (fun run -> runSite run, []))
         | Runs.Native native ->
             let contract = NativeMethod.contract native
 
@@ -4641,9 +4681,9 @@ module EscapeAnalysis =
                             let wrapper, preserve = initializerFailure state
 
                             OutsideBodyFact.Raises wrapper
-                            :: OutsideBodyFact.Runs (preserve, [])
+                            :: OutsideBodyFact.Runs (RuntimeRun.Calls preserve, [])
                             :: (initializers
-                                |> List.map (fun initializer -> OutsideBodyFact.Runs (initializer, [])))
+                                |> List.map (fun initializer -> OutsideBodyFact.Runs (RuntimeRun.Calls initializer, [])))
                             @ failures
 
                     state,
@@ -4835,7 +4875,7 @@ module EscapeAnalysis =
                         ->
                         // The body's call to itself, which the JIT expands where it stands
                         // (`gtIsRecursiveCall`): no call happens, so the raises are this offset's.
-                        let raisedHere (raised : (ThrownType * MethodKey list) list) =
+                        let raisedHere (raised : (ThrownType * RuntimeRun list) list) =
                             let raisedHere, constructed = raisedAt offset raised
                             state, raisedHere @ raises, opaque, constructed @ calls
 
@@ -5095,11 +5135,11 @@ module EscapeAnalysis =
                 spellings,
                 [
                     OutsideBodyFact.Runs (
-                        corelibStatic state "System.Threading" "Monitor" helpers.Enter 2,
+                        RuntimeRun.Calls (corelibStatic state "System.Threading" "Monitor" helpers.Enter 2),
                         [ SpelledArgument.Value lock ; acquired ]
                     )
                     OutsideBodyFact.Runs (
-                        corelibStatic state "System.Threading" "Monitor" helpers.Exit 2,
+                        RuntimeRun.Calls (corelibStatic state "System.Threading" "Monitor" helpers.Exit 2),
                         [ SpelledArgument.Value lock ; SpelledArgument.Value StackValue.Unknown ]
                     )
                     if method.IsStatic then
@@ -5560,7 +5600,7 @@ module EscapeAnalysis =
                 let thrown, made = constructedRaise state "System.BadImageFormatException"
 
                 made
-                |> List.map (fun made -> OutsideBodyFact.Runs (made, []))
+                |> List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, []))
                 |> Set.ofList
                 |> Set.union (Set.add (OutsideBodyFact.Raises thrown) outsideBody)
 
@@ -7330,7 +7370,7 @@ module EscapeAnalysis =
 
             state,
             OutsideBodyFact.Raises thrown
-            :: List.map (fun made -> OutsideBodyFact.Runs (made, [])) made
+            :: List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, [])) made
         // `ThrowTypeLoadException`, for the array type, makes it as `EETypeLoadException` does.
         | RefusalSite.Newarr _ ->
             let thrown, made =
@@ -8201,36 +8241,46 @@ module EscapeAnalysis =
                     state, callees, raises, (offset, Opacity.ConstrainedMethodPointer, Some callee.Callee) :: undecided
             )
 
+        // What the runtime runs as `outsideBody` says, and of that, what it runs through
+        // `InvokeThrowing`.
         let runs (state : EscapeAnalysisState) (outsideBody : Set<OutsideBodyFact>) =
-            ((state, []), outsideBody)
-            ||> Seq.fold (fun (state, outside) fact ->
+            ((state, [], []), outsideBody)
+            ||> Seq.fold (fun (state, outside, handing) fact ->
                 match fact with
-                | OutsideBodyFact.Runs (method, passes) ->
+                | OutsideBodyFact.Runs (run, passes) ->
                     let state, reached =
-                        passedTo state Set.empty instance facts passes None (instanceOf state method [] [])
+                        passedTo state Set.empty instance facts passes None (instanceOf state run.Method [] [])
 
-                    state, reached :: outside
+                    match run with
+                    | RuntimeRun.Calls _ -> state, reached :: outside, handing
+                    | RuntimeRun.InvokesThrowing _ -> state, reached :: outside, reached :: handing
                 | OutsideBodyFact.Raises _
-                | OutsideBodyFact.Opaque _ -> state, outside
+                | OutsideBodyFact.Opaque _ -> state, outside, handing
             )
 
-        let state, outside = runs state facts.OutsideBody
-        let state, raisedWhereInlined = runs state facts.RaisedWhereInlined
+        let state, outside, outsideHanding = runs state facts.OutsideBody
+        let state, raisedWhereInlined, inlinedHanding = runs state facts.RaisedWhereInlined
 
-        // Each method called through `InvokeThrowing`, as the call reaches it: what `reaching`
-        // put among the callees at that offset for that method.
-        let handsBack =
+        // Each method called through `InvokeThrowing` in the body, as the call reaches it: what
+        // `reaching` put among the callees at that offset for that method.
+        let bodyHanding =
             facts.Calls
             |> List.collect (fun (offset, site, _) ->
                 match site with
                 | CallSite.InvokeThrowing callee ->
                     callees
                     |> List.filter (fun (at, reached) -> at = offset && reached.Definition = callee.Callee)
+                    |> List.map (fun (at, reached) -> CallPlace.Body at, reached)
                 | CallSite.Direct _
                 | CallSite.Runtime _
                 | CallSite.Constrained _
                 | CallSite.Virtual _ -> []
             )
+
+        let handsBack =
+            bodyHanding
+            @ (outsideHanding |> List.map (fun reached -> CallPlace.OutsideBody, reached))
+            @ (inlinedHanding |> List.map (fun reached -> CallPlace.WhereInlined, reached))
             |> List.distinct
 
         state,
@@ -8401,6 +8451,30 @@ module EscapeAnalysis =
             | ExceptionRegion.Finally _
             | ExceptionRegion.Fault _ -> state, handedBack
         )
+
+    /// What may escape where `raised` arises past every handler.
+    let private escapesOfRaised (raised : Set<Raised>) : Escapes =
+        {
+            Types =
+                raised
+                |> Seq.choose (fun raised ->
+                    match raised with
+                    | Raised.Named thrown -> Some thrown
+                    | Raised.Unnamed
+                    | Raised.Assumed _ -> None
+                )
+                |> Set.ofSeq
+            Unknown = raised.Contains Raised.Unnamed
+            Assumes =
+                raised
+                |> Seq.choose (fun raised ->
+                    match raised with
+                    | Raised.Assumed (assumption, _) -> Some assumption
+                    | Raised.Named _
+                    | Raised.Unnamed -> None
+                )
+                |> Set.ofSeq
+        }
 
     /// <summary>
     /// What may escape `method`, and the state to ask the next question of.
@@ -8583,22 +8657,34 @@ module EscapeAnalysis =
                 | None, escapes -> escapes
                 | Some acc, Some escapes -> Some (Escapes.union acc escapes)
 
-            let nextInlined =
-                (Map.empty, reachable)
-                ||> List.fold (fun nextInlined key ->
+            let state, nextInlined =
+                ((state, Map.empty), reachable)
+                ||> List.fold (fun (state, nextInlined) key ->
                     let calls = state.InstanceCalls.[key]
 
                     let inlined =
                         (inlinedSeeds.TryFind key, calls.RaisedWhereInlined)
                         ||> List.fold (fun acc made -> join acc (Some (summaryOf made)))
 
+                    // What a method run there through `InvokeThrowing` hands back, too.
+                    let state, inlined =
+                        ((state, inlined), calls.HandsBack)
+                        ||> List.fold (fun (state, acc) (place, called) ->
+                            match place with
+                            | CallPlace.WhereInlined ->
+                                let state, caught = handedBackBy state called summaryOf
+                                state, join acc (Some (escapesOfRaised caught))
+                            | CallPlace.Body _
+                            | CallPlace.OutsideBody -> state, acc
+                        )
+
                     let inlined =
                         (inlined, calls.Callees)
                         ||> List.fold (fun acc (_, callee) -> join acc (inlinedOf callee))
 
                     match inlined with
-                    | Some inlined -> Map.add key inlined nextInlined
-                    | None -> nextInlined
+                    | Some inlined -> state, Map.add key inlined nextInlined
+                    | None -> state, nextInlined
                 )
 
             let state, next =
@@ -8651,10 +8737,22 @@ module EscapeAnalysis =
                             }
                         )
 
-                    // What runs outside the body is past all its handlers.
+                    // What runs outside the body is past all its handlers, and so is what a method
+                    // run there through `InvokeThrowing` hands back.
                     let escaping =
                         (escaping, calls.Outside)
                         ||> List.fold (fun acc callee -> Escapes.union acc (summaryOf callee))
+
+                    let state, escaping =
+                        ((state, escaping), calls.HandsBack)
+                        ||> List.fold (fun (state, acc) (place, called) ->
+                            match place with
+                            | CallPlace.OutsideBody ->
+                                let state, caught = handedBackBy state called summaryOf
+                                state, Escapes.union acc (escapesOfRaised caught)
+                            | CallPlace.Body _
+                            | CallPlace.WhereInlined -> state, acc
+                        )
 
                     let state, rethrows = rethrownIn state key summaryOf
 
@@ -8665,13 +8763,18 @@ module EscapeAnalysis =
                                     yield offset, thrown
                         ]
 
-                    // What each method called through `InvokeThrowing` hands back, which the VM
-                    // throws again at the call.
+                    // What each method the body calls through `InvokeThrowing` hands back, which the
+                    // VM throws again at the call.
                     let state, handedBack =
                         ((state, []), calls.HandsBack)
-                        ||> List.fold (fun (state, handedBack) (offset, called) ->
-                            let state, caught = handedBackBy state called summaryOf
-                            state, (caught |> Seq.map (fun raised -> offset, raised) |> List.ofSeq) @ handedBack
+                        ||> List.fold (fun (state, handedBack) (place, called) ->
+                            match place with
+                            | CallPlace.Body offset ->
+                                let state, caught = handedBackBy state called summaryOf
+
+                                state, (caught |> Seq.map (fun raised -> offset, raised) |> List.ofSeq) @ handedBack
+                            | CallPlace.OutsideBody
+                            | CallPlace.WhereInlined -> state, handedBack
                         )
 
                     let state, escaping =
@@ -8742,28 +8845,7 @@ module EscapeAnalysis =
         let state, caught =
             handedBackBy state (rootOf state method) (fun key -> state.Summaries.[key])
 
-        state,
-        {
-            Types =
-                caught
-                |> Seq.choose (fun raised ->
-                    match raised with
-                    | Raised.Named thrown -> Some thrown
-                    | Raised.Unnamed
-                    | Raised.Assumed _ -> None
-                )
-                |> Set.ofSeq
-            Unknown = caught.Contains Raised.Unnamed
-            Assumes =
-                caught
-                |> Seq.choose (fun raised ->
-                    match raised with
-                    | Raised.Assumed (assumption, _) -> Some assumption
-                    | Raised.Named _
-                    | Raised.Unnamed -> None
-                )
-                |> Set.ofSeq
-        }
+        state, escapesOfRaised caught
 
     /// Where `unknownSources` looks for something the analysis cannot name.
     [<RequireQualifiedAccess>]
@@ -8840,7 +8922,12 @@ module EscapeAnalysis =
                 @ (facts.Rethrows
                    |> List.map (fun (offset, _) -> offset, UnnamedAt.Rethrown (key, offset)))
                 @ (calls.HandsBack
-                   |> List.map (fun (offset, called) -> offset, UnnamedAt.HandedBack called))
+                   |> List.choose (fun (place, called) ->
+                       match place with
+                       | CallPlace.Body offset -> Some (offset, UnnamedAt.HandedBack called)
+                       | CallPlace.OutsideBody
+                       | CallPlace.WhereInlined -> None
+                   ))
 
             let state, onward =
                 ((state, []), onward)
@@ -8880,7 +8967,18 @@ module EscapeAnalysis =
                         )
                         |> List.ofSeq
 
-                    let ranOutside = (instanceCalls key).Outside |> List.map UnnamedAt.Escaping
+                    let calls = instanceCalls key
+
+                    let ranOutside =
+                        (calls.Outside |> List.map UnnamedAt.Escaping)
+                        @ (calls.HandsBack
+                           |> List.choose (fun (place, called) ->
+                               match place with
+                               | CallPlace.OutsideBody -> Some (UnnamedAt.HandedBack called)
+                               | CallPlace.Body _
+                               | CallPlace.WhereInlined -> None
+                           ))
+
                     let state, sites, onward = reaching state key facts.Regions (fun _ -> true)
                     state, outside @ sites, UnnamedAt.Inlined key :: ranOutside @ onward
                 | UnnamedAt.Inlined key ->
@@ -8899,6 +8997,13 @@ module EscapeAnalysis =
 
                     let onward =
                         (calls.RaisedWhereInlined |> List.map UnnamedAt.Escaping)
+                        @ (calls.HandsBack
+                           |> List.choose (fun (place, called) ->
+                               match place with
+                               | CallPlace.WhereInlined -> Some (UnnamedAt.HandedBack called)
+                               | CallPlace.Body _
+                               | CallPlace.OutsideBody -> None
+                           ))
                         @ (calls.Callees |> List.map (snd >> UnnamedAt.Inlined))
 
                     state, sites, onward
