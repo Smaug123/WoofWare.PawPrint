@@ -6027,10 +6027,45 @@ public static class Cases
             }
         | other -> failwith $"unknown profile %s{other}"
 
-    /// Every intrinsic in CoreLib, answered from what CoreCLR runs for it: the IL its VM substitutes
-    /// where there is some, and otherwise its own IL with its call to itself performed as the JIT
-    /// expands it for the CPU: a capability query answers a constant, an instruction the CPU lacks
-    /// throws `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
+    /// What `each CoreLib intrinsic is analysed as what CoreCLR runs for it` checks of an intrinsic's
+    /// answer, from what CoreCLR runs for it.
+    [<RequireQualifiedAccess>]
+    type private IntrinsicCheck =
+        /// The VM substitutes IL of its own for the method (`VmSubstitution.unsafeStub`).
+        | VmIl
+        /// The method's IL calls itself, and the JIT expands that call as a primitive.
+        | SelfCallPrimitive of IntrinsicPrimitive
+        /// The method's IL calls itself, and the JIT expands that call otherwise.
+        | SelfCallExpansion of JitExpansion
+        /// The VM substitutes a primitive for the whole method.
+        | WholePrimitive of IntrinsicPrimitive
+
+    /// What `each CoreLib intrinsic is analysed as what CoreCLR runs for it` checks of its answer for
+    /// `method`, an intrinsic; `None` where there is nothing particular to an intrinsic to check, as
+    /// for one that runs its own IL as any other method does, and then
+    /// `the analysis answers for each CoreLib intrinsic with nothing particular to check` takes it.
+    let private intrinsicCheck (corelib : DumpedAssembly) (method : MethodDefinitionHandle) : IntrinsicCheck option =
+        match VmSubstitution.unsafeStub corelib method, IntrinsicBody.classify corelib method with
+        | Some _, _ -> Some IntrinsicCheck.VmIl
+        | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
+            Some (IntrinsicCheck.SelfCallPrimitive primitive)
+        | None, IntrinsicBody.JitExpansion expansion -> Some (IntrinsicCheck.SelfCallExpansion expansion)
+        // The VM chooses the substitute by instantiation; where it is a primitive, that is the whole
+        // method.
+        | None, IntrinsicBody.VmSubstitution ->
+            IntrinsicPrimitive.recognise corelib method
+            |> Option.map IntrinsicCheck.WholePrimitive
+        // Each case is named, so that a new one does not compile until it is placed.
+        | None, IntrinsicBody.OwnIl
+        | None, IntrinsicBody.CallSiteExpansion
+        | None, IntrinsicBody.StructMarshalling _
+        | None, IntrinsicBody.NoIl -> None
+
+    /// Every intrinsic in CoreLib for which CoreCLR runs something other than its IL as written,
+    /// answered from what CoreCLR runs for it: the IL its VM substitutes where there is some, and
+    /// otherwise its own IL with its call to itself performed as the JIT expands it for the CPU: a
+    /// capability query answers a constant, an instruction the CPU lacks throws
+    /// `PlatformNotSupportedException`, and one it has raises what the JIT's tables say.
     [<TestCaseSource(nameof coreLibsAndProfiles)>]
     let ``each CoreLib intrinsic is analysed as what CoreCLR runs for it``
         (coreLibName : string)
@@ -6124,8 +6159,18 @@ public static class Cases
 
             made fullName (Some (ExceptionMaking.ofPrimitiveFault fault))
 
+        // Those with nothing particular to check are not analysed here, but by
+        // `the analysis answers for each CoreLib intrinsic with nothing particular to check`.
         for KeyValue (handle, method) in corelib.Methods do
-            if IntrinsicBody.isIntrinsic corelib handle then
+            let check =
+                if IntrinsicBody.isIntrinsic corelib handle then
+                    intrinsicCheck corelib handle
+                else
+                    None
+
+            match check with
+            | None -> ()
+            | Some check ->
                 let next, escapes = EscapeAnalysis.escapes analysis (MethodKey.make corelib handle)
                 analysis <- next
                 let shown = render analysis escapes
@@ -6133,8 +6178,8 @@ public static class Cases
                 let describe () =
                     $"%s{method.RequiredDeclaringType.Name}::%s{method.Name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
-                match VmSubstitution.unsafeStub corelib handle, IntrinsicBody.classify corelib handle with
-                | Some _, _ ->
+                match check with
+                | IntrinsicCheck.VmIl ->
                     substituted <- substituted + 1
 
                     let next, net11Frontier =
@@ -6147,7 +6192,7 @@ public static class Cases
 
                     if escapes.Unknown && not net11Frontier then
                         failures.Add $"%s{describe ()}: the VM's IL for it is all there is to see"
-                | None, IntrinsicBody.JitExpansion (JitExpansion.Primitive primitive) ->
+                | IntrinsicCheck.SelfCallPrimitive primitive ->
                     primitives <- primitives + 1
 
                     for fault, _ in (IntrinsicPrimitive.contract primitive).Raises do
@@ -6155,22 +6200,17 @@ public static class Cases
                             if not (shown.Contains wanted) then
                                 failures.Add
                                     $"%s{describe ()} lacks %s{wanted}, which %A{primitive} can raise by its fault %A{fault}"
-                | None, IntrinsicBody.VmSubstitution ->
-                    // The VM chooses the substitute by instantiation; where it is a primitive, that
-                    // is the whole method.
-                    match IntrinsicPrimitive.recognise corelib handle with
-                    | Some primitive ->
-                        wholePrimitives <- wholePrimitives + 1
+                | IntrinsicCheck.WholePrimitive primitive ->
+                    wholePrimitives <- wholePrimitives + 1
 
-                        let wanted =
-                            (IntrinsicPrimitive.contract primitive).Raises
-                            |> List.map (fst >> faultShown)
-                            |> Set.unionMany
+                    let wanted =
+                        (IntrinsicPrimitive.contract primitive).Raises
+                        |> List.map (fst >> faultShown)
+                        |> Set.unionMany
 
-                        if escapes.Unknown || shown <> wanted then
-                            failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
-                    | None -> ()
-                | None, IntrinsicBody.JitExpansion expansion ->
+                    if escapes.Unknown || shown <> wanted then
+                        failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
+                | IntrinsicCheck.SelfCallExpansion expansion ->
                     placeholders <- placeholders + 1
 
                     match IntrinsicBody.expandSelfCall profile expansion with
@@ -6225,12 +6265,11 @@ public static class Cases
                             for wanted in wanted do
                                 if not (shown.Contains wanted) then
                                     failures.Add $"%s{describe ()} lacks %s{wanted}"
-                    // Answered by the branch above.
+                    // Answered by `IntrinsicCheck.SelfCallPrimitive`.
                     | SelfCallExpansion.Primitive _ -> ()
                     | SelfCallExpansion.Unrecognised ->
                         if not escapes.Unknown then
                             failures.Add $"%s{describe ()}: what the JIT emits is not known"
-                | None, _ -> ()
 
         if failures.Count > 0 then
             failures |> Seq.truncate 40 |> String.concat Environment.NewLine |> failwith
@@ -6249,6 +6288,46 @@ public static class Cases
             unsupported |> shouldEqual 0
             instructions |> shouldBeGreaterThan 1000
             bareInstructions |> shouldBeGreaterThan 1000
+
+    /// The analysis answers, without failing, for every intrinsic in CoreLib with nothing particular to
+    /// an intrinsic to check (`intrinsicCheck`). Most run their own IL, as any other method does, and
+    /// between them they reach much of CoreLib, so this is what analyses the code a new runtime's
+    /// CoreLib adds to it.
+    [<TestCaseSource(nameof coreLibsAndProfiles)>]
+    let ``the analysis answers for each CoreLib intrinsic with nothing particular to check``
+        (coreLibName : string)
+        (profileName : string)
+        : unit
+        =
+        let corelib, runtimeDirs, target = coreLibNamed coreLibName
+        let profile = profileNamed corelib profileName
+
+        let unchecked =
+            [
+                for KeyValue (handle, _) in corelib.Methods do
+                    if
+                        IntrinsicBody.isIntrinsic corelib handle
+                        && (intrinsicCheck corelib handle).IsNone
+                    then
+                        yield MethodKey.make corelib handle
+            ]
+
+        // Each CoreLib has thousands, so that a test which finds few does not pass.
+        unchecked.Length |> shouldBeGreaterThan 1000
+
+        let failures =
+            ((analysisOf corelib runtimeDirs target profile Assumption.all [] id, []), unchecked)
+            ||> List.fold (fun (analysis, failures) key ->
+                try
+                    fst (EscapeAnalysis.escapes analysis key), failures
+                with e ->
+                    analysis, $"%s{EscapeAnalysis.methodName analysis key}: %s{e.Message}" :: failures
+            )
+            |> snd
+
+        match List.rev failures with
+        | [] -> ()
+        | failures -> failures |> Seq.truncate 40 |> String.concat Environment.NewLine |> failwith
 
     [<Test>]
     let ``a profile supporting another architecture's instruction set is refused`` () : unit =
