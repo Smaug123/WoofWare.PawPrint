@@ -413,3 +413,43 @@ module TestEmitScopeMemberRefs =
 
             rid.Rid |> shouldEqual (token &&& 0xFFFFFF)
             scope <- next
+
+    [<Test>]
+    let ``an empty name or signature, and a signature with bytes after its last type, are refused`` () : unit =
+        let scope = EmitScope.create "Dyn" Guid.Empty
+        let parent = MemberRefParent.TypeDef (TypeDefRid 1)
+        let signature = ImmutableArray.Create<byte> [| 0x20uy ; 0x00uy ; 0x01uy |]
+
+        Assert.Throws<ArgumentException> (fun () ->
+            EmitScopeReferences.defineMemberRef parent "" signature scope |> ignore
+        )
+        |> ignore
+
+        Assert.Throws<ArgumentException> (fun () ->
+            EmitScopeReferences.defineMemberRef parent "M" ImmutableArray.Empty scope
+            |> ignore
+        )
+        |> ignore
+
+        Assert.Throws<ArgumentException> (fun () ->
+            EmitScopeReferences.tryFindMemberRef parent "" signature scope |> ignore
+        )
+        |> ignore
+
+        Assert.Throws<ArgumentException> (fun () ->
+            EmitScopeReferences.methodSignatureNamesTypeByToken ImmutableArray.Empty
+            |> ignore
+        )
+        |> ignore
+
+        // A trailing byte the emitter would not copy.
+        Assert.Throws<ArgumentException> (fun () ->
+            EmitScopeReferences.methodSignatureNamesTypeByToken (
+                ImmutableArray.Create<byte> [| 0x20uy ; 0x00uy ; 0x01uy ; 0x08uy |]
+            )
+            |> ignore
+        )
+        |> ignore
+
+        EmitScopeReferences.methodSignatureNamesTypeByToken signature
+        |> shouldEqual false
