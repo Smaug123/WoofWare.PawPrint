@@ -103,9 +103,6 @@ public class StringCharByref
 
     public static unsafe int TestStringFixedPointerByteAdd()
     {
-        // Use a string literal not shared with other tests so this case is
-        // robust against in-place byte-view mutations elsewhere in the
-        // assembly that would otherwise alias through the intern pool.
         string s = "fp";
         ReadOnlySpan<char> span = s;
         fixed (char* p = &MemoryMarshal.GetReference(span))
