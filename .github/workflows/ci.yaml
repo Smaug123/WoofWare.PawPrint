@@ -98,6 +98,12 @@ jobs:
     # a bare `dotnet test` runs, once. The negated clause matches no `[<Explicit>]` test, just as
     # a bare `dotnet test` runs none; the positive one would run any whose name it matches, and
     # none does.
+    # `NUnit.AssemblySelectLimit` is raised because, when a filter selects more non-Explicit tests
+    # than the limit (2000 by default), the NUnit adapter drops the filter, runs every
+    # non-Explicit test, and reports only those the filter selected. `Rest` selects over 5000, so
+    # under the default it would run `TestEscapeAnalysis*` too, unreported, and take as long as the
+    # whole suite. A filter that names a category, as each `test-guest` runner's does, is exempt
+    # (`Execution.CheckFilter` in the adapter's source).
     # The TRX files carry each test's duration. They're uploaded so that the tests can be
     # divided between runners by measured cost on CI's 4-vCPU hardware, which isn't
     # proportional to what a developer machine measures.
@@ -112,7 +118,7 @@ jobs:
         esac
         projects="$(python3 scripts/footprint.py test-projects)"
         for project in $projects; do
-          nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --filter "FullyQualifiedName${op}.TestEscapeAnalysis" --logger "trx;LogFilePrefix=default" --results-directory TestResults
+          nix develop "$GITHUB_WORKSPACE" --command dotnet test "$project" --no-build --configuration Release --filter "FullyQualifiedName${op}.TestEscapeAnalysis" --logger "trx;LogFilePrefix=default" --results-directory TestResults -- NUnit.AssemblySelectLimit=1000000
         done
     - name: Upload test results
       if: ${{ always() && steps.affected.outputs.tests == 'true' }}
