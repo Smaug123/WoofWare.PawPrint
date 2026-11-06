@@ -2826,18 +2826,11 @@ module NativeRuntimeAssembly =
                     request
                     state.TypeSystem._LoadedAssemblies
             with
-            | AssemblyBindResult.Bound (assemblies, bound) ->
+            | AssemblyBindResult.Bound (_, bound) ->
                 if not (state.TypeSystem._LoadedAssemblies.ContainsDefinition bound.Name) then
                     refuseIfSubscribed "AssemblyLoad" $"loaded %s{bound.DefinitionFullName}"
 
-                answer
-                    bound.DefinitionFullName
-                    { state with
-                        TypeSystem =
-                            { state.TypeSystem with
-                                _LoadedAssemblies = assemblies
-                            }
-                    }
+                answer bound.DefinitionFullName (state.WithLoadedAssembly bound)
             | AssemblyBindResult.NotFound ->
                 if defaultContextHasResolvingSubscriber ctx state then
                     failwith
