@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c in progress, and with it the issue's guest passes. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -746,3 +746,40 @@ reports the max stack, init-locals flag and IL it was built with, and a local si
 ### 4c: left to later stages
 
 * Exception handlers in a body (4d).
+
+### 4d: what CoreCLR's emitter writes
+
+Read from `TypeBuilder_SetMethodIL` and `ExceptionHandlingSize` (vm/comdynamic.cpp) and `SectEH_Emit`
+(inc/corhlpr.cpp):
+
+* The managed `ExceptionHandler` mirrors the native `ExceptionInstance`: seven `int`s, the class token,
+  try start and end, filter offset, handler start and end, and kind
+  (`ExceptionHandlingClauseOptions`, the same values as `CorExceptionFlag`).
+* A clause's class token is the filter offset for a filter, `mdTypeRefNil` for a finally, and the
+  token the managed caller passes otherwise, which is 0 for a fault.
+* With any clause, the header is fat and marked `CorILMethod_MoreSects`, and the section follows the
+  code at the next 4-byte boundary. It is small when it would hold at most 20 clauses (`4 + 12n` bytes
+  within a one-byte data size) and every clause's offsets fit 16 bits and lengths 8; otherwise fat. The
+  sizing and the emitter compare the data size with 255 by `>` and `<` respectively, but `4 + 12n` is
+  never 255, so they always agree.
+
+Measured on .NET 10 (`GetMethodBody` of each method of `TypeBuilderSetMethodILExceptions.cs`): each
+clause's kind, ranges and catch type or filter offset are as the `ILGenerator` built them.
+
+### 4d: the decisions
+
+* **A clause is data, `ExceptionClause`, whose handler is a union of the four kinds**, and
+  `methodBody` lays the section out from it; the handler decodes the guest's array into it and refuses a
+  kind the managed caller never passes.
+
+### 4d: the oracle
+
+* `TypeBuilderSetMethodILExceptions.cs`, which exits 0 on .NET 10, invokes a typed catch, a finally, a
+  filter, a fault inside a catch, and a catch whose try block is too long for a small clause. Its
+  terminal-state check reads each body back from the module's image and compares it with what .NET 10
+  reports, checks each section's format, and reads the finally's small section whole.
+* `TestEmitScopeMethods` reads each `methodBody` back with SRM, clauses included, its section small
+  exactly when CoreCLR's would be; the generator favours either side of each bound, and draws 20 or 21
+  clauses that each fit a small section.
+* Each mutant is caught: a filter read as a catch, a fault read as a finally, a handler length off by
+  one, a finally's class token 0, and each bound of the small section moved by one.

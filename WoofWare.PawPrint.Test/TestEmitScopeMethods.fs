@@ -299,28 +299,102 @@ module TestEmitScopeMethods =
         |> shouldContainText "MethodDef RID 2"
 
     /// The body `TypeBuilder_SetMethodIL` writes, read back from the module's image by SRM's reader:
-    /// the code, max stack, local signature and init-locals flag it was given, in a tiny header exactly
-    /// when `COR_ILMETHOD::Size` picks one (no flags, no local signature, max stack at most 8 and fewer
-    /// than 64 bytes of code), which the reader reports as a max stack of 8 with no locals.
+    /// the code, max stack, local signature, init-locals flag and exception clauses it was given. The
+    /// header is tiny exactly when `COR_ILMETHOD::Size` picks one (no flags, no local signature, max
+    /// stack at most 8, fewer than 64 bytes of code and no clauses), which the reader reports as a max
+    /// stack of 8 with no locals. The clauses' section is small exactly when `ExceptionHandlingSize`
+    /// picks one: at most 20 clauses, each with offsets that fit 16 bits and lengths that fit 8.
     [<Test>]
-    let ``a method body reads back as SetMethodIL wrote it, tiny exactly when CoreCLR's header is`` () : unit =
+    let ``a method body reads back as SetMethodIL wrote it, in CoreCLR's formats`` () : unit =
         let tiny = ref 0
         let fat = ref 0
+        let smallSections = ref 0
+        let fatSections = ref 0
 
-        let property (initLocals : bool) (maxStack : int) (codeLength : int) (localSig : int option) : unit =
+        // With `fits`, a clause a small section can hold; otherwise either side of each of its bounds,
+        // often.
+        let genClause (fits : bool) : Gen<ExceptionClause> =
+            let offsets =
+                if fits then
+                    Gen.elements [ 0 ; 1 ; 0xFF ; 0xFFFF ]
+                else
+                    Gen.frequency [ 3, Gen.choose (0, 300) ; 1, Gen.elements [ 0xFFFF ; 0x10000 ] ]
+
+            let lengths =
+                if fits then
+                    Gen.elements [ 0 ; 1 ; 0xFF ]
+                else
+                    Gen.frequency [ 3, Gen.choose (0, 300) ; 1, Gen.elements [ 0xFF ; 0x100 ] ]
+
+            gen {
+                let! offset = offsets
+                let! length = lengths
+                let! handlerOffset = offsets
+                let! handlerLength = lengths
+                let! token = Gen.choose (1, 5)
+
+                let! handler =
+                    Gen.elements
+                        [
+                            ExceptionClauseHandler.Catch (0x01000000 ||| token)
+                            ExceptionClauseHandler.Filter (token * 3)
+                            ExceptionClauseHandler.Finally
+                            ExceptionClauseHandler.Fault 0
+                        ]
+
+                return
+                    {
+                        Handler = handler
+                        TryOffset = offset
+                        TryLength = length
+                        HandlerOffset = handlerOffset
+                        HandlerLength = handlerLength
+                    }
+            }
+
+        let property
+            (initLocals : bool)
+            (maxStack : int)
+            (codeLength : int)
+            (localSig : int option)
+            (clauses : ExceptionClause list)
+            : unit
+            =
             let maxStack = uint16 maxStack
             // `ret`s, so that the body is valid IL whatever its length.
             let code = ImmutableArray.CreateRange (Seq.replicate codeLength 0x2Auy)
             let localSignature = localSig |> Option.map (fun s -> StandAloneSigRid (s % 3 + 1))
-            let body = EmitScopeDefinitions.methodBody initLocals maxStack code localSignature
+
+            let body =
+                EmitScopeDefinitions.methodBody initLocals maxStack code localSignature clauses
 
             let isTiny =
-                not initLocals && localSignature.IsNone && maxStack <= 8us && codeLength < 64
+                not initLocals
+                && localSignature.IsNone
+                && maxStack <= 8us
+                && codeLength < 64
+                && clauses.IsEmpty
+
+            let isSmallSection =
+                clauses.Length <= 20
+                && clauses
+                   |> List.forall (fun c ->
+                       c.TryOffset <= 0xFFFF
+                       && c.TryLength <= 0xFF
+                       && c.HandlerOffset <= 0xFFFF
+                       && c.HandlerLength <= 0xFF
+                   )
 
             if isTiny then
                 tiny.Value <- tiny.Value + 1
             else
                 fat.Value <- fat.Value + 1
+
+            if not clauses.IsEmpty then
+                if isSmallSection then
+                    smallSections.Value <- smallSections.Value + 1
+                else
+                    fatSections.Value <- fatSections.Value + 1
 
             let scope =
                 EmitScopeGen.apply
@@ -360,7 +434,14 @@ module TestEmitScopeMethods =
 
             block.GetILBytes () |> List.ofArray |> shouldEqual (List.ofSeq code)
             block.Size |> shouldEqual body.Length
-            block.ExceptionRegions.Length |> shouldEqual 0
+
+            let alignedCode = (codeLength + 3) &&& ~~~3
+
+            let sectionLength =
+                match clauses with
+                | [] -> 0
+                | _ when isSmallSection -> 4 + 12 * clauses.Length
+                | _ -> 4 + 24 * clauses.Length
 
             if isTiny then
                 body.Length |> shouldEqual (1 + codeLength)
@@ -368,7 +449,14 @@ module TestEmitScopeMethods =
                 block.LocalVariablesInitialized |> shouldEqual false
                 block.LocalSignature.IsNil |> shouldEqual true
             else
-                body.Length |> shouldEqual (12 + codeLength)
+                body.Length
+                |> shouldEqual (
+                    if clauses.IsEmpty then
+                        12 + codeLength
+                    else
+                        12 + alignedCode + sectionLength
+                )
+
                 block.MaxStack |> shouldEqual (int maxStack)
                 block.LocalVariablesInitialized |> shouldEqual initLocals
 
@@ -379,6 +467,36 @@ module TestEmitScopeMethods =
                         Metadata.StandaloneSignatureHandle.op_Implicit block.LocalSignature
                     )
                     |> shouldEqual rid.Rid
+
+            if not clauses.IsEmpty then
+                // `CorILMethod_Sect_EHTable`, with `CorILMethod_Sect_FatFormat` for a fat section.
+                body.[12 + alignedCode]
+                |> shouldEqual (if isSmallSection then 0x01uy else 0x41uy)
+
+            block.ExceptionRegions
+            |> Seq.map (fun r ->
+                let classOrFilter =
+                    match r.Kind with
+                    | Metadata.ExceptionRegionKind.Filter -> r.FilterOffset
+                    | Metadata.ExceptionRegionKind.Catch -> Metadata.Ecma335.MetadataTokens.GetToken r.CatchType
+                    | _ -> 0
+
+                int r.Kind, r.TryOffset, r.TryLength, r.HandlerOffset, r.HandlerLength, classOrFilter
+            )
+            |> List.ofSeq
+            |> shouldEqual (
+                clauses
+                |> List.map (fun c ->
+                    let kind, classOrFilter =
+                        match c.Handler with
+                        | ExceptionClauseHandler.Catch token -> 0, token
+                        | ExceptionClauseHandler.Filter offset -> 1, offset
+                        | ExceptionClauseHandler.Finally -> 2, 0
+                        | ExceptionClauseHandler.Fault _ -> 4, 0
+
+                    kind, c.TryOffset, c.TryLength, c.HandlerOffset, c.HandlerLength, classOrFilter
+                )
+            )
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 1000,
@@ -400,12 +518,24 @@ module TestEmitScopeMethods =
                                 ]
 
                         let! localSig = Gen.frequency [ 1, Gen.constant None ; 1, Gen.map Some (Gen.choose (0, 2)) ]
-                        return initLocals, maxStack, codeLength, localSig
+
+                        // No clauses for half the bodies, so that the header's bounds are tested; and
+                        // either side of the 20 clauses a small section holds.
+                        let! clauseCount =
+                            Gen.frequency [ 4, Gen.constant 0 ; 3, Gen.choose (1, 4) ; 1, Gen.elements [ 20 ; 21 ] ]
+
+                        let! fits = Gen.elements [ true ; false ]
+                        let! clauses = Gen.listOfLength clauseCount (genClause fits)
+                        return initLocals, maxStack, codeLength, localSig, List.ofSeq clauses
                     }
                 ))
-                (fun (initLocals, maxStack, codeLength, localSig) -> property initLocals maxStack codeLength localSig)
+                (fun (initLocals, maxStack, codeLength, localSig, clauses) ->
+                    property initLocals maxStack codeLength localSig clauses
+                )
         )
 
-        // About a tenth of the samples are tiny.
-        tiny.Value |> shouldBeGreaterThan 50
+        // About a twentieth of the samples are tiny, and of those with clauses, some of each format.
+        tiny.Value |> shouldBeGreaterThan 20
         fat.Value |> shouldBeGreaterThan 500
+        smallSections.Value |> shouldBeGreaterThan 50
+        fatSections.Value |> shouldBeGreaterThan 50
