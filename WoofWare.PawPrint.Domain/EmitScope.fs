@@ -609,9 +609,9 @@ module EmitScope =
         }
 
     /// <summary>
-    /// Set the <c>ImplFlags</c> column of a method already in the scope, the one column of a row that
-    /// CoreCLR's emitter overwrites after adding it (<c>RegMeta::SetMethodImplFlags</c>). Every other
-    /// row, and every heap, is unchanged.
+    /// Set the <c>ImplFlags</c> column of a method already in the scope, which CoreCLR's emitter
+    /// overwrites after adding the row (<c>RegMeta::SetMethodImplFlags</c>). Every other row, and every
+    /// heap, is unchanged.
     /// </summary>
     /// <exception cref="ArgumentException">
     /// The scope has no such method, or <paramref name="flags"/> does not fit the column's two bytes.
@@ -628,6 +628,30 @@ module EmitScope =
                     index,
                     { scope.MethodDefs.[index] with
                         ImplFlags = flags
+                    }
+                )
+        }
+
+    /// <summary>
+    /// Set the <c>Extends</c> column of a type already in the scope, which CoreCLR's emitter overwrites
+    /// after adding the row (<c>RegMeta::SetTypeParent</c>). Every other row, and every heap, is
+    /// unchanged.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// The scope has no such type, or no row that <paramref name="extends"/> names.
+    /// </exception>
+    let setTypeDefExtends (typeDef : TypeDefRid) (extends : TypeDefOrRef) (scope : EmitScope) : EmitScope =
+        let operation = "EmitScope.setTypeDefExtends"
+        requireRid operation "TypeDef" scope.TypeDefs.Count typeDef.Rid
+        requireTypeDefOrRef operation scope extends
+        let index = typeDef.Rid - 1
+
+        { scope with
+            TypeDefs =
+                scope.TypeDefs.SetItem (
+                    index,
+                    { scope.TypeDefs.[index] with
+                        Extends = Some extends
                     }
                 )
         }

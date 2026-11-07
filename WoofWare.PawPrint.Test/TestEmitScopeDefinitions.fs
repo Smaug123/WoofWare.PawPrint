@@ -339,3 +339,67 @@ module TestEmitScopeDefinitions =
         match AllConcreteTypes.add bct created ct AllConcreteTypes.Empty with
         | Error refusal -> failwith (TypeLoadRefusal.describe refusal)
         | Ok (handle, _) -> handle |> shouldEqual (ConcreteTypeHandle.Concrete 0)
+
+    /// `RegMeta::SetTypeParent`, which `TypeBuilder_SetParentType` calls, overwrites a type's `Extends`
+    /// column and nothing else, checking no more than that the row exists.
+    [<Test>]
+    let ``a type's parent is overwritten in place`` () : unit =
+        let scope = DynamicAssemblyImage.scope dynamicParts Guid.Empty
+        let name, scope = EmitScope.internString "Thing" scope
+        let ns, scope = EmitScope.internString "System" scope
+        let objectName, scope = EmitScope.internString "Object" scope
+
+        let objectRef, scope =
+            EmitScope.addTypeRef
+                {
+                    ResolutionScope = ResolutionScope.Module
+                    Name = objectName
+                    Namespace = ns
+                }
+                scope
+
+        let row : TypeDefRow =
+            {
+                Flags = TypeAttributes.Public
+                Name = name
+                Namespace = StringOffset 0
+                Extends = Some (TypeDefOrRef.TypeRef objectRef)
+            }
+
+        let thing, scope = EmitScope.addTypeDef row scope
+
+        let reparented =
+            EmitScope.setTypeDefExtends thing (TypeDefOrRef.TypeDef (TypeDefRid 1)) scope
+
+        (EmitScope.typeDefs reparented).[thing.Rid - 1]
+        |> shouldEqual
+            { row with
+                Extends = Some (TypeDefOrRef.TypeDef (TypeDefRid 1))
+            }
+
+        // Every other row, and the scope it was given, is unchanged.
+        (EmitScope.typeDefs reparented).[0]
+        |> shouldEqual (EmitScope.typeDefs scope).[0]
+
+        (EmitScope.typeDefs scope).[thing.Rid - 1] |> shouldEqual row
+
+        EmitScope.typeRefs reparented
+        |> List.ofSeq
+        |> shouldEqual (List.ofSeq (EmitScope.typeRefs scope))
+
+        let thrown (f : unit -> EmitScope) : string =
+            match
+                (try
+                    f () |> ignore
+                    None
+                 with :? ArgumentException as e ->
+                     Some e.Message)
+            with
+            | None -> failwith "expected an ArgumentException"
+            | Some message -> message
+
+        thrown (fun () -> EmitScope.setTypeDefExtends (TypeDefRid 3) (TypeDefOrRef.TypeRef objectRef) scope)
+        |> shouldContainText "TypeDef RID 3"
+
+        thrown (fun () -> EmitScope.setTypeDefExtends thing (TypeDefOrRef.TypeRef (TypeRefRid 2)) scope)
+        |> shouldContainText "TypeRef RID 2"
