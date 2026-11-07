@@ -96,7 +96,6 @@ module TestEmitScopeExtension =
     let ``appending to a scope is refused exactly for the created types it changes`` () : unit =
         let unchanged = ref 0
         let changed = ref 0
-        let moved = ref 0
         let added = ref 0
         let filled = ref 0
 
@@ -132,31 +131,6 @@ module TestEmitScopeExtension =
             else
                 changed.Value <- changed.Value + 1
 
-            // A created type's row in a sorted table whose image RID differs, which the check must
-            // admit when nothing else about the type changed.
-            let movedIn (classes : ImmutableArray<TypeDefRid>) (beforeRids : ImmutableArray<int>) afterRids =
-                Seq.zip3 classes beforeRids afterRids
-                |> Seq.exists (fun (cls, b, a) -> created.Contains cls && b <> a && not (changedTypes.Contains cls.Rid))
-
-            let interfaceClasses =
-                EmitScope.interfaceImpls before
-                |> Seq.map (fun row -> row.Class)
-                |> ImmutableArray.CreateRange
-
-            let implClasses =
-                EmitScope.methodImpls before
-                |> Seq.map (fun row -> row.Class)
-                |> ImmutableArray.CreateRange
-
-            if
-                movedIn
-                    interfaceClasses
-                    (EmitScopeImage.interfaceImplRids before)
-                    (EmitScopeImage.interfaceImplRids after)
-                || movedIn implClasses (EmitScopeImage.methodImplRids before) (EmitScopeImage.methodImplRids after)
-            then
-                moved.Value <- moved.Value + 1
-
             for violation in violations do
                 match violation with
                 | EmitScopeExtensionViolation.AddedToCreatedType _ -> added.Value <- added.Value + 1
@@ -180,13 +154,92 @@ module TestEmitScopeExtension =
                 (fun (mvid, ops, extra, choices) -> property mvid ops extra choices)
         )
 
-        // Both answers, every reason for refusing, and a created type's rows moving in a sorted table
-        // without any other change, must be common enough to be tested.
+        // Both answers, and every reason for refusing, must be common enough to be tested.
         unchanged.Value |> shouldBeGreaterThan 30
         changed.Value |> shouldBeGreaterThan 30
-        moved.Value |> shouldBeGreaterThan 10
         added.Value |> shouldBeGreaterThan 30
         filled.Value |> shouldBeGreaterThan 10
+
+    /// Rows appended for `<Module>`, the lowest TypeDef, sort before every other type's rows in
+    /// `InterfaceImpl` and `MethodImpl`, so they move every created type's rows of those tables in the
+    /// image while changing nothing about the type.
+    [<Test>]
+    let ``a created type's rows of a sorted table may move`` () : unit =
+        let moved = ref 0
+
+        let property (mvid : Guid) (ops : Op list) (choices : int list) : unit =
+            let before = apply mvid ops
+            let created = (created before choices).Remove (TypeDefRid 1)
+
+            let after =
+                (before, created)
+                ||> Seq.fold (fun scope createdType ->
+                    let scope =
+                        EmitScope.addInterfaceImpl
+                            {
+                                Class = TypeDefRid 1
+                                Interface = TypeDefOrRef.TypeDef createdType
+                            }
+                            scope
+
+                    if (EmitScope.methodDefs scope).Count = 0 then
+                        scope
+                    else
+                        EmitScope.addMethodImpl
+                            {
+                                Class = TypeDefRid 1
+                                Body = MethodDefOrRef.MethodDef (MethodDefRid 1)
+                                Declaration = MethodDefOrRef.MethodDef (MethodDefRid 1)
+                            }
+                            scope
+                )
+
+            EmitScopeExtension.violations created before after |> shouldEqual []
+
+            let beforePe, beforeReader = readImage (EmitScopeImage.write before)
+            use _ = beforePe
+            let afterPe, afterReader = readImage (EmitScopeImage.write after)
+            use _ = afterPe
+
+            for t in created do
+                typeView afterReader t |> shouldEqual (typeView beforeReader t)
+
+            let movedIn
+                (classes : TypeDefRid seq)
+                (beforeRids : ImmutableArray<int>)
+                (afterRids : ImmutableArray<int>)
+                =
+                Seq.zip3 classes beforeRids afterRids
+                |> Seq.exists (fun (cls, b, a) -> created.Contains cls && b <> a)
+
+            if
+                movedIn
+                    (EmitScope.interfaceImpls before |> Seq.map (fun row -> row.Class))
+                    (EmitScopeImage.interfaceImplRids before)
+                    (EmitScopeImage.interfaceImplRids after)
+                || movedIn
+                    (EmitScope.methodImpls before |> Seq.map (fun row -> row.Class))
+                    (EmitScopeImage.methodImplRids before)
+                    (EmitScopeImage.methodImplRids after)
+            then
+                moved.Value <- moved.Value + 1
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll
+                (Arb.fromGen (
+                    gen {
+                        let! mvid = genGuid
+                        let! ops = genOps
+                        let! choices = Gen.choose (1, 3) |> Gen.bind (fun n -> Gen.listOfLength n choice)
+                        return mvid, ops, List.ofSeq choices
+                    }
+                ))
+                (fun (mvid, ops, choices) -> property mvid ops choices)
+        )
+
+        // Most samples must move a created type's rows, or the property barely tests the admission.
+        moved.Value |> shouldBeGreaterThan 100
 
     /// What reading `after`'s image where `before`'s was read shows to have changed, each as a
     /// requirement on the violations reported: a category, for counting, and whether the violations
