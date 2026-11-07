@@ -22,7 +22,7 @@ type EmitScopeExtensionViolation =
 
     /// An entry of one of the earlier scope's heaps differs in the later one, or the later scope does
     /// not have it. <c>entry</c> counts from 1 in the order the entries were interned, the empty
-    /// string or blob not counted.
+    /// string or blob, and the space every user string heap starts with, not counted.
     | HeapEntryChanged of heap : HeapIndex * entry : int
 
     /// A row the later scope adds is a member of a type already created: a field or method it
@@ -234,4 +234,14 @@ module EmitScopeExtension =
                     (EmitScope.blobs after)
 
             yield! heapRewritten HeapIndex.Guid (=) (EmitScope.guids before) (EmitScope.guids after)
+
+            // The space every heap starts with is entry 0, so entries count from the first interned.
+            let userStringEntries (scope : EmitScope) = (EmitScope.userStrings scope).RemoveAt 0
+
+            yield!
+                heapRewritten
+                    HeapIndex.UserString
+                    (fun (x : ImmutableArray<byte>) y -> x.AsSpan().SequenceEqual (y.AsSpan ()))
+                    (userStringEntries before)
+                    (userStringEntries after)
         ]
