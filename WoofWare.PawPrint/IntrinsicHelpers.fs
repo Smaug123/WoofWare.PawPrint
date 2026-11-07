@@ -750,39 +750,6 @@ module internal IntrinsicHelpers =
         | CliType.Numeric (CliNumericType.Int16 i) -> char (int<uint16> (uint16<int16> i))
         | other -> failwith $"%s{operation}: expected char-compatible value, got %O{other}"
 
-    let int32OfEvalStackValue (operation : string) (value : EvalStackValue) : int =
-        match value with
-        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-        | EvalStackValue.UserDefinedValueType vt ->
-            match (CliValueType.PrimitiveLikeField vt).Contents |> CliType.unwrapPrimitiveLikeDeep with
-            | CliType.Numeric (CliNumericType.Int32 i) -> i
-            | other -> failwith $"%s{operation}: expected int32-like value, got %O{other}"
-        | other -> failwith $"%s{operation}: expected int32-like value, got %O{other}"
-
-    let isCorelibConcreteType
-        (state : IlMachineState)
-        (ns : string)
-        (name : string)
-        (handle : ConcreteTypeHandle)
-        : bool
-        =
-        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
-        | Some ty ->
-            AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
-            && ty.Namespace = ns
-            && ty.Name = name
-        | None -> false
-
-    let isReadOnlySpanOfChar (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
-        match AllConcreteTypes.lookup handle state.TypeSystem.ConcreteTypes with
-        | Some ty ->
-            AssemblyDefinitionName.isNamed "System.Private.CoreLib" ty.AssemblyFullName
-            && ty.Namespace = "System"
-            && ty.Name = "ReadOnlySpan`1"
-            && ty.Generics.Length = 1
-            && isCorelibConcreteType state "System" "Char" ty.Generics.[0]
-        | None -> false
-
     let spanReceiverValue
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
@@ -829,56 +796,6 @@ module internal IntrinsicHelpers =
             | other -> failwith $"%s{operation}: expected _length to be int32, got %O{other}"
 
         reference, length
-
-    let readCharSpanContents
-        (baseClassTypes : BaseClassTypes<_>)
-        (operation : string)
-        (state : IlMachineState)
-        (span : CliValueType)
-        : string * IlMachineState
-        =
-        let spanType =
-            AllConcreteTypes.lookup span.Declared state.TypeSystem.ConcreteTypes
-            |> Option.defaultWith (fun () -> failwith $"%s{operation}: span type %O{span.Declared} was not registered")
-
-        if
-            not (AssemblyDefinitionName.isNamed "System.Private.CoreLib" spanType.AssemblyFullName)
-            || spanType.Namespace <> "System"
-            || (spanType.Name <> "ReadOnlySpan`1" && spanType.Name <> "Span`1")
-            || spanType.Generics.Length <> 1
-            || not (isCorelibConcreteType state "System" "Char" spanType.Generics.[0])
-        then
-            failwith $"%s{operation}: expected ReadOnlySpan<char> or Span<char>, got %O{spanType}"
-
-        let reference, length = spanReferenceAndLength operation state span
-
-        if length < 0 then
-            failwith $"%s{operation}: span length was negative: %d{length}"
-
-        let contents, state =
-            (([], state), [ 0 .. length - 1 ])
-            ||> List.fold (fun (chars, state) index ->
-                let ptr, state =
-                    offsetManagedPointerByElements
-                        baseClassTypes
-                        state
-                        spanType.Generics.[0]
-                        (int64<int> index)
-                        reference
-
-                let value =
-                    match ptr with
-                    | EvalStackValue.ManagedPointer src ->
-                        IlMachineState.readManagedByref
-                            baseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed src)
-                    | other -> failwith $"%s{operation}: element pointer was not a managed pointer: %O{other}"
-
-                charOfCliType operation value :: chars, state
-            )
-
-        System.String (contents |> List.rev |> List.toArray), state
 
     let spanToString
         (loggerFactory : ILoggerFactory)
@@ -945,57 +862,6 @@ module internal IntrinsicHelpers =
 
         state
         |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
-        |> advanceCaller
-
-    let memoryExtensionsEquals
-        (baseClassTypes : BaseClassTypes<_>)
-        (currentThread : ThreadId)
-        (advanceCaller : IlMachineState -> IlMachineState)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
-        | [ leftSpan ; rightSpan ; comparisonType ],
-          MethodReturnType.Returns (ConcreteBool state.TypeSystem.ConcreteTypes) when
-            isReadOnlySpanOfChar state leftSpan
-            && isReadOnlySpanOfChar state rightSpan
-            && isCorelibConcreteType state "System" "StringComparison" comparisonType
-            ->
-            ()
-        | _ ->
-            failwith
-                $"bad signature for %s{IntrinsicMethodKeys.formatMethodKey (IntrinsicMethodKeys.methodKey state methodToCall)}"
-
-        let operation =
-            "MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)"
-
-        let comparisonType, state = IlMachineState.popEvalStack currentThread state
-        let right, state = IlMachineState.popEvalStack currentThread state
-        let left, state = IlMachineState.popEvalStack currentThread state
-
-        let comparisonType = int32OfEvalStackValue operation comparisonType
-        let left = spanReceiverValue baseClassTypes operation state left
-        let right = spanReceiverValue baseClassTypes operation state right
-        let left, state = readCharSpanContents baseClassTypes operation state left
-        let right, state = readCharSpanContents baseClassTypes operation state right
-
-        let result =
-            match comparisonType with
-            | 0
-            | 1
-            | 2
-            | 3 ->
-                failwith
-                    $"TODO: %s{operation} with culture-sensitive StringComparison %d{comparisonType} requires deterministic culture modelling"
-            | 4 -> String.Equals (left, right, StringComparison.Ordinal)
-            | 5 -> String.Equals (left, right, StringComparison.OrdinalIgnoreCase)
-            | _ ->
-                failwith
-                    $"TODO: %s{operation} with invalid StringComparison %d{comparisonType} should throw ArgumentException"
-
-        state
-        |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
         |> advanceCaller
 
     /// The size operand of `initblk` (ECMA-335 III.3.36) and of `cpblk` (III.3.30) is an
