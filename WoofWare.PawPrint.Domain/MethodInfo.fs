@@ -1102,7 +1102,16 @@ module MethodInfo =
                 else
 
                 let s = methodBody.LocalSignature |> metadataReader.GetStandaloneSignature
-                s.DecodeLocalSignature (TypeDefn.typeProvider assembly, ()) |> Some
+                let mutable blob = metadataReader.GetBlobReader s.Signature
+                let header = blob.ReadSignatureHeader ()
+
+                // ECMA-335 II.23.2.6 requires at least one local, and SRM's decoder refuses a count of
+                // zero, but CoreCLR's emitter gives every body built with no locals this signature
+                // (`TypeBuilder_SetMethodIL`), and CoreCLR runs it.
+                if header.Kind = SignatureKind.LocalVariables && blob.ReadCompressedInteger () = 0 then
+                    Some ImmutableArray.Empty
+                else
+                    s.DecodeLocalSignature (TypeDefn.typeProvider assembly, ()) |> Some
 
             let instructions =
                 IlDecoding.decodeInstructions (IlTokenUniverse.Metadata assembly) (methodBody.GetILBytes ())
