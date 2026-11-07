@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, in progress). Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -597,3 +597,56 @@ a stage emits it.
   the check to admit each.
 * `TestLoadedAssemblies` replaces a scope whose new rows, for a type with a lower RID, move a created
   type's rows of both tables, and checks the created type's `TypeInfo` reads back the same.
+
+## Stage 4 in detail
+
+### The order
+
+The issue's guest stops in `CreateType` at `TypeBuilder_SetParentType`. `CreateTypeNoLock`
+(RuntimeTypeBuilder.cs) calls, in order: `SetParentType`, when the type and its parent both have
+non-nil tokens; `DefineDefaultConstructor`, for a class with no constructor that is not an interface,
+a value type or static; `TypeBuilder_SetMethodIL` for every method, an abstract one included, with an
+empty body; then `TypeBuilder_TermCreateClass`.
+
+**Chosen (2026-11-07): `TermCreateClass` first, then `SetParentType`, then `SetMethodIL`.** What
+`SetParentType` and `SetMethodIL` write is visible to a guest only through a created type, so neither
+could have a guest that exits 0 on real .NET before `TermCreateClass` works. An interface without
+methods reaches `TermCreateClass` alone: it has no parent and no methods to give a body. So stage 4a's
+guest creates only such interfaces, and the stages after it each re-run the issue's guest, as before.
+A Fable consultation agreed, adding that `SetParentType` also needs the extension check to admit a
+filled-in `Extends` column of a type not yet created, which is better reviewed against a working
+`CreateType`.
+
+### 4a: what CoreCLR does
+
+`TypeBuilder_TermCreateClass` (vm/comdynamic.cpp) calls `ReflectionModule::AddClass(tk)`, which marks
+the type created, then, unless `tk` is nil, `ClassLoader::LoadTypeHandleForTypeKey`, and writes the
+loaded type's `RuntimeType` to `retType`. The managed caller returns its cached `RuntimeType` for a type
+already created, without the QCall.
+
+### 4a: the decisions
+
+* **The type is recorded as created, interned and its `RuntimeType` handed back; its layout is not
+  forced.** CoreCLR loads the type fully here and raises `TypeLoadException` for a type it rejects.
+  PawPrint builds a type's layout when it is first needed, for a disk type as for this one, and its
+  load-time checks are host refusals, not guest exceptions. Forcing the layout here would move such a
+  refusal earlier without making it catchable, and would be a path only dynamic types take. A guest
+  that catches `TypeLoadException` from `CreateType` is not modelled.
+* **The nil token is refused by name.** It is the global type, which `ModuleBuilder.CreateGlobalFunctions`
+  creates; no guest reaches it yet. When one does, creating it is `WithCreatedType` for `TypeDef` 1, as
+  for any type.
+
+### 4a: the oracle
+
+* `TypeBuilderCreateInterface.cs`, which exits 0 on .NET 10, creates an interface, one extending it, and
+  a third defined after both are created. It checks each `CreateType` result's name, namespace, token
+  and that it is an interface, and that a second `CreateType` returns the first result. Its
+  terminal-state check reads which of the module's types are recorded as created.
+* Each mutant of the handler is caught: the type not recorded as created, a null result, and the next
+  `TypeDef` loaded in place of the one created.
+
+### 4a: left to later stages
+
+* `SetParentType` (4b), with the extension check admitting a filled-in `Extends` column of a type not yet
+  created.
+* `SetMethodIL` (4c), for every method, including the empty body an abstract method gets.

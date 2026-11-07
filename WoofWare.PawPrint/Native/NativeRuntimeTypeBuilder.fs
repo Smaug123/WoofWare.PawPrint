@@ -376,4 +376,92 @@ module NativeRuntimeTypeBuilder =
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
 
             NativeHandlerResult.completed state |> Some
+        | "TypeBuilder_TermCreateClass",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        handleGenerics) ],
+          MethodReturnType.Void when moduleGenerics.IsEmpty && handleGenerics.IsEmpty ->
+            let operation = "TypeBuilder_TermCreateClass"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+            let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[2]
+
+            if typeToken &&& 0x00FFFFFF = 0 then
+                failwith
+                    $"TODO: %s{operation}: the nil token 0x%08x{typeToken} is the global type of %s{moduleName}, which ModuleBuilder.CreateGlobalFunctions creates; creating <Module> is not implemented"
+
+            let created =
+                if typeToken >>> 24 &&& 0xFF <> typeDefTable then
+                    failwith
+                        $"%s{operation}: 0x%08x{typeToken} is not a TypeDef token, and the managed caller passes only its TypeBuilder's"
+
+                match EmitScope.tryTypeDefRid (typeToken &&& 0x00FFFFFF) held with
+                | Some created -> created
+                | None -> failwith $"%s{operation}: 0x%08x{typeToken} names no TypeDef row of the module's scope"
+
+            // `ReflectionModule::AddClass` marks the type created before the class loader loads it,
+            // and PawPrint's loader refuses a type of a dynamic module that is not created. The
+            // managed caller returns early for a created type, so a second creation is a fault here.
+            let state = state.WithCreatedType moduleName created
+
+            let assembly =
+                state.LoadedAssembly moduleName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: %s{moduleName} is not loaded")
+
+            let typeInfo =
+                assembly.TypeDefs.[System.Reflection.Metadata.Ecma335.MetadataTokens.TypeDefinitionHandle created.Rid]
+
+            if not typeInfo.Generics.IsEmpty then
+                failwith
+                    $"%s{operation}: %s{typeInfo.Namespace}.%s{typeInfo.Name} of %s{moduleName} has generic parameters, which a dynamic module's scope cannot yet hold"
+
+            // CoreCLR's `LoadTypeHandleForTypeKey` loads the type fully here, raising
+            // `TypeLoadException` for a type it rejects. PawPrint, as for any type, builds the type's
+            // layout when it is first needed, and refuses there what CoreCLR would reject; a guest
+            // that catches `TypeLoadException` from `CreateType` is not modelled.
+            let stk =
+                LoadedTypeInfo.signatureTypeKind ctx.BaseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
+
+            let state, handle =
+                IlMachineState.concretizeType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    moduleName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+                    (TypeDefn.FromDefinition (typeInfo.Identity, stk))
+
+            let runtimeType, state =
+                IlMachineState.getOrAllocateType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    (RuntimeTypeHandleTarget.Closed handle)
+                    state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed retType)
+                    (CliType.ObjectRef (Some runtimeType))
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None

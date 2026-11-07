@@ -314,6 +314,11 @@ type IlMachineState =
 
         this.WithTypeSystem typeSystem, assembly
 
+    /// Record that the runtime has created this type of a dynamic assembly; see
+    /// `LoadedAssemblies.WithCreatedType`.
+    member this.WithCreatedType (fullName : string) (typeDef : TypeDefRid) : IlMachineState =
+        this.WithTypeSystem (this.TypeSystem.WithCreatedType fullName typeDef)
+
     /// Record which assembly a dynamic assembly's `AssemblyRef` row was emitted for; see
     /// `LoadedAssemblies.WithAssemblyRefTarget`.
     member this.WithAssemblyRefTarget
