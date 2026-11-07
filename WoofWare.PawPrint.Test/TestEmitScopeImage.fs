@@ -454,9 +454,8 @@ module TestEmitScopeImage =
                 |> List.map (fun m -> m.TryMetadata.Value.Handle |> MetadataTokens.GetRowNumber)
                 |> shouldEqual (ridsOwnedBy i (EmitScope.methodDefs scope |> Seq.map _.Owner.Rid))
 
-                // A method marked abstract is abstract, with a body or without: `SetMethodIL` gives an
-                // abstract method an empty one, and CoreCLR's reflection reports it has none. Any other
-                // method with a body is IL, and one without is an IL method with no body.
+                // A method with a body is IL; one without is abstract if marked so, and otherwise
+                // an IL method with no body.
                 for m in ty.Methods do
                     let row =
                         (EmitScope.methodDefs scope).[MetadataTokens.GetRowNumber (
@@ -466,8 +465,7 @@ module TestEmitScopeImage =
                                                       - 1]
 
                     match row.Body, m.Body with
-                    | Some _, MethodBody.Il _ when not (row.Flags.HasFlag MethodAttributes.Abstract) -> ()
-                    | Some _, MethodBody.Abstract when row.Flags.HasFlag MethodAttributes.Abstract -> ()
+                    | Some _, MethodBody.Il _ -> ()
                     | None, MethodBody.Abstract when row.Flags.HasFlag MethodAttributes.Abstract ->
                         abstractBodies <- abstractBodies + 1
                     | None, MethodBody.MissingIl when not (row.Flags.HasFlag MethodAttributes.Abstract) ->

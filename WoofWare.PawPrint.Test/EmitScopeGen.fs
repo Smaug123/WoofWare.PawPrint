@@ -48,7 +48,8 @@ module EmitScopeGen =
         | SetMethodImplFlags of method : int * flags : int
         /// Overwrite the parent of a type already in the scope other than `<Module>`, if it has any.
         | SetTypeDefExtends of typeDef : int * extends : int
-        /// Give a method already in the scope its body, if it has none and `body` is one.
+        /// Give a method already in the scope its body, over any it has, if it is not abstract and `body`
+        /// is one: `SetMethodIL` sets no body for an abstract method's empty code.
         | SetMethodBody of method : int * body : BodyShape
 
     type private Applied =
@@ -556,10 +557,13 @@ module EmitScopeGen =
             else
                 let method = MethodDefRid (methodChoice % methodCount + 1)
 
-                match (EmitScope.methodDefs scope).[method.Rid - 1].Body, body scope shape with
-                | None, Some filled -> withScope (EmitScope.setMethodBody method filled applied.Scope) applied
-                | Some _, _
-                | None, None -> applied
+                let row = (EmitScope.methodDefs scope).[method.Rid - 1]
+
+                match body scope shape with
+                | Some filled when not (row.Flags.HasFlag MethodAttributes.Abstract) ->
+                    withScope (EmitScope.setMethodBody method filled applied.Scope) applied
+                | Some _
+                | None -> applied
 
     let emptyScope (mvid : Guid) : EmitScope =
         let scope = EmitScope.create "RefEmit_InMemoryManifestModule" mvid

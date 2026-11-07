@@ -612,7 +612,7 @@ module TestEmitScopeExtension =
                 |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, secondType.Rid) ]
 
     [<Test>]
-    let ``a method's body may be filled in once, and only while its type is not created`` () : unit =
+    let ``a method's body may be filled in, and only while its type is not created`` () : unit =
         let scope = apply Guid.Empty []
         let name, scope = EmitScope.internString "M" scope
 
@@ -647,9 +647,14 @@ module TestEmitScopeExtension =
                 EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
             ]
 
-        // A body, once there, is fixed: the emitter writes each method's body once.
-        let rewritten = EmitScope.setMethodBody (MethodDefRid 1) (body 0x00uy) before
+        // A `CreateType` retried after failing partway gives a method its body again.
+        let refilled = EmitScope.setMethodBody (MethodDefRid 1) (body 0x00uy) filled
 
-        for createdTypes in [ ImmutableHashSet.Empty ; created ] do
-            EmitScopeExtension.violations createdTypes filled rewritten
-            |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
+        EmitScopeExtension.violations ImmutableHashSet.Empty filled refilled
+        |> shouldEqual []
+
+        EmitScopeExtension.violations created filled refilled
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
+            ]

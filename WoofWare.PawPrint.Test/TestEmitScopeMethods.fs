@@ -257,10 +257,10 @@ module TestEmitScopeMethods =
         // The scope it was given is unchanged.
         (EmitScope.methodDefs scope).[0] |> shouldEqual row
 
-    /// `TypeBuilder_SetMethodIL` gives a method its body once, when its type is created; a method that
-    /// already has one is a fault in the caller.
+    /// `TypeBuilder_SetMethodIL` gives a method its body when its type is created, and gives it again,
+    /// overwriting the first, when `CreateType` is retried after failing partway.
     [<Test>]
-    let ``a method's body is set once`` () : unit =
+    let ``a method's body is set, and set again over the first`` () : unit =
         let scope = withTypes ()
         let name, scope = EmitScope.internString "M" scope
         let signature, scope = EmitScope.internBlob signatures.[0] scope
@@ -287,8 +287,13 @@ module TestEmitScopeMethods =
 
         (EmitScope.methodDefs scope).[0] |> shouldEqual row
 
-        thrown (fun () -> EmitScope.setMethodBody method body filled)
-        |> shouldContainText "already has a body"
+        let other = ImmutableArray.Create<byte> [| 0x0Auy ; 0x16uy ; 0x2Auy |]
+
+        (EmitScope.methodDefs (EmitScope.setMethodBody method other filled)).[0]
+        |> shouldEqual
+            { row with
+                Body = Some other
+            }
 
         thrown (fun () -> EmitScope.setMethodBody (MethodDefRid 2) body scope)
         |> shouldContainText "MethodDef RID 2"

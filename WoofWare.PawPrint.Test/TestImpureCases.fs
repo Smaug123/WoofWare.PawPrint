@@ -1404,12 +1404,13 @@ module TestImpureCases =
         |> List.map (fun rid -> loaded.IsCreatedType name (TypeDefRid rid))
         |> shouldEqual [ false ; true ; true ; true ]
 
-    /// `TypeBuilderSetMethodIL.cs` has created `I` and `T`, and with them given each method a body:
-    /// `I.M` (MethodDef 1), and `T`'s `FortyTwo`, `Seven`, `Sum` and `Twice` (2 to 5). A guest cannot
-    /// read a body's header, so this checks the bytes each method's row holds, as .NET 10 reports their
-    /// parts: a fat header (ECMA-335 II.25.4.3) of flags, max stack, code size and local signature
-    /// token, then the code. The local signatures are `StandAloneSig` 1, holding no locals, and 2,
-    /// holding one `int`.
+    /// `TypeBuilderSetMethodIL.cs` has created `I` and `T`, and with them called `SetMethodIL` for each
+    /// method: `I.M` (MethodDef 1), abstract, whose empty body sets none, and `T`'s `FortyTwo`, `Seven`,
+    /// `Sum` and `Twice` (2 to 5). A guest cannot read a body's header, so this checks the bytes each
+    /// method's row holds, as .NET 10 reports their parts: a fat header (ECMA-335 II.25.4.3) of flags,
+    /// max stack, code size and local signature token, then the code. The local signatures are
+    /// `StandAloneSig` 1, holding no locals, which `I.M`'s empty body asked for first, and 2, holding
+    /// one `int`.
     let private assertMethodBodies (state : IlMachineState) : unit =
         let scope =
             state.TypeSystem._LoadedAssemblies.TryDynamicScope
@@ -1434,8 +1435,7 @@ module TestImpureCases =
         |> List.ofSeq
         |> shouldEqual
             [
-                // `I.M`, abstract, with no `ILGenerator`: `RuntimeMethodBuilder.GetMaxStack`'s default of 16.
-                Some (fat true 16uy [] 1uy)
+                None
                 Some (fat true 1uy [ 0x1Fuy ; 0x2Auy ; 0x2Auy ] 1uy)
                 Some (fat true 1uy [ 0x1Duy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
                 Some (fat false 2uy [ 0x02uy ; 0x03uy ; 0x58uy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
@@ -4862,6 +4862,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertMethodBodies
+            }
+            {
+                // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has
+                // given the earlier methods their bodies: the retry refuses to bake a released body
+                // again, and gives an abstract method its empty one again, which sets none. Dynamic-code
+                // switch overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderCreateTypeRetry.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it
