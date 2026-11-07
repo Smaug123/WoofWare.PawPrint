@@ -636,6 +636,50 @@ module NativeRuntimeTypeBuilder =
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
 
             NativeHandlerResult.completed state |> Some
+        | "TypeBuilder_AddInterfaceImpl",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void when moduleGenerics.IsEmpty ->
+            let operation = "TypeBuilder_AddInterfaceImpl"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+            let typeToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let cls =
+                if typeToken >>> 24 &&& 0xFF <> typeDefTable || typeToken &&& 0x00FFFFFF = 0 then
+                    failwith
+                        $"%s{operation}: 0x%08x{typeToken} is not a non-nil TypeDef token, and the managed caller passes only its TypeBuilder's"
+
+                match EmitScope.tryTypeDefRid (typeToken &&& 0x00FFFFFF) held with
+                | Some cls -> cls
+                | None -> failwith $"%s{operation}: 0x%08x{typeToken} names no TypeDef row of the module's scope"
+
+            let interfaceToken = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let target =
+                match typeDefOrRef operation "the interface" interfaceToken held with
+                | Some target -> target
+                | None ->
+                    failwith
+                        $"%s{operation}: the interface 0x%08x{interfaceToken} is nil, and the managed caller passes a type's token"
+
+            let extended = EmitScopeDefinitions.addInterfaceImpl cls target held
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            NativeHandlerResult.completed state |> Some
         | "TypeBuilder_TermCreateClass",
           "System.Private.CoreLib",
           "System.Reflection.Emit",

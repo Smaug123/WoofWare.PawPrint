@@ -171,6 +171,28 @@ module EmitScopeDefinitions =
             }
             scope
 
+    /// <summary>
+    /// Record that <paramref name="cls"/> implements <paramref name="target"/>, as
+    /// <c>RegMeta::AddInterfaceImpl</c> does: unless the table already has a row with this class and
+    /// interface (<c>ImportHelper::FindInterfaceImpl</c>), which it looks for whether or not the emitter
+    /// checks for duplicates elsewhere, a new row. <c>DefineType</c>'s interfaces are added without
+    /// that search.
+    /// </summary>
+    let addInterfaceImpl (cls : TypeDefRid) (target : TypeDefOrRef) (scope : EmitScope) : EmitScope =
+        let existing =
+            EmitScope.interfaceImpls scope
+            |> Seq.exists (fun row -> row.Class = cls && row.Interface = target)
+
+        if existing then
+            scope
+        else
+            EmitScope.addInterfaceImpl
+                {
+                    Class = cls
+                    Interface = target
+                }
+                scope
+
     /// `fdRTSpecialName`, `fdHasFieldMarshal` and `fdHasDefault`: the bits of `fdReservedMask` that
     /// `RegMeta::DefineField` clears from the flags it is given, keeping `fdHasFieldRVA`.
     let private reservedFieldFlags : FieldAttributes = enum<FieldAttributes> 0x9400

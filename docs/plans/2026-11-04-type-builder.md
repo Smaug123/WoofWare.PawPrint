@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a implemented (#2164); stage 5b in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a implemented (#2164); stage 5b implemented (#2165); stage 5c in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -847,4 +847,24 @@ of 0, unless special-cased. `EmitScope.create` starts every scope with the space
   reads the heap's entries.
 * Each mutant is caught: the final byte 0, the scope starting without the space, the token's table
   byte wrong, and each code unit's high byte dropped.
+
+### 5c: `TypeBuilder_AddInterfaceImpl`
+
+`TypeBuilder.AddInterfaceImplementation` adds an interface after `DefineType`. `RegMeta::AddInterfaceImpl`
+looks for a row with the same class and interface (`ImportHelper::FindInterfaceImpl`, over the whole
+table, which the dynamic emitter keeps unsorted) and adds one only if there is none. It searches whether
+or not the emitter checks for duplicates; `DefineType`'s interfaces, through `_SetImplements`, are
+searched only under `MDDupInterfaceImpl`, which a dynamic module does not set, so naming an interface
+twice there is two rows. `EmitScopeDefinitions.addInterfaceImpl` does the same search.
+
+### 5c: the oracle
+
+* `TypeBuilderAddInterfaceImpl.cs`, which exits 0 on .NET 10, adds an interface of another assembly and
+  one of the module, the first twice, names an interface twice in `DefineType` and adds it again, then
+  creates the types and checks they implement the interfaces. Its terminal-state check reads the
+  `InterfaceImpl` rows; the TypeRef numbers in it were measured on .NET 10 (`DefineType` asks for the
+  interfaces' tokens before the parent's).
+* `TestEmitScopeDefinitions` checks `addInterfaceImpl` against a model of distinct pairs in the order
+  first asked for.
+* Each mutant is caught: the search removed, and the row given to the previous type.
 

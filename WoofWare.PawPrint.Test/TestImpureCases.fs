@@ -1616,6 +1616,29 @@ module TestImpureCases =
                 " ", 1uy
             ]
 
+    /// `TypeBuilderAddInterfaceImpl.cs` has defined `IDynamic` (TypeDef 2), `Both` (3) and `Added` (4),
+    /// whose `IMarker` is TypeRef 1 and whose parent `object` is TypeRef 2 (measured on .NET 10:
+    /// `DefineType` asks for the interfaces' tokens before the parent's). A guest cannot read an
+    /// `InterfaceImpl` row, so this checks the rows the scope ends with, in the order they were added:
+    /// `Both`'s two from `DefineType`, which does not look for a duplicate, then `Added`'s two from
+    /// `AddInterfaceImplementation`, which does, so neither repeated call adds one.
+    let private assertInterfaceImplRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.interfaceImpls scope
+        |> Seq.map (fun row -> row.Class.Rid, row.Interface)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                3, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                3, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                4, TypeDefOrRef.TypeRef (TypeRefRid 1)
+                4, TypeDefOrRef.TypeDef (TypeDefRid 2)
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -5074,6 +5097,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertUserStrings
+            }
+            {
+                // `TypeBuilder_AddInterfaceImpl`, through `TypeBuilder.AddInterfaceImplementation`: an
+                // interface of another assembly and one of the module added after `DefineType`, one of
+                // them twice; `assertInterfaceImplRows` checks the duplicates the emitter skips. Dynamic-
+                // code switch overridden to true like its siblings; verified by hand to exit 0 on real
+                // .NET 10.
+                FileName = "TypeBuilderAddInterfaceImpl.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertInterfaceImplRows
             }
             {
                 // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has
