@@ -264,6 +264,72 @@ module NativeRuntimeTypeBuilder =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | "TypeBuilder_DefineField",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection", "FieldAttributes", attributesGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty && attributesGenerics.IsEmpty
+            ->
+            let operation = "TypeBuilder_DefineField"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+
+            // `RegMeta::DefineField` reads a nil parent as the global type, as `DefineMethod` does.
+            let owner =
+                methodParent operation (NativeCall.int32Argument operation instruction.Arguments.[1]) held
+
+            let name =
+                match NativeCall.managedPointerOfPointerArgument operation "wszName" instruction.Arguments.[2] with
+                | ManagedPointerSource.Null ->
+                    failwith $"%s{operation}: a null field name; the managed caller refuses a null name"
+                | namePtr -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+
+            // The managed caller passes its signature buffer, which may be longer than the signature.
+            let signature =
+                NativeCall.readCountedBytes
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    (NativeCall.managedPointerOfPointerArgument operation "pSignature" instruction.Arguments.[3])
+                    (NativeCall.int32Argument operation instruction.Arguments.[4])
+                |> ImmutableArray.CreateRange
+
+            let attributes =
+                enum<FieldAttributes> (NativeCall.int32Argument operation instruction.Arguments.[5])
+
+            // `RuntimeFieldBuilder` clears `FieldAttributes.ReservedMask`, `HasFieldRVA` included, before
+            // calling this; a field's RVA arrives later, through `ModuleBuilder_SetFieldRVAContent`.
+            if attributes &&& FieldAttributes.ReservedMask <> enum<FieldAttributes> 0 then
+                failwith
+                    $"%s{operation}: %s{name} has the reserved flags 0x%x{int (attributes &&& FieldAttributes.ReservedMask)}, which the managed caller clears"
+
+            let field, extended =
+                EmitScopeDefinitions.defineField owner name signature attributes held
+
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 (0x04000000 ||| field.Rid)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | "TypeBuilder_SetMethodImpl",
           "System.Private.CoreLib",
           "System.Reflection.Emit",

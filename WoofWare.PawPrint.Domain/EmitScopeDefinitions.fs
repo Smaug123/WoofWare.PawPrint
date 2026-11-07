@@ -171,6 +171,56 @@ module EmitScopeDefinitions =
             }
             scope
 
+    /// `fdRTSpecialName`, `fdHasFieldMarshal` and `fdHasDefault`: the bits of `fdReservedMask` that
+    /// `RegMeta::DefineField` clears from the flags it is given, keeping `fdHasFieldRVA`.
+    let private reservedFieldFlags : FieldAttributes = enum<FieldAttributes> 0x9400
+
+    /// <summary>
+    /// Define a field of <paramref name="owner"/>, as <c>RegMeta::DefineField</c> does in a dynamic
+    /// module, whose emitter does not check for a duplicate <c>Field</c> (<c>MDDupFieldDef</c> is not
+    /// set): a new row, at the next RID.
+    /// </summary>
+    /// <remarks>
+    /// The row keeps the low 16 bits of <paramref name="flags"/>, the column's width, without
+    /// <c>RTSpecialName</c>, <c>HasFieldMarshal</c> and <c>HasDefault</c>, which the emitter keeps for
+    /// itself. A field named exactly <c>value__</c> gains <c>RTSpecialName</c> and <c>SpecialName</c>.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="flags"/> has <c>HasFieldRVA</c>, for which the emitter adds a <c>FieldRVA</c>
+    /// row, which a scope does not hold.
+    /// </exception>
+    let defineField
+        (owner : TypeDefRid)
+        (name : string)
+        (signature : ImmutableArray<byte>)
+        (flags : FieldAttributes)
+        (scope : EmitScope)
+        : FieldRid * EmitScope
+        =
+        if flags.HasFlag FieldAttributes.HasFieldRVA then
+            invalidArg
+                (nameof flags)
+                $"EmitScopeDefinitions.defineField: %s{name} has HasFieldRVA, for which the emitter adds a FieldRVA row, which a scope does not hold"
+
+        let flags =
+            (flags &&& ~~~reservedFieldFlags &&& enum<FieldAttributes> 0xFFFF)
+            ||| (if name = "value__" then
+                     FieldAttributes.RTSpecialName ||| FieldAttributes.SpecialName
+                 else
+                     enum<FieldAttributes> 0)
+
+        let name, scope = EmitScope.internString name scope
+        let signature, scope = EmitScope.internBlob signature scope
+
+        EmitScope.addField
+            {
+                Owner = owner
+                Flags = flags
+                Name = name
+                Signature = signature
+            }
+            scope
+
     /// <summary>
     /// The body <c>TypeBuilder_SetMethodIL</c> writes: the header <c>COR_ILMETHOD::Size</c> picks, the
     /// code, and a section of the exception clauses if there are any. A tiny header (ECMA-335 II.25.4.2)

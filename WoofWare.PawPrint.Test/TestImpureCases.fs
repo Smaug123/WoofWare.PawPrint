@@ -1558,6 +1558,33 @@ module TestImpureCases =
                 0x01uy
             ]
 
+    /// `TypeBuilderDefineField.cs` has defined four fields, of `Counter` (TypeDef 2), `Box` (3) and
+    /// `Pair` (4). This checks each row's owner, name, flags and signature as .NET 10 reports them for the
+    /// created fields: `Box.value` without the reserved `HasDefault` it was defined with, which the
+    /// managed caller clears, and `Pair.value__` with the `RTSpecialName` and `SpecialName` the emitter
+    /// adds.
+    let private assertFieldRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.fields scope
+        |> Seq.map (fun row ->
+            row.Owner.Rid,
+            EmitScope.stringAt row.Name scope,
+            int row.Flags,
+            EmitScope.blobAt row.Signature scope |> List.ofSeq
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                2, "count", 0x0011, [ 0x06uy ; 0x08uy ]
+                3, "value", 0x0001, [ 0x06uy ; 0x0Auy ]
+                4, "value__", 0x0606, [ 0x06uy ; 0x08uy ]
+                4, "second", 0x0006, [ 0x06uy ; 0x0Euy ]
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -4978,6 +5005,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertExceptionSections
+            }
+            {
+                // `TypeBuilder_DefineField`, through `TypeBuilder.DefineField`: static and instance
+                // fields read and written by emitted IL, and a value type's fields; `assertFieldRows`
+                // checks the flags the emitter keeps. Dynamic-code switch overridden to true like its
+                // siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderDefineField.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertFieldRows
             }
             {
                 // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has

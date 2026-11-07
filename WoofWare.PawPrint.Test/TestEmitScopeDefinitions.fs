@@ -403,3 +403,93 @@ module TestEmitScopeDefinitions =
 
         thrown (fun () -> EmitScope.setTypeDefExtends thing (TypeDefOrRef.TypeRef (TypeRefRid 2)) scope)
         |> shouldContainText "TypeRef RID 2"
+
+    /// `RegMeta::DefineField` in a dynamic module, which does not check for a duplicate field
+    /// (`MDDupFieldDef` is not set): each call is a new row, at the next RID, holding the low 16 bits of
+    /// the flags without `fdRTSpecialName`, `fdHasFieldMarshal` and `fdHasDefault`, and with
+    /// `fdRTSpecialName` and `fdSpecialName` for a field named exactly `value__`.
+    [<Test>]
+    let ``every field is a new row with the flags the emitter keeps`` () : unit =
+        let names = [ "value__" ; "Value__" ; "value_" ; "x" ; "日本" ; "x" ]
+        let signature = ImmutableArray.Create<byte> [| 0x06uy ; 0x08uy |]
+        let special = ref 0
+
+        let property (definitions : (int * int * bool) list) : unit =
+            let scope = DynamicAssemblyImage.scope dynamicParts Guid.Empty
+            let name, scope = EmitScope.internString "Thing" scope
+
+            let thing, scope =
+                EmitScope.addTypeDef
+                    {
+                        Flags = TypeAttributes.Public
+                        Name = name
+                        Namespace = StringOffset 0
+                        Extends = None
+                    }
+                    scope
+
+            let mutable scope = scope
+
+            for nameIndex, flags, onThing in definitions do
+                let name = names.[nameIndex % names.Length]
+                // `fdHasFieldRVA` is refused; see below.
+                let flags = enum<FieldAttributes> (flags &&& ~~~0x0100)
+                let owner = if onThing then thing else TypeDefRid 1
+                let before = (EmitScope.fields scope).Count
+                let field, next = EmitScopeDefinitions.defineField owner name signature flags scope
+
+                field.Rid |> shouldEqual (before + 1)
+                (EmitScope.fields next).Count |> shouldEqual (before + 1)
+
+                let row = (EmitScope.fields next).[before]
+                let isSpecial = (name = "value__")
+
+                if isSpecial then
+                    special.Value <- special.Value + 1
+
+                row.Owner |> shouldEqual owner
+                EmitScope.stringAt row.Name next |> shouldEqual name
+
+                EmitScope.blobAt row.Signature next
+                |> List.ofSeq
+                |> shouldEqual (List.ofSeq signature)
+
+                int row.Flags
+                |> shouldEqual ((int flags &&& ~~~0x9400 &&& 0xFFFF) ||| (if isSpecial then 0x0600 else 0))
+
+                scope <- next
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 100,
+            Prop.forAll
+                (Arb.fromGen (
+                    Gen.listOf (
+                        Gen.zip3 (Gen.choose (0, 100)) (Gen.choose (0, 0x1FFFF)) (Gen.elements [ true ; false ])
+                    )
+                    |> Gen.map List.ofSeq
+                ))
+                property
+        )
+
+        special.Value |> shouldBeGreaterThan 100
+
+    /// `fdHasFieldRVA` makes `RegMeta::_SetFieldProps` add a `FieldRVA` row, which a scope does not hold.
+    [<Test>]
+    let ``a field with an RVA is refused`` () : unit =
+        let scope = DynamicAssemblyImage.scope dynamicParts Guid.Empty
+
+        let thrown =
+            try
+                EmitScopeDefinitions.defineField
+                    (TypeDefRid 1)
+                    "data"
+                    (ImmutableArray.Create<byte> [| 0x06uy ; 0x08uy |])
+                    (FieldAttributes.Static ||| FieldAttributes.HasFieldRVA)
+                    scope
+                |> ignore
+
+                None
+            with :? ArgumentException as e ->
+                Some e.Message
+
+        thrown |> Option.map (fun m -> m.Contains "FieldRVA") |> shouldEqual (Some true)

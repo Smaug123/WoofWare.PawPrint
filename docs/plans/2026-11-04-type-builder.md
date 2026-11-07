@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -783,3 +783,37 @@ clause's kind, ranges and catch type or filter offset are as the `ILGenerator` b
   clauses that each fit a small section.
 * Each mutant is caught: a filter read as a catch, a fault read as a finally, a handler length off by
   one, a finally's class token 0, and each bound of the small section moved by one.
+
+## Stage 5: what the issue's guest does not reach
+
+With 4c the issue's guest passes. Stage 5 takes the `TypeBuilder` and `ModuleBuilder` QCalls it never
+reached, one group a PR, most common first, each with a guest measured on real .NET.
+
+### 5a: `TypeBuilder_DefineField`
+
+Read from `TypeBuilder_DefineField` (vm/comdynamic.cpp), `RegMeta::DefineField` and `_SetFieldProps`
+(md/compiler), and `RuntimeFieldBuilder`'s constructor:
+
+* `RuntimeFieldBuilder` clears `FieldAttributes.ReservedMask` (`RTSpecialName`, `HasFieldMarshal`,
+  `HasDefault` and `HasFieldRVA`) and passes a field signature from `SignatureHelper`.
+* `RegMeta::DefineField` reads a nil parent as the global type, checks for no duplicate
+  (`MDDupFieldDef` is not set), clears `RTSpecialName`, `HasFieldMarshal` and `HasDefault` itself, adds
+  `RTSpecialName` and `SpecialName` to a field named exactly `value__`, and stores the low 16 bits. With
+  `HasFieldRVA` it would add a `FieldRVA` row, which no `TypeBuilder` caller asks for.
+
+`EmitScopeDefinitions.defineField` does the same, refusing `HasFieldRVA`; the handler refuses any
+reserved flag, which the managed caller never passes.
+
+### 5a: the oracle
+
+* `TypeBuilderDefineField.cs`, which exits 0 on .NET 10, reads and writes a static and an instance
+  field from emitted IL through their `FieldDef` tokens, and creates a value type with a field named
+  `value__`. Its terminal-state check reads each field's row as .NET 10 reports the created field.
+  Each method is invoked once: with dynamic code supported, reflection's second invocation of a method
+  emits an invoke stub, which reaches `StubHelpers.NextCallReturnAddress`, a JIT intrinsic PawPrint
+  refuses.
+* `TestEmitScopeDefinitions` checks `defineField`'s rows and flags over generated names and flags, and
+  its refusal of `HasFieldRVA`.
+* Each mutant is caught: the token's RID off by one, `value__` not marked special, and `HasDefault`
+  kept; the last only by the unit test, since the managed caller clears it before the emitter sees it.
+
