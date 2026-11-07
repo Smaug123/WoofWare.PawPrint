@@ -493,3 +493,62 @@ module TestEmitScopeDefinitions =
                 Some e.Message
 
         thrown |> Option.map (fun m -> m.Contains "FieldRVA") |> shouldEqual (Some true)
+
+    /// `RegMeta::AddInterfaceImpl`, which `TypeBuilder_AddInterfaceImpl` calls, looks for a row with the
+    /// same class and interface (`ImportHelper::FindInterfaceImpl`, over the whole table, which a
+    /// dynamic module's emitter does not keep sorted) and adds one only if there is none, whether or not
+    /// the emitter checks for duplicates elsewhere.
+    [<Test>]
+    let ``an interface implementation is added only if the table lacks it`` () : unit =
+        let found = ref 0
+
+        let property (requests : (int * int) list) : unit =
+            let scope = DynamicAssemblyImage.scope dynamicParts Guid.Empty
+            let mutable scope = scope
+
+            // Three classes, and three interfaces as TypeDefs of the module.
+            for name in [ "A" ; "B" ; "C" ] do
+                let name, next = EmitScope.internString name scope
+
+                scope <-
+                    EmitScope.addTypeDef
+                        {
+                            Flags = TypeAttributes.Public
+                            Name = name
+                            Namespace = StringOffset 0
+                            Extends = None
+                        }
+                        next
+                    |> snd
+
+            let mutable model : (TypeDefRid * TypeDefOrRef) list = []
+
+            for cls, iface in requests do
+                let cls = TypeDefRid (cls % 3 + 2)
+                let target = TypeDefOrRef.TypeDef (TypeDefRid (iface % 3 + 2))
+                let next = EmitScopeDefinitions.addInterfaceImpl cls target scope
+
+                if List.contains (cls, target) model then
+                    found.Value <- found.Value + 1
+                    Object.ReferenceEquals (next, scope) |> shouldEqual true
+                else
+                    model <- model @ [ cls, target ]
+
+                EmitScope.interfaceImpls next
+                |> Seq.map (fun row -> row.Class, row.Interface)
+                |> List.ofSeq
+                |> shouldEqual model
+
+                scope <- next
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 100,
+            Prop.forAll
+                (Arb.fromGen (
+                    Gen.listOf (Gen.zip (Gen.choose (0, 8)) (Gen.choose (0, 8)))
+                    |> Gen.map List.ofSeq
+                ))
+                property
+        )
+
+        found.Value |> shouldBeGreaterThan 100
