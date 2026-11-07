@@ -4672,6 +4672,24 @@ module TestImpureCases =
                 AssertTerminalState = Some assertDefinedTypeRows
             }
             {
+                // `RuntimeModule_GetFullyQualifiedName` on a Reflection.Emit module, through
+                // `ModuleBuilder.Name`: `<In Memory Module>`. Dynamic-code switch overridden to
+                // true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "ModuleBuilderNameInMemory.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `TypeBuilder_DefineMethod` and `TypeBuilder_SetMethodImpl`, through
                 // `MethodBuilder.MetadataToken`: the MethodDef rows a dynamic module gains, before any
                 // type is created; `assertDefinedMethodRows` checks the rows no guest can read yet.
@@ -5557,6 +5575,19 @@ module TestImpureCases =
                 // reports its path, so there is no cross-runtime fact here.
                 // Recorded in docs/divergences.md.
                 FileName = "AssemblyLocationEmpty.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A module's fully qualified name and its `Name` are both `<Unknown>`, CoreCLR's
+                // answer for an image with no path, for the same reason an assembly's location
+                // is empty above; the real runtime reports the .dll's path, so there is no
+                // cross-runtime fact here. Recorded in docs/divergences.md.
+                FileName = "ModuleFullyQualifiedNameUnknown.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
                 AppContext = AppContextProperties.empty
