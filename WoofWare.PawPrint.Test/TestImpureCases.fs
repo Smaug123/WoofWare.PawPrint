@@ -4804,6 +4804,25 @@ module TestImpureCases =
                 AssertTerminalState = Some assertInterfacesCreated
             }
             {
+                // `TypeBuilder_SetParentType`, which `TypeBuilder.CreateType` calls for a type with a
+                // parent: two static classes, one of them reparented after `DefineType`, and a value
+                // type, none of which reaches `SetMethodIL`. Dynamic-code switch overridden to true like
+                // its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderSetParent.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,
                 // truncated and wrong-kind entries in method, field and type position, and the
                 // null and open contexts of GenericMethodInfo and GenericFieldInfo, each with the
