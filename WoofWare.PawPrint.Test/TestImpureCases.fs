@@ -1585,6 +1585,37 @@ module TestImpureCases =
                 4, "second", 0x0006, [ 0x06uy ; 0x0Euy ]
             ]
 
+    /// `ModuleBuilderStringConstant.cs` has asked for six strings, `"hello"` twice. This checks the
+    /// module's `#US` entries, each as its UTF-16 code units and its final byte: the space the heap
+    /// starts with, whose final byte is 0, then each distinct string once, in the order asked for, with
+    /// a final byte of 1.
+    let private assertUserStrings (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.userStrings scope
+        |> Seq.map (fun entry ->
+            let units =
+                [|
+                    for i in 0..2 .. entry.Length - 2 -> char (int entry.[i] ||| (int entry.[i + 1] <<< 8))
+                |]
+
+            System.String units, entry.[entry.Length - 1]
+        )
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                " ", 0uy
+                "hello", 1uy
+                "", 1uy
+                // A lone surrogate, which an F# literal cannot spell.
+                string (char 0xD800), 1uy
+                System.String ('y', 8200), 1uy
+                " ", 1uy
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -5024,6 +5055,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertFieldRows
+            }
+            {
+                // `ModuleBuilder_GetStringConstant`, through `ldstr` and `GetStringMetadataToken`: the
+                // tokens are `#US` offsets, the same string is one entry, and emitted methods load the
+                // strings; `assertUserStrings` reads the heap's entries. Dynamic-code switch overridden
+                // to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "ModuleBuilderStringConstant.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertUserStrings
             }
             {
                 // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has

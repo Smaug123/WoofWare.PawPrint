@@ -30,6 +30,68 @@ module NativeRuntimeModuleBuilder =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
+        | "ModuleBuilder_GetStringConstant",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeModuleBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty
+            ->
+            let operation = "ModuleBuilder_GetStringConstant"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held =
+                match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
+                | Some scope -> scope
+                | None ->
+                    failwith
+                        $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+
+            let length = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            if length < 0 then
+                failwith
+                    $"%s{operation}: a negative length %d{length}; the managed caller passes the string's own length"
+
+            // The managed caller pins the string and passes its length, so the code units are counted,
+            // not terminated: the string may hold a NUL, and a lone surrogate passes through as it is.
+            let value =
+                let bytes =
+                    NativeCall.readCountedBytes
+                        operation
+                        ctx.BaseClassTypes
+                        state
+                        (NativeCall.managedPointerOfPointerArgument operation "pwzValue" instruction.Arguments.[1])
+                        (2 * length)
+
+                System.String (Array.init length (fun i -> char (int bytes.[2 * i] ||| (int bytes.[2 * i + 1] <<< 8))))
+
+            let offset, extended = EmitScope.internUserString value held
+
+            // `RegMeta::DefineUserString` refuses an offset that needs the token's table byte.
+            if offset.Offset &&& 0xFF000000 <> 0 then
+                failwith
+                    $"TODO: %s{operation}: the #US heap of %s{moduleName} is full at offset 0x%x{offset.Offset}, for which CoreCLR raises META_E_STRINGSPACE_FULL"
+
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 (0x70000000 ||| offset.Offset)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | "ModuleBuilder_GetTypeRef",
           "System.Private.CoreLib",
           "System.Reflection.Emit",

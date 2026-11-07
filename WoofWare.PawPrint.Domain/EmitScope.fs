@@ -26,6 +26,16 @@ type BlobOffset =
         match this with
         | BlobOffset offset -> offset
 
+/// An offset into an emit scope's `#US` heap, which a user string token (`0x70`) holds.
+[<Struct>]
+type UserStringOffset =
+    internal
+    | UserStringOffset of int
+
+    member this.Offset : int =
+        match this with
+        | UserStringOffset offset -> offset
+
 /// A 1-based index into an emit scope's `#GUID` heap.
 [<Struct>]
 type GuidIndex =
@@ -293,6 +303,9 @@ type EmitScope =
             BlobOffsets : ImmutableDictionary<ImmutableArray<byte>, BlobOffset>
             BlobsByOffset : ImmutableDictionary<int, ImmutableArray<byte>>
             BlobHeapLength : int
+            UserStrings : ImmutableList<ImmutableArray<byte>>
+            UserStringOffsets : ImmutableDictionary<ImmutableArray<byte>, UserStringOffset>
+            UserStringHeapLength : int
             Guids : ImmutableList<Guid>
             Module : ModuleRow
             Assembly : AssemblyRow option
@@ -456,6 +469,35 @@ module EmitScope =
         | true, offset -> Some offset
         | false, _ -> None
 
+    /// <summary>
+    /// The offset of a user string in the <c>#US</c> heap, adding it if the heap lacks it, as
+    /// <c>RegMeta::DefineUserString</c> does: the string's UTF-16 code units, a lone surrogate
+    /// included, little-endian, then a final byte of 1, found among the heap's entries by those bytes
+    /// before it is added.
+    /// </summary>
+    let internUserString (value : string) (scope : EmitScope) : UserStringOffset * EmitScope =
+        let bytes =
+            let builder = ImmutableArray.CreateBuilder<byte> (2 * value.Length + 1)
+
+            for c in value do
+                builder.Add (byte (int c &&& 0xFF))
+                builder.Add (byte (int c >>> 8))
+
+            builder.Add 1uy
+            builder.MoveToImmutable ()
+
+        match scope.UserStringOffsets.TryGetValue bytes with
+        | true, offset -> offset, scope
+        | false, _ ->
+            let offset = UserStringOffset scope.UserStringHeapLength
+
+            offset,
+            { scope with
+                UserStrings = scope.UserStrings.Add bytes
+                UserStringOffsets = scope.UserStringOffsets.Add (bytes, offset)
+                UserStringHeapLength = scope.UserStringHeapLength + compressedLengthSize bytes.Length + bytes.Length
+            }
+
     /// The offset `internBlob` would return for `value` if the heap already holds it, without adding it.
     let tryBlobOffset (value : ImmutableArray<byte>) (scope : EmitScope) : BlobOffset option =
         if value.IsDefault then
@@ -464,6 +506,9 @@ module EmitScope =
         match scope.BlobOffsets.TryGetValue value with
         | true, offset -> Some offset
         | false, _ -> None
+
+    /// The `#US` entry `RegMeta::GetSaveSize` adds to an empty heap: a space, and a final byte of 0.
+    let private spaceUserString : ImmutableArray<byte> = ImmutableArray.Create<byte> [| 0x20uy ; 0uy ; 0uy |]
 
     /// What CoreCLR's emit scope holds once it is opened for a dynamic module: the `Module` row and the
     /// `<Module>` type (RID 1), which owns module-scope members.
@@ -482,6 +527,14 @@ module EmitScope =
                         .Add (ImmutableArray.Empty, BlobOffset 0)
                 BlobsByOffset = ImmutableDictionary.Empty.Add (0, ImmutableArray.Empty)
                 BlobHeapLength = 1
+                // `RegMeta::GetSaveSize` gives an empty user string heap a space, whose final byte is 0,
+                // and a dynamic module's heap has it from its creation.
+                UserStrings = ImmutableList.Create spaceUserString
+                UserStringOffsets =
+                    ImmutableDictionary
+                        .Create<ImmutableArray<byte>, UserStringOffset>(ByteContentComparer ())
+                        .Add (spaceUserString, UserStringOffset 1)
+                UserStringHeapLength = 1 + 1 + spaceUserString.Length
                 Guids = ImmutableList.Create mvid
                 Module =
                     {
@@ -742,6 +795,10 @@ module EmitScope =
 
     /// The `#Blob` entries other than the empty blob, in the order they were interned.
     let blobs (scope : EmitScope) : ImmutableList<ImmutableArray<byte>> = scope.Blobs
+
+    /// The entries of the `#US` heap after its leading empty one, in the order they were interned, each
+    /// as its bytes after the length prefix: the space every heap starts with first.
+    let userStrings (scope : EmitScope) : ImmutableList<ImmutableArray<byte>> = scope.UserStrings
 
     /// The `#GUID` entries; index `i` is at position `i - 1`.
     let guids (scope : EmitScope) : ImmutableList<Guid> = scope.Guids

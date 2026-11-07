@@ -919,3 +919,71 @@ module TestEmitScopeImage =
                 body.LocalsInit |> shouldEqual true
             | other -> failwith $"expected an IL body, got %A{other}"
         | methods -> failwith $"expected one method, got %d{methods.Length}"
+
+    /// Strings `ModuleBuilder_GetStringConstant` asks for, chosen so that equal ones recur, that each
+    /// length prefix's width is crossed, that one is a lone surrogate, and that one is the space the
+    /// heap starts with.
+    let private userStringValues : string list =
+        [
+            "a"
+            ""
+            " "
+            "ab"
+            "é"
+            "\uD800"
+            System.String ('x', 70)
+            System.String ('y', 8200)
+            "z"
+        ]
+
+    /// `RegMeta::DefineUserString` in a dynamic module: the string's UTF-16 bytes and a final byte of 1,
+    /// found in the `#US` heap before it is added, after the `" "` that `RegMeta::GetSaveSize` gives an
+    /// empty heap, whose final byte is 0. Real .NET's `ModuleBuilder.GetStringMetadataToken` reaches the
+    /// same function, so it is the oracle.
+    [<Test>]
+    let ``a user string is found in the heap before it is added, as real .NET finds it`` () : unit =
+        let property (choices : int list) : unit =
+            let assembly =
+                Emit.AssemblyBuilder.DefineDynamicAssembly (
+                    AssemblyName "UserStringOracle",
+                    Emit.AssemblyBuilderAccess.Run
+                )
+
+            let module' = assembly.DefineDynamicModule "UserStringOracle"
+            let mutable scope = EmitScope.create "UserStringOracle" Guid.Empty
+
+            for choice in choices do
+                let value = userStringValues.[choice % userStringValues.Length]
+                let offset, next = EmitScope.internUserString value scope
+
+                0x70000000 ||| offset.Offset
+                |> shouldEqual (module'.GetStringMetadataToken value)
+
+                scope <- next
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 50,
+            Prop.forAll (Arb.fromGen (Gen.listOf (Gen.choose (0, 100)) |> Gen.map List.ofSeq)) property
+        )
+
+    [<Test>]
+    let ``every user string reads back from the image at its offset`` () : unit =
+        let mutable scope = EmitScope.create "M" Guid.Empty
+
+        let offsets =
+            [
+                for value in userStringValues do
+                    let offset, next = EmitScope.internUserString value scope
+                    scope <- next
+                    yield value, offset
+            ]
+
+        let pe, reader = readImage (EmitScopeImage.write scope)
+        use _ = pe
+
+        // The space `RegMeta::GetSaveSize` gives an empty heap.
+        reader.GetUserString (MetadataTokens.UserStringHandle 1) |> shouldEqual " "
+
+        for value, offset in offsets do
+            reader.GetUserString (MetadataTokens.UserStringHandle offset.Offset)
+            |> shouldEqual value

@@ -182,10 +182,14 @@ module EmitScopeImage =
 
         heap
 
-    /// `#US` holds only its empty entry: nothing an emit scope holds names a user string yet.
-    let private userStringHeap () : BlobBuilder =
+    let private userStringHeap (scope : EmitScope) : BlobBuilder =
         let heap = BlobBuilder ()
         heap.WriteByte 0uy
+
+        for value in EmitScope.userStrings scope do
+            heap.WriteCompressedInteger value.Length
+            heap.WriteBytes value
+
         heap.Align 4
         heap
 
@@ -469,7 +473,7 @@ module EmitScopeImage =
         let strings = stringHeap scope
         let blobs = blobHeap scope
         let guids = guidHeap scope
-        let userStrings = userStringHeap ()
+        let userStrings = userStringHeap scope
 
         // A heap index is two bytes while the heap is smaller than 2^16 bytes (II.24.2.6).
         let tables =
