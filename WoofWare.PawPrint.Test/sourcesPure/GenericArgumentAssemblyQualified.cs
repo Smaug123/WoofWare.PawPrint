@@ -78,6 +78,24 @@ public class Program
         if (typeof(List<>).MakeArrayType().AssemblyQualifiedName
             != $"System.Collections.Generic.List`1[], {coreLib}") return 72;
 
+        // A function pointer's own FullName is null, but an array of one can be a generic
+        // argument, whose full rendering names an assembly for it. That is the assembly of the
+        // function pointer's loader module, which (nothing being collectible) is its return
+        // type's: `ComputeLoaderModuleWorker` with no definition module takes the first type in
+        // the return-and-arguments list. Its types are rendered with the argument's format, so a
+        // generic return type is in full too.
+        unsafe
+        {
+            if (typeof(List<delegate*<Top>[]>).FullName
+                != $"System.Collections.Generic.List`1[[Top()[], {here}]]") return 75;
+            if (typeof(List<delegate*<Top, void>[]>).FullName
+                != $"System.Collections.Generic.List`1[[System.Void(Top)[], {coreLib}]]") return 76;
+            if (typeof(List<delegate*<List<Top>>[]>).FullName
+                != $"System.Collections.Generic.List`1[[System.Collections.Generic.List`1[[Top, {here}]]()[], {coreLib}]]") return 77;
+            if (typeof(List<delegate*<Top>[]>).ToString()
+                != "System.Collections.Generic.List`1[Top()[]]") return 78;
+        }
+
         // The point of the brackets: an assembly-qualified name parses back to the same type.
         if (Type.GetType(typeof(Dictionary<string, Top>).AssemblyQualifiedName) != typeof(Dictionary<string, Top>)) return 80;
         if (Type.GetType(typeof(List<Top[]>).AssemblyQualifiedName) != typeof(List<Top[]>)) return 81;

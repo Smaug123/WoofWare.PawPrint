@@ -405,7 +405,7 @@ public unsafe class FnPtrHolder<T>
         let rendered =
             refusal
             |> Option.map (fun refusal ->
-                refusal, NativeRuntimeTypeHelpers.szArrayRefusalTypeName "test" state element refusal
+                refusal, NativeRuntimeTypeHelpers.szArrayRefusalTypeName "test" bct state element refusal
             )
 
         state, rendered

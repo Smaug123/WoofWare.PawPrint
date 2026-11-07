@@ -1841,6 +1841,7 @@ module NativeRuntimeTypeHelpers =
     /// refused rather than ignored.
     let runtimeTypeHandleName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (flags : int32)
         (typeHandleTarget : RuntimeTypeHandleTarget)
@@ -1877,36 +1878,11 @@ module NativeRuntimeTypeHelpers =
                 failwith $"%s{operation}: assembly for %s{what} is not loaded: %s{assemblyFullName}"
             )
 
-        // CoreCLR names a function pointer's assembly by its `FnPtrTypeDesc`'s loader module,
-        // which PawPrint does not model. `RuntimeType` never asks: `IsFullNameRoundtripCompatible`
-        // makes `FullName` and `AssemblyQualifiedName` null for any type whose root element is a
-        // function pointer.
-        let refuseFunctionPointerAssembly () : 'a =
-            failwith
-                $"TODO: %s{operation}: FormatAssembly of a function pointer, or of a shape over one, is not modelled; CoreCLR names the FnPtrTypeDesc's loader module"
-
-        // `TypeHandle::GetAssembly`: a ParamTypeDesc's module is its element's, and a type
-        // variable's is its owner's.
-        let rec assemblyOfHandle (typeHandle : ConcreteTypeHandle) : string =
-            match typeHandle with
-            | ConcreteTypeHandle.Byref inner
-            | ConcreteTypeHandle.Pointer inner
-            | ConcreteTypeHandle.OneDimArrayZero inner
-            | ConcreteTypeHandle.Array (inner, _) -> assemblyOfHandle inner
-            | ConcreteTypeHandle.Concrete _ -> (lookupConcrete typeHandle).AssemblyFullName
-            | ConcreteTypeHandle.FunctionPointer _ -> refuseFunctionPointerAssembly ()
-
-        let rec assemblyOfTarget (target : RuntimeTypeHandleTarget) : string =
-            match target with
-            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-            | RuntimeTypeHandleTarget.Closed typeHandle -> assemblyOfHandle typeHandle
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
-            | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> identity.AssemblyFullName
-            | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
-            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) -> declaringType.AssemblyFullName
-            | RuntimeTypeHandleTarget.Composite (_, element) -> assemblyOfTarget element
-            | RuntimeTypeHandleTarget.FunctionPointer _ -> refuseFunctionPointerAssembly ()
+        // `TypeHandle::GetAssembly`, which `Type.Assembly` reports too: a byref, pointer or array
+        // names its element's assembly, a type variable its owner's, and a function pointer its
+        // loader module's.
+        let assemblyOf (target : RuntimeTypeHandleTarget) : string =
+            NativeCall.typeAssemblyFullName operation baseClassTypes state target
 
         // `TypeNameBuilder::AddAssemblySpec`: ", " and the assembly's full display name, which
         // `EscapeEmbeddedAssemblyName` escapes inside an instantiation so that a ']' in it
@@ -1940,9 +1916,7 @@ module NativeRuntimeTypeHelpers =
             (returnName : unit -> string)
             : string
             =
-            if hasFormatFlag formatAssemblyFlag format then
-                refuseFunctionPointerAssembly ()
-            elif not (hasFormatFlag formatNamespaceFlag format) then
+            if not (hasFormatFlag formatNamespaceFlag format) then
                 ""
             else
                 let args = parameterNames ()
@@ -1968,7 +1942,7 @@ module NativeRuntimeTypeHelpers =
 
                 elementName
                 + shapeSuffix shape
-                + assemblySuffix format embedded (fun () -> assemblyOfHandle element)
+                + assemblySuffix format embedded (fun () -> assemblyOf (RuntimeTypeHandleTarget.Closed element))
 
             match typeHandle with
             | ConcreteTypeHandle.Byref inner -> overElement CompositeShape.Byref inner
@@ -1976,18 +1950,22 @@ module NativeRuntimeTypeHelpers =
             | ConcreteTypeHandle.OneDimArrayZero inner -> overElement CompositeShape.OneDimArrayZero inner
             | ConcreteTypeHandle.Array (inner, rank) -> overElement (CompositeShape.Array rank) inner
             | ConcreteTypeHandle.FunctionPointer signature ->
-                functionPointerName
-                    format
-                    signature.Header
-                    (fun () -> signature.ParameterTypes |> List.map (concreteTypeHandleName format false))
-                    (fun () ->
-                        match signature.ReturnType with
-                        // Void has no metadata-driven concrete handle to recurse through, so emit
-                        // the qualified BCL name directly. CoreCLR recurses into the void type's
-                        // metadata and gets the namespace via the same FormatNamespace path.
-                        | MethodReturnType.Void -> "System.Void"
-                        | MethodReturnType.Returns ret -> concreteTypeHandleName format false ret
-                    )
+                let name =
+                    functionPointerName
+                        format
+                        signature.Header
+                        (fun () -> signature.ParameterTypes |> List.map (concreteTypeHandleName format false))
+                        (fun () ->
+                            match signature.ReturnType with
+                            // Void has no metadata-driven concrete handle to recurse through, so emit
+                            // the qualified BCL name directly. CoreCLR recurses into the void type's
+                            // metadata and gets the namespace via the same FormatNamespace path.
+                            | MethodReturnType.Void -> "System.Void"
+                            | MethodReturnType.Returns ret -> concreteTypeHandleName format false ret
+                        )
+
+                name
+                + assemblySuffix format embedded (fun () -> assemblyOf (RuntimeTypeHandleTarget.Closed typeHandle))
             | ConcreteTypeHandle.Concrete _ ->
                 let concreteType = lookupConcrete typeHandle
                 let assembly = loadedAssembly "concrete type" concreteType.AssemblyFullName
@@ -2014,14 +1992,14 @@ module NativeRuntimeTypeHelpers =
 
                 name + assemblySuffix format embedded (fun () -> concreteType.AssemblyFullName)
 
-        /// `TypeString::AppendInst`. Under FormatFullInst, an argument that is not a type
-        /// variable is rendered with FormatNamespace and FormatAssembly added (and FormatFullInst
-        /// kept, so its own arguments are rendered in full too); otherwise an argument keeps only
-        /// FormatNamespace. `TypeNameBuilder::CloseGenericArgument` keeps the bracket it opened
-        /// around an argument exactly when that argument ended in an assembly spec, and every
-        /// type that is not a type variable does under FormatAssembly, so the bracket follows from
-        /// the same condition. That bracket is what stops an assembly display name's commas from
-        /// reading as argument separators.
+        // `TypeString::AppendInst`. Under FormatFullInst, an argument that is not a type
+        // variable is rendered with FormatNamespace and FormatAssembly added (and FormatFullInst
+        // kept, so its own arguments are rendered in full too); otherwise an argument keeps only
+        // FormatNamespace. `TypeNameBuilder::CloseGenericArgument` keeps the bracket it opened
+        // around an argument exactly when that argument ended in an assembly spec, and every
+        // type that is not a type variable does under FormatAssembly, so the bracket follows from
+        // the same condition. That bracket is what stops an assembly display name's commas from
+        // reading as argument separators.
         and instantiation (format : int32) (arguments : RuntimeTypeHandleTarget list) : string =
             let fullInst = hasFormatFlag formatFullInstFlag format
 
@@ -2148,21 +2126,24 @@ module NativeRuntimeTypeHelpers =
 
                 elementName
                 + shapeSuffix shape
-                + assemblySuffix format embedded (fun () -> assemblyOfTarget element)
+                + assemblySuffix format embedded (fun () -> assemblyOf element)
             // The same rendering as the closed function pointer in `concreteTypeHandleName`; the
             // parameter or return types that are not closed simply print as themselves, so
             // `delegate*<T, void>` reflected from a generic method is "System.Void(T)" and its
             // `Name` is "" (both measured on .NET 10).
             | RuntimeTypeHandleTarget.FunctionPointer signature ->
-                functionPointerName
-                    format
-                    signature.Header
-                    (fun () -> signature.ParameterTypes |> List.map (targetName format false))
-                    (fun () ->
-                        match signature.ReturnType with
-                        | MethodReturnType.Void -> "System.Void"
-                        | MethodReturnType.Returns ret -> targetName format false ret
-                    )
+                let name =
+                    functionPointerName
+                        format
+                        signature.Header
+                        (fun () -> signature.ParameterTypes |> List.map (targetName format false))
+                        (fun () ->
+                            match signature.ReturnType with
+                            | MethodReturnType.Void -> "System.Void"
+                            | MethodReturnType.Returns ret -> targetName format false ret
+                        )
+
+                name + assemblySuffix format embedded (fun () -> assemblyOf target)
 
         targetName flags false typeHandleTarget
 
@@ -2186,12 +2167,13 @@ module NativeRuntimeTypeHelpers =
     /// renderer — so those do delegate to `runtimeTypeHandleName`.
     let rec typeHandleGetName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (target : RuntimeTypeHandleTarget)
         : string
         =
         let getNameOfHandle (handle : ConcreteTypeHandle) : string =
-            typeHandleGetName operation state (RuntimeTypeHandleTarget.Closed handle)
+            typeHandleGetName operation baseClassTypes state (RuntimeTypeHandleTarget.Closed handle)
 
         match target with
         // `TypeDesc::GetName` -> `TypeDesc::ConstructName` (`vm/typedesc.cpp:190`).
@@ -2202,7 +2184,7 @@ module NativeRuntimeTypeHelpers =
         // `ConstructName` renders a ParamTypeDesc as its element followed by the shape's suffix,
         // as the closed shapes below do; the element is a variable, which renders as `!0` / `!!0`.
         | RuntimeTypeHandleTarget.Composite (shape, element) ->
-            let elementName = typeHandleGetName operation state element
+            let elementName = typeHandleGetName operation baseClassTypes state element
 
             match shape with
             | CompositeShape.Byref -> $"%s{elementName}&"
@@ -2270,6 +2252,7 @@ module NativeRuntimeTypeHelpers =
                         |> Seq.map (fun arg ->
                             runtimeTypeHandleName
                                 operation
+                                baseClassTypes
                                 state
                                 formatNamespaceFlag
                                 (RuntimeTypeHandleTarget.Closed arg)
@@ -2286,20 +2269,22 @@ module NativeRuntimeTypeHelpers =
     /// `Big` in the fourth. Measured on .NET 10 for each refusal, nested and not.
     let szArrayRefusalTypeName
         (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (element : RuntimeTypeHandleTarget)
         (refusal : SzArrayElementRefusal)
         : string
         =
         match refusal with
-        | SzArrayElementRefusal.ValueClassTooLarge -> typeHandleGetName operation state element
+        | SzArrayElementRefusal.ValueClassTooLarge -> typeHandleGetName operation baseClassTypes state element
         // The byref refusal renders the byref alone rather than the array over it: the type-name
         // builder will not append `[]` after `&`.
-        | SzArrayElementRefusal.ByRef -> runtimeTypeHandleName operation state formatNamespaceFlag element
+        | SzArrayElementRefusal.ByRef ->
+            runtimeTypeHandleName operation baseClassTypes state formatNamespaceFlag element
         | SzArrayElementRefusal.ByRefLike
         | SzArrayElementRefusal.Void ->
             RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
-            |> runtimeTypeHandleName operation state formatNamespaceFlag
+            |> runtimeTypeHandleName operation baseClassTypes state formatNamespaceFlag
 
     /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
     /// single helper behind every QCall that hands a type list back through an

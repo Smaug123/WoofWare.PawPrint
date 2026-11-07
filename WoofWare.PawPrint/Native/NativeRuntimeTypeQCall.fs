@@ -47,7 +47,8 @@ module NativeRuntimeTypeQCall =
             let retString =
                 NativeCall.stringHandleOnStackTarget operation state "retString" instruction.Arguments.[2]
 
-            let name = runtimeTypeHandleName operation state flags typeHandleTarget
+            let name =
+                runtimeTypeHandleName operation ctx.BaseClassTypes state flags typeHandleTarget
 
             let nameAddr, state =
                 IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes name state
@@ -289,6 +290,7 @@ module NativeRuntimeTypeQCall =
                 let typeName =
                     NativeRuntimeTypeHelpers.runtimeTypeHandleName
                         operation
+                        ctx.BaseClassTypes
                         state
                         NativeRuntimeTypeHelpers.formatNamespaceFlag
                         typeHandleTarget
@@ -375,7 +377,12 @@ module NativeRuntimeTypeQCall =
                 // key's module, which for an array key is its element's; `typeAssemblyFullName`
                 // peels the shapes the same way.
                 let typeName =
-                    NativeRuntimeTypeHelpers.szArrayRefusalTypeName operation state typeHandleTarget refusal
+                    NativeRuntimeTypeHelpers.szArrayRefusalTypeName
+                        operation
+                        ctx.BaseClassTypes
+                        state
+                        typeHandleTarget
+                        refusal
 
                 let assemblyName =
                     NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
