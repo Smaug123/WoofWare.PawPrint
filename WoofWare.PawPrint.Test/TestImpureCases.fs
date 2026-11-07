@@ -1405,6 +1405,21 @@ module TestImpureCases =
                 3, methodDef 5, memberRef 2
             ]
 
+    /// `TypeBuilderCreateInterface.cs` has created its three interfaces, `N.IEmpty` (TypeDef 2),
+    /// `IDerived` (TypeDef 3) and `IAfter` (TypeDef 4), which the runtime must have recorded as
+    /// created, so that the dynamic module's scope can no longer change their members.
+    let private assertInterfacesCreated (state : IlMachineState) : unit =
+        let loaded = state.TypeSystem._LoadedAssemblies
+        let name = "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+
+        loaded.TryDynamicScope name
+        |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+        |> ignore
+
+        [ 1 ; 2 ; 3 ; 4 ]
+        |> List.map (fun rid -> loaded.IsCreatedType name (TypeDefRid rid))
+        |> shouldEqual [ false ; true ; true ; true ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -4767,6 +4782,26 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertMethodImplRows
+            }
+            {
+                // `TypeBuilder_TermCreateClass`, through `TypeBuilder.CreateType`, for three interfaces
+                // without methods, one defined after the others are created; none reaches
+                // `SetParentType` or `SetMethodIL`. `assertInterfacesCreated` checks the runtime
+                // recorded each as created. Dynamic-code switch overridden to true like its siblings;
+                // verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderCreateInterface.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertInterfacesCreated
             }
             {
                 // Scope entries rewritten through private reflection after CreateDelegate: null,
