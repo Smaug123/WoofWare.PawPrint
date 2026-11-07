@@ -26,6 +26,10 @@ open WoofWare.PawPrint
 /// the definition for a generic virtual method on a value type, even one that is its own canonical
 /// form (<c>SBox&lt;int&gt;</c>), where CoreCLR's method table holds the method's unboxing stub;
 /// PawPrint refuses those too.
+///
+/// A parent naming a generic parameter the caller's context does not supply raises
+/// <c>BadImageFormatException</c>, which <c>RuntimeModule.ResolveMethod</c> wraps in
+/// <c>ArgumentException</c>.
 /// </remarks>
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -56,6 +60,8 @@ public class Holder<T> : IConvertOnClass
     public U ConvertOnString<U>(T v) => default!;
     public U ConvertInContext<U>(T v) => default!;
     public void PlainInContext() { }
+    public void SelfTarget() { }
+    public void CallsSelf() => SelfTarget();
 }
 
 public struct SBox<T> : IConvertOnStruct
@@ -120,7 +126,12 @@ public static class Program
         }
         catch (ArgumentException e) when (e.InnerException is BadImageFormatException)
         {
-            return 128;
+            Exception inner = e.InnerException;
+            bool faithful =
+                inner.HResult == unchecked((int)0x8007000B)
+                && inner.Message == "An attempt was made to load a program with an incorrect format.\n (0x8007000B)"
+                && inner.InnerException == null;
+            return faithful ? 128 : 129;
         }
 
         int code = Array.IndexOf(DeclaringTypes, m.DeclaringType) + 1;
@@ -193,7 +204,8 @@ public static class Program
 
     // Classifications, as `Classify` computes them: the declaring type's index in `DeclaringTypes`
     // plus one, then 8 for a generic method, 16 for a generic method definition, 32 for one over its
-    // own parameter, and 64 for the very `MethodInfo` its declaring type's `GetMethod` returns.
+    // own parameter, and 64 for the very `MethodInfo` its declaring type's `GetMethod` returns; or
+    // 128 for an `ArgumentException` wrapping the `BadImageFormatException` CoreCLR raises.
     let private definitionOnHolderOfInt = 1 + 8 + 16 + 32 + 64
     let private plainOnHolderOfInt = 1 + 64
 
@@ -214,6 +226,13 @@ public static class Program
             // Virtual methods, generic on a class and non-generic on a struct.
             "ConvertVirtualOnClass", "none", definitionOnHolderOfInt
             "PlainVirtual", "none", 3 + 64
+            // The parent, `Holder<!!0>`, needs a method context.
+            "ConvertInContext", "none", 128
+            "PlainInContext", "none", 128
+            // The parent, `Holder<!0>`, needs a type context, which a method context does not give.
+            "SelfTarget", "none", 128
+            "SelfTarget", "m=int", 128
+            "SelfTarget", "t=long,m=int", 64
         ]
 
     /// The cases where CoreCLR's answer is on a shared canonical form, which PawPrint refuses.
