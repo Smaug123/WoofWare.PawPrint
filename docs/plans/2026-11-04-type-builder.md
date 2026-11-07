@@ -690,15 +690,20 @@ Read from `TypeBuilder_SetMethodIL` (vm/comdynamic.cpp), `IlmethodSize` and `Ilm
 (inc/corhlpr.cpp), `RegMeta::GetTokenFromSig` and `ImportHelper::FindStandAloneSig`, and
 `CreateTypeNoLock` and `RuntimeMethodBuilder.GetLocalSignature` and `GetMaxStack`:
 
-* `CreateTypeNoLock` calls `SetMethodIL` for every method, an abstract one included, which gets an
-  empty body. It always passes a local signature: for a method with no locals, `07 00`
+* `CreateTypeNoLock` calls `SetMethodIL` for every method, an abstract one included, whose code is
+  empty. The QCall sets the method's RVA only for code that is not empty, so an abstract method keeps
+  no body. It always passes a local signature: for a method with no locals, `07 00`
   (`IMAGE_CEE_CS_CALLCONV_LOCAL_SIG` and a count of zero). The QCall's test for an empty signature is
   the bytes `00 00`, so even that gets a `StandAloneSig` row, through `GetTokenFromSig`, which in a
   dynamic module finds the first row with the same bytes before adding one.
 * The header is the one `IlmethodSize` picks: tiny when the method zeroes no locals, has no local
   signature, a max stack of at most 8 and fewer than 64 bytes of code; fat otherwise. Since every body
   has a local signature, every body `CreateType` writes is fat.
-* A method with no `ILGenerator`, an abstract one, has a max stack of 16 (`DefaultMaxStack`).
+* A `CreateType` that throws partway, as baking a method with an unmarked label does, has already
+  called `SetMethodIL` for the methods before it, and a retry calls it again. In a `Run` assembly a
+  method with code has released its body by then, and the retry refuses to bake it again; an abstract
+  method's empty code is given again and sets nothing. In a `RunAndCollect` assembly the body is kept,
+  and the second call overwrites the first RVA.
 * The token fixups are relocations for an image saved to disk; they change no byte in memory.
 
 Measured on .NET 10 (`GetMethodBody` of each method of `TypeBuilderSetMethodIL.cs`'s `T`): every body
@@ -707,14 +712,14 @@ reports the max stack, init-locals flag and IL it was built with, and a local si
 
 ### 4c: the decisions
 
-* **A method's body is a column the emitter fills in once.** `EmitScope.setMethodBody` refuses a method
-  that already has one; the extension check admits a body where there was none for a type not yet
-  created, and treats any other change to it as `RowChanged`.
+* **A method's body is a column the emitter fills in, as it does the implementation flags.**
+  `EmitScope.setMethodBody` overwrites any body the method had, and the extension check admits any
+  change to a body for a type not yet created; it cannot tell a body set again from a rewritten one, as
+  with the flags. Empty code sets no body. (A Codex review found the first version, which refused a
+  second body, crashing on a retried `CreateType` that real .NET completes.)
 * **A local signature of no locals reads back as an empty one.** ECMA-335 II.23.2.6 asks for at least
   one local, and SRM's decoder refuses a count of zero, but CoreCLR's emitter writes `07 00` and CoreCLR
   runs it, so `MethodInfo.readMethodBody` reads it as no locals rather than refusing it.
-* **An abstract method's body is ignored by the reader**, as it already was: `MethodInfo.read` reports a
-  method marked abstract as abstract, body or not, matching CoreCLR's reflection.
 * **Exception handlers are refused by name.** Their section of the body (small or fat clauses,
   `SectEH_Emit`) is 4d.
 
@@ -723,15 +728,19 @@ reports the max stack, init-locals flag and IL it was built with, and a local si
 * `TypeBuilderSetMethodIL.cs`, which exits 0 on .NET 10, creates an interface with an abstract method
   and a static class whose methods have no locals, one local, the same local signature with locals
   not zeroed, and calls to another of its methods, then invokes each. Its terminal-state check reads
-  each method's body bytes and the module's two `StandAloneSig` rows.
+  each method's body bytes, the abstract method's absent, and the module's two `StandAloneSig` rows.
+* `TypeBuilderCreateTypeRetry.cs`, which exits 0 on .NET 10, retries a `CreateType` that failed at an
+  unmarked label: once after an abstract method's empty code, which succeeds, and once after a method
+  with code, whose released body the retry refuses to bake. PawPrint refuses a `RunAndCollect`
+  assembly, so a body set a second time is tested only by the unit tests and the extension properties.
 * `TestEmitScopeReferences` checks `defineStandAloneSig` against real .NET's
   `ModuleBuilder.GetSignatureMetadataToken`, which reaches the same `GetTokenFromSig`.
 * `TestEmitScopeMethods` reads each `methodBody` back from the module's image with SRM, its header tiny
   exactly when CoreCLR's would be; the generator favours each bound of the tiny header.
-* The extension properties generate a body filled in, an abstract method's included, and a created
-  type's view includes its methods' bodies.
-* Each mutant of the handler is caught: the init-locals flag inverted, the local signature dropped, the
-  max stack off by one, and the body given to another method.
+* The extension properties generate a body set, over any the method had, for a method that is not
+  abstract, and a created type's view includes its methods' bodies.
+* Each mutant of the handler is caught: a body set for empty code, the init-locals flag inverted, the
+  local signature dropped, the max stack off by one, and the body given to another method.
 * Issue #2091's guest, `TypeBuilderInterfaceOverride.cs`, now passes and is un-parked.
 
 ### 4c: left to later stages
