@@ -666,3 +666,17 @@ module TestEmitScopeExtension =
             [
                 EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
             ]
+
+    [<Test>]
+    let ``a user string added is an extension, and one rewritten is refused`` () : unit =
+        let scope = EmitScope.create "M" Guid.Empty
+        let _, before = EmitScope.internUserString "first" scope
+        let _, appended = EmitScope.internUserString "second" before
+        let _, rewritten = EmitScope.internUserString "other" scope
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before appended
+        |> shouldEqual []
+
+        // Entries count from the first the scope interned, after the space every heap starts with.
+        EmitScopeExtension.violations ImmutableHashSet.Empty before rewritten
+        |> shouldEqual [ EmitScopeExtensionViolation.HeapEntryChanged (HeapIndex.UserString, 1) ]
