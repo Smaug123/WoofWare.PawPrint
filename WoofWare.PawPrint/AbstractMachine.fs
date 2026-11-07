@@ -505,15 +505,15 @@ module AbstractMachine =
             StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
         | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
             MulticastDelegateStub.execute loggerFactory baseClassTypes thread instruction state
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (_, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (_, typeNameOverrides)) ->
             UnsafeAccessorDispatch.executeInvalidKind
                 loggerFactory
                 baseClassTypes
                 thread
                 instruction
-                hasTypeNameOverrides
+                typeNameOverrides
                 state
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, typeNameOverrides)) ->
             UnsafeAccessorDispatch.execute
                 loggerFactory
                 baseClassTypes
@@ -521,7 +521,7 @@ module AbstractMachine =
                 instruction
                 kind
                 targetName
-                hasTypeNameOverrides
+                typeNameOverrides
                 state
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith

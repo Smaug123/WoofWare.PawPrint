@@ -471,28 +471,20 @@ module IlFormatting =
             ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
             [ header ; "  // No IL body (runtime-provided multicast delegate invoke stub)" ]
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, typeNameOverrides)) ->
             let nameStr =
                 match targetName with
                 | Some n -> $"\"{n}\""
                 | None -> "<attributed method name>"
 
-            let overrides =
-                if hasTypeNameOverrides then
-                    ", types named by [UnsafeAccessorType]"
-                else
-                    ""
+            let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
             [
                 header
                 $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr}{overrides})"
             ]
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, hasTypeNameOverrides)) ->
-            let overrides =
-                if hasTypeNameOverrides then
-                    ", types named by [UnsafeAccessorType]"
-                else
-                    ""
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, typeNameOverrides)) ->
+            let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
             [
                 header

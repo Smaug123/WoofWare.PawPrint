@@ -1638,25 +1638,17 @@ module Assembly =
                     Console.WriteLine $"<runtime-provided: StructureMarshaler<T> body (%O{operation})>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
                     Console.WriteLine "<runtime-provided: multicast delegate invoke stub>"
-                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, typeNameOverrides)) ->
                     let nameStr =
                         match targetName with
                         | Some n -> $"\"%s{n}\""
                         | None -> "<inherits attributed name>"
 
-                    let overrides =
-                        if hasTypeNameOverrides then
-                            ", types named by [UnsafeAccessorType]"
-                        else
-                            ""
+                    let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
                     Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}%s{overrides}>"
-                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, hasTypeNameOverrides)) ->
-                    let overrides =
-                        if hasTypeNameOverrides then
-                            ", types named by [UnsafeAccessorType]"
-                        else
-                            ""
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, typeNameOverrides)) ->
+                    let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
                     Console.WriteLine $"<runtime-provided: UnsafeAccessor naming no kind (%d{raw})%s{overrides}>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->

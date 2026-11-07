@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
+open System.Reflection
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -64,10 +65,10 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "CallStatic"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, typeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.StaticMethod
             name |> shouldEqual (Some "TargetStatic")
-            hasTypeNameOverrides |> shouldEqual false
+            typeNameOverrides |> shouldEqual []
         | other -> failwithf "Expected UnsafeAccessor (StaticMethod, Some \"TargetStatic\") but got %A" other
 
     [<Test>]
@@ -76,10 +77,10 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "CallInstance"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, typeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.Method
             name |> shouldEqual None
-            hasTypeNameOverrides |> shouldEqual false
+            typeNameOverrides |> shouldEqual []
         | other -> failwithf "Expected UnsafeAccessor (Method, None) but got %A" other
 
     [<Test>]
@@ -88,10 +89,10 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "GetField"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, typeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.Field
             name |> shouldEqual (Some "_field")
-            hasTypeNameOverrides |> shouldEqual false
+            typeNameOverrides |> shouldEqual []
         | other -> failwithf "Expected UnsafeAccessor (Field, Some \"_field\") but got %A" other
 
     /// A `[UnsafeAccessorType("...")]` on a parameter or on the return names the target type by
@@ -116,6 +117,19 @@ namespace UnsafeAccessorTest
 
         [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Get")]
         public static extern int Plain(object obj);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Get")]
+        [return: UnsafeAccessorType("Ret")]
+        public static extern object Several(
+            [UnsafeAccessorType("First")] object a,
+            object b,
+            [UnsafeAccessorType("Third&")] in object c);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Get")]
+        public static extern int NullName([UnsafeAccessorType(null)] object obj);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Get")]
+        public static extern int NonAscii([UnsafeAccessorType("Ünïcödé.Typé")] object obj);
     }
 }
 """
@@ -129,7 +143,7 @@ namespace UnsafeAccessorTest
 
         TypeIdentityTestHelpers.dumpedAssembly None bytes
 
-    let private typeNameOverrideOf (assy : DumpedAssembly) (methodName : string) : bool =
+    let private typeNameOverrideOf (assy : DumpedAssembly) (methodName : string) : UnsafeAccessorTypeOverride list =
         let ty =
             TypeIdentityTestHelpers.getTopLevelTypeDef assy "UnsafeAccessorTest" "Overridden"
 
@@ -139,26 +153,67 @@ namespace UnsafeAccessorTest
             |> Option.defaultWith (fun () -> failwithf "Missing method %s" methodName)
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (_, _, hasTypeNameOverrides)) ->
-            hasTypeNameOverrides
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (_, _, typeNameOverrides)) -> typeNameOverrides
         | other -> failwithf "Expected UnsafeAccessor but got %A" other
 
-    [<Test>]
-    let ``UnsafeAccessorType on a parameter is detected`` () =
-        compileWithTypeNameOverrides ()
-        |> fun assy -> typeNameOverrideOf assy "OnParameter" |> shouldEqual true
+    let private named (sequence : int) (attributes : ParameterAttributes) (name : string) : UnsafeAccessorTypeOverride =
+        {
+            Sequence = sequence
+            Attributes = attributes
+            Argument = UnsafeAccessorTypeArgument.Named name
+        }
 
     [<Test>]
-    let ``UnsafeAccessorType on the return is detected`` () =
+    let ``UnsafeAccessorType on a parameter is read`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "OnParameter"
+        |> shouldEqual [ named 1 ParameterAttributes.None "Some.Other.Type, Some.Other.Assembly" ]
+
+    [<Test>]
+    let ``UnsafeAccessorType on the return is read`` () =
         // The return's attributes live on the Param row with sequence number 0, which
         // `Parameter.readAll` drops; the scan must read the raw rows rather than that list.
         compileWithTypeNameOverrides ()
-        |> fun assy -> typeNameOverrideOf assy "OnReturn" |> shouldEqual true
+        |> fun assy -> typeNameOverrideOf assy "OnReturn"
+        |> shouldEqual [ named 0 ParameterAttributes.None "Some.Other.Type, Some.Other.Assembly" ]
 
     [<Test>]
-    let ``A declaration with no UnsafeAccessorType is not flagged`` () =
+    let ``A declaration with no UnsafeAccessorType has no overrides`` () =
         compileWithTypeNameOverrides ()
-        |> fun assy -> typeNameOverrideOf assy "Plain" |> shouldEqual false
+        |> fun assy -> typeNameOverrideOf assy "Plain" |> shouldEqual []
+
+    /// Param-row order is the order CoreCLR resolves the names in, and the row's flags are what
+    /// decide whether a retyped byref is written back (`in` is not). A parameter carrying no
+    /// attribute contributes nothing, though its Param row is there for its name.
+    [<Test>]
+    let ``Several overrides are read in Param-row order with their rows' flags`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "Several"
+        |> shouldEqual
+            [
+                named 0 ParameterAttributes.None "Ret"
+                named 1 ParameterAttributes.None "First"
+                named 3 ParameterAttributes.In "Third&"
+            ]
+
+    [<Test>]
+    let ``A null type name is read as null rather than as a name`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "NullName"
+        |> shouldEqual
+            [
+                {
+                    Sequence = 1
+                    Attributes = ParameterAttributes.None
+                    Argument = UnsafeAccessorTypeArgument.Null
+                }
+            ]
+
+    [<Test>]
+    let ``A type name is decoded as UTF-8`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "NonAscii"
+        |> shouldEqual [ named 1 ParameterAttributes.None "Ünïcödé.Typé" ]
 
     /// An explicitly supplied `Name = null` is not the same as an absent `Name`: CoreCLR's
     /// `TryParseUnsafeAccessorAttribute` keys the "use the attributed method's name" default off the

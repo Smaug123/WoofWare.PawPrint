@@ -178,6 +178,59 @@ type UnsafeAccessorKind =
     | Field
     | StaticField
 
+/// <summary>
+/// The string argument of one <c>[UnsafeAccessorType("...")]</c> attribute.
+/// </summary>
+[<RequireQualifiedAccess>]
+type UnsafeAccessorTypeArgument =
+    /// A type name, as the attribute spells it: possibly assembly-qualified, possibly naming one of
+    /// the accessor's own type parameters as <c>!0</c> or <c>!!0</c>.
+    | Named of typeName : string
+    /// <c>[UnsafeAccessorType(null)]</c>, which C# accepts. CoreCLR reads the argument with
+    /// <c>CustomAttributeParser::GetNonNullString</c>, which fails on it.
+    | Null
+    /// A blob that is not a prolog followed by one serialised string.
+    | Malformed
+
+/// <summary>
+/// One <c>[UnsafeAccessorType]</c> attribute on an <c>[UnsafeAccessor]</c> declaration, with the
+/// Param row that carries it. It names the type of the parameter (or of the return) by string,
+/// in place of the type the signature gives, which is how an accessor reaches a type its own
+/// assembly cannot reference.
+/// </summary>
+type UnsafeAccessorTypeOverride =
+    {
+        /// The Param row's sequence number: 0 for the return, <c>n</c> for the <c>n</c>th
+        /// parameter. Metadata does not bound it by the signature's parameter count; CoreCLR
+        /// refuses one beyond it.
+        Sequence : int
+        /// The Param row's flags. CoreCLR reads <c>In</c> to decide whether a retyped byref
+        /// parameter is written back once the target returns.
+        Attributes : ParameterAttributes
+        Argument : UnsafeAccessorTypeArgument
+    }
+
+[<RequireQualifiedAccess>]
+module UnsafeAccessorTypeOverride =
+    /// A one-line rendering of a declaration's overrides, for disassembly listings: empty when
+    /// there are none.
+    let describeAll (overrides : UnsafeAccessorTypeOverride list) : string =
+        if List.isEmpty overrides then
+            ""
+        else
+            overrides
+            |> List.map (fun o ->
+                let argument =
+                    match o.Argument with
+                    | UnsafeAccessorTypeArgument.Named name -> $"\"%s{name}\""
+                    | UnsafeAccessorTypeArgument.Null -> "null"
+                    | UnsafeAccessorTypeArgument.Malformed -> "<malformed>"
+
+                $"#%d{o.Sequence} = %s{argument}"
+            )
+            |> String.concat ", "
+            |> sprintf ", types named by [UnsafeAccessorType]: %s"
+
 /// What a struct-marshalling body does to a struct with layout: CoreCLR's <c>MarshalOperation</c>
 /// (.NET 10's stubgen.h, whose struct stub takes it as an argument, and .NET 11's dllimport.h,
 /// whose <c>StructureMarshaler&lt;T&gt;</c> has one body per operation).
@@ -247,16 +300,17 @@ type RuntimeBehaviour =
     /// as empty.
     /// </summary>
     /// <remarks>
-    /// <c>HasTypeNameOverrides</c> says that at least one of the declaration's parameters, or its
-    /// return, carries <c>[UnsafeAccessorType("...")]</c> — the .NET 10 attribute that names the
-    /// type by assembly-qualified string rather than by signature, so that a member of a type the
-    /// declaring assembly cannot reference can still be reached. Every one of CoreLib's own
-    /// <c>[UnsafeAccessor]</c> declarations is of that shape. Such a declaration's *signature*
-    /// therefore does not name the types dispatch must use, so a dispatcher reading the signature
-    /// would resolve against the wrong type (usually <c>System.Object</c>) and silently miss the
-    /// target; the flag exists so that it refuses instead.
+    /// <c>TypeNameOverrides</c> lists the declaration's <c>[UnsafeAccessorType("...")]</c>
+    /// attributes, in Param-row order, which is the order CoreCLR resolves them in. Each names the
+    /// type of a parameter or of the return by string rather than by signature, so that a member
+    /// of a type the declaring assembly cannot reference can still be reached; every one of
+    /// CoreLib's own <c>[UnsafeAccessor]</c> declarations is of that shape. Where the list is not
+    /// empty, the declaration's signature does not name the types dispatch must use.
     /// </remarks>
-    | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option * hasTypeNameOverrides : bool
+    | UnsafeAccessor of
+        kind : UnsafeAccessorKind *
+        targetName : string option *
+        typeNameOverrides : UnsafeAccessorTypeOverride list
 
     /// <summary>
     /// A C# 12+ <c>[UnsafeAccessor]</c> whose <c>UnsafeAccessorKind</c> is an integer that names
@@ -270,10 +324,10 @@ type RuntimeBehaviour =
     /// the refusal reaches the guest as a catchable <c>BadImageFormatException</c> on the
     /// accessor's first invocation rather than stopping the assembly from loading. It processes
     /// any <c>[UnsafeAccessorType]</c> attributes <em>before</em> that switch, so
-    /// <c>HasTypeNameOverrides</c> is carried here as well: a named type that fails to resolve
+    /// <c>TypeNameOverrides</c> is carried here as well: a named type that fails to resolve
     /// raises before the kind is ever examined.
     /// </remarks>
-    | UnsafeAccessorInvalidKind of raw : int * hasTypeNameOverrides : bool
+    | UnsafeAccessorInvalidKind of raw : int * typeNameOverrides : UnsafeAccessorTypeOverride list
 
     /// <summary>
     /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
@@ -1261,34 +1315,73 @@ module MethodInfo =
 
             if malformed then None else Some (kind, parsedName)
 
-    /// Does any of the method's Param rows carry <c>[UnsafeAccessorType("...")]</c>?
+    /// The string an <c>[UnsafeAccessorType]</c> attribute's blob gives: a prolog, then one
+    /// serialised string, as <c>ProcessUnsafeAccessorTypeAttributes</c> reads it.
+    let private readUnsafeAccessorTypeArgument (reader : byref<BlobReader>) : UnsafeAccessorTypeArgument =
+        if reader.RemainingBytes < 3 || reader.ReadUInt16 () <> 0x0001us then
+            UnsafeAccessorTypeArgument.Malformed
+        elif reader.ReadByte () = 0xFFuy then
+            UnsafeAccessorTypeArgument.Null
+        else
+            reader.Offset <- reader.Offset - 1
+            let mutable length = 0
+
+            if not (reader.TryReadCompressedInteger &length) || length > reader.RemainingBytes then
+                UnsafeAccessorTypeArgument.Malformed
+            else
+                UnsafeAccessorTypeArgument.Named (reader.ReadUTF8 length)
+
+    /// The method's <c>[UnsafeAccessorType("...")]</c> attributes, one per Param row carrying one,
+    /// in Param-row order.
     ///
     /// Every Param row is scanned, sequence number 0 included: that row is where a
     /// <c>[return: UnsafeAccessorType]</c> lands, and it is the row
-    /// <see cref="UnsafeAccessorKind.Constructor"/> names the target type through.
-    let private hasUnsafeAccessorTypeAttribute (metadataReader : MetadataReader) (methodDef : MethodDefinition) : bool =
+    /// <see cref="UnsafeAccessorKind.Constructor"/> names the target type through. A row carrying
+    /// more than one contributes its first, which is the one CoreCLR's
+    /// <c>GetCustomAttributeByName</c> finds.
+    let private readUnsafeAccessorTypeOverrides
+        (metadataReader : MetadataReader)
+        (methodDef : MethodDefinition)
+        : UnsafeAccessorTypeOverride list
+        =
         methodDef.GetParameters ()
-        |> Seq.exists (fun paramHandle ->
-            metadataReader.GetParameter(paramHandle).GetCustomAttributes ()
-            |> Seq.exists (fun attrHandle ->
+        |> Seq.choose (fun paramHandle ->
+            let parameter = metadataReader.GetParameter paramHandle
+
+            parameter.GetCustomAttributes ()
+            |> Seq.tryPick (fun attrHandle ->
                 let attr = metadataReader.GetCustomAttribute attrHandle
 
                 match tryReadAttributeTypeName metadataReader attr.Constructor with
-                | Some ("System.Runtime.CompilerServices", "UnsafeAccessorTypeAttribute") -> true
-                | _ -> false
+                | Some ("System.Runtime.CompilerServices", "UnsafeAccessorTypeAttribute") ->
+                    let argument =
+                        if attr.Value.IsNil then
+                            UnsafeAccessorTypeArgument.Malformed
+                        else
+                            let mutable reader = metadataReader.GetBlobReader attr.Value
+                            readUnsafeAccessorTypeArgument &reader
+
+                    Some
+                        {
+                            Sequence = parameter.SequenceNumber
+                            Attributes = parameter.Attributes
+                            Argument = argument
+                        }
+                | _ -> None
             )
         )
+        |> List.ofSeq
 
     /// <summary>
     /// Scan a method's custom attributes for <c>[UnsafeAccessor]</c> and parse the
-    /// kind and (optional) target name, together with whether any parameter or the return
-    /// carries <c>[UnsafeAccessorType]</c>. Returns <c>None</c> when the attribute is
+    /// kind and (optional) target name, together with the <c>[UnsafeAccessorType]</c> attributes
+    /// on its parameters and return. Returns <c>None</c> when the attribute is
     /// absent or the blob fails to match the expected shape.
     /// </summary>
     let private tryReadUnsafeAccessor
         (metadataReader : MetadataReader)
         (methodDef : MethodDefinition)
-        : (int * string option * bool) option
+        : (int * string option * UnsafeAccessorTypeOverride list) option
         =
         let mutable result = None
 
@@ -1305,7 +1398,7 @@ module MethodInfo =
 
         result
         |> Option.map (fun (kind, targetName) ->
-            kind, targetName, hasUnsafeAccessorTypeAttribute metadataReader methodDef
+            kind, targetName, readUnsafeAccessorTypeOverrides metadataReader methodDef
         )
 
     /// What this method's first `[System.Runtime.InteropServices.UnmanagedCallersOnly]` names as its
@@ -1395,7 +1488,7 @@ module MethodInfo =
                     // has no body at all, which CoreCLR refuses only when it is invoked; any
                     // other code type is unexpected, and we fail loudly to surface the gap.
                     match tryReadUnsafeAccessor metadataReader methodDef with
-                    | Some (rawKind, targetName, hasTypeNameOverrides) ->
+                    | Some (rawKind, targetName, typeNameOverrides) ->
                         let kind =
                             match rawKind with
                             | 0 -> Some UnsafeAccessorKind.Constructor
@@ -1408,11 +1501,11 @@ module MethodInfo =
                         match kind with
                         | Some kind ->
                             MethodBody.RuntimeProvided (
-                                RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)
+                                RuntimeBehaviour.UnsafeAccessor (kind, targetName, typeNameOverrides)
                             )
                         | None ->
                             MethodBody.RuntimeProvided (
-                                RuntimeBehaviour.UnsafeAccessorInvalidKind (rawKind, hasTypeNameOverrides)
+                                RuntimeBehaviour.UnsafeAccessorInvalidKind (rawKind, typeNameOverrides)
                             )
                     | None when
                         implAttrs &&& MethodImplAttributes.CodeTypeMask = MethodImplAttributes.IL

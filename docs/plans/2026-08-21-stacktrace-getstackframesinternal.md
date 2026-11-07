@@ -343,9 +343,8 @@ dispatch — or, more cheaply, making an unresolvable `[UnsafeAccessor]` raise a
 which the surrounding `try/catch` would swallow exactly as real .NET does when
 `System.Diagnostics.StackTrace.dll` is absent.
 
-Status: `[UnsafeAccessor]` dispatch has landed, and `CreateStackTraceSymbols()` now stops at
-`UnsafeAccessorDispatch`'s refusal of an accessor that names its type with `[UnsafeAccessorType]`.
-The cheaper route above would not be faithful: `System.Diagnostics.StackTrace` ships in the shared
-framework, so real .NET resolves the name and constructs a `StackTraceSymbols` rather than taking
-the `catch`. What remains is `[UnsafeAccessorType]` resolution, which CoreCLR does through the
-managed `TypeNameResolver.GetTypeHelper` and so through the `AssemblyNative_InternalLoad` QCall.
+Status: `[UnsafeAccessor]` dispatch and `[UnsafeAccessorType]` resolution have both landed, so
+`CreateStackTraceSymbols()` constructs a `StackTraceSymbols` as real .NET does (the cheaper route
+above would not have been faithful: `System.Diagnostics.StackTrace` ships in the shared framework,
+so real .NET resolves the name rather than taking the `catch`). `StackTraceFromExceptionNeedFileInfo.cs`
+covers the zero-frame case.
