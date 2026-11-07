@@ -257,6 +257,42 @@ module TestEmitScopeMethods =
         // The scope it was given is unchanged.
         (EmitScope.methodDefs scope).[0] |> shouldEqual row
 
+    /// `TypeBuilder_SetMethodIL` gives a method its body once, when its type is created; a method that
+    /// already has one is a fault in the caller.
+    [<Test>]
+    let ``a method's body is set once`` () : unit =
+        let scope = withTypes ()
+        let name, scope = EmitScope.internString "M" scope
+        let signature, scope = EmitScope.internBlob signatures.[0] scope
+
+        let row : MethodDefRow =
+            {
+                Owner = TypeDefRid 2
+                Body = None
+                ImplFlags = MethodImplAttributes.IL
+                Flags = MethodAttributes.Public ||| MethodAttributes.Static
+                Name = name
+                Signature = signature
+            }
+
+        let method, scope = EmitScope.addMethodDef row scope
+        let body = ImmutableArray.Create<byte> [| 0x06uy ; 0x2Auy |]
+        let filled = EmitScope.setMethodBody method body scope
+
+        (EmitScope.methodDefs filled).[0]
+        |> shouldEqual
+            { row with
+                Body = Some body
+            }
+
+        (EmitScope.methodDefs scope).[0] |> shouldEqual row
+
+        thrown (fun () -> EmitScope.setMethodBody method body filled)
+        |> shouldContainText "already has a body"
+
+        thrown (fun () -> EmitScope.setMethodBody (MethodDefRid 2) body scope)
+        |> shouldContainText "MethodDef RID 2"
+
     /// The body `TypeBuilder_SetMethodIL` writes, read back from the module's image by SRM's reader:
     /// the code, max stack, local signature and init-locals flag it was given, in a tiny header exactly
     /// when `COR_ILMETHOD::Size` picks one (no flags, no local signature, max stack at most 8 and fewer
