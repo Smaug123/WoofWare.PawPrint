@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c in progress, and with it the issue's guest passes. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -683,3 +683,57 @@ parent, so for most types this writes the same token again; it differs when the 
 ### 4b: left to later stages
 
 * `SetMethodIL` (4c), which the issue's guest now stops at, giving `Thing.get_Value` its body.
+
+### 4c: what CoreCLR's emitter writes
+
+Read from `TypeBuilder_SetMethodIL` (vm/comdynamic.cpp), `IlmethodSize` and `IlmethodEmit`
+(inc/corhlpr.cpp), `RegMeta::GetTokenFromSig` and `ImportHelper::FindStandAloneSig`, and
+`CreateTypeNoLock` and `RuntimeMethodBuilder.GetLocalSignature` and `GetMaxStack`:
+
+* `CreateTypeNoLock` calls `SetMethodIL` for every method, an abstract one included, which gets an
+  empty body. It always passes a local signature: for a method with no locals, `07 00`
+  (`IMAGE_CEE_CS_CALLCONV_LOCAL_SIG` and a count of zero). The QCall's test for an empty signature is
+  the bytes `00 00`, so even that gets a `StandAloneSig` row, through `GetTokenFromSig`, which in a
+  dynamic module finds the first row with the same bytes before adding one.
+* The header is the one `IlmethodSize` picks: tiny when the method zeroes no locals, has no local
+  signature, a max stack of at most 8 and fewer than 64 bytes of code; fat otherwise. Since every body
+  has a local signature, every body `CreateType` writes is fat.
+* A method with no `ILGenerator`, an abstract one, has a max stack of 16 (`DefaultMaxStack`).
+* The token fixups are relocations for an image saved to disk; they change no byte in memory.
+
+Measured on .NET 10 (`GetMethodBody` of each method of `TypeBuilderSetMethodIL.cs`'s `T`): every body
+reports the max stack, init-locals flag and IL it was built with, and a local signature token of
+`StandAloneSig` 1 (`07 00`) or 2 (`07 01 08`). The abstract method reports no body.
+
+### 4c: the decisions
+
+* **A method's body is a column the emitter fills in once.** `EmitScope.setMethodBody` refuses a method
+  that already has one; the extension check admits a body where there was none for a type not yet
+  created, and treats any other change to it as `RowChanged`.
+* **A local signature of no locals reads back as an empty one.** ECMA-335 II.23.2.6 asks for at least
+  one local, and SRM's decoder refuses a count of zero, but CoreCLR's emitter writes `07 00` and CoreCLR
+  runs it, so `MethodInfo.readMethodBody` reads it as no locals rather than refusing it.
+* **An abstract method's body is ignored by the reader**, as it already was: `MethodInfo.read` reports a
+  method marked abstract as abstract, body or not, matching CoreCLR's reflection.
+* **Exception handlers are refused by name.** Their section of the body (small or fat clauses,
+  `SectEH_Emit`) is 4d.
+
+### 4c: the oracle
+
+* `TypeBuilderSetMethodIL.cs`, which exits 0 on .NET 10, creates an interface with an abstract method
+  and a static class whose methods have no locals, one local, the same local signature with locals
+  not zeroed, and calls to another of its methods, then invokes each. Its terminal-state check reads
+  each method's body bytes and the module's two `StandAloneSig` rows.
+* `TestEmitScopeReferences` checks `defineStandAloneSig` against real .NET's
+  `ModuleBuilder.GetSignatureMetadataToken`, which reaches the same `GetTokenFromSig`.
+* `TestEmitScopeMethods` reads each `methodBody` back from the module's image with SRM, its header tiny
+  exactly when CoreCLR's would be; the generator favours each bound of the tiny header.
+* The extension properties generate a body filled in, an abstract method's included, and a created
+  type's view includes its methods' bodies.
+* Each mutant of the handler is caught: the init-locals flag inverted, the local signature dropped, the
+  max stack off by one, and the body given to another method.
+* Issue #2091's guest, `TypeBuilderInterfaceOverride.cs`, now passes and is un-parked.
+
+### 4c: left to later stages
+
+* Exception handlers in a body (4d).
