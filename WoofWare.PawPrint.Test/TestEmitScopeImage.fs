@@ -896,7 +896,7 @@ module TestEmitScopeImage =
             EmitScope.addMethodDef
                 {
                     Owner = TypeDefRid 2
-                    Body = Some (EmitScopeDefinitions.methodBody true 1us code (Some sigRow))
+                    Body = Some (EmitScopeDefinitions.methodBody true 1us code (Some sigRow) [])
                     ImplFlags = MethodImplAttributes.IL
                     Flags = MethodAttributes.Public ||| MethodAttributes.Static
                     Name = name

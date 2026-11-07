@@ -19,6 +19,31 @@ type TypeDefDefinition =
     /// </summary>
     | Duplicate of TypeDefRid
 
+/// What an exception clause's handler is (ECMA-335 II.19), as <c>TypeBuilder_SetMethodIL</c> writes the
+/// clause's flags and its class token or filter offset.
+[<RequireQualifiedAccess>]
+type ExceptionClauseHandler =
+    /// Catches exceptions assignable to the type this token names.
+    | Catch of classToken : int
+    /// Runs the filter that starts at this offset to decide whether to handle the exception.
+    | Filter of filterOffset : int
+    /// Runs however the try block is left. CoreCLR writes its class token as <c>mdTypeRefNil</c>.
+    | Finally
+    /// Runs when the try block is left by an exception. CoreCLR writes the class token the managed
+    /// caller passes, which is 0.
+    | Fault of classToken : int
+
+/// An exception clause of a method body: its handler, and the try block and handler it covers, each
+/// as an offset into the code and a length.
+type ExceptionClause =
+    {
+        Handler : ExceptionClauseHandler
+        TryOffset : int
+        TryLength : int
+        HandlerOffset : int
+        HandlerLength : int
+    }
+
 /// <summary>
 /// The definitions CoreCLR's emitter adds to a dynamic module's scope: types, each checked for a
 /// duplicate first (<c>MDDupTypeDef</c>), and methods, which are not (<c>MDDupMethodDef</c> is not set).
@@ -147,16 +172,20 @@ module EmitScopeDefinitions =
             scope
 
     /// <summary>
-    /// The body <c>TypeBuilder_SetMethodIL</c> writes for a method with no exception handlers: the
-    /// header <c>COR_ILMETHOD::Size</c> picks, then the code. A tiny header (ECMA-335 II.25.4.2) when
-    /// the method zeroes no locals, has no local signature, a max stack of at most 8 and fewer than 64
-    /// bytes of code; otherwise a fat one (II.25.4.3) holding all four.
+    /// The body <c>TypeBuilder_SetMethodIL</c> writes: the header <c>COR_ILMETHOD::Size</c> picks, the
+    /// code, and a section of the exception clauses if there are any. A tiny header (ECMA-335 II.25.4.2)
+    /// when the method zeroes no locals, has no local signature, a max stack of at most 8, fewer than 64
+    /// bytes of code and no clauses; otherwise a fat one (II.25.4.3) holding all four. The section
+    /// (II.25.4.5) follows the code at the next 4-byte boundary, and is small, as
+    /// <c>ExceptionHandlingSize</c> picks, when it holds at most 20 clauses whose offsets fit 16 bits and
+    /// whose lengths fit 8; otherwise fat.
     /// </summary>
     let methodBody
         (initLocals : bool)
         (maxStack : uint16)
         (code : ImmutableArray<byte>)
         (localSignature : StandAloneSigRid option)
+        (clauses : ExceptionClause list)
         : ImmutableArray<byte>
         =
         if code.IsDefault then
@@ -164,22 +193,34 @@ module EmitScopeDefinitions =
 
         let builder = ImmutableArray.CreateBuilder<byte> ()
 
-        if not initLocals && localSignature.IsNone && maxStack <= 8us && code.Length < 64 then
+        let little (value : int) (width : int) =
+            for i in 0 .. width - 1 do
+                builder.Add (byte (value >>> (8 * i)))
+
+        let moreSections = not clauses.IsEmpty
+
+        if
+            not initLocals
+            && localSignature.IsNone
+            && maxStack <= 8us
+            && code.Length < 64
+            && not moreSections
+        then
             // `CorILMethod_TinyFormat`, with the code size in the top six bits.
             builder.Add (byte (0x02 ||| (code.Length <<< 2)))
         else
-            // `CorILMethod_FatFormat`, `CorILMethod_InitLocals` if asked for, and the header's size of
-            // three 4-byte words in the top nibble.
-            let flags = 0x03 ||| (if initLocals then 0x10 else 0) ||| (3 <<< 12)
+            // `CorILMethod_FatFormat`, `CorILMethod_InitLocals` if asked for, `CorILMethod_MoreSects`
+            // if there are clauses, and the header's size of three 4-byte words in the top nibble.
+            let flags =
+                0x03
+                ||| (if initLocals then 0x10 else 0)
+                ||| (if moreSections then 0x08 else 0)
+                ||| (3 <<< 12)
 
             let localSignatureToken =
                 match localSignature with
                 | Some rid -> 0x11000000 ||| rid.Rid
                 | None -> 0
-
-            let little (value : int) (width : int) =
-                for i in 0 .. width - 1 do
-                    builder.Add (byte (value >>> (8 * i)))
 
             little flags 2
             little (int maxStack) 2
@@ -187,6 +228,59 @@ module EmitScopeDefinitions =
             little localSignatureToken 4
 
         builder.AddRange code
+
+        if moreSections then
+            // The header is 12 bytes, so aligning the code's end aligns the section.
+            while builder.Count % 4 <> 0 do
+                builder.Add 0uy
+
+            let flagsAndClassToken (clause : ExceptionClause) : int * int =
+                match clause.Handler with
+                | ExceptionClauseHandler.Catch token -> 0, token
+                | ExceptionClauseHandler.Filter offset -> 1, offset
+                // `mdTypeRefNil`.
+                | ExceptionClauseHandler.Finally -> 2, 0x01000000
+                | ExceptionClauseHandler.Fault token -> 4, token
+
+            let small =
+                clauses.Length <= 20
+                && clauses
+                   |> List.forall (fun c ->
+                       c.TryOffset <= 0xFFFF
+                       && c.TryLength <= 0xFF
+                       && c.HandlerOffset <= 0xFFFF
+                       && c.HandlerLength <= 0xFF
+                   )
+
+            if small then
+                // `CorILMethod_Sect_EHTable`, the data size in one byte, and two reserved bytes.
+                builder.Add 0x01uy
+                builder.Add (byte (4 + 12 * clauses.Length))
+                little 0 2
+
+                for clause in clauses do
+                    let flags, classToken = flagsAndClassToken clause
+                    little flags 2
+                    little clause.TryOffset 2
+                    little clause.TryLength 1
+                    little clause.HandlerOffset 2
+                    little clause.HandlerLength 1
+                    little classToken 4
+            else
+                // `CorILMethod_Sect_EHTable` with `CorILMethod_Sect_FatFormat`, and the data size in
+                // three bytes.
+                builder.Add 0x41uy
+                little (4 + 24 * clauses.Length) 3
+
+                for clause in clauses do
+                    let flags, classToken = flagsAndClassToken clause
+                    little flags 4
+                    little clause.TryOffset 4
+                    little clause.TryLength 4
+                    little clause.HandlerOffset 4
+                    little clause.HandlerLength 4
+                    little classToken 4
+
         builder.ToImmutable ()
 
     /// <summary>

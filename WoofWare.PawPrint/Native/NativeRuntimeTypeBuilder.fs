@@ -485,11 +485,56 @@ module NativeRuntimeTypeBuilder =
             let maxStack =
                 uint16 (NativeCall.int32Argument operation instruction.Arguments.[7] &&& 0xFFFF)
 
-            let exceptionCount = NativeCall.int32Argument operation instruction.Arguments.[9]
+            // `ExceptionHandler`, which mirrors the native `ExceptionInstance`: seven `int`s, the class
+            // token, try start and end, filter offset, handler start and end, and kind.
+            let clauses =
+                let count = NativeCall.int32Argument operation instruction.Arguments.[9]
 
-            if exceptionCount <> 0 then
-                failwith
-                    $"TODO: %s{operation}: 0x%08x{methodToken} of %s{moduleName} has %d{exceptionCount} exception handlers, whose section of the method body is not implemented"
+                if count < 0 then
+                    failwith $"%s{operation}: a negative count %d{count} of exception handlers"
+
+                let pointer =
+                    NativeCall.managedPointerOfPointerArgument operation "exceptions" instruction.Arguments.[8]
+
+                let raw =
+                    NativeCall.readCountedBytes
+                        $"%s{operation}: exceptions"
+                        ctx.BaseClassTypes
+                        state
+                        pointer
+                        (28 * count)
+
+                [
+                    for i in 0 .. count - 1 do
+                        let field (index : int) =
+                            System.BitConverter.ToInt32 (raw, 28 * i + 4 * index)
+
+                        let classToken = field 0
+                        let tryStart = field 1
+                        let tryEnd = field 2
+                        let filterOffset = field 3
+                        let handlerStart = field 4
+                        let handlerEnd = field 5
+
+                        let handler =
+                            match field 6 with
+                            | 0 -> ExceptionClauseHandler.Catch classToken
+                            | 1 -> ExceptionClauseHandler.Filter filterOffset
+                            | 2 -> ExceptionClauseHandler.Finally
+                            | 4 -> ExceptionClauseHandler.Fault classToken
+                            | kind ->
+                                failwith
+                                    $"%s{operation}: exception handler %d{i} of 0x%08x{methodToken} has kind %d{kind}, which is not one of the ExceptionHandlingClauseOptions the managed caller passes"
+
+                        yield
+                            {
+                                Handler = handler
+                                TryOffset = tryStart
+                                TryLength = tryEnd - tryStart
+                                HandlerOffset = handlerStart
+                                HandlerLength = handlerEnd - handlerStart
+                            }
+                ]
 
             // The token fixups are relocations for an image saved to disk: they move no byte of a
             // dynamic module's body in memory, so nothing here reads them.
@@ -507,7 +552,12 @@ module NativeRuntimeTypeBuilder =
                     Some rid, held
 
             let body =
-                EmitScopeDefinitions.methodBody initLocals maxStack (ImmutableArray.Create<byte> code) localSignatureRow
+                EmitScopeDefinitions.methodBody
+                    initLocals
+                    maxStack
+                    (ImmutableArray.Create<byte> code)
+                    localSignatureRow
+                    clauses
 
             // CoreCLR sets the method's RVA only for code that is not empty, so an abstract method,
             // whose code is, keeps no body; its local signature's row is added all the same.
