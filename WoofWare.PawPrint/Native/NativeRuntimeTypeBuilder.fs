@@ -313,9 +313,11 @@ module NativeRuntimeTypeBuilder =
             let attributes =
                 enum<FieldAttributes> (NativeCall.int32Argument operation instruction.Arguments.[5])
 
-            if attributes.HasFlag FieldAttributes.HasFieldRVA then
+            // `RuntimeFieldBuilder` clears `FieldAttributes.ReservedMask`, `HasFieldRVA` included, before
+            // calling this; a field's RVA arrives later, through `ModuleBuilder_SetFieldRVAContent`.
+            if attributes &&& FieldAttributes.ReservedMask <> enum<FieldAttributes> 0 then
                 failwith
-                    $"TODO: %s{operation}: %s{name} has HasFieldRVA, as ModuleBuilder.DefineInitializedData and DefineUninitializedData define a field, for which the emitter adds a FieldRVA row; an emit scope has no FieldRVA table yet"
+                    $"%s{operation}: %s{name} has the reserved flags 0x%x{int (attributes &&& FieldAttributes.ReservedMask)}, which the managed caller clears"
 
             let field, extended =
                 EmitScopeDefinitions.defineField owner name signature attributes held

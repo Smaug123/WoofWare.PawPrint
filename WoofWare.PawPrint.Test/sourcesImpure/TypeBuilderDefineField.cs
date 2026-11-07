@@ -5,8 +5,9 @@ using System.Reflection.Emit;
 // `TypeBuilder_DefineField`, through `TypeBuilder.DefineField`: a static field and an instance field,
 // each read and written by emitted IL that names it by its FieldDef token, and the fields of a value
 // type. Each method is invoked once: with dynamic code supported, reflection's second invocation of a
-// method emits an invoke stub, which is not what this tests. The emitter clears the reserved flags it keeps for itself, and marks a field named `value__`
-// special; the test harness reads those from the dynamic module's scope. Measured on .NET 10 to exit 0.
+// method emits an invoke stub, which is not what this tests. The managed caller clears the reserved
+// flags (`FieldAttributes.ReservedMask`), and the emitter marks a field named `value__` special; the test
+// harness reads the flags from the dynamic module's scope. Measured on .NET 10 to exit 0.
 //
 // Returns 0 on success, or the number of the first check that failed.
 
@@ -59,7 +60,7 @@ public static class Program
         // class Box { long value; public long Swap (long v) { long old = value; value = v; return old; } }
         TypeBuilder box = module.DefineType ("Box", TypeAttributes.Public | TypeAttributes.Class);
 
-        // `HasDefault` is reserved: the emitter clears it.
+        // `HasDefault` is reserved: `RuntimeFieldBuilder` clears it before the emitter sees it.
         FieldBuilder value = box.DefineField ("value", typeof (long), FieldAttributes.Private | FieldAttributes.HasDefault);
 
         if (value.MetadataToken != 0x04000002)

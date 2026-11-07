@@ -1560,8 +1560,9 @@ module TestImpureCases =
 
     /// `TypeBuilderDefineField.cs` has defined four fields, of `Counter` (TypeDef 2), `Box` (3) and
     /// `Pair` (4). This checks each row's owner, name, flags and signature as .NET 10 reports them for the
-    /// created fields: `Box.value` without the reserved `HasDefault` it was defined with, and
-    /// `Pair.value__` with `RTSpecialName` and `SpecialName`.
+    /// created fields: `Box.value` without the reserved `HasDefault` it was defined with, which the
+    /// managed caller clears, and `Pair.value__` with the `RTSpecialName` and `SpecialName` the emitter
+    /// adds.
     let private assertFieldRows (state : IlMachineState) : unit =
         let scope =
             state.TypeSystem._LoadedAssemblies.TryDynamicScope
