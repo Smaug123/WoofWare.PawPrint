@@ -450,22 +450,6 @@ module TestImpureCases =
             currentDirectoryCase "/héllo/中文/🐶",
             """A *short* non-ASCII directory, parked for an unrelated reason: it fits the stackalloc, so `SystemNative_GetCwd` succeeds and ERANGE never enters into it, but decoding the bytes back with `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path, which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a `cgt.un` between two byrefs into one stackalloc block ("refusing cgt.un: no structural order between byrefs"). The ASCII siblings in `cases` cover the same handler; what is missing is byref ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of such a path directly in the meantime."""
             {
-                FileName = "TypeBuilderInterfaceOverride.cs"
-                ExpectedReturnCode = 0
-                KernelConfig = KernelConfig.Default
-                AppContext =
-                    AppContextProperties.ofMap (
-                        Map.ofList
-                            [
-                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
-                            ]
-                    )
-                Oracle = OraclePolicy.Never
-                ExpectsUnhandledException = false
-                AssertTerminalState = None
-            },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value`, the MemberRef of `IThing.get_Value` and the MethodImpl between them, and `TypeBuilder_SetParentType` in `TypeBuilder.CreateType`, it stops at `TypeBuilder_SetMethodIL`, giving `Thing.get_Value` its body; each stage of the plan takes it a QCall further."""
-            {
                 FileName = "ModuleBuilderMemberRefTranslatedSignature.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -4878,6 +4862,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertMethodBodies
+            }
+            {
+                // Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it
+                // defines a type with `TypeBuilder`, creates it, instantiates it with
+                // `Activator.CreateInstance` and calls it through an interface. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderInterfaceOverride.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // `TypeBuilder_SetParentType`, which `TypeBuilder.CreateType` calls for a type with a
