@@ -464,3 +464,73 @@ module TestEmitScopeReferences =
         // Each is a row defining the request adds, so each may be recorded as naming its assembly.
         EmitScopeReferences.isAssemblyRefFor request first scope |> shouldEqual true
         EmitScopeReferences.isAssemblyRefFor request second scope |> shouldEqual true
+
+    /// `RegMeta::GetTokenFromSig`, which `TypeBuilder_SetMethodIL` calls for a body's local signature:
+    /// in a dynamic module, whose emitter checks for duplicate signatures, the first `StandAloneSig`
+    /// row with the same bytes (`ImportHelper::FindStandAloneSig`), or a new one. Real .NET's
+    /// `ModuleBuilder.GetSignatureMetadataToken` reaches the same function, so it is the oracle.
+    [<Test>]
+    let ``a local signature is found among the StandAloneSig rows before one is added, as real .NET finds it``
+        ()
+        : unit
+        =
+        let localTypes : Type list list =
+            [
+                []
+                [ typeof<int> ]
+                [ typeof<int> ; typeof<string> ]
+                [ typeof<string> ]
+                [ typeof<int> ; typeof<int> ]
+            ]
+
+        let found = ref 0
+        let added = ref 0
+
+        let property (choices : int list) : unit =
+            let assembly =
+                System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly (
+                    AssemblyName "StandAloneSigOracle",
+                    System.Reflection.Emit.AssemblyBuilderAccess.Run
+                )
+
+            let module' = assembly.DefineDynamicModule "StandAloneSigOracle"
+
+            let signatureOf (types : Type list) =
+                let helper = System.Reflection.Emit.SignatureHelper.GetLocalVarSigHelper module'
+
+                for t in types do
+                    helper.AddArgument t
+
+                helper
+
+            let mutable scope = EmitScope.create "StandAloneSigOracle" Guid.Empty
+
+            for choice in choices do
+                let helper = signatureOf localTypes.[choice % localTypes.Length]
+                let bytes = ImmutableArray.Create<byte> (helper.GetSignature ())
+                let expected = module'.GetSignatureMetadataToken helper
+                let before = (EmitScope.standAloneSigs scope).Count
+                let rid, next = EmitScopeReferences.defineStandAloneSig bytes scope
+
+                0x11000000 ||| rid.Rid |> shouldEqual expected
+
+                if (EmitScope.standAloneSigs next).Count = before then
+                    found.Value <- found.Value + 1
+                    Object.ReferenceEquals (next, scope) |> shouldEqual true
+                else
+                    added.Value <- added.Value + 1
+                    (EmitScope.standAloneSigs next).Count |> shouldEqual (before + 1)
+
+                    EmitScope.blobAt (EmitScope.standAloneSigs next).[rid.Rid - 1].Signature next
+                    |> List.ofSeq
+                    |> shouldEqual (List.ofSeq bytes)
+
+                scope <- next
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 100,
+            Prop.forAll (Arb.fromGen (Gen.listOf (Gen.choose (0, 100)) |> Gen.map List.ofSeq)) property
+        )
+
+        found.Value |> shouldBeGreaterThan 100
+        added.Value |> shouldBeGreaterThan 100

@@ -350,6 +350,35 @@ module EmitScopeReferences =
                 }
                 scope
 
+    /// <summary>
+    /// The <c>StandAloneSig</c> row holding <paramref name="signature"/>: the first with the same bytes,
+    /// as <c>ImportHelper::FindStandAloneSig</c> finds it in a dynamic module, whose emitter checks for
+    /// duplicate signatures, or a new one, as <c>RegMeta::GetTokenFromSig</c> adds it.
+    /// </summary>
+    /// <exception cref="ArgumentException">The signature is empty.</exception>
+    let defineStandAloneSig (signature : ImmutableArray<byte>) (scope : EmitScope) : StandAloneSigRid * EmitScope =
+        if signature.IsDefaultOrEmpty then
+            invalidArg (nameof signature) "a StandAloneSig's signature is never empty"
+
+        // Equal blobs are one heap entry, so a row matches exactly when it holds this offset.
+        let existing =
+            EmitScope.tryBlobOffset signature scope
+            |> Option.bind (fun offset ->
+                EmitScope.standAloneSigs scope
+                |> Seq.tryFindIndex (fun row -> row.Signature = offset)
+            )
+
+        match existing with
+        | Some index -> StandAloneSigRid (index + 1), scope
+        | None ->
+            let offset, scope = EmitScope.internBlob signature scope
+
+            EmitScope.addStandAloneSig
+                {
+                    Signature = offset
+                }
+                scope
+
     /// The bytes of a compressed unsigned integer (ECMA-335 II.23.2) in its shortest form.
     let private compressed (value : int) : byte list =
         if value < 0x80 then
