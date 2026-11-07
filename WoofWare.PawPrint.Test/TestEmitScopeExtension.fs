@@ -27,9 +27,11 @@ module TestEmitScopeExtension =
 
     let private rowNumber (handle : EntityHandle) : int = MetadataTokens.GetRowNumber handle
 
-    /// Everything a created type's `MethodTable` is built from, as handles into the image: its
-    /// methods with their implementation flags and parameters, its fields, its interface
-    /// implementations and its method impls.
+    /// Everything a created type's `MethodTable` is built from: its methods with their implementation
+    /// flags and parameters, and its fields, as handles into the image, and its interface
+    /// implementations and method impls in table order. Those two tables are sorted, so their RIDs
+    /// move as rows of lower classes are added; the runtime keeps no handle into them, only what each
+    /// row names.
     let private typeView (reader : MetadataReader) (typeDef : TypeDefRid) =
         let definition =
             reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle typeDef.Rid)
@@ -58,19 +60,14 @@ module TestEmitScopeExtension =
         let interfaces =
             [
                 for i in definition.GetInterfaceImplementations () do
-                    let row = reader.GetInterfaceImplementation i
-                    yield rowNumber (InterfaceImplementationHandle.op_Implicit i), token row.Interface
+                    yield token (reader.GetInterfaceImplementation i).Interface
             ]
 
         let impls =
             [
                 for i in definition.GetMethodImplementations () do
                     let row = reader.GetMethodImplementation i
-
-                    yield
-                        rowNumber (MethodImplementationHandle.op_Implicit i),
-                        token row.MethodBody,
-                        token row.MethodDeclaration
+                    yield token row.MethodBody, token row.MethodDeclaration
             ]
 
         methods, fields, interfaces, impls
@@ -78,8 +75,7 @@ module TestEmitScopeExtension =
     let private createdTypeNamed (violation : EmitScopeExtensionViolation) : TypeDefRid option =
         match violation with
         | EmitScopeExtensionViolation.AddedToCreatedType (_, _, createdType)
-        | EmitScopeExtensionViolation.FilledInCreatedType (_, _, createdType)
-        | EmitScopeExtensionViolation.SortedRowMoved (_, _, createdType, _, _) -> Some createdType
+        | EmitScopeExtensionViolation.FilledInCreatedType (_, _, createdType) -> Some createdType
         | EmitScopeExtensionViolation.RowChanged _
         | EmitScopeExtensionViolation.HeapEntryChanged _ -> None
 
@@ -100,7 +96,6 @@ module TestEmitScopeExtension =
     let ``appending to a scope is refused exactly for the created types it changes`` () : unit =
         let unchanged = ref 0
         let changed = ref 0
-        let moved = ref 0
         let added = ref 0
         let filled = ref 0
 
@@ -138,7 +133,6 @@ module TestEmitScopeExtension =
 
             for violation in violations do
                 match violation with
-                | EmitScopeExtensionViolation.SortedRowMoved _ -> moved.Value <- moved.Value + 1
                 | EmitScopeExtensionViolation.AddedToCreatedType _ -> added.Value <- added.Value + 1
                 | EmitScopeExtensionViolation.FilledInCreatedType _ -> filled.Value <- filled.Value + 1
                 | EmitScopeExtensionViolation.RowChanged _
@@ -163,9 +157,89 @@ module TestEmitScopeExtension =
         // Both answers, and every reason for refusing, must be common enough to be tested.
         unchanged.Value |> shouldBeGreaterThan 30
         changed.Value |> shouldBeGreaterThan 30
-        moved.Value |> shouldBeGreaterThan 10
         added.Value |> shouldBeGreaterThan 30
         filled.Value |> shouldBeGreaterThan 10
+
+    /// Rows appended for `<Module>`, the lowest TypeDef, sort before every other type's rows in
+    /// `InterfaceImpl` and `MethodImpl`, so they move every created type's rows of those tables in the
+    /// image while changing nothing about the type.
+    [<Test>]
+    let ``a created type's rows of a sorted table may move`` () : unit =
+        let moved = ref 0
+
+        let property (mvid : Guid) (ops : Op list) (choices : int list) : unit =
+            let before = apply mvid ops
+            let created = (created before choices).Remove (TypeDefRid 1)
+
+            let after =
+                (before, created)
+                ||> Seq.fold (fun scope createdType ->
+                    let scope =
+                        EmitScope.addInterfaceImpl
+                            {
+                                Class = TypeDefRid 1
+                                Interface = TypeDefOrRef.TypeDef createdType
+                            }
+                            scope
+
+                    if (EmitScope.methodDefs scope).Count = 0 then
+                        scope
+                    else
+                        EmitScope.addMethodImpl
+                            {
+                                Class = TypeDefRid 1
+                                Body = MethodDefOrRef.MethodDef (MethodDefRid 1)
+                                Declaration = MethodDefOrRef.MethodDef (MethodDefRid 1)
+                            }
+                            scope
+                )
+
+            EmitScopeExtension.violations created before after |> shouldEqual []
+
+            let beforePe, beforeReader = readImage (EmitScopeImage.write before)
+            use _ = beforePe
+            let afterPe, afterReader = readImage (EmitScopeImage.write after)
+            use _ = afterPe
+
+            for t in created do
+                typeView afterReader t |> shouldEqual (typeView beforeReader t)
+
+            let movedIn
+                (classes : TypeDefRid seq)
+                (beforeRids : ImmutableArray<int>)
+                (afterRids : ImmutableArray<int>)
+                =
+                Seq.zip3 classes beforeRids afterRids
+                |> Seq.exists (fun (cls, b, a) -> created.Contains cls && b <> a)
+
+            if
+                movedIn
+                    (EmitScope.interfaceImpls before |> Seq.map (fun row -> row.Class))
+                    (EmitScopeImage.interfaceImplRids before)
+                    (EmitScopeImage.interfaceImplRids after)
+                || movedIn
+                    (EmitScope.methodImpls before |> Seq.map (fun row -> row.Class))
+                    (EmitScopeImage.methodImplRids before)
+                    (EmitScopeImage.methodImplRids after)
+            then
+                moved.Value <- moved.Value + 1
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll
+                (Arb.fromGen (
+                    gen {
+                        let! mvid = genGuid
+                        let! ops = genOps
+                        let! choices = Gen.choose (1, 3) |> Gen.bind (fun n -> Gen.listOfLength n choice)
+                        return mvid, ops, List.ofSeq choices
+                    }
+                ))
+                (fun (mvid, ops, choices) -> property mvid ops choices)
+        )
+
+        // Most samples must move a created type's rows, or the property barely tests the admission.
+        moved.Value |> shouldBeGreaterThan 100
 
     /// What reading `after`'s image where `before`'s was read shows to have changed, each as a
     /// requirement on the violations reported: a category, for counting, and whether the violations
@@ -321,7 +395,7 @@ module TestEmitScopeExtension =
                     if not (met violations) then
                         failwith $"a %s{category} difference is not among the violations %A{violations}"
 
-                // Nothing is created, so nothing can be added to or moved within a created type.
+                // Nothing is created, so nothing can be added to or filled in a created type.
                 violations |> List.choose createdTypeNamed |> shouldEqual []
 
         Check.One (

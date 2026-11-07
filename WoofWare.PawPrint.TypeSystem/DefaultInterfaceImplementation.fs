@@ -68,13 +68,7 @@ module internal DefaultInterfaceImplementation =
         let assembly, _ =
             ConcreteMethodTable.definitionMetadata operation state levelTy.Identity
 
-        let rows =
-            levelTypeInfo.MethodImpls
-            |> Seq.sortBy (fun (KeyValue (handle, _)) ->
-                MetadataToken.toInt (MetadataToken.MethodImplementation handle)
-            )
-            |> Seq.map (fun (KeyValue (_, impl)) -> impl)
-            |> List.ofSeq
+        let rows = List.ofSeq levelTypeInfo.MethodImpls
 
         // The body `row` supplies, if it names `method` on an instantiation `accepts` admits.
         let bodyOf

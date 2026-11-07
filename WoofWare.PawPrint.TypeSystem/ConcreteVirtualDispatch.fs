@@ -578,7 +578,7 @@ module ConcreteVirtualDispatch =
             let currentAssy =
                 state._LoadedAssemblies.ByDefinitionName currentTy.Identity.AssemblyFullName
 
-            (state, [], currentTypeInfo.MethodImpls.Values)
+            (state, [], currentTypeInfo.MethodImpls)
             |||> StateResult.fold (fun state acc impl ->
                 if not (methodImplDeclarationCouldMatch currentAssy impl.Declaration) then
                     state, Ok acc

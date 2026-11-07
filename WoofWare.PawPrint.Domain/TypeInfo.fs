@@ -102,9 +102,14 @@ type TypeInfo<'generic, 'fieldGeneric> =
 
         /// <summary>
         /// Method implementation mappings for this type, often used for interface implementations
-        /// or overriding virtual methods from base classes.
+        /// or overriding virtual methods from base classes, in the order of the type's rows in the
+        /// <c>MethodImpl</c> table.
         /// </summary>
-        MethodImpls : ImmutableDictionary<MethodImplementationHandle, MethodImplParsed>
+        /// <remarks>
+        /// The rows' handles are not kept: <c>MethodImpl</c> is a sorted table, so in a dynamic
+        /// module's image a row's RID moves when a row of a type with a lower RID is added.
+        /// </remarks>
+        MethodImpls : MethodImplParsed ImmutableArray
 
         /// <summary>
         /// Fields defined in this type.
@@ -552,19 +557,18 @@ module TypeInfo =
         let methods = typeDef.GetMethods ()
 
         let methodImpls =
-            typeDef.GetMethodImplementations ()
-            |> Seq.map (fun handle ->
+            let result = ImmutableArray.CreateBuilder ()
+
+            for handle in typeDef.GetMethodImplementations () do
                 let m = metadataReader.GetMethodImplementation handle
 
-                let impl : MethodImplParsed =
-                    {
-                        Declaration = MetadataToken.ofEntityHandle m.MethodDeclaration
-                        Body = MetadataToken.ofEntityHandle m.MethodBody
-                    }
+                {
+                    Declaration = MetadataToken.ofEntityHandle m.MethodDeclaration
+                    Body = MetadataToken.ofEntityHandle m.MethodBody
+                }
+                |> result.Add
 
-                KeyValuePair (handle, impl)
-            )
-            |> ImmutableDictionary.CreateRange
+            result.ToImmutable ()
 
         let fields =
             typeDef.GetFields ()

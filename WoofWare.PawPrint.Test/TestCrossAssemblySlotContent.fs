@@ -217,7 +217,7 @@ public static class Driver
             | Some typeInfo -> typeInfo
 
         let declarations =
-            cg.MethodImpls.Values |> Seq.map (fun impl -> impl.Declaration) |> List.ofSeq
+            cg.MethodImpls |> Seq.map (fun impl -> impl.Declaration) |> List.ofSeq
 
         // Exactly one MethodImpl, and its declaration is a MemberRef -- not a MethodDef, which is what
         // a same-assembly declaration would give.

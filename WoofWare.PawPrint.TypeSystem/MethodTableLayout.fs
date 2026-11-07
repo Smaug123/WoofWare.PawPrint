@@ -1532,7 +1532,7 @@ module MethodTableLayout =
             )
 
         match
-            ((content, Map.empty), typeInfo.MethodImpls.Values |> List.ofSeq)
+            ((content, Map.empty), List.ofSeq typeInfo.MethodImpls)
             ||> StateResult.fold applyMethodImpl ctx
         with
         | ctx, Error failure -> ctx, Error failure
