@@ -27,8 +27,8 @@ module TestEmitScopeExtension =
 
     let private rowNumber (handle : EntityHandle) : int = MetadataTokens.GetRowNumber handle
 
-    /// Everything a created type's `MethodTable` is built from: its methods with their implementation
-    /// flags and parameters, and its fields, as handles into the image, and its interface
+    /// Everything a created type's `MethodTable` is built from: its parent, its methods with their
+    /// implementation flags and parameters, and its fields, as handles into the image, and its interface
     /// implementations and method impls in table order. Those two tables are sorted, so their RIDs
     /// move as rows of lower classes are added; the runtime keeps no handle into them, only what each
     /// row names.
@@ -70,7 +70,7 @@ module TestEmitScopeExtension =
                     yield token row.MethodBody, token row.MethodDeclaration
             ]
 
-        methods, fields, interfaces, impls
+        token definition.BaseType, methods, fields, interfaces, impls
 
     let private createdTypeNamed (violation : EmitScopeExtensionViolation) : TypeDefRid option =
         match violation with
@@ -539,3 +539,57 @@ module TestEmitScopeExtension =
             for createdTypes in [ ImmutableHashSet.Empty ; created ] do
                 EmitScopeExtension.violations createdTypes before after
                 |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
+
+    [<Test>]
+    let ``only a type's parent may be filled in, and only while it is not created`` () : unit =
+        let scope = apply Guid.Empty []
+        let first, scope = EmitScope.internString "First" scope
+        let second, scope = EmitScope.internString "Second" scope
+
+        let typeDef (name : StringOffset) (flags : Reflection.TypeAttributes) : TypeDefRow =
+            {
+                Flags = flags
+                Name = name
+                Namespace = StringOffset 0
+                Extends = None
+            }
+
+        let firstType, scope =
+            EmitScope.addTypeDef (typeDef first Reflection.TypeAttributes.Public) scope
+
+        let before, secondType =
+            let secondType, scope =
+                EmitScope.addTypeDef (typeDef second Reflection.TypeAttributes.Public) scope
+
+            scope, secondType
+
+        let filled =
+            EmitScope.setTypeDefExtends secondType (TypeDefOrRef.TypeDef firstType) before
+
+        let reflagged =
+            EmitScope.addTypeDef (typeDef second Reflection.TypeAttributes.Sealed) scope
+            |> snd
+
+        let both =
+            EmitScope.setTypeDefExtends secondType (TypeDefOrRef.TypeDef firstType) reflagged
+
+        let created = ImmutableHashSet.Create secondType
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before filled
+        |> shouldEqual []
+
+        // Another type's being created does not fix this one's parent.
+        EmitScopeExtension.violations (ImmutableHashSet.Create firstType) before filled
+        |> shouldEqual []
+
+        EmitScopeExtension.violations created before filled
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.TypeDef, secondType.Rid, secondType)
+            ]
+
+        // Any other column is fixed once the row is added, filled in alongside or not.
+        for after in [ reflagged ; both ] do
+            for createdTypes in [ ImmutableHashSet.Empty ; created ] do
+                EmitScopeExtension.violations createdTypes before after
+                |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, secondType.Rid) ]
