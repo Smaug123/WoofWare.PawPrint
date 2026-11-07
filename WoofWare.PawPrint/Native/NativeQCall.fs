@@ -156,6 +156,8 @@ module NativeQCall =
             "ModuleBuilder_GetTypeRef", NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTypeRef"
             "ModuleBuilder_GetStringConstant",
             NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetStringConstant"
+            "ModuleBuilder_GetTokenFromTypeSpec",
+            NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTokenFromTypeSpec"
             "ModuleBuilder_GetMemberRefOfMethodInfo",
             NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetMemberRefOfMethodInfo"
             "TypeBuilder_DefineType", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_DefineType"

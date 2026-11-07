@@ -59,9 +59,7 @@ module NativeRuntimeTypeBuilder =
             match token >>> 24 &&& 0xFF with
             | 0x01 -> EmitScope.tryTypeRefRid rid scope |> Option.map TypeDefOrRef.TypeRef
             | 0x02 -> EmitScope.tryTypeDefRid rid scope |> Option.map TypeDefOrRef.TypeDef
-            | 0x1B ->
-                failwith
-                    $"TODO: %s{operation}: %s{what} is the TypeSpec 0x%08x{token}, which ModuleBuilder_GetTokenFromTypeSpec hands out, and an emit scope has no TypeSpec table yet"
+            | 0x1B -> EmitScope.tryTypeSpecRid rid scope |> Option.map TypeDefOrRef.TypeSpec
             | _ ->
                 failwith
                     $"%s{operation}: %s{what} 0x%08x{token} is not a TypeDef, TypeRef or TypeSpec token, which the managed caller's GetTypeTokenInternal alone hands out"

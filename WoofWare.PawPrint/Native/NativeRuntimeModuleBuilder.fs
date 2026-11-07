@@ -92,6 +92,54 @@ module NativeRuntimeModuleBuilder =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | "ModuleBuilder_GetTokenFromTypeSpec",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeModuleBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
+            moduleGenerics.IsEmpty
+            ->
+            let operation = "ModuleBuilder_GetTokenFromTypeSpec"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held =
+                match state.TypeSystem._LoadedAssemblies.TryDynamicScope moduleName with
+                | Some scope -> scope
+                | None ->
+                    failwith
+                        $"%s{operation}: %s{moduleName} is not a dynamic assembly, and only a RuntimeModuleBuilder's module reaches this QCall"
+
+            // A signature naming a type the managed caller could not spell as a token
+            // (`ELEMENT_TYPE_INTERNAL`) is refused by name: `readCountedBytes` reads numbers only.
+            let signature =
+                NativeCall.readCountedBytes
+                    operation
+                    ctx.BaseClassTypes
+                    state
+                    (NativeCall.managedPointerOfPointerArgument operation "pSignature" instruction.Arguments.[1])
+                    (NativeCall.int32Argument operation instruction.Arguments.[2])
+                |> System.Collections.Immutable.ImmutableArray.CreateRange
+
+            let typeSpec, extended = EmitScopeReferences.defineTypeSpec signature held
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 (0x1B000000 ||| typeSpec.Rid)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | "ModuleBuilder_GetTypeRef",
           "System.Private.CoreLib",
           "System.Reflection.Emit",
