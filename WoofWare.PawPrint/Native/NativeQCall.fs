@@ -163,6 +163,7 @@ module NativeQCall =
             "TypeBuilder_TermCreateClass", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_TermCreateClass"
             "TypeBuilder_SetParentType", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_SetParentType"
             "TypeBuilder_SetMethodIL", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_SetMethodIL"
+            "TypeBuilder_DefineField", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_DefineField"
             "AssemblyNative_InitializeAssemblyLoadContext",
             NativeAssemblyLoadContext.tryExecuteQCall "AssemblyNative_InitializeAssemblyLoadContext"
             "AssemblyNative_GetLoadContextForAssembly",
