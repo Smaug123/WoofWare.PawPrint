@@ -322,6 +322,25 @@ module NativeRuntimeFieldHandle =
             failwith
                 $"%s{operation}: declaring type %O{notClosed} is not closed; CoreCLR raises NotSupportedException for a declaring type shared by generic instantiations (invokeutil.cpp:777), and the managed caller refuses one containing generic parameters before reaching here"
 
+    /// Whether `declaringTypeHandle` is an instantiation of `Nullable<T>`. Both QCalls below
+    /// refuse such a declaring type with `NotSupportedException` before anything else they do —
+    /// running the class initialiser, inspecting the target — as CoreCLR's
+    /// `InvokeUtil::SetValidField` and `InvokeUtil::GetFieldValue` do (invokeutil.cpp:775, 999):
+    /// `hasValue` and `value` cannot be read or written independently through a box, which holds
+    /// only the underlying `T`.
+    let private declaringTypeIsNullable
+        (ctx : NativeCallContext)
+        (operation : string)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : bool
+        =
+        match AllConcreteTypes.lookup declaringTypeHandle state.TypeSystem.ConcreteTypes with
+        | Some ct -> InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable
+        | None ->
+            failwith
+                $"BUG: %s{operation}: the field handle's declaring type %O{declaringTypeHandle} is not in the concrete type table, though the field-handle registry recorded it"
+
     /// The `bool` a `[MarshalAs(UnmanagedType.Bool)] ref bool` argument addresses, which reaches
     /// us as a four-byte cell.
     let private readIsClassInitialized
@@ -721,6 +740,14 @@ module NativeRuntimeFieldHandle =
 
             let declaringTypeHandle = declaringTypeOfFieldHandle operation fieldHandle
 
+            // Unreachable through `FieldInfo.GetValue`, whose `FieldAccessor` refuses a
+            // `Nullable<T>` declaring type with `FieldAccessException` before calling us
+            // (FieldAccessor.cs:24, 195); only a caller of the internal wrapper gets here.
+            if declaringTypeIsNullable ctx operation declaringTypeHandle state then
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.NotSupportedException state
+                |> Some
+            else
+
             let isClassInitializedPtr =
                 NativeCall.managedPointerOfPointerArgument operation "pIsClassInitialized" instruction.Arguments.[4]
 
@@ -853,6 +880,14 @@ module NativeRuntimeFieldHandle =
                 FieldRvaData.fieldForHandle operation fieldHandle state
 
             let declaringTypeHandle = declaringTypeOfFieldHandle operation fieldHandle
+
+            // Unreachable through `FieldInfo.SetValue`, whose `FieldAccessor` refuses a
+            // `Nullable<T>` declaring type with `FieldAccessException` before calling us
+            // (FieldAccessor.cs:24, 311); only a caller of the internal wrapper gets here.
+            if declaringTypeIsNullable ctx operation declaringTypeHandle state then
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.NotSupportedException state
+                |> Some
+            else
 
             let isClassInitializedPtr =
                 NativeCall.managedPointerOfPointerArgument operation "pIsClassInitialized" instruction.Arguments.[5]
