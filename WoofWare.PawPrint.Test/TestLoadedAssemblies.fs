@@ -768,6 +768,79 @@ module TestLoadedAssemblies =
         | None -> Assert.Fail "Expected a method added to a created type to be refused"
         | Some message -> message |> shouldContainText "AddedToCreatedType"
 
+    /// The image sorts `InterfaceImpl` and `MethodImpl` by class, so a row added for a type with a lower
+    /// RID than a created type's moves the created type's rows. Their RIDs are not visible to a guest,
+    /// and the runtime keeps none of them, so the created type reads back the same.
+    [<Test>]
+    let ``a created type's interface implementations and method impls may move in the image`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let first, scope = dynamicScope "Sorted" |> withType "First"
+        let second, scope = withType "Second" scope
+        // MethodDefs 1 and 2 are First's, 3 and 4 Second's.
+        let scope =
+            scope
+            |> withMethod first
+            |> withMethod first
+            |> withMethod second
+            |> withMethod second
+
+        let impl (owner : TypeDefRid) (body : int) (declaration : int) (scope : EmitScope) : EmitScope =
+            EmitScope.addMethodImpl
+                {
+                    Class = owner
+                    Body = MethodDefOrRef.MethodDef (MethodDefRid body)
+                    Declaration = MethodDefOrRef.MethodDef (MethodDefRid declaration)
+                }
+                scope
+
+        let implements (owner : TypeDefRid) (target : TypeDefRid) (scope : EmitScope) : EmitScope =
+            EmitScope.addInterfaceImpl
+                {
+                    Class = owner
+                    Interface = TypeDefOrRef.TypeDef target
+                }
+                scope
+
+        // Second's rows, two of each so that their order is tested too.
+        let scope =
+            scope
+            |> impl second 4 2
+            |> impl second 3 1
+            |> implements second first
+            |> implements second second
+
+        let loaded, dynamic = registerDynamic scope LoadedAssemblies.empty
+        let name = dynamic.DefinitionFullName
+        let loaded = loaded.WithCreatedType name second
+
+        // Rows for First, which sorts before Second, so Second's rows move in the image.
+        let extended = scope |> impl first 1 3 |> implements first second
+
+        EmitScopeImage.methodImplRids extended
+        |> List.ofSeq
+        |> shouldEqual [ 2 ; 3 ; 1 ]
+
+        EmitScopeImage.interfaceImplRids extended
+        |> List.ofSeq
+        |> shouldEqual [ 2 ; 3 ; 1 ]
+
+        let loaded, replaced = loaded.WithEmitScope loggerFactory name extended
+        loaded.IsCreatedType name second |> shouldEqual true
+
+        let typeInfo (assembly : DumpedAssembly) =
+            assembly.TypeDefs.[MetadataTokens.TypeDefinitionHandle second.Rid]
+
+        List.ofSeq (typeInfo replaced).MethodImpls
+        |> shouldEqual (List.ofSeq (typeInfo dynamic).MethodImpls)
+
+        List.ofSeq (typeInfo replaced).ImplementedInterfaces
+        |> shouldEqual (List.ofSeq (typeInfo dynamic).ImplementedInterfaces)
+
+        // A row for the created type itself is still refused.
+        match thrownBy (fun () -> loaded.WithEmitScope loggerFactory name (impl second 3 1 extended)) with
+        | None -> Assert.Fail "Expected a method impl added to a created type to be refused"
+        | Some message -> message |> shouldContainText "AddedToCreatedType"
+
     [<Test>]
     let ``a type is created once, and only a type the scope has`` () : unit =
         let first, scope = dynamicScope "CreatedOnce" |> withType "First"

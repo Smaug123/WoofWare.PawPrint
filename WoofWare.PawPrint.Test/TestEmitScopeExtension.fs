@@ -27,9 +27,11 @@ module TestEmitScopeExtension =
 
     let private rowNumber (handle : EntityHandle) : int = MetadataTokens.GetRowNumber handle
 
-    /// Everything a created type's `MethodTable` is built from, as handles into the image: its
-    /// methods with their implementation flags and parameters, its fields, its interface
-    /// implementations and its method impls.
+    /// Everything a created type's `MethodTable` is built from: its methods with their implementation
+    /// flags and parameters, and its fields, as handles into the image, and its interface
+    /// implementations and method impls in table order. Those two tables are sorted, so their RIDs
+    /// move as rows of lower classes are added; the runtime keeps no handle into them, only what each
+    /// row names.
     let private typeView (reader : MetadataReader) (typeDef : TypeDefRid) =
         let definition =
             reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle typeDef.Rid)
@@ -58,19 +60,14 @@ module TestEmitScopeExtension =
         let interfaces =
             [
                 for i in definition.GetInterfaceImplementations () do
-                    let row = reader.GetInterfaceImplementation i
-                    yield rowNumber (InterfaceImplementationHandle.op_Implicit i), token row.Interface
+                    yield token (reader.GetInterfaceImplementation i).Interface
             ]
 
         let impls =
             [
                 for i in definition.GetMethodImplementations () do
                     let row = reader.GetMethodImplementation i
-
-                    yield
-                        rowNumber (MethodImplementationHandle.op_Implicit i),
-                        token row.MethodBody,
-                        token row.MethodDeclaration
+                    yield token row.MethodBody, token row.MethodDeclaration
             ]
 
         methods, fields, interfaces, impls
@@ -136,11 +133,36 @@ module TestEmitScopeExtension =
             else
                 changed.Value <- changed.Value + 1
 
+            // A created type's row in a sorted table whose image RID differs, which the check must
+            // admit when nothing else about the type changed.
+            let movedIn (classes : ImmutableArray<TypeDefRid>) (beforeRids : ImmutableArray<int>) afterRids =
+                Seq.zip3 classes beforeRids afterRids
+                |> Seq.exists (fun (cls, b, a) -> created.Contains cls && b <> a && not (changedTypes.Contains cls.Rid))
+
+            let interfaceClasses =
+                EmitScope.interfaceImpls before
+                |> Seq.map (fun row -> row.Class)
+                |> ImmutableArray.CreateRange
+
+            let implClasses =
+                EmitScope.methodImpls before
+                |> Seq.map (fun row -> row.Class)
+                |> ImmutableArray.CreateRange
+
+            if
+                movedIn
+                    interfaceClasses
+                    (EmitScopeImage.interfaceImplRids before)
+                    (EmitScopeImage.interfaceImplRids after)
+                || movedIn implClasses (EmitScopeImage.methodImplRids before) (EmitScopeImage.methodImplRids after)
+            then
+                moved.Value <- moved.Value + 1
+
             for violation in violations do
                 match violation with
-                | EmitScopeExtensionViolation.SortedRowMoved _ -> moved.Value <- moved.Value + 1
                 | EmitScopeExtensionViolation.AddedToCreatedType _ -> added.Value <- added.Value + 1
                 | EmitScopeExtensionViolation.FilledInCreatedType _ -> filled.Value <- filled.Value + 1
+                | EmitScopeExtensionViolation.SortedRowMoved _
                 | EmitScopeExtensionViolation.RowChanged _
                 | EmitScopeExtensionViolation.HeapEntryChanged _ -> ()
 
@@ -160,7 +182,8 @@ module TestEmitScopeExtension =
                 (fun (mvid, ops, extra, choices) -> property mvid ops extra choices)
         )
 
-        // Both answers, and every reason for refusing, must be common enough to be tested.
+        // Both answers, every reason for refusing, and a created type's rows moving in a sorted table
+        // without any other change, must be common enough to be tested.
         unchanged.Value |> shouldBeGreaterThan 30
         changed.Value |> shouldBeGreaterThan 30
         moved.Value |> shouldBeGreaterThan 10
@@ -321,7 +344,7 @@ module TestEmitScopeExtension =
                     if not (met violations) then
                         failwith $"a %s{category} difference is not among the violations %A{violations}"
 
-                // Nothing is created, so nothing can be added to or moved within a created type.
+                // Nothing is created, so nothing can be added to or filled in a created type.
                 violations |> List.choose createdTypeNamed |> shouldEqual []
 
         Check.One (
