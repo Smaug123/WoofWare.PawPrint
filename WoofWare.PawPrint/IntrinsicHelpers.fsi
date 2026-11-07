@@ -92,16 +92,6 @@ module internal IntrinsicHelpers =
         state : IlMachineState ->
             IlMachineState
 
-    /// Execute `MemoryExtensions.Equals(ReadOnlySpan<char>, ReadOnlySpan<char>, StringComparison)`
-    /// for the deterministic ordinal comparison modes PawPrint currently supports.
-    val memoryExtensionsEquals :
-        baseClassTypes : BaseClassTypes<DumpedAssembly> ->
-        currentThread : ThreadId ->
-        advanceCaller : (IlMachineState -> IlMachineState) ->
-        methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
-        state : IlMachineState ->
-            IlMachineState
-
     /// Pop `addr`, `value` and `size` from the evaluation stack and fill the block they describe,
     /// serving both the `initblk` opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned`
     /// JIT intrinsics the real JIT replaces with it. `operation` names the caller in the

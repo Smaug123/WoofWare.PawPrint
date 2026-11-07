@@ -810,9 +810,6 @@ module Intrinsics =
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
             spanToString loggerFactory baseClassTypes currentThread advanceCaller methodToCall state
             |> IntrinsicResult.Completed
-        | CorelibAssembly, "MemoryExtensions", "Equals" ->
-            memoryExtensionsEquals baseClassTypes currentThread advanceCaller methodToCall state
-            |> IntrinsicResult.Completed
         | CorelibAssembly, "SpanHelpers", "SequenceEqual" when isSpanHelpersByteSequenceEqual state methodToCall ->
             spanHelpersSequenceEqual baseClassTypes currentThread advanceCaller methodToCall state
             |> IntrinsicResult.Completed
