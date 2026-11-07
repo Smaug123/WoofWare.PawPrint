@@ -509,7 +509,14 @@ module NativeRuntimeTypeBuilder =
             let body =
                 EmitScopeDefinitions.methodBody initLocals maxStack (ImmutableArray.Create<byte> code) localSignatureRow
 
-            let extended = EmitScope.setMethodBody method body held
+            // CoreCLR sets the method's RVA only for code that is not empty, so an abstract method,
+            // whose code is, keeps no body; its local signature's row is added all the same.
+            let extended =
+                if code.Length = 0 then
+                    held
+                else
+                    EmitScope.setMethodBody method body held
+
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
 
             NativeHandlerResult.completed state |> Some

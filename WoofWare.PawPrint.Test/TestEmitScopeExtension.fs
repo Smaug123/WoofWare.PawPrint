@@ -481,7 +481,7 @@ module TestEmitScopeExtension =
         |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, 2) ]
 
     [<Test>]
-    let ``a changed method body is reported`` () : unit =
+    let ``a changed method body is reported only for a created type`` () : unit =
         let scope = apply Guid.Empty []
         let name, scope = EmitScope.internString "M" scope
 
@@ -505,8 +505,16 @@ module TestEmitScopeExtension =
         EmitScopeExtension.violations ImmutableHashSet.Empty before same
         |> shouldEqual []
 
+        // `SetMethodIL` gives a method its body again when `CreateType` is retried, so a different body
+        // is a fill, which only a created type refuses.
         EmitScopeExtension.violations ImmutableHashSet.Empty before after
-        |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
+        |> shouldEqual []
+
+        EmitScopeExtension.violations (ImmutableHashSet.Create (TypeDefRid 1)) before after
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
+            ]
 
     [<Test>]
     let ``only a method's implementation flags may be filled in, and only while its type is not created`` () : unit =
