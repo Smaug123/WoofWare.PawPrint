@@ -15,9 +15,10 @@ open WoofWare.PawPrint
 /// shared instantiation and on a value type's generic virtual method as anywhere else.
 /// </summary>
 /// <remarks>
-/// A spec whose arguments name a generic parameter the caller's context does not supply raises
-/// <c>ArgumentException</c> (wrapping <c>BadImageFormatException</c>), and one whose arguments
-/// violate the method's constraints raises <c>VerificationException</c>. PawPrint refuses both.
+/// A spec whose arguments, or whose MemberRef's parent, name a generic parameter the caller's context
+/// does not supply raises <c>BadImageFormatException</c>, which <c>RuntimeModule.ResolveMethod</c>
+/// wraps in <c>ArgumentException</c>. One whose arguments violate the method's constraints raises
+/// <c>VerificationException</c>, which PawPrint refuses.
 /// </remarks>
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -27,7 +28,9 @@ module TestModuleResolveMethodSpec =
     /// one method through a MethodSpec. `Main` resolves each token it is given, in the context given
     /// beside it, and returns 0 if every answer is the one given beside it, or one more than the index
     /// of the first that is not. An answer is either a key of `Expected`, which the resolved method
-    /// must be the very `MethodInfo` of, or `!` and the name of the exception resolving must raise.
+    /// must be the very `MethodInfo` of, or `!` and the names of the exception resolving must raise and
+    /// of its inner exceptions, separated by `/`. A `BadImageFormatException` among them must carry
+    /// the HResult and message CoreCLR gives it.
     let private source =
         """
 using System;
@@ -44,6 +47,7 @@ public class Holder<T>
     public U Convert<U>() => default!;
     public static U Make<U>() => default!;
     public T InContext() => Convert<T>();
+    public int ParentInContext() => Convert<int>();
     public static W MakeInMethod<W>() => Make<W>();
 }
 
@@ -122,6 +126,18 @@ public static class Program
         }
     }
 
+    static string Describe(Exception e) =>
+        e.GetType().Name + (e.InnerException == null ? "" : "/" + Describe(e.InnerException));
+
+    static bool Faithful(Exception e)
+    {
+        if (e is BadImageFormatException
+            && (e.HResult != unchecked((int)0x8007000B)
+                || e.Message != "An attempt was made to load a program with an incorrect format.\n (0x8007000B)"))
+            return false;
+        return e.InnerException == null || Faithful(e.InnerException);
+    }
+
     static bool Answers(int token, string context, string expected)
     {
         Type[] typeArgs = context.Contains("t=int") ? new[] { typeof(int) } : null;
@@ -137,7 +153,7 @@ public static class Program
         }
         catch (Exception e)
         {
-            return expected == "!" + e.GetType().Name;
+            return expected == "!" + Describe(e) && Faithful(e);
         }
 
         if (expected.StartsWith("!"))
@@ -235,12 +251,23 @@ public static class Program
             "Sites", "HolderOfStringConvert", "none", "Holder<string>.Convert<string>"
             "Sites", "HolderMake", "none", "Holder<int>.Make<long>"
             "Holder`1", "InContext", "t=int", "Holder<int>.Convert<int>"
+            "Holder`1", "ParentInContext", "t=int", "Holder<int>.Convert<int>"
             "Holder`1", "MakeInMethod", "t=int m=string", "Holder<int>.Make<string>"
             "Sites", "SBoxGenericVirtual", "none", "SBox<int>.GenericVirtual<long>"
             "Sites", "SBoxGenericNonVirtual", "none", "SBox<int>.GenericNonVirtual<long>"
             "Sites", "PlainGenericVirtual", "none", "Plain.GenericVirtual<long>"
             "Sites", "ArrayEmpty", "none", "Array.Empty<int>"
             "Sites", "EnumerableEmpty", "none", "Enumerable.Empty<string>"
+            // The spec's argument, `!!0`, needs a method context.
+            "Statics", "Caller", "none", "!ArgumentException/BadImageFormatException"
+            // The spec's argument, `!0`, needs a type context, which a method context does not give.
+            "Holder`1", "InContext", "none", "!ArgumentException/BadImageFormatException"
+            "Holder`1", "InContext", "m=int", "!ArgumentException/BadImageFormatException"
+            // The spec's argument is closed, but its MemberRef's parent, `Holder<!0>`, needs a type
+            // context.
+            "Holder`1", "ParentInContext", "none", "!ArgumentException/BadImageFormatException"
+            // Arguments are read before constraints are checked.
+            "Statics", "CallerS", "none", "!ArgumentException/BadImageFormatException"
         ]
 
     /// Methods on classes whose base is in an assembly nothing else loads, each resolved by a run of
@@ -256,11 +283,7 @@ public static class Program
     /// The cases PawPrint refuses, the exception the real runtime was measured to raise, and text
     /// PawPrint's refusal must contain.
     let private refused : (string * string * string * string * string) list =
-        [
-            "Statics", "CallerS", "m=string", "!VerificationException", "violates"
-            "Statics", "Caller", "none", "!ArgumentException", "context"
-            "Holder`1", "InContext", "none", "!ArgumentException", "context"
-        ]
+        [ "Statics", "CallerS", "m=string", "!VerificationException", "violates" ]
 
     let private checkArgs (cases : (string * string * string * string) list) : string list =
         [
@@ -301,8 +324,6 @@ public static class Program
         | other -> failwith $"expected the guest to exit, got %A{other}"
 
     [<TestCase 0>]
-    [<TestCase 1>]
-    [<TestCase 2>]
     let ``PawPrint refuses a MethodSpec that CoreCLR rejects`` (index : int) : unit =
         let typeName, methodName, _, expected, refusal = refused.[index]
         let token = methodSpecToken (image.Force ()) typeName methodName
