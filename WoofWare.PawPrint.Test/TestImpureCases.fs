@@ -1639,6 +1639,35 @@ module TestImpureCases =
                 4, TypeDefOrRef.TypeDef (TypeDefRid 2)
             ]
 
+    /// `ModuleBuilderTypeSpec.cs` has named `List<int>` twice and `Dictionary<string, int>` once. This
+    /// checks the module's TypeSpec rows, as .NET 10 reports their signatures: each instantiation once,
+    /// naming its generic type by the TypeRef the module has for it (`List`1` is TypeRef 2 and
+    /// `Dictionary`2` TypeRef 3, after `object`).
+    let private assertTypeSpecRows (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.typeRefs scope
+        |> Seq.map (fun row -> EmitScope.stringAt row.Namespace scope, EmitScope.stringAt row.Name scope)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                "System", "Object"
+                "System.Collections.Generic", "List`1"
+                "System.Collections.Generic", "Dictionary`2"
+            ]
+
+        EmitScope.typeSpecs scope
+        |> Seq.map (fun row -> EmitScope.blobAt row.Signature scope |> List.ofSeq)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                [ 0x15uy ; 0x12uy ; 0x09uy ; 0x01uy ; 0x08uy ]
+                [ 0x15uy ; 0x12uy ; 0x0Duy ; 0x02uy ; 0x0Euy ; 0x08uy ]
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -5117,6 +5146,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertInterfaceImplRows
+            }
+            {
+                // `ModuleBuilder_GetTokenFromTypeSpec`, through `castclass` and `isinst` naming generic
+                // instantiations: each signature one TypeSpec row, found before it is added;
+                // `assertTypeSpecRows` reads the rows. Dynamic-code switch overridden to true like its
+                // siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "ModuleBuilderTypeSpec.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertTypeSpecRows
             }
             {
                 // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has

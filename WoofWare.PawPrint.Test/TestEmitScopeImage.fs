@@ -25,6 +25,7 @@ module TestEmitScopeImage =
         match target with
         | TypeDefOrRef.TypeDef rid -> 0x02000000 ||| rid.Rid
         | TypeDefOrRef.TypeRef rid -> 0x01000000 ||| rid.Rid
+        | TypeDefOrRef.TypeSpec rid -> 0x1B000000 ||| rid.Rid
 
     let private methodDefOrRefToken (target : MethodDefOrRef) : int =
         match target with
@@ -319,12 +320,18 @@ module TestEmitScopeImage =
 
             checkBlob scope reader sigs.[i - 1].Signature actual.Signature
 
+        let typeSpecs = EmitScope.typeSpecs scope
+        reader.GetTableRowCount TableIndex.TypeSpec |> shouldEqual typeSpecs.Count
+
+        for i in 1 .. typeSpecs.Count do
+            let actual = reader.GetTypeSpecification (MetadataTokens.TypeSpecificationHandle i)
+            checkBlob scope reader typeSpecs.[i - 1].Signature actual.Signature
+
         // Nothing the scope cannot hold.
         for table in
             [
                 TableIndex.Constant
                 TableIndex.CustomAttribute
-                TableIndex.TypeSpec
                 TableIndex.ModuleRef
                 TableIndex.NestedClass
                 TableIndex.GenericParam
