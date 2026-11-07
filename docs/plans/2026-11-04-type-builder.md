@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a implemented (#2164); stage 5b in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -816,4 +816,35 @@ reserved flag, which the managed caller never passes.
   its refusal of `HasFieldRVA`.
 * Each mutant is caught: the token's RID off by one, `value__` not marked special, and `HasDefault`
   kept; the last only by the unit test, since the managed caller clears it before the emitter sees it.
+
+### 5b: `ModuleBuilder_GetStringConstant`
+
+`ldstr` in emitted IL, and `ModuleBuilder.GetStringMetadataToken`, ask for a user string's token. Read
+from `ModuleBuilder_GetStringConstant` (vm/commodule.cpp), `RegMeta::DefineUserString` and
+`RegMeta::GetSaveSize`, and measured on .NET 10:
+
+* `DefineUserString` stores the string's UTF-16 code units and a final byte of 1, always, rather than
+  ECMA-335's flag for special characters, and the heap finds an entry with the same bytes before it adds
+  one, so a string asked for twice is one token.
+* `GetSaveSize` gives an empty heap a space whose final byte is 0, and a dynamic module has it from its
+  creation: offset 1 holds `" "` before the guest asks for anything, and its first string is at offset
+  5. A guest's own `" "` has a final byte of 1, so it is a separate entry.
+
+### 5b: the decision
+
+**The heap holds each entry's bytes (code units and final byte), interned by those bytes**, as the
+`#Blob` heap is. Holding strings and computing the bytes when writing would lose the space's final byte
+of 0, unless special-cased. `EmitScope.create` starts every scope with the space.
+
+### 5b: the oracle
+
+* `TestEmitScopeImage` asks real .NET's `ModuleBuilder.GetStringMetadataToken` for generated sequences of
+  strings, recurring ones, the space, a lone surrogate and each width of length prefix among them, and
+  requires `internUserString` to give each the same offset; and reads each entry back from the image.
+* `TestEmitScopeExtension` refuses a rewritten entry.
+* `ModuleBuilderStringConstant.cs`, which exits 0 on .NET 10, checks tokens and loads the strings from
+  emitted methods, the same literal in two methods as one interned object. Its terminal-state check
+  reads the heap's entries.
+* Each mutant is caught: the final byte 0, the scope starting without the space, the token's table
+  byte wrong, and each code unit's high byte dropped.
 
