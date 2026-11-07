@@ -57,6 +57,7 @@ module NativeMarshal =
         let name =
             NativeRuntimeTypeHelpers.runtimeTypeHandleName
                 operation
+                ctx.BaseClassTypes
                 state
                 NativeRuntimeTypeHelpers.formatNamespaceFlag
                 typeHandle

@@ -700,6 +700,7 @@ module internal UnsafeAccessorDispatch =
             let render (handle : ConcreteTypeHandle) : string =
                 NativeRuntimeTypeHelpers.runtimeTypeHandleName
                     describe
+                    baseClassTypes
                     state
                     NativeRuntimeTypeHelpers.formatNamespaceFlag
                     (RuntimeTypeHandleTarget.Closed handle)
@@ -987,6 +988,7 @@ module internal UnsafeAccessorDispatch =
             let arrayName () : string =
                 NativeRuntimeTypeHelpers.typeHandleGetName
                     describe
+                    baseClassTypes
                     state
                     (RuntimeTypeHandleTarget.Closed strippedTarget)
 

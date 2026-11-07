@@ -914,6 +914,11 @@ module NativeCall =
             declaringType.AssemblyFullName
         // The same element rule as the closed shapes below.
         | RuntimeTypeHandleTarget.Composite (_, element) -> typeAssemblyFullName operation baseClassTypes state element
+        // A function pointer belongs to no module of its own, so it names its loader module's
+        // assembly: `ComputeLoaderModuleForFunctionPointer` (clsload.inl) passes the return and
+        // parameter types to `ComputeLoaderModuleWorker` with no definition module, which takes
+        // the first of them -- the return type -- when none is collectible. PawPrint loads every
+        // assembly into the default context, so none is.
         | RuntimeTypeHandleTarget.FunctionPointer signature ->
             match signature.ReturnType with
             | MethodReturnType.Void -> baseClassTypes.Void.AssemblyFullName
@@ -922,7 +927,7 @@ module NativeCall =
             // Unwrap Byref/Pointer/Array to reach the element type's assembly.
             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow
             // the element rule. Function pointers anchor to their return type's
-            // assembly (CoreCLR `MethodTable::GetAssembly` for FnPtr); for `void`
+            // assembly, as for the open function pointer above; for `void`
             // returns, that assembly is corelib (where System.Void lives).
             let rec assemblyFullNameOfHandle (h : ConcreteTypeHandle) : string =
                 match h with
