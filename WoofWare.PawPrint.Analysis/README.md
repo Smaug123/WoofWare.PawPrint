@@ -298,12 +298,14 @@ by the constructor. It makes the exception of a failure to bind a member
 (`MissingMethodException`, `MissingFieldException`) or to dispatch a call
 (`AmbiguousImplementationException`, `EntryPointNotFoundException`) the same way. A
 multidimensional array constructor's `ArgumentOutOfRangeException` it makes the same way too, and
-then looks up its message by a resource name (`Environment.GetResourceStringLocal`), which the
-analysis follows as well. A failed type binding's `TypeLoadException` it makes by running a
-constructor taking the type's name, which formats its message from the runtime's native resources
-with `String.Format`, and what that constructor can raise is in the answer too. The analysis cannot
-yet tell which formatting methods `String.Format` calls on the strings it is given, so an answer in
-which a type fails to bind is "unknown".
+then looks up its message by a resource name, which the analysis follows as well: on .NET 10 by
+calling `Environment.GetResourceStringLocal`, and on .NET 11 by calling
+`Environment.GetResourceString(char*, string*, Exception*)` through `InvokeThrowing`, so that what
+the lookup raises is handed back and thrown again. A failed type binding's `TypeLoadException` it
+makes by running a constructor taking the type's name, which formats its message from the runtime's
+native resources with `String.Format`, and what that constructor can raise is in the answer too.
+The analysis cannot yet tell which formatting methods `String.Format` calls on the strings it is
+given, so an answer in which a type fails to bind is "unknown".
 
 Where a type initializer fails, the runtime runs `TypeInitializationException`'s
 `(string, Exception)` constructor around what the initializer raised. Should that constructor fail,
