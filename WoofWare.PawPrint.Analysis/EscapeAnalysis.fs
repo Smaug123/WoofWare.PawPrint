@@ -2432,6 +2432,81 @@ module EscapeAnalysis =
             | _ -> None
         | _ -> None
 
+    /// What a method specification's argument, as `assembly` spells it, is that CoreCLR admits in no
+    /// instantiation (`Generics::CheckInstantiation`), if it is one: a byref, a pointer, a function
+    /// pointer, `void`, or `TypedReference` where `InstantiationCheck.refusesTypedReference` says.
+    /// CoreCLR reads it past custom modifiers and `pinned`. The argument must bind.
+    let rec private spelledMalformedArgument
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * MalformedArgument option
+        =
+        let ofIdentity (identity : ResolvedTypeIdentity) : MalformedArgument option =
+            if identity = state.BaseTypes.Void.Identity then
+                Some MalformedArgument.Void
+            elif
+                identity = state.BaseTypes.TypedReference.Identity
+                && InstantiationCheck.refusesTypedReference state.Runtime
+            then
+                Some MalformedArgument.TypedReference
+            else
+                None
+
+        match spelling with
+        | TypeDefn.Modified modified -> spelledMalformedArgument state assembly modified.Unmodified
+        | TypeDefn.Pinned element -> spelledMalformedArgument state assembly element
+        | TypeDefn.Byref _ -> state, Some MalformedArgument.Byref
+        | TypeDefn.Pointer _ -> state, Some MalformedArgument.Pointer
+        | TypeDefn.FunctionPointer _ -> state, Some MalformedArgument.FunctionPointer
+        | TypeDefn.Void -> state, Some MalformedArgument.Void
+        | TypeDefn.PrimitiveType PrimitiveType.TypedReference ->
+            state,
+            (if InstantiationCheck.refusesTypedReference state.Runtime then
+                 Some MalformedArgument.TypedReference
+             else
+                 None)
+        | TypeDefn.FromDefinition (identity, _) -> state, ofIdentity identity
+        | TypeDefn.FromReference (typeRef, _) ->
+            match bindTypeRef state assembly typeRef with
+            | state, TypeReferenceIdentity.Resolved identity -> state, ofIdentity identity
+            | _, unbound ->
+                failwith
+                    $"BUG: an argument of a method specification in %s{assembly.DefinitionFullName} loaded, but its reference binds to %O{unbound}"
+        // The JIT resolves the specification with the arguments of the instantiation it compiles in
+        // place of every type variable, none of which CoreCLR refuses.
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericInstantiation _
+        | TypeDefn.OneDimensionalArrayLowerBoundZero _
+        | TypeDefn.Array _ -> state, None
+
+    /// Why CoreCLR refuses the instantiation that a method specification of `assembly`, whose
+    /// arguments are spelled `arguments`, names of a method declaring `declared` generic parameters,
+    /// if it does: it checks the arity, and then each argument (`spelledMalformedArgument`), once
+    /// the method's declaring type and every argument have loaded
+    /// (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp). Every argument must bind.
+    let private methodSpecFault
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (declared : int)
+        (arguments : TypeDefn ImmutableArray)
+        : EscapeAnalysisState * MethodInstantiationFault option
+        =
+        if declared <> arguments.Length then
+            state, Some (MethodInstantiationFault.Arity (declared, arguments.Length))
+        else
+            ((state, None), Seq.indexed arguments)
+            ||> Seq.fold (fun (state, fault) (index, argument) ->
+                match fault with
+                | Some _ -> state, fault
+                | None ->
+                    match spelledMalformedArgument state assembly argument with
+                    | state, Some malformed -> state, Some (MethodInstantiationFault.Argument (index, malformed))
+                    | state, None -> state, None
+            )
+
     /// Bind the metadata token an instruction names, as the JIT does before the body runs: what it
     /// names when that is a member, and what binding it can throw. The JIT loads a member's owner
     /// first, and resolves the member only if that load succeeds.
@@ -2476,7 +2551,36 @@ module EscapeAnalysis =
             let state, target = callTarget state assembly token
 
             let state, argumentsFailure = firstLoadFailure state assembly spec.Signature
-            state, TokenReferent.Method target, raisesOf argumentsFailure @ failures
+
+            let bound =
+                argumentsFailure.IsNone
+                && failures
+                   |> List.forall (fun fact ->
+                       match fact with
+                       | OutsideBodyFact.Raises _ -> false
+                       | OutsideBodyFact.Runs _
+                       | OutsideBodyFact.Opaque _ -> true
+                   )
+
+            // Once the method and its arguments load, CoreCLR checks the instantiation, refusing it
+            // with `BadImageFormatException` (`COMPlusThrowHR`, which makes it as
+            // `EEException::CreateThrowable` does).
+            let state, refused =
+                match target with
+                | CallTarget.Method callee when bound ->
+                    let _, definition = methodOf state callee.Callee
+
+                    match methodSpecFault state assembly definition.Generics.Length spec.Signature with
+                    | state, None -> state, []
+                    | state, Some _ ->
+                        let thrown, made = constructedRaise state "System.BadImageFormatException"
+
+                        state,
+                        OutsideBodyFact.Raises thrown
+                        :: List.map (fun made -> OutsideBodyFact.Runs (RuntimeRun.Calls made, [])) made
+                | _ -> state, []
+
+            state, TokenReferent.Method target, raisesOf argumentsFailure @ failures @ refused
         | MetadataToken.MemberReference handle ->
             match assembly.Members.[handle].Signature with
             | MemberSignature.Method _ ->
@@ -6556,6 +6660,9 @@ module EscapeAnalysis =
                     state.TypeSystem
             with
             | typeSystem, Ok (concretized, declaringType) -> typeSystem, concretized, declaringType
+            | _, Error (TypeBindingFailure.Refused (TypeLoadRefusal.InvalidMethodInstantiation _) as failure) ->
+                failwith
+                    $"BUG: a call names an instantiation CoreCLR refuses, which binding its token reports and leaves without arguments (`bindToken`): %s{TypeBindingFailure.describe failure}"
             | _, Error failure -> failwith (TypeBindingFailure.describe failure)
 
         let implementationOn

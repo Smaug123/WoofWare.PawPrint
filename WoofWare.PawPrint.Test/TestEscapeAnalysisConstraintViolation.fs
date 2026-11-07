@@ -2144,8 +2144,6 @@ public static class Cases
                     "Holder`1::Run", Gap.Unnamed
                     "CallsRunMake", Gap.Unnamed
                     "Holder`1::RunMake", Gap.Unnamed
-                    "CallsPointing", Gap.Unnamed
-                    "Plain::G", Gap.Unnamed
                     "CallsPointingType", Gap.Throws
                     "Plain::H", Gap.Unnamed
                     "CallsClosedReturn", Gap.Unnamed
@@ -2153,14 +2151,6 @@ public static class Cases
                     "CallsPartlyClosedReturn", Gap.Unnamed
                     "Plain::CallsMP", Gap.Unnamed
                 ]
-            |> fun unreported ->
-                match FrameworkUnderTest.runtime () with
-                | EmulatedRuntime.Net10 ->
-                    unreported
-                    |> Map.add "CallsTypedReference" Gap.Unnamed
-                    |> Map.add "Plain::G2" Gap.Unnamed
-                // .NET 11 admits the instantiation over `TypedReference`.
-                | EmulatedRuntime.Net11 -> unreported
 
         let failures =
             [
@@ -2238,7 +2228,7 @@ public static class Cases
 
     /// A method specification CoreCLR refuses to instantiate, whatever instruction names it: one
     /// supplying the wrong number of arguments, or an argument no instantiation may have (a pointer,
-    /// a byref, or, on .NET 10 but not .NET 11, `TypedReference`). CoreCLR raises
+    /// a byref, `void`, or, on .NET 10 but not .NET 11, `TypedReference`). CoreCLR raises
     /// `BadImageFormatException` creating the instantiation
     /// (`MethodDesc::FindOrCreateAssociatedMethodDesc`, genmeth.cpp) as the JIT resolves the token
     /// compiling the body naming it, so the body's own `catch` does not stop it.
@@ -2287,6 +2277,11 @@ public static class Cases
                         Reflection.Emit.OpCodes.Call,
                         staticMethod.MakeGenericMethod [| typeof<int>.MakeByRefType () |]
                     )
+                ),
+                refused
+                "StaticVoid",
+                (fun (_, _, staticMethod) il ->
+                    il.Emit (Reflection.Emit.OpCodes.Call, staticMethod.MakeGenericMethod [| typeof<Void> |])
                 ),
                 refused
                 "StaticTypedReference",
@@ -2430,7 +2425,7 @@ public static class Cases
             |> Seq.sort
             |> List.ofSeq
 
-        Assert.That (arities, Is.EqualTo<int list> [ 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 2 ; 2 ])
+        Assert.That (arities, Is.EqualTo<int list> [ 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 1 ; 2 ; 2 ])
 
         let mutable analysis =
             analysisOver
