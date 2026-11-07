@@ -682,4 +682,4 @@ parent, so for most types this writes the same token again; it differs when the 
 
 ### 4b: left to later stages
 
-* `SetMethodIL` (4c), which the issue's guest now stops at, defining `Thing`'s default constructor.
+* `SetMethodIL` (4c), which the issue's guest now stops at, giving `Thing.get_Value` its body.
