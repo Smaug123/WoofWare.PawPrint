@@ -251,6 +251,7 @@ module EmitScopeImage =
         rowCounts.[int TableIndex.MemberRef] <- (EmitScope.memberRefs scope).Count
         rowCounts.[int TableIndex.StandAloneSig] <- (EmitScope.standAloneSigs scope).Count
         rowCounts.[int TableIndex.MethodImpl] <- methodImpls.Length
+        rowCounts.[int TableIndex.TypeSpec] <- (EmitScope.typeSpecs scope).Count
         rowCounts.[int TableIndex.Assembly] <- (if (EmitScope.assembly scope).IsSome then 1 else 0)
         rowCounts.[int TableIndex.AssemblyRef] <- (EmitScope.assemblyRefs scope).Count
 
@@ -304,6 +305,7 @@ module EmitScopeImage =
                 | None -> 0
                 | Some (TypeDefOrRef.TypeDef rid) -> (rid.Rid <<< 2) ||| 0
                 | Some (TypeDefOrRef.TypeRef rid) -> (rid.Rid <<< 2) ||| 1
+                | Some (TypeDefOrRef.TypeSpec rid) -> (rid.Rid <<< 2) ||| 2
 
             writeIndex tables typeDefOrRefSize column coded
 
@@ -415,6 +417,10 @@ module EmitScopeImage =
             index TableIndex.TypeDef "MethodImpl.Class" row.Class.Rid
             methodDefOrRef "MethodImpl.MethodBody" row.Body
             methodDefOrRef "MethodImpl.MethodDeclaration" row.Declaration
+
+        // TypeSpec (II.22.39)
+        for row in EmitScope.typeSpecs scope do
+            blob "TypeSpec.Signature" row.Signature
 
         // Assembly (II.22.2)
         match EmitScope.assembly scope with

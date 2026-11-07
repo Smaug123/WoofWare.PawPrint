@@ -534,3 +534,60 @@ module TestEmitScopeReferences =
 
         found.Value |> shouldBeGreaterThan 100
         added.Value |> shouldBeGreaterThan 100
+
+    /// `RegMeta::GetTokenFromTypeSpec`, which `ModuleBuilder_GetTokenFromTypeSpec` calls: in a dynamic
+    /// module, whose emitter checks for duplicate TypeSpecs (`MDDupTypeSpec`), the first TypeSpec row
+    /// with the same signature, or a new one. Real .NET's `ModuleBuilder.GetTypeMetadataToken` reaches it
+    /// for a generic instantiation or an array, so it is the oracle, and gives the signature too.
+    [<Test>]
+    let ``a TypeSpec is found among the rows before one is added, as real .NET finds it`` () : unit =
+        let types : Type list =
+            [
+                typeof<Collections.Generic.List<int>>
+                typeof<Collections.Generic.List<string>>
+                typeof<Collections.Generic.Dictionary<string, int>>
+                typeof<int[]>
+                typeof<string[,]>
+            ]
+
+        let found = ref 0
+        let added = ref 0
+
+        let property (choices : int list) : unit =
+            let assembly =
+                System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly (
+                    AssemblyName "TypeSpecOracle",
+                    System.Reflection.Emit.AssemblyBuilderAccess.Run
+                )
+
+            let module' = assembly.DefineDynamicModule "TypeSpecOracle"
+            let mutable scope = EmitScope.create "TypeSpecOracle" Guid.Empty
+
+            for choice in choices do
+                let t = types.[choice % types.Length]
+                let expected = module'.GetTypeMetadataToken t
+                let bytes = ImmutableArray.Create<byte> (module'.ResolveSignature expected)
+                let before = (EmitScope.typeSpecs scope).Count
+                let rid, next = EmitScopeReferences.defineTypeSpec bytes scope
+
+                0x1B000000 ||| rid.Rid |> shouldEqual expected
+
+                if (EmitScope.typeSpecs next).Count = before then
+                    found.Value <- found.Value + 1
+                    Object.ReferenceEquals (next, scope) |> shouldEqual true
+                else
+                    added.Value <- added.Value + 1
+
+                    EmitScope.blobAt (EmitScope.typeSpecs next).[rid.Rid - 1].Signature next
+                    |> List.ofSeq
+                    |> shouldEqual (List.ofSeq bytes)
+
+                scope <- next
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 100,
+            Prop.forAll (Arb.fromGen (Gen.listOf (Gen.choose (0, 100)) |> Gen.map List.ofSeq)) property
+        )
+
+        found.Value |> shouldBeGreaterThan 100
+        added.Value |> shouldBeGreaterThan 100
