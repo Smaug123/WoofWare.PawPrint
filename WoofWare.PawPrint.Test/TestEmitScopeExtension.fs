@@ -4,6 +4,7 @@ open System
 open System.Collections.Immutable
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -27,12 +28,13 @@ module TestEmitScopeExtension =
 
     let private rowNumber (handle : EntityHandle) : int = MetadataTokens.GetRowNumber handle
 
-    /// Everything a created type's `MethodTable` is built from: its parent, its methods with their
-    /// implementation flags and parameters, and its fields, as handles into the image, and its interface
+    /// Everything a created type's `MethodTable` is built from, and what its methods run: its parent, its
+    /// methods with their implementation flags, parameters and bodies, and its fields, as handles into
+    /// the image, and its interface
     /// implementations and method impls in table order. Those two tables are sorted, so their RIDs
     /// move as rows of lower classes are added; the runtime keeps no handle into them, only what each
     /// row names.
-    let private typeView (reader : MetadataReader) (typeDef : TypeDefRid) =
+    let private typeView (pe : PEReader) (reader : MetadataReader) (typeDef : TypeDefRid) =
         let definition =
             reader.GetTypeDefinition (MetadataTokens.TypeDefinitionHandle typeDef.Rid)
 
@@ -45,10 +47,25 @@ module TestEmitScopeExtension =
                                 yield rowNumber (ParameterHandle.op_Implicit p)
                         ]
 
+                    // A body moves as bodies before it are filled in, so it is compared by content.
+                    let body =
+                        match (reader.GetMethodDefinition m).RelativeVirtualAddress with
+                        | 0 -> None
+                        | rva ->
+                            let block = System.Reflection.Metadata.PEReaderExtensions.GetMethodBody (pe, rva)
+
+                            Some (
+                                List.ofArray (block.GetILBytes ()),
+                                block.MaxStack,
+                                block.LocalVariablesInitialized,
+                                token (StandaloneSignatureHandle.op_Implicit block.LocalSignature)
+                            )
+
                     yield
                         rowNumber (MethodDefinitionHandle.op_Implicit m),
                         (reader.GetMethodDefinition m).ImplAttributes,
-                        parameters
+                        parameters,
+                        body
             ]
 
         let fields =
@@ -116,7 +133,7 @@ module TestEmitScopeExtension =
 
             let changedTypes =
                 created
-                |> Seq.filter (fun t -> typeView beforeReader t <> typeView afterReader t)
+                |> Seq.filter (fun t -> typeView beforePe beforeReader t <> typeView afterPe afterReader t)
                 |> Seq.map (fun t -> t.Rid)
                 |> Set.ofSeq
 
@@ -202,7 +219,7 @@ module TestEmitScopeExtension =
             use _ = afterPe
 
             for t in created do
-                typeView afterReader t |> shouldEqual (typeView beforeReader t)
+                typeView afterPe afterReader t |> shouldEqual (typeView beforePe beforeReader t)
 
             let movedIn
                 (classes : TypeDefRid seq)
@@ -593,3 +610,46 @@ module TestEmitScopeExtension =
             for createdTypes in [ ImmutableHashSet.Empty ; created ] do
                 EmitScopeExtension.violations createdTypes before after
                 |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, secondType.Rid) ]
+
+    [<Test>]
+    let ``a method's body may be filled in once, and only while its type is not created`` () : unit =
+        let scope = apply Guid.Empty []
+        let name, scope = EmitScope.internString "M" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0uy ; 0uy ; 1uy |]) scope
+
+        let before =
+            EmitScope.addMethodDef
+                {
+                    Owner = TypeDefRid 1
+                    Body = None
+                    ImplFlags = Reflection.MethodImplAttributes.IL
+                    Flags = Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static
+                    Name = name
+                    Signature = signature
+                }
+                scope
+            |> snd
+
+        let body (code : byte) =
+            ImmutableArray.Create<byte> [| 0x06uy ; code |]
+
+        let filled = EmitScope.setMethodBody (MethodDefRid 1) (body 0x2Auy) before
+        let created = ImmutableHashSet.Create (TypeDefRid 1)
+
+        EmitScopeExtension.violations ImmutableHashSet.Empty before filled
+        |> shouldEqual []
+
+        EmitScopeExtension.violations created before filled
+        |> shouldEqual
+            [
+                EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.MethodDef, 1, TypeDefRid 1)
+            ]
+
+        // A body, once there, is fixed: the emitter writes each method's body once.
+        let rewritten = EmitScope.setMethodBody (MethodDefRid 1) (body 0x00uy) before
+
+        for createdTypes in [ ImmutableHashSet.Empty ; created ] do
+            EmitScopeExtension.violations createdTypes filled rewritten
+            |> shouldEqual [ EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, 1) ]
