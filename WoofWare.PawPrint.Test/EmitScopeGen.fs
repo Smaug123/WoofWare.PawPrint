@@ -46,6 +46,8 @@ module EmitScopeGen =
         | MethodImpl of cls : int * body : int * declaration : int
         /// Overwrite the implementation flags of a method already in the scope, if it has any.
         | SetMethodImplFlags of method : int * flags : int
+        /// Overwrite the parent of a type already in the scope other than `<Module>`, if it has any.
+        | SetTypeDefExtends of typeDef : int * extends : int
 
     type private Applied =
         {
@@ -209,6 +211,7 @@ module EmitScopeGen =
                 |> Gen.map2 (fun first rest -> Op.StandAloneSig (first :: List.ofSeq rest)) choice
                 2, Gen.map3 (fun c b d -> Op.MethodImpl (c, b, d)) choice choice choice
                 2, Gen.map2 (fun m f -> Op.SetMethodImplFlags (m, f)) choice choice
+                2, Gen.map2 (fun t e -> Op.SetTypeDefExtends (t, e)) choice choice
             ]
 
     let pick (choice : int) (items : 'a list) : 'a option =
@@ -536,6 +539,14 @@ module EmitScopeGen =
                 let method = MethodDefRid (methodChoice % methodCount + 1)
                 let flags = (pick flags methodImplFlagChoices).Value
                 withScope (EmitScope.setMethodImplFlags method flags applied.Scope) applied
+        | Op.SetTypeDefExtends (typeChoice, extendsChoice) ->
+            // `TypeBuilder_SetParentType` is never called for the global type.
+            if typeDefCount < 2 then
+                applied
+            else
+                let typeDef = TypeDefRid (typeChoice % (typeDefCount - 1) + 2)
+                let extends = (pick extendsChoice (typeDefOrRefs scope)).Value
+                withScope (EmitScope.setTypeDefExtends typeDef extends applied.Scope) applied
 
     let emptyScope (mvid : Guid) : EmitScope =
         let scope = EmitScope.create "RefEmit_InMemoryManifestModule" mvid
@@ -641,8 +652,8 @@ module EmitScopeGen =
         |> Map.ofList
 
     /// `describeRows` without the columns the emitter fills in after adding a row (a method's
-    /// implementation flags), which an extension of a scope may change while the row's type is not
-    /// created.
+    /// implementation flags, a type's parent), which an extension of a scope may change while the
+    /// row's type is not created.
     let withoutFilledColumns (rows : Map<TableIndex * int, obj>) : Map<TableIndex * int, obj> =
         rows
         |> Map.map (fun (table, _) row ->
@@ -651,6 +662,9 @@ module EmitScopeGen =
                     unbox<MethodAttributes * MethodImplAttributes * int * int * int> row
 
                 box (attributes, name, signature, owner)
+            elif table = TableIndex.TypeDef then
+                let attributes, name, ns, _ = unbox<TypeAttributes * int * int * int> row
+                box (attributes, name, ns)
             else
                 row
         )

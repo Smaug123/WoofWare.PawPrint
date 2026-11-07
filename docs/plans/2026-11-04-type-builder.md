@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -650,3 +650,36 @@ already created, without the QCall.
 * `SetParentType` (4b), with the extension check admitting a filled-in `Extends` column of a type not yet
   created.
 * `SetMethodIL` (4c), for every method, including the empty body an abstract method gets.
+
+### 4b: what CoreCLR's emitter writes
+
+`TypeBuilder_SetParentType` calls `RegMeta::SetTypeParent` (md/compiler/helper.cpp), which writes the
+parent's token over the type's `Extends` column and checks nothing else. `DefineType` already wrote a
+parent, so for most types this writes the same token again; it differs when the guest called
+`SetParent` in between. The managed caller passes a `TypeDef`, `TypeRef` or `TypeSpec` from
+`GetTypeTokenInternal`, and never a nil token for either argument.
+
+### 4b: the decisions
+
+* **A type's `Extends` is a column the emitter fills in, like a method's implementation flags.**
+  `EmitScope.setTypeDefExtends` overwrites it, and the extension check admits a change to that column
+  alone for a type not yet created, reporting it as `FilledInCreatedType` for a created one. Nothing
+  reads an uncreated type's parent: the loader refuses the type itself.
+* **A `TypeSpec` parent is refused by name**, as `typeDefOrRef` already refuses one for `DefineType`,
+  since a scope has no `TypeSpec` table yet.
+
+### 4b: the oracle
+
+* `EmitScopeGen` gains an op that overwrites a type's parent, so the extension properties generate the
+  fill, and a created type's view includes its parent. A unit test checks the fill is admitted for a
+  type not yet created, even while another is created, and refused for a created one, and that any
+  other change to the row is still `RowChanged`.
+* `TypeBuilderSetParent.cs`, which exits 0 on .NET 10, creates two static classes, one reparented to
+  `Exception` after `DefineType`, and a value type: none gets a default constructor, so with no methods
+  none reaches `SetMethodIL`. It checks each created type's `BaseType`.
+* Each mutant of the handler is caught: the column left as `DefineType` wrote it, and the previous
+  type's parent written instead.
+
+### 4b: left to later stages
+
+* `SetMethodIL` (4c), which the issue's guest now stops at, giving `Thing.get_Value` its body.

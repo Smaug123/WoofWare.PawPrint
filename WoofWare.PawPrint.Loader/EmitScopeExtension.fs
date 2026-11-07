@@ -31,8 +31,8 @@ type EmitScopeExtensionViolation =
     | AddedToCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
     /// A row of the earlier scope differs in the later one only in a column the emitter fills in after
-    /// adding the row (a method's implementation flags), and the row is a member of a type already
-    /// created.
+    /// adding the row (a method's implementation flags, a type's parent), and the row is a type already
+    /// created or a member of one.
     | FilledInCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
 /// Whether one emit scope extends another, given which of its types the runtime has already created.
@@ -44,10 +44,10 @@ module EmitScopeExtension =
     /// </summary>
     /// <remarks>
     /// Empty when <paramref name="after"/> was built from <paramref name="before"/> by appending rows,
-    /// interning entries and filling in the implementation flags of methods, none of them for a
-    /// created type. Then an image of <paramref name="after"/> reads back every heap entry and created
-    /// type of <paramref name="before"/>'s as <paramref name="before"/>'s image does, and every row but
-    /// for those flags, at the same RID except in the tables the image sorts. A history that was
+    /// interning entries, and filling in the implementation flags of methods and the parents of types,
+    /// none of them for a created type. Then an image of <paramref name="after"/> reads back every heap
+    /// entry and created type of <paramref name="before"/>'s as <paramref name="before"/>'s image does,
+    /// and every row but for those columns, at the same RID except in the tables the image sorts. A history that was
     /// otherwise rewritten, rather than appended to, is refused even where the image happens to read
     /// back the same.
     /// </remarks>
@@ -123,6 +123,36 @@ module EmitScopeExtension =
                             yield EmitScopeExtensionViolation.RowChanged (TableIndex.MethodDef, i + 1)
             ]
 
+        // Each type of `before` at the same position of `after`. The emitter fills in a type's parent
+        // after adding its row, so a change to that column alone is a fill, refused only for a created
+        // type.
+        let typeDefsRewritten (beforeRows : ImmutableList<TypeDefRow>) (afterRows : ImmutableList<TypeDefRow>) =
+            [
+                for i in 0 .. beforeRows.Count - 1 do
+                    if i >= afterRows.Count then
+                        yield EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, i + 1)
+                    else
+                        let was = beforeRows.[i]
+                        let row = afterRows.[i]
+
+                        if was = row then
+                            ()
+                        elif
+                            { was with
+                                Extends = row.Extends
+                            } = row
+                        then
+                            match EmitScope.tryTypeDefRid (i + 1) after with
+                            | Some typeDef when created.Contains typeDef ->
+                                yield
+                                    EmitScopeExtensionViolation.FilledInCreatedType (TableIndex.TypeDef, i + 1, typeDef)
+                            | Some _ -> ()
+                            | None ->
+                                failwith $"BUG: TypeDef %d{i + 1} is in the scope, but tryTypeDefRid has no row for it"
+                        else
+                            yield EmitScopeExtensionViolation.RowChanged (TableIndex.TypeDef, i + 1)
+            ]
+
         let methodOwner (method : MethodDefRid) : TypeDefRid =
             (EmitScope.methodDefs after).[method.Rid - 1].Owner
 
@@ -131,7 +161,7 @@ module EmitScopeExtension =
                 yield EmitScopeExtensionViolation.RowChanged (TableIndex.Module, 1)
 
             yield! rewritten TableIndex.TypeRef (EmitScope.typeRefs before) (EmitScope.typeRefs after)
-            yield! rewritten TableIndex.TypeDef (EmitScope.typeDefs before) (EmitScope.typeDefs after)
+            yield! typeDefsRewritten (EmitScope.typeDefs before) (EmitScope.typeDefs after)
 
             yield! rewritten TableIndex.Field (EmitScope.fields before) (EmitScope.fields after)
 
