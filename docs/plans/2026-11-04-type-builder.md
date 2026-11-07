@@ -232,11 +232,9 @@ All thirteen mutants of the check, the load-context members and the writer's RID
   earlier method's body moves the RVAs of the bodies after it in `.text`. That is harmless: `Assembly.read`
   parses each body when it reads the image, and later reads through `PeReader` look the assembly up by
   name, so they go to the current image.
-* **Stage 4** calls `WithCreatedType` from `TypeBuilder_TermCreateClass`. A guest that adds an
-  `InterfaceImpl` or `MethodImpl` to an earlier-defined type after creating a later one crashes on the
-  moved-row check. That is plausible (create `B`, then `DefineMethodOverride` on `A`), so if a guest
-  reaches it, we decide then whether PawPrint keeps those handles anywhere outside the `DumpedAssembly`
-  that a re-read rebuilds.
+* **Stage 4** calls `WithCreatedType` from `TypeBuilder_TermCreateClass`. A guest may add an
+  `InterfaceImpl` or `MethodImpl` to an earlier-defined type after creating a later one (create `B`,
+  then `DefineMethodOverride` on `A`), which moves `B`'s rows in the image; 3f admits it.
 
 ## Stage 3 in detail
 
@@ -593,8 +591,9 @@ a stage emits it.
 
 ### 3f: the oracle
 
-* `TestEmitScopeExtension`'s property compares a created type's interface implementations and method
-  impls by what each names, in table order, and counts the generated extensions that move a created
-  type's rows without changing it.
+* `TestEmitScopeExtension`'s extension property compares a created type's interface implementations
+  and method impls by what each names, in table order. A second property appends rows for `<Module>`,
+  which sort before every other type's, so that most samples move a created type's rows, and requires
+  the check to admit each.
 * `TestLoadedAssemblies` replaces a scope whose new rows, for a type with a lower RID, move a created
   type's rows of both tables, and checks the created type's `TypeInfo` reads back the same.
