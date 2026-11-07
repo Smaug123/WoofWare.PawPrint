@@ -1420,6 +1420,63 @@ module TestImpureCases =
         |> List.map (fun rid -> loaded.IsCreatedType name (TypeDefRid rid))
         |> shouldEqual [ false ; true ; true ; true ]
 
+    /// `TypeBuilderSetMethodIL.cs` has created `I` and `T`, and with them given each method a body:
+    /// `I.M` (MethodDef 1), and `T`'s `FortyTwo`, `Seven`, `Sum` and `Twice` (2 to 5). A guest cannot
+    /// read a body's header, so this checks the bytes each method's row holds, as .NET 10 reports their
+    /// parts: a fat header (ECMA-335 II.25.4.3) of flags, max stack, code size and local signature
+    /// token, then the code. The local signatures are `StandAloneSig` 1, holding no locals, and 2,
+    /// holding one `int`.
+    let private assertMethodBodies (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.standAloneSigs scope
+        |> Seq.map (fun row -> EmitScope.blobAt row.Signature scope |> List.ofSeq)
+        |> List.ofSeq
+        |> shouldEqual [ [ 0x07uy ; 0x00uy ] ; [ 0x07uy ; 0x01uy ; 0x08uy ] ]
+
+        // `CorILMethod_FatFormat`, with `CorILMethod_InitLocals` when the method zeroes its locals, and
+        // the header's size of three words in the top nibble.
+        let fat (initLocals : bool) (maxStack : byte) (code : byte list) (localSig : byte) : byte list =
+            [ (if initLocals then 0x13uy else 0x03uy) ; 0x30uy ; maxStack ; 0x00uy ]
+            @ [ byte code.Length ; 0x00uy ; 0x00uy ; 0x00uy ]
+            @ [ localSig ; 0x00uy ; 0x00uy ; 0x11uy ]
+            @ code
+
+        EmitScope.methodDefs scope
+        |> Seq.map (fun row -> row.Body |> Option.map List.ofSeq)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                // `I.M`, abstract, with no `ILGenerator`: `RuntimeMethodBuilder.GetMaxStack`'s default of 16.
+                Some (fat true 16uy [] 1uy)
+                Some (fat true 1uy [ 0x1Fuy ; 0x2Auy ; 0x2Auy ] 1uy)
+                Some (fat true 1uy [ 0x1Duy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
+                Some (fat false 2uy [ 0x02uy ; 0x03uy ; 0x58uy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
+                Some (
+                    fat
+                        true
+                        2uy
+                        [
+                            0x28uy
+                            0x02uy
+                            0x00uy
+                            0x00uy
+                            0x06uy
+                            0x28uy
+                            0x02uy
+                            0x00uy
+                            0x00uy
+                            0x06uy
+                            0x58uy
+                            0x2Auy
+                        ]
+                        1uy
+                )
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -4802,6 +4859,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertInterfacesCreated
+            }
+            {
+                // `TypeBuilder_SetMethodIL`, which `TypeBuilder.CreateType` calls for every method, an
+                // abstract one included: the bodies run, and `assertMethodBodies` checks the bytes each
+                // method's row holds and the local signatures they name. Dynamic-code switch overridden
+                // to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderSetMethodIL.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertMethodBodies
             }
             {
                 // `TypeBuilder_SetParentType`, which `TypeBuilder.CreateType` calls for a type with a
