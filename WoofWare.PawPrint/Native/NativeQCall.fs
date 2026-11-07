@@ -154,6 +154,8 @@ module NativeQCall =
             "AppDomain_CreateDynamicAssembly",
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
             "ModuleBuilder_GetTypeRef", NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetTypeRef"
+            "ModuleBuilder_GetStringConstant",
+            NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetStringConstant"
             "ModuleBuilder_GetMemberRefOfMethodInfo",
             NativeRuntimeModuleBuilder.tryExecuteQCall "ModuleBuilder_GetMemberRefOfMethodInfo"
             "TypeBuilder_DefineType", NativeRuntimeTypeBuilder.tryExecuteQCall "TypeBuilder_DefineType"
