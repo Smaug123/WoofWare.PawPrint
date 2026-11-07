@@ -917,8 +917,10 @@ mutation-testing skill applies to each table/classifier they introduce.
      escape there what the method's catch and filter clauses catch, and what preserving the stack
      trace raises. RC1 looks up an exception's message by resource name the same way, and what
      the runtime runs to make an exception (`RuntimeRun`) says so, in a body, outside it, or
-     where the JIT inlines it. Still open: the escape analysis's resource-lookup assumption
-     (`Environment.GetResourceStringLocal` is gone);
+     where the JIT inlines it. The lookup that call reaches, `SR.InternalGetResourceString`, whose
+     contract the escape analysis assumes, runs the same code on RC1 (its resource reader differs
+     only in how it reads a decimal, which no string lookup does), so that assumption holds there
+     as stated;
    * **(landed)** the escape analysis's helpers around a synchronized method, per runtime: RC1's
      JIT calls `Monitor.SynchronizedMethodEnter`/`SynchronizedMethodExit`, and defines no
      `Monitor.ExitIfLockTaken`. `SynchronizedMethodHelpers` names each runtime's pair, and a test
