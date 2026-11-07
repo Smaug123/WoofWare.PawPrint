@@ -633,6 +633,31 @@ module EmitScope =
         }
 
     /// <summary>
+    /// Give a method already in the scope its body, over any it had, as <c>TypeBuilder_SetMethodIL</c>
+    /// sets its RVA when its type is created, and again when <c>CreateType</c> is retried after failing
+    /// partway. Every other row, and every heap, is unchanged.
+    /// </summary>
+    /// <exception cref="ArgumentException">The scope has no such method, or the body is empty.</exception>
+    let setMethodBody (method : MethodDefRid) (body : ImmutableArray<byte>) (scope : EmitScope) : EmitScope =
+        let operation = "EmitScope.setMethodBody"
+        requireRid operation "MethodDef" scope.MethodDefs.Count method.Rid
+
+        if body.IsDefaultOrEmpty then
+            invalidArg (nameof body) $"%s{operation}: a method body holds at least its header"
+
+        let index = method.Rid - 1
+
+        { scope with
+            MethodDefs =
+                scope.MethodDefs.SetItem (
+                    index,
+                    { scope.MethodDefs.[index] with
+                        Body = Some body
+                    }
+                )
+        }
+
+    /// <summary>
     /// Set the <c>Extends</c> column of a type already in the scope, which CoreCLR's emitter overwrites
     /// after adding the row (<c>RegMeta::SetTypeParent</c>). Every other row, and every heap, is
     /// unchanged.

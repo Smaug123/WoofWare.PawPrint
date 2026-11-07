@@ -256,3 +256,156 @@ module TestEmitScopeMethods =
 
         // The scope it was given is unchanged.
         (EmitScope.methodDefs scope).[0] |> shouldEqual row
+
+    /// `TypeBuilder_SetMethodIL` gives a method its body when its type is created, and gives it again,
+    /// overwriting the first, when `CreateType` is retried after failing partway.
+    [<Test>]
+    let ``a method's body is set, and set again over the first`` () : unit =
+        let scope = withTypes ()
+        let name, scope = EmitScope.internString "M" scope
+        let signature, scope = EmitScope.internBlob signatures.[0] scope
+
+        let row : MethodDefRow =
+            {
+                Owner = TypeDefRid 2
+                Body = None
+                ImplFlags = MethodImplAttributes.IL
+                Flags = MethodAttributes.Public ||| MethodAttributes.Static
+                Name = name
+                Signature = signature
+            }
+
+        let method, scope = EmitScope.addMethodDef row scope
+        let body = ImmutableArray.Create<byte> [| 0x06uy ; 0x2Auy |]
+        let filled = EmitScope.setMethodBody method body scope
+
+        (EmitScope.methodDefs filled).[0]
+        |> shouldEqual
+            { row with
+                Body = Some body
+            }
+
+        (EmitScope.methodDefs scope).[0] |> shouldEqual row
+
+        let other = ImmutableArray.Create<byte> [| 0x0Auy ; 0x16uy ; 0x2Auy |]
+
+        (EmitScope.methodDefs (EmitScope.setMethodBody method other filled)).[0]
+        |> shouldEqual
+            { row with
+                Body = Some other
+            }
+
+        thrown (fun () -> EmitScope.setMethodBody (MethodDefRid 2) body scope)
+        |> shouldContainText "MethodDef RID 2"
+
+    /// The body `TypeBuilder_SetMethodIL` writes, read back from the module's image by SRM's reader:
+    /// the code, max stack, local signature and init-locals flag it was given, in a tiny header exactly
+    /// when `COR_ILMETHOD::Size` picks one (no flags, no local signature, max stack at most 8 and fewer
+    /// than 64 bytes of code), which the reader reports as a max stack of 8 with no locals.
+    [<Test>]
+    let ``a method body reads back as SetMethodIL wrote it, tiny exactly when CoreCLR's header is`` () : unit =
+        let tiny = ref 0
+        let fat = ref 0
+
+        let property (initLocals : bool) (maxStack : int) (codeLength : int) (localSig : int option) : unit =
+            let maxStack = uint16 maxStack
+            // `ret`s, so that the body is valid IL whatever its length.
+            let code = ImmutableArray.CreateRange (Seq.replicate codeLength 0x2Auy)
+            let localSignature = localSig |> Option.map (fun s -> StandAloneSigRid (s % 3 + 1))
+            let body = EmitScopeDefinitions.methodBody initLocals maxStack code localSignature
+
+            let isTiny =
+                not initLocals && localSignature.IsNone && maxStack <= 8us && codeLength < 64
+
+            if isTiny then
+                tiny.Value <- tiny.Value + 1
+            else
+                fat.Value <- fat.Value + 1
+
+            let scope =
+                EmitScopeGen.apply
+                    Guid.Empty
+                    [
+                        EmitScopeGen.Op.TypeDef ("T", "", 0, None)
+                        EmitScopeGen.Op.StandAloneSig [ 0 ]
+                        EmitScopeGen.Op.StandAloneSig [ 1 ]
+                        EmitScopeGen.Op.StandAloneSig [ 2 ]
+                    ]
+
+            let name, scope = EmitScope.internString "M" scope
+
+            let signature, scope =
+                EmitScope.internBlob (ImmutableArray.Create<byte> [| 0x00uy ; 0x00uy ; 0x01uy |]) scope
+
+            let method, scope =
+                EmitScope.addMethodDef
+                    {
+                        Owner = TypeDefRid 2
+                        Body = Some body
+                        ImplFlags = MethodImplAttributes.IL
+                        Flags = MethodAttributes.Public ||| MethodAttributes.Static
+                        Name = name
+                        Signature = signature
+                    }
+                    scope
+
+            let pe, reader = EmitScopeGen.readImage (EmitScopeImage.write scope)
+            use _ = pe
+
+            let rva =
+                (reader.GetMethodDefinition (Metadata.Ecma335.MetadataTokens.MethodDefinitionHandle method.Rid))
+                    .RelativeVirtualAddress
+
+            let block = Metadata.PEReaderExtensions.GetMethodBody (pe, rva)
+
+            block.GetILBytes () |> List.ofArray |> shouldEqual (List.ofSeq code)
+            block.Size |> shouldEqual body.Length
+            block.ExceptionRegions.Length |> shouldEqual 0
+
+            if isTiny then
+                body.Length |> shouldEqual (1 + codeLength)
+                block.MaxStack |> shouldEqual 8
+                block.LocalVariablesInitialized |> shouldEqual false
+                block.LocalSignature.IsNil |> shouldEqual true
+            else
+                body.Length |> shouldEqual (12 + codeLength)
+                block.MaxStack |> shouldEqual (int maxStack)
+                block.LocalVariablesInitialized |> shouldEqual initLocals
+
+                match localSignature with
+                | None -> block.LocalSignature.IsNil |> shouldEqual true
+                | Some rid ->
+                    Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                        Metadata.StandaloneSignatureHandle.op_Implicit block.LocalSignature
+                    )
+                    |> shouldEqual rid.Rid
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 1000,
+            Prop.forAll
+                (Arb.fromGen (
+                    gen {
+                        let! initLocals = Gen.elements [ true ; false ]
+                        // Each bound of the tiny header, and either side of it, often.
+                        let! maxStack =
+                            Gen.frequency
+                                [ 3, Gen.choose (0, 10) ; 2, Gen.elements [ 8 ; 9 ] ; 1, Gen.choose (0, 65535) ]
+
+                        let! codeLength =
+                            Gen.frequency
+                                [
+                                    3, Gen.choose (0, 70)
+                                    2, Gen.elements [ 0 ; 63 ; 64 ]
+                                    1, Gen.choose (0, 300)
+                                ]
+
+                        let! localSig = Gen.frequency [ 1, Gen.constant None ; 1, Gen.map Some (Gen.choose (0, 2)) ]
+                        return initLocals, maxStack, codeLength, localSig
+                    }
+                ))
+                (fun (initLocals, maxStack, codeLength, localSig) -> property initLocals maxStack codeLength localSig)
+        )
+
+        // About a tenth of the samples are tiny.
+        tiny.Value |> shouldBeGreaterThan 50
+        fat.Value |> shouldBeGreaterThan 500

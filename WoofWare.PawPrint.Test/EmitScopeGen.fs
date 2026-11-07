@@ -48,6 +48,9 @@ module EmitScopeGen =
         | SetMethodImplFlags of method : int * flags : int
         /// Overwrite the parent of a type already in the scope other than `<Module>`, if it has any.
         | SetTypeDefExtends of typeDef : int * extends : int
+        /// Give a method already in the scope its body, over any it has, if it is not abstract and `body`
+        /// is one: `SetMethodIL` sets no body for an abstract method's empty code.
+        | SetMethodBody of method : int * body : BodyShape
 
     type private Applied =
         {
@@ -212,6 +215,7 @@ module EmitScopeGen =
                 2, Gen.map3 (fun c b d -> Op.MethodImpl (c, b, d)) choice choice choice
                 2, Gen.map2 (fun m f -> Op.SetMethodImplFlags (m, f)) choice choice
                 2, Gen.map2 (fun t e -> Op.SetTypeDefExtends (t, e)) choice choice
+                2, Gen.map2 (fun m b -> Op.SetMethodBody (m, b)) choice genBody
             ]
 
     let pick (choice : int) (items : 'a list) : 'a option =
@@ -547,6 +551,19 @@ module EmitScopeGen =
                 let typeDef = TypeDefRid (typeChoice % (typeDefCount - 1) + 2)
                 let extends = (pick extendsChoice (typeDefOrRefs scope)).Value
                 withScope (EmitScope.setTypeDefExtends typeDef extends applied.Scope) applied
+        | Op.SetMethodBody (methodChoice, shape) ->
+            if methodCount = 0 then
+                applied
+            else
+                let method = MethodDefRid (methodChoice % methodCount + 1)
+
+                let row = (EmitScope.methodDefs scope).[method.Rid - 1]
+
+                match body scope shape with
+                | Some filled when not (row.Flags.HasFlag MethodAttributes.Abstract) ->
+                    withScope (EmitScope.setMethodBody method filled applied.Scope) applied
+                | Some _
+                | None -> applied
 
     let emptyScope (mvid : Guid) : EmitScope =
         let scope = EmitScope.create "RefEmit_InMemoryManifestModule" mvid

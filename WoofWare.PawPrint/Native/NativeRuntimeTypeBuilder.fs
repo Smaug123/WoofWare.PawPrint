@@ -425,6 +425,101 @@ module NativeRuntimeTypeBuilder =
             let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
 
             NativeHandlerResult.completed state |> Some
+        | "TypeBuilder_SetMethodIL",
+          "System.Private.CoreLib",
+          "System.Reflection.Emit",
+          "RuntimeTypeBuilder",
+          [ CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", moduleGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection.Emit",
+                                                                         "ExceptionHandler",
+                                                                         handlerGenerics))
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void when moduleGenerics.IsEmpty && handlerGenerics.IsEmpty ->
+            let operation = "TypeBuilder_SetMethodIL"
+
+            if instruction.Arguments.Length <> 12 then
+                failwith $"%s{operation}: expected twelve native arguments, got %d{instruction.Arguments.Length}"
+
+            let moduleName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let held = dynamicScope operation moduleName state
+            let methodToken = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let method =
+                if methodToken >>> 24 &&& 0xFF <> methodDefTable then
+                    failwith
+                        $"%s{operation}: 0x%08x{methodToken} is not a MethodDef token, and the managed caller passes only its MethodBuilder's"
+
+                match EmitScope.tryMethodDefRid (methodToken &&& 0x00FFFFFF) held with
+                | Some method -> method
+                | None -> failwith $"%s{operation}: 0x%08x{methodToken} names no MethodDef row of the module's scope"
+
+            // `Interop.BOOL`: any nonzero value is true.
+            let initLocals = NativeCall.int32Argument operation instruction.Arguments.[2] <> 0
+
+            let readBytes (what : string) (pointerIndex : int) (lengthIndex : int) : byte array =
+                let length = NativeCall.int32Argument operation instruction.Arguments.[lengthIndex]
+
+                let pointer =
+                    NativeCall.managedPointerOfPointerArgument operation what instruction.Arguments.[pointerIndex]
+
+                NativeCall.readCountedBytes $"%s{operation}: %s{what}" ctx.BaseClassTypes state pointer length
+
+            let code = readBytes "body" 3 4
+            let localSignature = readBytes "localSig" 5 6
+
+            // The native parameter is a `UINT16`, so only the low 16 bits of the managed `int` arrive.
+            let maxStack =
+                uint16 (NativeCall.int32Argument operation instruction.Arguments.[7] &&& 0xFFFF)
+
+            let exceptionCount = NativeCall.int32Argument operation instruction.Arguments.[9]
+
+            if exceptionCount <> 0 then
+                failwith
+                    $"TODO: %s{operation}: 0x%08x{methodToken} of %s{moduleName} has %d{exceptionCount} exception handlers, whose section of the method body is not implemented"
+
+            // The token fixups are relocations for an image saved to disk: they move no byte of a
+            // dynamic module's body in memory, so nothing here reads them.
+
+            // An empty local signature is the two bytes 0 0, which `CreateType` never passes: it passes
+            // `IMAGE_CEE_CS_CALLCONV_LOCAL_SIG` and a count even for no locals, and the emitter gives
+            // that a `StandAloneSig` row like any other.
+            let localSignatureRow, held =
+                if localSignature = [| 0uy ; 0uy |] then
+                    None, held
+                else
+                    let rid, held =
+                        EmitScopeReferences.defineStandAloneSig (ImmutableArray.Create<byte> localSignature) held
+
+                    Some rid, held
+
+            let body =
+                EmitScopeDefinitions.methodBody initLocals maxStack (ImmutableArray.Create<byte> code) localSignatureRow
+
+            // CoreCLR sets the method's RVA only for code that is not empty, so an abstract method,
+            // whose code is, keeps no body; its local signature's row is added all the same.
+            let extended =
+                if code.Length = 0 then
+                    held
+                else
+                    EmitScope.setMethodBody method body held
+
+            let state, _ = state.WithEmitScope ctx.LoggerFactory moduleName extended
+
+            NativeHandlerResult.completed state |> Some
         | "TypeBuilder_TermCreateClass",
           "System.Private.CoreLib",
           "System.Reflection.Emit",

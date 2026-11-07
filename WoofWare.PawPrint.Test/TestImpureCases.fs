@@ -450,22 +450,6 @@ module TestImpureCases =
             currentDirectoryCase "/héllo/中文/🐶",
             """A *short* non-ASCII directory, parked for an unrelated reason: it fits the stackalloc, so `SystemNative_GetCwd` succeeds and ERANGE never enters into it, but decoding the bytes back with `Marshal.PtrToStringUTF8` takes CoreLib's non-ASCII UTF-8 path, which stops in `Utf8Utility.GetPointerToFirstInvalidByte` at a `cgt.un` between two byrefs into one stackalloc block ("refusing cgt.un: no structural order between byrefs"). The ASCII siblings in `cases` cover the same handler; what is missing is byref ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of such a path directly in the meantime."""
             {
-                FileName = "TypeBuilderInterfaceOverride.cs"
-                ExpectedReturnCode = 0
-                KernelConfig = KernelConfig.Default
-                AppContext =
-                    AppContextProperties.ofMap (
-                        Map.ofList
-                            [
-                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
-                            ]
-                    )
-                Oracle = OraclePolicy.Never
-                ExpectsUnhandledException = false
-                AssertTerminalState = None
-            },
-            """Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it defines a type with `TypeBuilder`, creates it and calls it through an interface. Measured on .NET 10 to exit 0. Past the TypeRefs of `object` and `IThing`, the TypeDef of `Thing`, the MethodDef of `get_Value`, the MemberRef of `IThing.get_Value` and the MethodImpl between them, and `TypeBuilder_SetParentType` in `TypeBuilder.CreateType`, it stops at `TypeBuilder_SetMethodIL`, giving `Thing.get_Value` its body; each stage of the plan takes it a QCall further."""
-            {
                 FileName = "ModuleBuilderMemberRefTranslatedSignature.cs"
                 ExpectedReturnCode = 0
                 KernelConfig = KernelConfig.Default
@@ -1419,6 +1403,63 @@ module TestImpureCases =
         [ 1 ; 2 ; 3 ; 4 ]
         |> List.map (fun rid -> loaded.IsCreatedType name (TypeDefRid rid))
         |> shouldEqual [ false ; true ; true ; true ]
+
+    /// `TypeBuilderSetMethodIL.cs` has created `I` and `T`, and with them called `SetMethodIL` for each
+    /// method: `I.M` (MethodDef 1), abstract, whose empty body sets none, and `T`'s `FortyTwo`, `Seven`,
+    /// `Sum` and `Twice` (2 to 5). A guest cannot read a body's header, so this checks the bytes each
+    /// method's row holds, as .NET 10 reports their parts: a fat header (ECMA-335 II.25.4.3) of flags,
+    /// max stack, code size and local signature token, then the code. The local signatures are
+    /// `StandAloneSig` 1, holding no locals, which `I.M`'s empty body asked for first, and 2, holding
+    /// one `int`.
+    let private assertMethodBodies (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        EmitScope.standAloneSigs scope
+        |> Seq.map (fun row -> EmitScope.blobAt row.Signature scope |> List.ofSeq)
+        |> List.ofSeq
+        |> shouldEqual [ [ 0x07uy ; 0x00uy ] ; [ 0x07uy ; 0x01uy ; 0x08uy ] ]
+
+        // `CorILMethod_FatFormat`, with `CorILMethod_InitLocals` when the method zeroes its locals, and
+        // the header's size of three words in the top nibble.
+        let fat (initLocals : bool) (maxStack : byte) (code : byte list) (localSig : byte) : byte list =
+            [ (if initLocals then 0x13uy else 0x03uy) ; 0x30uy ; maxStack ; 0x00uy ]
+            @ [ byte code.Length ; 0x00uy ; 0x00uy ; 0x00uy ]
+            @ [ localSig ; 0x00uy ; 0x00uy ; 0x11uy ]
+            @ code
+
+        EmitScope.methodDefs scope
+        |> Seq.map (fun row -> row.Body |> Option.map List.ofSeq)
+        |> List.ofSeq
+        |> shouldEqual
+            [
+                None
+                Some (fat true 1uy [ 0x1Fuy ; 0x2Auy ; 0x2Auy ] 1uy)
+                Some (fat true 1uy [ 0x1Duy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
+                Some (fat false 2uy [ 0x02uy ; 0x03uy ; 0x58uy ; 0x0Auy ; 0x06uy ; 0x2Auy ] 2uy)
+                Some (
+                    fat
+                        true
+                        2uy
+                        [
+                            0x28uy
+                            0x02uy
+                            0x00uy
+                            0x00uy
+                            0x06uy
+                            0x28uy
+                            0x02uy
+                            0x00uy
+                            0x00uy
+                            0x06uy
+                            0x58uy
+                            0x2Auy
+                        ]
+                        1uy
+                )
+            ]
 
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
@@ -4802,6 +4843,63 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertInterfacesCreated
+            }
+            {
+                // `TypeBuilder_SetMethodIL`, which `TypeBuilder.CreateType` calls for every method, an
+                // abstract one included: the bodies run, and `assertMethodBodies` checks the bytes each
+                // method's row holds and the local signatures they name. Dynamic-code switch overridden
+                // to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderSetMethodIL.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertMethodBodies
+            }
+            {
+                // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has
+                // given the earlier methods their bodies: the retry refuses to bake a released body
+                // again, and gives an abstract method its empty one again, which sets none. Dynamic-code
+                // switch overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderCreateTypeRetry.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Issue #2091's guest, the acceptance case of `docs/plans/2026-11-04-type-builder.md`: it
+                // defines a type with `TypeBuilder`, creates it, instantiates it with
+                // `Activator.CreateInstance` and calls it through an interface. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderInterfaceOverride.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // `TypeBuilder_SetParentType`, which `TypeBuilder.CreateType` calls for a type with a

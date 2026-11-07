@@ -147,6 +147,49 @@ module EmitScopeDefinitions =
             scope
 
     /// <summary>
+    /// The body <c>TypeBuilder_SetMethodIL</c> writes for a method with no exception handlers: the
+    /// header <c>COR_ILMETHOD::Size</c> picks, then the code. A tiny header (ECMA-335 II.25.4.2) when
+    /// the method zeroes no locals, has no local signature, a max stack of at most 8 and fewer than 64
+    /// bytes of code; otherwise a fat one (II.25.4.3) holding all four.
+    /// </summary>
+    let methodBody
+        (initLocals : bool)
+        (maxStack : uint16)
+        (code : ImmutableArray<byte>)
+        (localSignature : StandAloneSigRid option)
+        : ImmutableArray<byte>
+        =
+        if code.IsDefault then
+            invalidArg (nameof code) "a method body's code must be an initialised array"
+
+        let builder = ImmutableArray.CreateBuilder<byte> ()
+
+        if not initLocals && localSignature.IsNone && maxStack <= 8us && code.Length < 64 then
+            // `CorILMethod_TinyFormat`, with the code size in the top six bits.
+            builder.Add (byte (0x02 ||| (code.Length <<< 2)))
+        else
+            // `CorILMethod_FatFormat`, `CorILMethod_InitLocals` if asked for, and the header's size of
+            // three 4-byte words in the top nibble.
+            let flags = 0x03 ||| (if initLocals then 0x10 else 0) ||| (3 <<< 12)
+
+            let localSignatureToken =
+                match localSignature with
+                | Some rid -> 0x11000000 ||| rid.Rid
+                | None -> 0
+
+            let little (value : int) (width : int) =
+                for i in 0 .. width - 1 do
+                    builder.Add (byte (value >>> (8 * i)))
+
+            little flags 2
+            little (int maxStack) 2
+            little code.Length 4
+            little localSignatureToken 4
+
+        builder.AddRange code
+        builder.ToImmutable ()
+
+    /// <summary>
     /// Set a method's implementation flags, as <c>RegMeta::SetMethodImplFlags</c> does: the low 16
     /// bits of <paramref name="flags"/>, the column's width, replacing whatever the row held.
     /// </summary>
