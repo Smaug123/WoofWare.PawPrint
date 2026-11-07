@@ -204,6 +204,7 @@ module EmitScopeExtension =
 
             yield! rewritten TableIndex.MemberRef (EmitScope.memberRefs before) (EmitScope.memberRefs after)
             yield! rewritten TableIndex.StandAloneSig (EmitScope.standAloneSigs before) (EmitScope.standAloneSigs after)
+            yield! rewritten TableIndex.TypeSpec (EmitScope.typeSpecs before) (EmitScope.typeSpecs after)
 
             yield! rewritten TableIndex.MethodImpl (EmitScope.methodImpls before) (EmitScope.methodImpls after)
 

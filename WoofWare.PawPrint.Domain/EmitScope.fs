@@ -116,6 +116,16 @@ type MemberRefRid =
         match this with
         | MemberRefRid rid -> rid
 
+/// The RID of an emit scope's `TypeSpec` row.
+[<Struct>]
+type TypeSpecRid =
+    internal
+    | TypeSpecRid of int
+
+    member this.Rid : int =
+        match this with
+        | TypeSpecRid rid -> rid
+
 /// The RID of an emit scope's `StandAloneSig` row.
 [<Struct>]
 type StandAloneSigRid =
@@ -140,6 +150,7 @@ type ResolutionScope =
 type TypeDefOrRef =
     | TypeDef of TypeDefRid
     | TypeRef of TypeRefRid
+    | TypeSpec of TypeSpecRid
 
 /// ECMA-335 II.24.2.6's `MemberRefParent` coded index, for the targets an emit scope can hold.
 [<RequireQualifiedAccess>]
@@ -266,6 +277,12 @@ type StandAloneSigRow =
         Signature : BlobOffset
     }
 
+/// A `TypeSpec` row (ECMA-335 II.22.39): a type's signature, such as a generic instantiation's.
+type TypeSpecRow =
+    {
+        Signature : BlobOffset
+    }
+
 /// A `MethodImpl` row (ECMA-335 II.22.27).
 type MethodImplRow =
     {
@@ -318,6 +335,7 @@ type EmitScope =
             InterfaceImpls : ImmutableList<InterfaceImplRow>
             MemberRefs : ImmutableList<MemberRefRow>
             StandAloneSigs : ImmutableList<StandAloneSigRow>
+            TypeSpecs : ImmutableList<TypeSpecRow>
             MethodImpls : ImmutableList<MethodImplRow>
         }
 
@@ -360,6 +378,7 @@ module EmitScope =
         match target with
         | TypeDefOrRef.TypeDef rid -> requireRid operation "TypeDef" scope.TypeDefs.Count rid.Rid
         | TypeDefOrRef.TypeRef rid -> requireRid operation "TypeRef" scope.TypeRefs.Count rid.Rid
+        | TypeDefOrRef.TypeSpec rid -> requireRid operation "TypeSpec" scope.TypeSpecs.Count rid.Rid
 
     let private requireMethodDefOrRef (operation : string) (scope : EmitScope) (target : MethodDefOrRef) : unit =
         match target with
@@ -459,6 +478,13 @@ module EmitScope =
         else
             None
 
+    /// The `TypeSpec` row with this RID, if the scope has one.
+    let tryTypeSpecRid (rid : int) (scope : EmitScope) : TypeSpecRid option =
+        if rid >= 1 && rid <= scope.TypeSpecs.Count then
+            Some (TypeSpecRid rid)
+        else
+            None
+
     /// The offset `internString` would return for `value` if the heap already holds what CoreCLR's
     /// emitter stores for it, without adding it.
     let tryStringOffset (value : string) (scope : EmitScope) : StringOffset option =
@@ -551,6 +577,7 @@ module EmitScope =
                 InterfaceImpls = ImmutableList.Empty
                 MemberRefs = ImmutableList.Empty
                 StandAloneSigs = ImmutableList.Empty
+                TypeSpecs = ImmutableList.Empty
                 MethodImpls = ImmutableList.Empty
             }
 
@@ -778,6 +805,14 @@ module EmitScope =
             StandAloneSigs = scope.StandAloneSigs.Add row
         }
 
+    let addTypeSpec (row : TypeSpecRow) (scope : EmitScope) : TypeSpecRid * EmitScope =
+        requireBlob "EmitScope.addTypeSpec" scope row.Signature
+
+        TypeSpecRid (scope.TypeSpecs.Count + 1),
+        { scope with
+            TypeSpecs = scope.TypeSpecs.Add row
+        }
+
     /// Adds a `MethodImpl` row. Nothing hands out its RID: the image sorts the table by class.
     let addMethodImpl (row : MethodImplRow) (scope : EmitScope) : EmitScope =
         let operation = "EmitScope.addMethodImpl"
@@ -815,6 +850,7 @@ module EmitScope =
     let parameters (scope : EmitScope) : ImmutableList<ParamRow> = scope.Params
     let memberRefs (scope : EmitScope) : ImmutableList<MemberRefRow> = scope.MemberRefs
     let standAloneSigs (scope : EmitScope) : ImmutableList<StandAloneSigRow> = scope.StandAloneSigs
+    let typeSpecs (scope : EmitScope) : ImmutableList<TypeSpecRow> = scope.TypeSpecs
 
     /// In the order they were added, which is not the image's: the image sorts them by class.
     let interfaceImpls (scope : EmitScope) : ImmutableList<InterfaceImplRow> = scope.InterfaceImpls
