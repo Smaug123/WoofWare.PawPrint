@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, in progress). Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -256,6 +256,9 @@ definitions (`GetTypeRef` for `object` and `IThing`, then `DefineType`, `DefineM
   token. The guest then stops in `DefineMethodOverride` at `TypeBuilder_DefineMethodImpl`.
 * **3e, `TypeBuilder_DefineMethodImpl`.** The guest then stops in `CreateType` at
   `TypeBuilder_SetParentType`.
+* **3f, a created type's rows of a sorted table may move in the image**, which stage 4 would otherwise
+  refuse for a later override or interface implementation of a type with a lower RID. The guest is
+  unchanged.
 * Then the rest in the order the guest reaches them.
 
 ### 3a: what CoreCLR's emitter writes
@@ -556,8 +559,42 @@ decision: the handler decodes the three tokens and appends the row with `EmitSco
 
 ### 3e: left to later stages
 
-* The image sorts `MethodImpl` by class, where CoreCLR's table stays in the order rows were added. So
-  once stage 4 creates a type, an override defined afterwards for a type with a lower `TypeDef` RID
-  moves the created type's rows, which the extension check refuses as `SortedRowMoved`, while real
-  .NET accepts it. `InterfaceImpl` has the same property, through `TypeBuilder_AddInterfaceImpl`.
-  Stage 4 must decide how to admit it.
+* The image sorts `MethodImpl` and `InterfaceImpl` by class, so once stage 4 creates a type, a row added
+  afterwards for a type with a lower `TypeDef` RID moves the created type's rows. 3f admits it.
+
+### 3f: a created type's rows of a sorted table may move
+
+CoreCLR's read-write metadata keeps `MethodImpl` and `InterfaceImpl` in the order rows were added, and
+reads one class's rows through a `VirtualSort` (md/enc/metamodelrw.cpp) whose `Compare` orders by class,
+then by RID. That is the image's stable sort by class: a class's rows come back in the order they were
+added, wherever rows of other classes land. A row's RID in either table is not visible to a guest:
+Reflection.Emit hands out no token for either, and `IMetaDataImport::EnumMethodImpls` returns the body
+and declaration, not the row.
+
+So the extension check's `SortedRowMoved` refused a replacement that changes nothing a guest or the
+runtime can read. The options weighed:
+
+* **Keep no handle into a sorted table (chosen).** `TypeInfo.MethodImpls`, the only place the runtime
+  kept one (a dictionary keyed by `MethodImplementationHandle`, re-sorted by handle wherever it was
+  read), becomes an array in table order. With no handle kept, a moved RID is harmless by construction,
+  and the check drops `SortedRowMoved`; it still requires every row unchanged and none added for a
+  created type, so a created type's rows read back the same and in the same order. A breaking change to
+  `WoofWare.PawPrint.Domain`'s public `TypeInfo`.
+* **Drop the check alone.** Sound only because nothing resolves an old handle against a new image,
+  which nothing would enforce.
+* **Re-read created types when a row moves.** Keeps the image and the check, and replaces every cached
+  `TypeInfo` of a created type; more machinery, reaching into the type system's caches.
+* **Write the tables unsorted.** System.Reflection.Metadata's reader refuses an unsorted `MethodImpl`
+  or `InterfaceImpl` table.
+
+Not every table CoreCLR virtual-sorts is like these two: a `GenericParam` row's token is visible to a
+guest, through `GenericTypeParameterBuilder.MetadataToken`, so that table will need its own answer when
+a stage emits it.
+
+### 3f: the oracle
+
+* `TestEmitScopeExtension`'s property compares a created type's interface implementations and method
+  impls by what each names, in table order, and counts the generated extensions that move a created
+  type's rows without changing it.
+* `TestLoadedAssemblies` replaces a scope whose new rows, for a type with a lower RID, move a created
+  type's rows of both tables, and checks the created type's `TypeInfo` reads back the same.

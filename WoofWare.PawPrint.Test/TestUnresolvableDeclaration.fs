@@ -239,7 +239,7 @@ module TestUnresolvableDeclaration =
                 | None -> failwith "fabricated assembly has no BG"
                 | Some typeInfo -> typeInfo
 
-            match bg.MethodImpls.Values |> Seq.map (fun impl -> impl.Declaration) |> List.ofSeq with
+            match bg.MethodImpls |> Seq.map (fun impl -> impl.Declaration) |> List.ofSeq with
             | [ MetadataToken.MemberReference handle ] ->
                 match fixture.Fabricated.Members.[handle].Parent with
                 | MetadataToken.TypeSpecification _ -> ()

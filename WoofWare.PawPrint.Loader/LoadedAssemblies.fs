@@ -365,8 +365,10 @@ type LoadedAssemblies =
     /// <remarks>
     /// Crashes unless <paramref name="scope"/> extends the assembly's current scope
     /// (<c>EmitScopeExtension.violations</c>), given the types created so far: every handle into the
-    /// old image then means the same in the new one, and every created type reads back the same, so
-    /// nothing the runtime has already read from the old image is invalidated. A scope that does not
+    /// old image then means the same in the new one, except into <c>InterfaceImpl</c> and
+    /// <c>MethodImpl</c>, which the image sorts and of which the runtime keeps no handle, and every
+    /// created type reads back the same, so nothing the runtime has already read from the old image is
+    /// invalidated. A scope that does not
     /// extend it is a fault in whatever built the scope.
     /// </remarks>
     /// <returns>The load context and the replacement assembly.</returns>

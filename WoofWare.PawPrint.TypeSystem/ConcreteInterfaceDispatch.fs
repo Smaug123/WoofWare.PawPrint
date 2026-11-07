@@ -809,13 +809,7 @@ module ConcreteInterfaceDispatch =
 
         // `PlaceMethodImpls` runs after `PlaceInterfaceMethods`, so a MethodImpl replaces whatever
         // placement mapped (`AddMethodImplDispatchMapping`).
-        let methodImpls =
-            typeInfo.MethodImpls
-            |> Seq.sortBy (fun (KeyValue (handle, _)) ->
-                MetadataToken.toInt (MetadataToken.MethodImplementation handle)
-            )
-            |> Seq.map (fun (KeyValue (_, impl)) -> impl)
-            |> List.ofSeq
+        let methodImpls = List.ofSeq typeInfo.MethodImpls
 
         let state, placed =
             (state, (placed, ImmutableDictionary.Empty), methodImpls)

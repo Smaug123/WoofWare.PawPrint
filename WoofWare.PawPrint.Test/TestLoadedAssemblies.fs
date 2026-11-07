@@ -830,11 +830,33 @@ module TestLoadedAssemblies =
         let typeInfo (assembly : DumpedAssembly) =
             assembly.TypeDefs.[MetadataTokens.TypeDefinitionHandle second.Rid]
 
+        let methodDef (rid : int) : MetadataToken =
+            MetadataToken.MethodDef (MetadataTokens.MethodDefinitionHandle rid)
+
+        // In the order the scope added them.
+        List.ofSeq (typeInfo dynamic).MethodImpls
+        |> shouldEqual
+            [
+                {
+                    Body = methodDef 4
+                    Declaration = methodDef 2
+                }
+                {
+                    Body = methodDef 3
+                    Declaration = methodDef 1
+                }
+            ]
+
         List.ofSeq (typeInfo replaced).MethodImpls
         |> shouldEqual (List.ofSeq (typeInfo dynamic).MethodImpls)
 
-        List.ofSeq (typeInfo replaced).ImplementedInterfaces
-        |> shouldEqual (List.ofSeq (typeInfo dynamic).ImplementedInterfaces)
+        // `AssemblyName` compares by reference, so compare what it names.
+        let interfaces (assembly : DumpedAssembly) =
+            (typeInfo assembly).ImplementedInterfaces
+            |> Seq.map (fun i -> i.InterfaceHandle, i.RelativeToAssembly.FullName)
+            |> List.ofSeq
+
+        interfaces replaced |> shouldEqual (interfaces dynamic)
 
         // A row for the created type itself is still refused.
         match thrownBy (fun () -> loaded.WithEmitScope loggerFactory name (impl second 3 1 extended)) with

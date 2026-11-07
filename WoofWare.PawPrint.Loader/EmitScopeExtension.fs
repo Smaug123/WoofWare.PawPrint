@@ -11,7 +11,9 @@ open System.Reflection.Metadata.Ecma335
 /// <remarks>
 /// A row's <c>position</c> is its RID in the scope, which is its RID in the image, except in
 /// <c>InterfaceImpl</c> and <c>MethodImpl</c>: there it is the 1-based position at which the scope
-/// added the row, because the image sorts those tables by class.
+/// added the row, because the image sorts those tables by class. A row of those tables therefore
+/// moves when a later row sorts before it, and that is not a violation: the runtime keeps no handle
+/// into them, only what each row names, and a class's rows keep their order.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type EmitScopeExtensionViolation =
@@ -33,10 +35,6 @@ type EmitScopeExtensionViolation =
     /// created.
     | FilledInCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
-    /// A row of a created type, in a table the image sorts, has a different RID in the later image
-    /// than in the earlier one, because the later scope added a row for a type that sorts before it.
-    | SortedRowMoved of table : TableIndex * position : int * createdType : TypeDefRid * before : int * after : int
-
 /// Whether one emit scope extends another, given which of its types the runtime has already created.
 [<RequireQualifiedAccess>]
 module EmitScopeExtension =
@@ -47,10 +45,9 @@ module EmitScopeExtension =
     /// <remarks>
     /// Empty when <paramref name="after"/> was built from <paramref name="before"/> by appending rows,
     /// interning entries and filling in the implementation flags of methods, none of them for a
-    /// created type and none sorting before a created type's rows in a sorted table. Then an image of
-    /// <paramref name="after"/> reads back every heap entry and created type of
-    /// <paramref name="before"/>'s as <paramref name="before"/>'s image does, and every row but for
-    /// those flags. A history that was otherwise rewritten, rather than appended to, is refused even
+    /// created type. Then an image of <paramref name="after"/> reads back every heap entry and created
+    /// type of <paramref name="before"/>'s as <paramref name="before"/>'s image does, and every row but
+    /// for those flags, at the same RID except in the tables the image sorts. A history that was otherwise rewritten, rather than appended to, is refused even
     /// where the image happens to read back the same.
     /// </remarks>
     /// <param name="created">
@@ -93,35 +90,6 @@ module EmitScopeExtension =
 
                     if created.Contains owner then
                         yield EmitScopeExtensionViolation.AddedToCreatedType (table, i + 1, owner)
-            ]
-
-        // Each row of a created type in a sorted table, unchanged in `after`, whose image RID moved.
-        let moved
-            (table : TableIndex)
-            (beforeRows : ImmutableList<'row>)
-            (afterRows : ImmutableList<'row>)
-            (cls : 'row -> TypeDefRid)
-            (beforeRids : ImmutableArray<int>)
-            (afterRids : ImmutableArray<int>)
-            =
-            [
-                for i in 0 .. beforeRows.Count - 1 do
-                    let owner = cls beforeRows.[i]
-
-                    if
-                        created.Contains owner
-                        && i < afterRows.Count
-                        && beforeRows.[i] = afterRows.[i]
-                        && beforeRids.[i] <> afterRids.[i]
-                    then
-                        yield
-                            EmitScopeExtensionViolation.SortedRowMoved (
-                                table,
-                                i + 1,
-                                owner,
-                                beforeRids.[i],
-                                afterRids.[i]
-                            )
             ]
 
         // Each method of `before` at the same position of `after`. The emitter fills in a method's
@@ -200,14 +168,6 @@ module EmitScopeExtension =
                     (EmitScope.interfaceImpls after)
                     (fun row -> row.Class)
 
-            yield!
-                moved
-                    TableIndex.InterfaceImpl
-                    (EmitScope.interfaceImpls before)
-                    (EmitScope.interfaceImpls after)
-                    (fun row -> row.Class)
-                    (EmitScopeImage.interfaceImplRids before)
-                    (EmitScopeImage.interfaceImplRids after)
 
             yield! rewritten TableIndex.MemberRef (EmitScope.memberRefs before) (EmitScope.memberRefs after)
             yield! rewritten TableIndex.StandAloneSig (EmitScope.standAloneSigs before) (EmitScope.standAloneSigs after)
@@ -221,14 +181,6 @@ module EmitScopeExtension =
                     (EmitScope.methodImpls after)
                     (fun row -> row.Class)
 
-            yield!
-                moved
-                    TableIndex.MethodImpl
-                    (EmitScope.methodImpls before)
-                    (EmitScope.methodImpls after)
-                    (fun row -> row.Class)
-                    (EmitScopeImage.methodImplRids before)
-                    (EmitScopeImage.methodImplRids after)
 
             // A scope gains its `Assembly` row once; from then on the row is fixed.
             match EmitScope.assembly before with

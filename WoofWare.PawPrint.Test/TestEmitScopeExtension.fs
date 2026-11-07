@@ -75,8 +75,7 @@ module TestEmitScopeExtension =
     let private createdTypeNamed (violation : EmitScopeExtensionViolation) : TypeDefRid option =
         match violation with
         | EmitScopeExtensionViolation.AddedToCreatedType (_, _, createdType)
-        | EmitScopeExtensionViolation.FilledInCreatedType (_, _, createdType)
-        | EmitScopeExtensionViolation.SortedRowMoved (_, _, createdType, _, _) -> Some createdType
+        | EmitScopeExtensionViolation.FilledInCreatedType (_, _, createdType) -> Some createdType
         | EmitScopeExtensionViolation.RowChanged _
         | EmitScopeExtensionViolation.HeapEntryChanged _ -> None
 
@@ -162,7 +161,6 @@ module TestEmitScopeExtension =
                 match violation with
                 | EmitScopeExtensionViolation.AddedToCreatedType _ -> added.Value <- added.Value + 1
                 | EmitScopeExtensionViolation.FilledInCreatedType _ -> filled.Value <- filled.Value + 1
-                | EmitScopeExtensionViolation.SortedRowMoved _
                 | EmitScopeExtensionViolation.RowChanged _
                 | EmitScopeExtensionViolation.HeapEntryChanged _ -> ()
 

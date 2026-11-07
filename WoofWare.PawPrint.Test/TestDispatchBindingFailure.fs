@@ -1203,7 +1203,7 @@ module TestDispatchBindingFailure =
             reference.Name.Name = "Nowhere"
         | Expected.DeclarationAbsent name, Error (TypeBindingFailure.MethodImplDeclarationAbsent miss) ->
             miss.Type.AssemblyFullName = f.Analysed.DefinitionFullName
-            && f.Analysed.TypeDefs.[miss.Type.TypeDefinition.Get].MethodImpls.Values
+            && f.Analysed.TypeDefs.[miss.Type.TypeDefinition.Get].MethodImpls
                |> Seq.exists (fun impl -> impl.Declaration = MetadataToken.MemberReference miss.Declaration)
             && f.Analysed.Members.[miss.Declaration].PrettyName = name
             && miss.Name = name
