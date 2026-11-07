@@ -4581,6 +4581,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // Stack crawls (GetExecutingAssembly, GetCallingAssembly) whose walk passes a
+                // dynamic method's frame: stepped over exactly when it is scoped to CoreLib and
+                // named InvokeStub_*, as MethodBase.Invoke's emitted stubs are. Dynamic-code switch
+                // overridden to true like its siblings; verified by hand to exit 0 on real .NET, in
+                // Release and Debug and with tiered compilation off.
+                FileName = "StackCrawlThroughDynamicMethod.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // A dynamic module's version ID is the runtime's own draw of sixteen
                 // secure random bytes, which must move the kernel's pool on, or the
                 // next `Guid.NewGuid` would repeat bytes a version ID already used.

@@ -105,15 +105,18 @@ module StackCrawlMark =
     /// </para>
     /// </remarks>
     let isReflectionInvocation (frame : MethodState) : bool =
-        // CoreCLR's own first test, and it gates the dynamic-method arm as much as the nominal one:
-        // a guest is free to name a `DynamicMethod` `InvokeStub_Whatever`, and that must not make
-        // its frame invisible to a crawl. Upstream says as much where it recognises the prefix.
+        // CoreCLR's own first test, and it gates the dynamic-method arm as much as the nominal one.
+        // A dynamic method's assembly is that of the module it is scoped to, so a guest's
+        // `DynamicMethod` named `InvokeStub_Whatever` stays visible to a crawl unless the guest
+        // scoped it to CoreLib's module, in which case CoreCLR steps over it like one of its own
+        // stubs (measured; upstream says as much where it recognises the prefix).
         //
-        // No guest can reach the dynamic-method arm at all yet, in either direction: for a dynamic
-        // method's frame to be live during a crawl its body must call the QCall, and a body whose
-        // `Call` names a real method is refused when the method is minted ("holds a
-        // System.RuntimeMethodHandle rather than a method"). The arm is written from upstream
-        // rather than from what a test reaches, for the reason the list below is.
+        // Guests reach the dynamic-method arm with both answers, through dynamic methods of their
+        // own scoped to CoreLib's module whose bodies call a crawling method such as
+        // `Assembly.GetExecutingAssembly` (`StackCrawlThroughDynamicMethod.cs`). CoreLib's own
+        // stubs, which `MethodBase.Invoke` emits from its second invocation of a method onwards,
+        // do not get this far: each begins with a call to the JIT intrinsic
+        // `StubHelpers.NextCallReturnAddress`, which PawPrint refuses.
         AssemblyDefinitionName.isNamed "System.Private.CoreLib" frame.ExecutingMethod.DeclaringAssemblyFullName
         && match frame.ExecutingMethod.TryDeclaringType with
            | None ->
