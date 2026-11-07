@@ -31,8 +31,8 @@ type EmitScopeExtensionViolation =
     | AddedToCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
     /// A row of the earlier scope differs in the later one only in a column the emitter fills in after
-    /// adding the row (a method's implementation flags, a type's parent), and the row is a type already
-    /// created or a member of one.
+    /// adding the row (a method's implementation flags or body, a type's parent), and the row is a type
+    /// already created or a member of one.
     | FilledInCreatedType of table : TableIndex * position : int * createdType : TypeDefRid
 
 /// Whether one emit scope extends another, given which of its types the runtime has already created.
@@ -44,8 +44,8 @@ module EmitScopeExtension =
     /// </summary>
     /// <remarks>
     /// Empty when <paramref name="after"/> was built from <paramref name="before"/> by appending rows,
-    /// interning entries, and filling in the implementation flags of methods and the parents of types,
-    /// none of them for a created type. Then an image of <paramref name="after"/> reads back every heap
+    /// interning entries, and filling in the implementation flags and bodies of methods (a body only
+    /// where there was none) and the parents of types, none of them for a created type. Then an image of <paramref name="after"/> reads back every heap
     /// entry and created type of <paramref name="before"/>'s as <paramref name="before"/>'s image does,
     /// and every row but for those columns, at the same RID except in the tables the image sorts. A history that was
     /// otherwise rewritten, rather than appended to, is refused even where the image happens to read
@@ -94,8 +94,8 @@ module EmitScopeExtension =
             ]
 
         // Each method of `before` at the same position of `after`. The emitter fills in a method's
-        // implementation flags after adding its row, so a change to that column alone is a fill,
-        // refused only for a created type.
+        // implementation flags after adding its row, and its body once, where it had none, so a change
+        // to those columns alone is a fill, refused only for a created type.
         let methodsRewritten (beforeRows : ImmutableList<MethodDefRow>) (afterRows : ImmutableList<MethodDefRow>) =
             [
                 for i in 0 .. beforeRows.Count - 1 do
@@ -110,6 +110,7 @@ module EmitScopeExtension =
                         elif
                             { was with
                                 ImplFlags = row.ImplFlags
+                                Body = (if was.Body.IsNone then row.Body else was.Body)
                             } = row
                         then
                             if created.Contains was.Owner then
