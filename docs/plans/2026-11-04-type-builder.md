@@ -1,6 +1,6 @@
 # Emitting types with `TypeBuilder`
 
-Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a implemented (#2164); stage 5b implemented (#2165); stage 5c in progress. Tracking issue: #2091. Follows
+Status: option A chosen (2026-11-04); stage 0 implemented (#2093); stage 1 implemented (#2101); stage 2 implemented (#2109); stage 3a implemented (#2115); stage 3b implemented (#2124); stage 3c implemented (#2135); stage 3d implemented (#2141); stage 3e implemented (#2144); sorted-table rows of a created type admitted to move (3f, #2154); stage 4a implemented (#2159); stage 4b implemented (#2160); stage 4c implemented (#2162), and with it the issue's guest passes; stage 4d implemented (#2163); stage 5a implemented (#2164); stage 5b implemented (#2165); stage 5c implemented (#2166); stage 5d in progress. Tracking issue: #2091. Follows
 `docs/plans/2026-09-26-expression-thunk-dynamic-method.md`, whose stage 3 gave a dynamic assembly real
 metadata (#1636) and deferred "`TypeBuilder` would later have to *extend* that metadata".
 
@@ -867,4 +867,44 @@ twice there is two rows. `EmitScopeDefinitions.addInterfaceImpl` does the same s
 * `TestEmitScopeDefinitions` checks `addInterfaceImpl` against a model of distinct pairs in the order
   first asked for.
 * Each mutant is caught: the search removed, and the row given to the previous type.
+
+### 5d: `ModuleBuilder_GetTokenFromTypeSpec`
+
+`GetTypeTokenInternal` asks for a TypeSpec for any type that is neither a TypeDef nor a TypeRef: a
+generic instantiation, an array, a pointer. `castclass`, `isinst`, `ldtoken` and the like in emitted IL
+reach it, and so would a generic parent or interface. `RegMeta::GetTokenFromTypeSpec`, under
+`MDDupTypeSpec`, which a dynamic module sets, finds the first row with the same signature
+(`ImportHelper::FindTypeSpec`) before adding one.
+
+### 5d: the decision
+
+**`TypeDefOrRef` gains a `TypeSpec` case.** ECMA-335's `TypeDefOrRef` coded index includes TypeSpec, and
+every column the scope types `TypeDefOrRef` (a parent, an interface) may name one; a separate union for
+the columns that admit a TypeSpec would have none to tell apart. `MemberRefParent` does not gain one
+yet: no QCall adds a member of a TypeSpec. A breaking change to `WoofWare.PawPrint.Domain`'s
+`TypeDefOrRef`.
+
+### 5d: the oracle
+
+* `TestEmitScopeReferences` checks `defineTypeSpec` against real .NET's
+  `ModuleBuilder.GetTypeMetadataToken` over generic instantiations and arrays, using the signatures
+  real .NET reports.
+* The generator adds TypeSpecs, which parents and interfaces may then name, so the image's round trip
+  and the extension properties cover the table.
+* `ModuleBuilderTypeSpec.cs`, which exits 0 on .NET 10, emits `castclass` and `isinst` against
+  `List<int>` and `Dictionary<string, int>`, checks their tokens, and invokes each method. Its
+  terminal-state check reads the TypeSpec signatures as .NET 10 reports them.
+* Each mutant is caught: the search removed, the coded index's TypeSpec tag wrong, and the token's
+  table byte wrong.
+
+### 5d: left to later stages
+
+* A generic parent or interface: `typeDefOrRef` no longer refuses one, but no guest creates such a type.
+* A member of a TypeSpec, as a call to a method of a generic instantiation needs. The managed caller
+  builds such a method's signature and asks `ModuleBuilder_GetMemberRefFromSignature` for it, but first
+  asks for the return parameter's and each parameter's custom modifiers, which reaches
+  `Signature.GetParameterOffsetInternal` for a method signature, which PawPrint refuses (it handles only
+  a field signature). A field of a generic instantiation goes through `ModuleBuilder_GetMemberRefOfFieldInfo`
+  instead. So `GetMemberRefFromSignature` waits on that refusal, a separate feature; a parked branch,
+  `module-builder-member-ref-from-signature`, holds a handler no guest can yet reach.
 
