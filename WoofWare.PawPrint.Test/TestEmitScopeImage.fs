@@ -876,3 +876,48 @@ module TestEmitScopeImage =
             Assert.Throws<Exception> (fun () -> EmitScopeImage.write scope |> ignore<byte[]>)
 
         e.Message |> shouldContainText "65536"
+
+    /// ECMA-335 II.23.2.6 says a local signature holds at least one local, and SRM's decoder refuses one
+    /// with none, but `TypeBuilder_SetMethodIL` gives every body built with no locals the signature
+    /// `07 00`, and CoreCLR runs it. `Assembly.read` reads it as a signature of no locals.
+    [<Test>]
+    let ``a local signature of no locals reads back as an empty one`` () : unit =
+        let scope = apply Guid.Empty [ Op.TypeDef ("T", "", 0, None) ]
+
+        let sigRow, scope =
+            EmitScopeReferences.defineStandAloneSig (ImmutableArray.Create<byte> [| 0x07uy ; 0x00uy |]) scope
+
+        let name, scope = EmitScope.internString "M" scope
+
+        let signature, scope =
+            EmitScope.internBlob (ImmutableArray.Create<byte> [| 0x00uy ; 0x00uy ; 0x08uy |]) scope
+
+        let code = ImmutableArray.Create<byte> [| 0x16uy ; 0x2Auy |]
+
+        let method, scope =
+            EmitScope.addMethodDef
+                {
+                    Owner = TypeDefRid 2
+                    Body = Some (EmitScopeDefinitions.methodBody true 1us code (Some sigRow))
+                    ImplFlags = MethodImplAttributes.IL
+                    Flags = MethodAttributes.Public ||| MethodAttributes.Static
+                    Name = name
+                    Signature = signature
+                }
+                scope
+
+        use stream = new MemoryStream (EmitScopeImage.write scope)
+        use assy = Assembly.read NullLoggerFactory.Instance None stream
+        let ty = assy.TypeDefs.[MetadataTokens.TypeDefinitionHandle 2]
+
+        match ty.Methods with
+        | [ m ] ->
+            MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit m.TryMetadata.Value.Handle : EntityHandle)
+            |> shouldEqual method.Rid
+
+            match m.Body with
+            | MethodBody.Il body ->
+                body.LocalVars |> Option.map List.ofSeq |> shouldEqual (Some [])
+                body.LocalsInit |> shouldEqual true
+            | other -> failwith $"expected an IL body, got %A{other}"
+        | methods -> failwith $"expected one method, got %d{methods.Length}"
