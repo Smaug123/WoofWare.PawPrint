@@ -91,11 +91,41 @@ type internal UnsafeAccessorRefusal =
     /// raises compiling a `Constructor` accessor's `newobj` of an abstract class.
     | CantInstantiateAbstractClass
 
+    /// `COR_E_NOTSUPPORTED`, which CoreCLR raises for an `[UnsafeAccessorType]` naming a value type
+    /// (`BFA_INVALID_UNSAFEACCESSORTYPE_VALUETYPE`) and for one retyping a byref return
+    /// (`BFA_INVALID_UNSAFEACCESSORTYPE`). The message is CoreCLR's own text.
+    | NotSupported of message : string
+
+/// The signature an `[UnsafeAccessor]` declaration's member lookup reads: the declaration's own,
+/// or, where it carries `[UnsafeAccessorType]` attributes, the one CoreCLR's
+/// `UpdateDeclarationSigWithTypes` (unsafeaccessors.cpp) builds with each named type in place of
+/// the type the signature gives.
+type internal AccessorSignature =
+    {
+        /// As metadata would spell it, which is what each candidate member's signature is compared
+        /// against.
+        Spelled : TypeMethodSignature<TypeDefn>
+        /// The same signature over the accessor's instantiation.
+        Concrete : TypeMethodSignature<ConcreteTypeHandle>
+        /// The type each retyped position names, keyed as Param sequence numbers are: 0 for the
+        /// return, `n` for the `n`th parameter. The stub type-checks the argument at every retyped
+        /// parameter position it passes on to the target.
+        Retyped : Map<int, ConcreteTypeHandle>
+    }
+
 [<RequireQualifiedAccess>]
 module internal UnsafeAccessorDispatch =
 
     [<Literal>]
     let private invalidUsageMessage = "Invalid usage of UnsafeAccessorAttribute."
+
+    [<Literal>]
+    let private invalidTypeUsageMessage =
+        "Invalid usage of UnsafeAccessorTypeAttribute."
+
+    [<Literal>]
+    let private valueTypeMessage =
+        "ValueTypes are not supported with UnsafeAccessorTypeAttribute."
 
     /// The name of the member to look for: the attribute's `Name` property, or the accessor's own
     /// name when it is absent, per `UnsafeAccessorAttribute`'s documented default. A constructor's
@@ -229,6 +259,141 @@ module internal UnsafeAccessorDispatch =
             ParameterTypes = signature.ParameterTypes |> List.map stripModifiersDeep
             ReturnType = stripReturnModifiersDeep signature.ReturnType
         }
+
+    /// Replace the type under a signature element's custom modifiers, keeping the modifiers:
+    /// `UpdateDeclarationSigWithTypes` copies each position's modifiers before appending the new
+    /// type.
+    let rec private replaceUnderModifiers (replacement : TypeDefn) (ty : TypeDefn) : TypeDefn =
+        match ty with
+        | TypeDefn.Modified m ->
+            TypeDefn.Modified
+                { m with
+                    Unmodified = replaceUnderModifiers replacement m.Unmodified
+                }
+        | _ -> replacement
+
+    /// Does this signature element, read past its custom modifiers, spell `System.Object`? The
+    /// concrete handle is the same element over the accessor's instantiation, which settles a
+    /// nominal spelling; it is not consulted for anything else, because CoreCLR reads the
+    /// element's type with no type context (`GetTypeHandleThrowing(pSigModule, NULL)`), so a `T`
+    /// is a type variable there even where the accessor's instantiation makes it `object`.
+    let rec private spellsObject
+        (objectType : ConcreteTypeHandle)
+        (spelled : TypeDefn)
+        (concrete : ConcreteTypeHandle)
+        : bool
+        =
+        match TypeDefn.stripCustomModifiers spelled with
+        | TypeDefn.PrimitiveType PrimitiveType.Object -> true
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _ -> concrete = objectType
+        | _ -> false
+
+    /// The declaration's signature with each `[UnsafeAccessorType]` row's resolved type in place,
+    /// as `UpdateDeclarationSigWithTypes` builds it, or what CoreCLR raises when a retyping is not
+    /// allowed. `retyped` is in Param-row order, each with its resolved type, and its sequence
+    /// numbers are already known to be in range; a later row at the same position replaces an
+    /// earlier one, as CoreCLR's array assignment does. `spell` gives a resolved type as the new
+    /// signature spells it.
+    ///
+    /// The positions are checked in signature order, the return first: a byref return cannot be
+    /// retyped at all (`NotSupportedException`), and otherwise the declared type must be `object`,
+    /// or `ref object` for a byref named type (`BadImageFormatException`).
+    let retypeSignature
+        (objectType : ConcreteTypeHandle)
+        (spell : ConcreteTypeHandle -> TypeDefn)
+        (declaredSpelled : TypeMethodSignature<TypeDefn>)
+        (declaredConcrete : TypeMethodSignature<ConcreteTypeHandle>)
+        (retyped : (int * ConcreteTypeHandle) list)
+        : Result<AccessorSignature, UnsafeAccessorRefusal>
+        =
+        let retyped = Map.ofList retyped
+
+        let retypeOne
+            (position : int)
+            (spelled : TypeDefn)
+            (concrete : ConcreteTypeHandle)
+            (named : ConcreteTypeHandle)
+            : Result<TypeDefn * ConcreteTypeHandle, UnsafeAccessorRefusal>
+            =
+            let declaredByref =
+                match TypeDefn.stripCustomModifiers spelled with
+                | TypeDefn.Byref _ -> true
+                | _ -> false
+
+            if position = 0 && declaredByref then
+                Error (UnsafeAccessorRefusal.NotSupported invalidTypeUsageMessage)
+            else
+
+            let valid =
+                match named, TypeDefn.stripCustomModifiers spelled, concrete with
+                | ConcreteTypeHandle.Byref _, TypeDefn.Byref spelledElement, ConcreteTypeHandle.Byref concreteElement ->
+                    spellsObject objectType spelledElement concreteElement
+                | ConcreteTypeHandle.Byref _, _, _ -> false
+                | ConcreteTypeHandle.Pointer _, _, _ ->
+                    failwith
+                        $"TODO: an [UnsafeAccessorType] at position %d{position} names a pointer type; CoreCLR accepts that over a declared `void*` and passes the argument on unchecked, which PawPrint does not model"
+                | _ -> spellsObject objectType spelled concrete
+
+            if not valid then
+                Error (UnsafeAccessorRefusal.BadImageFormat invalidTypeUsageMessage)
+            else
+                Ok (replaceUnderModifiers (spell named) spelled, named)
+
+        let returnPosition
+            : Result<MethodReturnType<TypeDefn> * MethodReturnType<ConcreteTypeHandle>, UnsafeAccessorRefusal> =
+            match Map.tryFind 0 retyped with
+            | None -> Ok (declaredSpelled.ReturnType, declaredConcrete.ReturnType)
+            | Some named ->
+                match declaredSpelled.ReturnType, declaredConcrete.ReturnType with
+                | MethodReturnType.Returns spelled, MethodReturnType.Returns concrete ->
+                    retypeOne 0 spelled concrete named
+                    |> Result.map (fun (spelled, concrete) ->
+                        MethodReturnType.Returns spelled, MethodReturnType.Returns concrete
+                    )
+                // `void` is not `object`; CoreCLR's handle for it fails the same check.
+                | _ -> Error (UnsafeAccessorRefusal.BadImageFormat invalidTypeUsageMessage)
+
+        match returnPosition with
+        | Error refusal -> Error refusal
+        | Ok (spelledReturn, concreteReturn) ->
+
+        let parameters =
+            List.zip declaredSpelled.ParameterTypes declaredConcrete.ParameterTypes
+            |> List.mapi (fun i pair -> i + 1, pair)
+
+        let folded =
+            (Ok [], parameters)
+            ||> List.fold (fun acc (position, (spelled, concrete)) ->
+                match acc with
+                | Error refusal -> Error refusal
+                | Ok soFar ->
+                    match Map.tryFind position retyped with
+                    | None -> Ok ((spelled, concrete) :: soFar)
+                    | Some named ->
+                        retypeOne position spelled concrete named
+                        |> Result.map (fun pair -> pair :: soFar)
+            )
+
+        match folded with
+        | Error refusal -> Error refusal
+        | Ok reversed ->
+            let spelledParameters, concreteParameters = List.rev reversed |> List.unzip
+
+            Ok
+                {
+                    Spelled =
+                        { declaredSpelled with
+                            ReturnType = spelledReturn
+                            ParameterTypes = spelledParameters
+                        }
+                    Concrete =
+                        { declaredConcrete with
+                            ReturnType = concreteReturn
+                            ParameterTypes = concreteParameters
+                        }
+                    Retyped = retyped
+                }
 
     /// A method signature holding exactly the types to be compared, spelled with the header the
     /// comparison should use. `compareSignatureTypes` compares `Header` and `GenericParameterCount`
@@ -766,7 +931,10 @@ module internal UnsafeAccessorDispatch =
 
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
-    /// CoreCLR would emit IL.
+    /// CoreCLR would emit IL. `declaration` is the signature to look the member up by: the
+    /// accessor's own, or the one `retypeSignature` builds from its `[UnsafeAccessorType]` names.
+    /// The accessor must already be known to be static, which CoreCLR asks before it resolves any
+    /// of those names.
     ///
     /// Runs on every invocation, where CoreCLR resolves once as it JITs the stub. That is only a
     /// cost: resolution reads metadata and registers concrete types, both idempotent, and a
@@ -777,7 +945,7 @@ module internal UnsafeAccessorDispatch =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (kind : UnsafeAccessorKind)
         (targetName : string option)
-        (hasTypeNameOverrides : bool)
+        (declaration : AccessorSignature)
         (accessor : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState * Result<UnsafeAccessorPlan, UnsafeAccessorRefusal>
@@ -785,24 +953,17 @@ module internal UnsafeAccessorDispatch =
         let describe =
             $"[UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name}"
 
-        // `UnsafeAccessor` must be on a static method (unsafeaccessors.cpp:1046), and CoreCLR asks
-        // that before it parses anything: an instance accessor that is *also* an unsupported shape
-        // is a `BadImageFormatException` the guest can catch, not a refusal.
         if not accessor.IsStatic then
-            state, Error (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage)
-        else
-
-        if hasTypeNameOverrides then
             failwith
-                $"TODO: %s{describe} names at least one of its types with [UnsafeAccessorType], which gives the type as an assembly-qualified string rather than in the signature. PawPrint resolves the target from the signature, so it would look the member up on the wrong type (usually System.Object) and silently miss it"
+                $"BUG: %s{describe} is an instance method, which is refused as BadImageFormat before its declaration is resolved"
 
-        let rawSignature = MethodInfo.requireRawSignature $"%s{describe} dispatch" accessor
+        let rawSignature = declaration.Spelled
 
         if rawSignature.RequiredParameterCount <> List.length rawSignature.ParameterTypes then
             failwith
                 $"TODO: %s{describe} declares a vararg signature; no C# accessor is one, and the comparison here assumes every parameter is required"
 
-        let concreteSignature = accessor.Signature
+        let concreteSignature = declaration.Concrete
 
         // The type whose members are searched, read from the return type for a constructor and
         // from the first parameter for everything else (unsafeaccessors.cpp:1063).
@@ -1271,6 +1432,7 @@ module internal UnsafeAccessorDispatch =
             $"Method %s{targetType}.%s{methodName}: type argument '%s{typeArgument}' violates the constraint of type parameter '%s{typeParameter}'."
         | UnsafeAccessorRefusal.CantInstantiateAbstractClass ->
             baseClassTypes.InvalidOperationException, "Instances of abstract classes cannot be created."
+        | UnsafeAccessorRefusal.NotSupported message -> baseClassTypes.NotSupportedException, message
 
     /// Is this receiver null, in either of the two ways an accessor's first argument can be?
     ///
@@ -1315,6 +1477,398 @@ module internal UnsafeAccessorDispatch =
 
         ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
+    /// The CoreLib primitives `AppendTypeToSignature` writes as their own element types
+    /// (`CorIsPrimitiveType`), which a signature compares by element type alone.
+    ///
+    /// `System.Object` is not among CoreCLR's -- it writes an `ELEMENT_TYPE_INTERNAL` naming the
+    /// type -- but `CompareElementType` matches that against `ELEMENT_TYPE_OBJECT`, which is how
+    /// every C# signature spells `object`, so it is spelled as that here. What this gives up is a
+    /// candidate spelling `object` as a class token, which CoreCLR would match too; no compiler
+    /// emits one. `System.TypedReference` is deliberately absent: its `ELEMENT_TYPE_INTERNAL`
+    /// matches no `ELEMENT_TYPE_TYPEDBYREF`.
+    let private primitivesSpelledByElementType : PrimitiveType list =
+        [
+            PrimitiveType.Boolean
+            PrimitiveType.Char
+            PrimitiveType.SByte
+            PrimitiveType.Byte
+            PrimitiveType.Int16
+            PrimitiveType.UInt16
+            PrimitiveType.Int32
+            PrimitiveType.UInt32
+            PrimitiveType.Int64
+            PrimitiveType.UInt64
+            PrimitiveType.Single
+            PrimitiveType.Double
+            PrimitiveType.String
+            PrimitiveType.IntPtr
+            PrimitiveType.UIntPtr
+            PrimitiveType.Object
+        ]
+
+    /// A resolved type as `AppendTypeToSignature` (unsafeaccessors.cpp) writes it into the retyped
+    /// signature: a primitive by its element type, an array, byref or pointer structurally, a
+    /// generic instantiation as its definition and arguments, and any other type by identity,
+    /// which is what its `ELEMENT_TYPE_INTERNAL` compares by.
+    let rec private spellResolvedType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (handle : ConcreteTypeHandle)
+        : TypeDefn
+        =
+        let recurse = spellResolvedType baseClassTypes state describe
+
+        match handle with
+        | ConcreteTypeHandle.Byref element -> TypeDefn.Byref (recurse element)
+        | ConcreteTypeHandle.Pointer element -> TypeDefn.Pointer (recurse element)
+        | ConcreteTypeHandle.OneDimArrayZero element -> TypeDefn.OneDimensionalArrayLowerBoundZero (recurse element)
+        | ConcreteTypeHandle.Array (element, rank) -> TypeDefn.Array (recurse element, rank)
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"BUG: %s{describe} resolved an [UnsafeAccessorType] name to the function pointer type %O{handle}, which no type name can spell"
+        | ConcreteTypeHandle.Concrete _ ->
+            match
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
+            with
+            | None -> failwith $"BUG: %s{describe}: resolved type %O{handle} has no TypeDef row"
+            | Some (concreteType, typeInfo) ->
+
+            let primitive =
+                if concreteType.Generics.IsEmpty then
+                    primitivesSpelledByElementType
+                    |> List.tryFind (fun primitive ->
+                        (BaseClassTypes.ofPrimitive baseClassTypes primitive).Identity = concreteType.Identity
+                    )
+                else
+                    None
+
+            match primitive with
+            | Some primitive -> TypeDefn.PrimitiveType primitive
+            | None ->
+
+            let definition =
+                TypeDefn.FromDefinition (
+                    concreteType.Identity,
+                    LoadedTypeInfo.signatureTypeKind baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
+                )
+
+            if concreteType.Generics.IsEmpty then
+                definition
+            else
+                TypeDefn.GenericInstantiation (definition, concreteType.Generics |> ImmutableArray.map recurse)
+
+    /// Is the type a value type, as CoreCLR's `TypeHandle::IsValueType` answers for a resolved
+    /// name? A byref, a pointer and an array never are.
+    let private isValueType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            match
+                AllConcreteTypes.tryTypeInfo state.TypeSystem._LoadedAssemblies state.TypeSystem.ConcreteTypes handle
+            with
+            | Some (_, typeInfo) ->
+                LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies typeInfo
+            | None -> failwith $"BUG: %s{describe}: resolved type %O{handle} has no TypeDef row"
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+
+    /// Where preparing an accessor's declaration has got to on this entry to its frame.
+    [<RequireQualifiedAccess>]
+    type private Preparation =
+        /// CoreLib's resolver has been called for the next `[UnsafeAccessorType]` name, and the
+        /// accessor's frame is re-entered when it returns.
+        | Calling of ExecutionResult
+        /// CoreCLR raises this while preparing the declaration, before it resolves any later name.
+        | Refused of UnsafeAccessorRefusal
+        /// The signature to look the target up by. Each name it needed has been resolved, and the
+        /// answers are still on the accessor's evaluation stack, one per `[UnsafeAccessorType]`.
+        | Ready of AccessorSignature
+
+    /// Resolve the declaration's `[UnsafeAccessorType]` names and build the signature its target
+    /// is looked up by, as `ProcessUnsafeAccessorTypeAttributes` (unsafeaccessors.cpp) does
+    /// before anything reads the accessor's kind.
+    ///
+    /// Each name is resolved by calling CoreLib's `TypeNameResolver.GetTypeHelper`, with the
+    /// arguments CoreCLR's VM passes it: the accessor's own assembly as the one an unqualified
+    /// name means, `throwOnError`, no requirement that the name be assembly-qualified, and the
+    /// accessor itself for a name spelling one of its type parameters. What the resolver throws
+    /// propagates out of the accessor, as it does on CoreCLR. One name is resolved per entry: its
+    /// answer is left on the accessor's evaluation stack, which holds nothing else before the
+    /// accessor dispatches, and the next entry counts the answers to know where it is. Each
+    /// answer is checked as CoreCLR checks it before resolving the next name.
+    let private prepareDeclaration
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (instruction : MethodState)
+        (overrides : UnsafeAccessorTypeOverride list)
+        (state : IlMachineState)
+        : Preparation
+        =
+        let accessor = instruction.ExecutingMethod
+
+        let describe =
+            $"[UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name}"
+
+        let declaredSpelled =
+            MethodInfo.requireRawSignature $"%s{describe} dispatch" accessor
+
+        let declaredConcrete = accessor.Signature
+
+        let answers : ManagedHeapAddress list =
+            instruction.EvaluationStack.Values
+            |> List.rev
+            |> List.map (fun value ->
+                match value with
+                | EvalStackValue.ObjectRef addr -> addr
+                | other ->
+                    failwith
+                        $"BUG: %s{describe} found %O{other} on its evaluation stack before dispatching, where only the RuntimeTypes its [UnsafeAccessorType] names resolved to belong; the resolver throws rather than answering null"
+            )
+
+        if answers.Length > overrides.Length then
+            failwith
+                $"BUG: %s{describe} found %d{answers.Length} resolved types on its evaluation stack but carries only %d{overrides.Length} [UnsafeAccessorType] attributes"
+
+        // `ProcessUnsafeAccessorTypeAttributes`, after each name resolves: a value type is refused
+        // (support for one is reserved for a future runtime), and so is a sequence number beyond
+        // the signature's parameters.
+        let checkAnswer
+            (o : UnsafeAccessorTypeOverride)
+            (answer : ManagedHeapAddress)
+            : Result<int * ConcreteTypeHandle, UnsafeAccessorRefusal>
+            =
+            let handle =
+                match DynamicScopeOperand.runtimeTypeHandleTargetOfRuntimeType describe state answer with
+                | RuntimeTypeHandleTarget.Closed handle -> handle
+                | other ->
+                    failwith
+                        $"TODO: %s{describe}: [UnsafeAccessorType] at position %d{o.Sequence} resolved to %O{other}, one of the accessor's own type parameters; CoreCLR splices the type variable itself into the signature, which PawPrint does not model"
+
+            if isValueType baseClassTypes state describe handle then
+                Error (UnsafeAccessorRefusal.NotSupported valueTypeMessage)
+            elif o.Sequence > declaredConcrete.ParameterTypes.Length then
+                Error (UnsafeAccessorRefusal.BadImageFormat invalidTypeUsageMessage)
+            else
+                Ok (o.Sequence, handle)
+
+        let checkedAnswers =
+            (Ok [], List.zip (List.take answers.Length overrides) answers)
+            ||> List.fold (fun acc (o, answer) ->
+                match acc with
+                | Error refusal -> Error refusal
+                | Ok soFar -> checkAnswer o answer |> Result.map (fun row -> row :: soFar)
+            )
+            |> Result.map List.rev
+
+        match checkedAnswers with
+        | Error refusal -> Preparation.Refused refusal
+        | Ok retyped when retyped.Length = overrides.Length ->
+            let objectType =
+                AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes baseClassTypes.Object
+
+            match
+                retypeSignature
+                    objectType
+                    (spellResolvedType baseClassTypes state describe)
+                    declaredSpelled
+                    declaredConcrete
+                    retyped
+            with
+            | Error refusal -> Preparation.Refused refusal
+            | Ok declaration -> Preparation.Ready declaration
+        | Ok _ ->
+
+        let next = overrides.[answers.Length]
+
+        let typeName =
+            match next.Argument with
+            | UnsafeAccessorTypeArgument.Named typeName -> typeName
+            | UnsafeAccessorTypeArgument.Null ->
+                failwith
+                    $"TODO: %s{describe} carries [UnsafeAccessorType(null)] at position %d{next.Sequence}; CoreCLR's GetNonNullString fails on it, and what that raises is not modelled"
+            | UnsafeAccessorTypeArgument.Malformed ->
+                failwith
+                    $"TODO: %s{describe} carries an [UnsafeAccessorType] at position %d{next.Sequence} whose blob is not a prolog and one string; what CoreCLR raises for it is not modelled"
+
+        let resolverType =
+            baseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Reflection" "TypeNameResolver"
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{describe}: CoreLib defines no System.Reflection.TypeNameResolver"
+            )
+
+        // The overload over a span, which the VM's own entry point forwards to on both .NET 10 and
+        // .NET 11 (where that entry point became `[UnmanagedCallersOnly]`).
+        let resolverMethod =
+            resolverType.Methods
+            |> List.filter (fun m ->
+                m.Name = "GetTypeHelper"
+                && m.IsStatic
+                && (
+                    match m.Signature.ParameterTypes with
+                    | [ TypeDefn.GenericInstantiation _
+                        _
+                        TypeDefn.PrimitiveType PrimitiveType.Boolean
+                        TypeDefn.PrimitiveType PrimitiveType.Boolean
+                        TypeDefn.PrimitiveType PrimitiveType.IntPtr ] -> true
+                    | _ -> false
+                )
+            )
+            |> function
+                | [ m ] -> m
+                | ms ->
+                    failwith
+                        $"%s{describe}: expected exactly one TypeNameResolver.GetTypeHelper(ReadOnlySpan<char>, RuntimeAssembly, bool, bool, IntPtr) in CoreLib, found %d{ms.Length}"
+
+        let state, concretized =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                resolverMethod
+                ImmutableArray.Empty
+                state
+
+        let resolver, _ = BindingStop.bound concretized
+
+        let nameAddr, state =
+            IlMachineState.allocateManagedString loggerFactory baseClassTypes typeName state
+
+        let span, state =
+            match IlMachineState.cliTypeZeroOfHandle state baseClassTypes resolver.Signature.ParameterTypes.[0] with
+            | CliType.ValueType span, state -> span, state
+            | other, _ -> failwith $"BUG: %s{describe}: ReadOnlySpan<char> zeroed to %O{other}"
+
+        let referenceField =
+            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_reference"
+
+        let lengthField =
+            IlMachineState.requiredOwnInstanceFieldId state span.Declared "_length"
+
+        let firstChar =
+            ManagedPointerSource.Byref
+                {
+                    Root = ByrefRoot.StringCharAt (nameAddr, 0)
+                    Projections = []
+                }
+
+        let span =
+            span
+            |> CliValueType.WithFieldSetById
+                referenceField
+                (EvalStackValue.toCliTypeCoerced
+                    (CliValueType.DereferenceFieldById referenceField span)
+                    (EvalStackValue.ManagedPointer firstChar))
+            |> CliValueType.WithFieldSetById
+                lengthField
+                (EvalStackValue.toCliTypeCoerced
+                    (CliValueType.DereferenceFieldById lengthField span)
+                    (EvalStackValue.Int32 (Int32Source.Verbatim typeName.Length)))
+
+        let requestingAssembly, state =
+            NativeRuntimeTypeHelpers.getOrAllocateRuntimeAssembly
+                loggerFactory
+                baseClassTypes
+                accessor.DeclaringAssemblyFullName
+                state
+
+        let accessorId, methodHandles =
+            MethodHandleRegistry.getOrAllocateConcreteId state.TypeSystem.ConcreteTypes accessor state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = methodHandles
+            }
+            |> IlMachineState.pushToEvalStack (CliType.ValueType span) thread
+            |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some requestingAssembly)) thread
+            |> IlMachineState.pushToEvalStack (CliType.ofBool true) thread // throwOnError
+            |> IlMachineState.pushToEvalStack (CliType.ofBool false) thread // requireAssemblyQualifiedName
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.MethodHandlePtr accessorId)))
+                thread
+
+        let state, commitment =
+            IlMachineStateExecution.callMethodWithCommitment
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                IlMachineStateExecution.CallDispatch.Direct
+                false
+                false // the accessor's frame has no IL, and its program counter says it has not dispatched
+                IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                resolver.Generics
+                resolver
+                thread
+                state.ThreadState.[thread]
+                None
+                ReturnValueDisposition.PushToCaller
+                ExceptionEscape.Propagate
+                state
+
+        match commitment with
+        | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+            ExecutionResult.stepped (state, WhatWeDid.Aborted fatal) |> Preparation.Calling
+        | IlMachineStateExecution.CallCommitment.Committed
+        | IlMachineStateExecution.CallCommitment.Raised ->
+            ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+            |> Preparation.Calling
+
+    /// The stub's `unbox.any` on each argument it passes on at a retyped position
+    /// (`EmitTypeCheck`, unsafeaccessors.cpp), from `firstArgument` onwards, in order. Answers the
+    /// first argument that is neither null nor an instance of the type its position names, with
+    /// that type.
+    let private firstMistypedArgument
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (describe : string)
+        (declaration : AccessorSignature)
+        (arguments : ImmutableArray<CliType>)
+        (firstArgument : int)
+        (state : IlMachineState)
+        : IlMachineState * (ManagedHeapAddress * ConcreteTypeHandle) option
+        =
+        let rec go (state : IlMachineState) (i : int) =
+            if i >= arguments.Length then
+                state, None
+            else
+
+            match Map.tryFind (i + 1) declaration.Retyped with
+            | None -> go state (i + 1)
+            | Some (ConcreteTypeHandle.Byref named) ->
+                let namedName =
+                    NativeRuntimeTypeHelpers.typeHandleGetName describe state (RuntimeTypeHandleTarget.Closed named)
+
+                failwith
+                    $"TODO: %s{describe} retypes its byref parameter %d{i} to %s{namedName}&; CoreCLR's stub type-checks what the byref holds, passes the target a byref to a local of the named type, and writes the local back after the target returns unless the parameter is `in`, which PawPrint does not model"
+            | Some named ->
+                match CliType.unwrapPrimitiveLikeDeep arguments.[i] with
+                | CliType.ObjectRef None -> go state (i + 1)
+                | CliType.ObjectRef (Some addr) ->
+                    let actual = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
+
+                    let state, isInstance =
+                        IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state actual named
+
+                    if isInstance then
+                        go state (i + 1)
+                    else
+                        state, Some (addr, named)
+                | other ->
+                    failwith
+                        $"BUG: %s{describe}: argument %d{i}, at a position retyped to the reference type %O{named}, is %O{other} rather than an object reference"
+
+        go state firstArgument
+
     /// Refuse an accessor whose `UnsafeAccessorKind` names none of the five kinds.
     ///
     /// CoreCLR parses the attribute's integer, keeps it, and reaches the `default:` of the switch
@@ -1326,28 +1880,32 @@ module internal UnsafeAccessorDispatch =
     /// Two things *are* read before that switch, in this order. The accessor must be static
     /// (unsafeaccessors.cpp:1045), asked before the attribute is even parsed: an instance accessor
     /// is the same `BadImageFormatException` whatever else its declaration says. Then
-    /// `ProcessUnsafeAccessorTypeAttributes` resolves any `[UnsafeAccessorType]` names, so a static
-    /// declaration carrying one can raise for the named type (a `TypeLoadException`, say) before
-    /// its kind is ever examined. That attribute is refused wherever it appears, this path included.
+    /// `ProcessUnsafeAccessorTypeAttributes` resolves any `[UnsafeAccessorType]` names and retypes
+    /// the signature with them, so a static declaration carrying one can raise for the named type
+    /// (a `TypeLoadException`, say) before its kind is ever examined.
     let executeInvalidKind
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
         (instruction : MethodState)
-        (hasTypeNameOverrides : bool)
+        (typeNameOverrides : UnsafeAccessorTypeOverride list)
         (state : IlMachineState)
         : ExecutionResult
         =
         let accessor = instruction.ExecutingMethod
 
-        if accessor.IsStatic && hasTypeNameOverrides then
-            failwith
-                $"TODO: [UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name} names none of the five kinds and also names at least one of its types with [UnsafeAccessorType]; CoreCLR resolves those names before it examines the kind, so what it raises depends on the named types, which PawPrint does not resolve"
+        let raise (refusal : UnsafeAccessorRefusal) : ExecutionResult =
+            let exceptionType, message = exceptionFor baseClassTypes refusal
+            raiseFromAccessor loggerFactory baseClassTypes thread exceptionType (Some message) state
 
-        let exceptionType, message =
-            exceptionFor baseClassTypes (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage)
+        if not accessor.IsStatic || typeNameOverrides.IsEmpty then
+            raise (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage)
+        else
 
-        raiseFromAccessor loggerFactory baseClassTypes thread exceptionType (Some message) state
+        match prepareDeclaration loggerFactory baseClassTypes thread instruction typeNameOverrides state with
+        | Preparation.Calling result -> result
+        | Preparation.Refused refusal -> raise refusal
+        | Preparation.Ready _ -> raise (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage)
 
     /// Run an `[UnsafeAccessor]` accessor's synthesised body.
     ///
@@ -1372,7 +1930,7 @@ module internal UnsafeAccessorDispatch =
         (instruction : MethodState)
         (kind : UnsafeAccessorKind)
         (targetName : string option)
-        (hasTypeNameOverrides : bool)
+        (typeNameOverrides : UnsafeAccessorTypeOverride list)
         (state : IlMachineState)
         : ExecutionResult
         =
@@ -1467,13 +2025,38 @@ module internal UnsafeAccessorDispatch =
             | result -> failwith $"unexpected ReturnFrameResult returning %s{describe}: %A{result}"
         else
 
-        let state, plan =
-            resolve loggerFactory baseClassTypes kind targetName hasTypeNameOverrides accessor state
-
-        match plan with
-        | Error refusal ->
+        let raiseRefusal (refusal : UnsafeAccessorRefusal) (state : IlMachineState) : ExecutionResult =
             let exceptionType, message = exceptionFor baseClassTypes refusal
             raiseFromAccessor exceptionType (Some message) state
+
+        // `UnsafeAccessor` must be on a static method (unsafeaccessors.cpp:1046), and CoreCLR asks
+        // that before it parses anything: an instance accessor that is *also* an unsupported shape
+        // is a `BadImageFormatException` the guest can catch, not a refusal.
+        if not accessor.IsStatic then
+            raiseRefusal (UnsafeAccessorRefusal.BadImageFormat invalidUsageMessage) state
+        else
+
+        let declaration =
+            if typeNameOverrides.IsEmpty then
+                {
+                    Spelled = MethodInfo.requireRawSignature $"%s{describe} dispatch" accessor
+                    Concrete = accessor.Signature
+                    Retyped = Map.empty
+                }
+                |> Preparation.Ready
+            else
+                prepareDeclaration loggerFactory baseClassTypes thread instruction typeNameOverrides state
+
+        match declaration with
+        | Preparation.Calling result -> result
+        | Preparation.Refused refusal -> raiseRefusal refusal state
+        | Preparation.Ready declaration ->
+
+        let state, plan =
+            resolve loggerFactory baseClassTypes kind targetName declaration accessor state
+
+        match plan with
+        | Error refusal -> raiseRefusal refusal state
         | Ok plan ->
 
         // The prologue: the accessor is static, so entering it initialises its declaring type.
@@ -1499,6 +2082,57 @@ module internal UnsafeAccessorDispatch =
         | StateLoadResult.Blocked (state, blockedBy) ->
             ExecutionResult.stepped (state, WhatWeDid.BlockedOnClassInit blockedBy)
         | StateLoadResult.NothingToDo state ->
+
+        // The resolved `[UnsafeAccessorType]` names have served their purpose, and nothing that
+        // follows can suspend before something is pushed except `ldsflda`'s initialiser, whose
+        // re-entry resolves them again.
+        let state =
+            (state, typeNameOverrides)
+            ||> List.fold (fun state _ -> IlMachineState.popEvalStack thread state |> snd)
+
+        // The stub loads every argument it passes on, type-checking each retyped one, before the
+        // instruction that reaches the target; a static member's first argument only named the
+        // type, and is not loaded.
+        let firstPassedArgument =
+            match plan with
+            | UnsafeAccessorPlan.CallStatic _
+            | UnsafeAccessorPlan.StaticFieldAddress _ -> 1
+            | UnsafeAccessorPlan.Construct _
+            | UnsafeAccessorPlan.ConstructArray _
+            | UnsafeAccessorPlan.CallInstance _
+            | UnsafeAccessorPlan.InstanceFieldAddress _ -> 0
+
+        let state, mistyped =
+            firstMistypedArgument
+                loggerFactory
+                baseClassTypes
+                describe
+                declaration
+                instruction.Arguments
+                firstPassedArgument
+                state
+
+        match mistyped with
+        | Some (argument, named) ->
+            // `COMPlusThrowInvalidCastException`'s IDS_EE_CANNOTCAST, as `castclass` raises it.
+            let fromName =
+                NativeRuntimeTypeHelpers.typeHandleGetName
+                    describe
+                    state
+                    (RuntimeTypeHandleTarget.Closed (ManagedHeap.getObjectConcreteType argument state.ManagedHeap))
+
+            let toName =
+                NativeRuntimeTypeHelpers.typeHandleGetName describe state (RuntimeTypeHandleTarget.Closed named)
+
+            if fromName = toName then
+                failwith
+                    $"TODO: %s{describe}: an argument of type %s{fromName} fails the type check against %s{toName}, a different type of the same name, so CoreCLR would throw the IDS_EE_CANNOTCASTSAME form naming both assemblies; PawPrint does not build that message"
+
+            raiseFromAccessor
+                baseClassTypes.InvalidCastException
+                (Some $"Unable to cast object of type '%s{fromName}' to type '%s{toName}'.")
+                state
+        | None ->
 
         match plan with
         | UnsafeAccessorPlan.CallStatic target -> callTarget target 1 IlMachineStateExecution.CallDispatch.Direct state

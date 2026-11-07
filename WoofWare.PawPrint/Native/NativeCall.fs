@@ -965,25 +965,17 @@ module NativeCall =
                 | RuntimeBehaviour.StructureMarshalerBody operation ->
                     $"Runtime (StructureMarshaler<T> body, %O{operation})"
                 | RuntimeBehaviour.MulticastDelegateInvoke -> "Runtime (multicast delegate invoke stub)"
-                | RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides) ->
+                | RuntimeBehaviour.UnsafeAccessor (kind, targetName, typeNameOverrides) ->
                     let nameStr =
                         match targetName with
                         | Some n -> $"\"%s{n}\""
                         | None -> "<attributed method name>"
 
-                    let overrides =
-                        if hasTypeNameOverrides then
-                            ", types named by [UnsafeAccessorType]"
-                        else
-                            ""
+                    let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
                     $"Runtime (UnsafeAccessor: kind=%O{kind}, target=%s{nameStr}%s{overrides})"
-                | RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, hasTypeNameOverrides) ->
-                    let overrides =
-                        if hasTypeNameOverrides then
-                            ", types named by [UnsafeAccessorType]"
-                        else
-                            ""
+                | RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, typeNameOverrides) ->
+                    let overrides = UnsafeAccessorTypeOverride.describeAll typeNameOverrides
 
                     $"Runtime (UnsafeAccessor naming no kind: %d{raw}%s{overrides})"
                 | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"

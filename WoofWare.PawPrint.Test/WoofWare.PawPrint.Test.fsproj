@@ -219,6 +219,7 @@
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestUnsafeAccessorModifierStrip.fs" />
+    <Compile Include="TestUnsafeAccessorRetype.fs" />
     <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestNativeHeapFree.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />

@@ -7,12 +7,9 @@ using System.Diagnostics;
 // array field of the `StackFrameHelper` null. What this file pins is that `StackTrace` then behaves
 // as real .NET does on those nulls rather than faulting on one.
 //
-// Deliberately the *single-argument* `StackTrace(Exception)` overload. It passes
-// `fNeedFileInfo: false` (StackTrace.cs:81-86), and the `true` overloads are not reachable under
-// PawPrint yet: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` before looking at any
-// frame, gated only on that flag, and it is an `[UnsafeAccessor]` constructor naming its type with
-// `[UnsafeAccessorType]`, which PawPrint does not resolve. Zero frames does not protect against it —
-// `sourcesPure/StackTraceFromExceptionNeedFileInfo.cs` is the parked guest for that shape.
+// Deliberately the *single-argument* `StackTrace(Exception)` overload, which passes
+// `fNeedFileInfo: false` (StackTrace.cs:81-86), so that no source lookup is involved;
+// `sourcesPure/StackTraceFromExceptionNeedFileInfo.cs` is the same shape with it.
 //
 // Every assertion here holds on both runtimes, measured. In particular `GetFrames()` answers an
 // empty array and never null (StackTrace.cs:171-176), while `GetFrame` answers null; asserting the
