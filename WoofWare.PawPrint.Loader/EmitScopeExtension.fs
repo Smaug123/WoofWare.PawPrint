@@ -47,8 +47,9 @@ module EmitScopeExtension =
     /// interning entries and filling in the implementation flags of methods, none of them for a
     /// created type. Then an image of <paramref name="after"/> reads back every heap entry and created
     /// type of <paramref name="before"/>'s as <paramref name="before"/>'s image does, and every row but
-    /// for those flags, at the same RID except in the tables the image sorts. A history that was otherwise rewritten, rather than appended to, is refused even
-    /// where the image happens to read back the same.
+    /// for those flags, at the same RID except in the tables the image sorts. A history that was
+    /// otherwise rewritten, rather than appended to, is refused even where the image happens to read
+    /// back the same.
     /// </remarks>
     /// <param name="created">
     /// The types of <paramref name="before"/> the runtime has created, whose members are fixed from
