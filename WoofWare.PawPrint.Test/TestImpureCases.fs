@@ -1461,6 +1461,103 @@ module TestImpureCases =
                 )
             ]
 
+    /// `TypeBuilderSetMethodILExceptions.cs` has created `T`, whose five methods' bodies have exception
+    /// handlers. A guest cannot read a body's sections, so this reads each body back from the image of
+    /// the module's scope and checks it against what .NET 10's `GetMethodBody` reports for the same
+    /// method: code length, max stack, local signature, and each clause's kind, try and handler ranges,
+    /// and catch type or filter offset. It also checks each section's format, small but for `Long`'s,
+    /// whose try block is too long for a small clause, and `Finally`'s section whole: CoreCLR writes a
+    /// finally clause's class token as `mdTypeRefNil`.
+    let private assertExceptionSections (state : IlMachineState) : unit =
+        let scope =
+            state.TypeSystem._LoadedAssemblies.TryDynamicScope
+                "Dyn, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null"
+            |> Option.defaultWith (fun () -> failwith "the guest's dynamic assembly Dyn is not loaded")
+
+        let pe, reader = EmitScopeGen.readImage (EmitScopeImage.write scope)
+        use _ = pe
+
+        // `InvalidOperationException` is the module's second TypeRef, after `object`.
+        let invalidOperation = 0x01000002
+
+        // Kind, try offset and length, handler offset and length, and the catch type token or the
+        // filter offset.
+        let expected =
+            [
+                21, 1, [ 0, 0, 11, 11, 8, invalidOperation ]
+                15, 2, [ 2, 0, 7, 7, 6, 0 ]
+                25, 1, [ 1, 0, 11, 15, 8, 11 ]
+                31, 2, [ 4, 0, 11, 11, 3, 0 ; 0, 0, 19, 19, 10, invalidOperation ]
+                321, 1, [ 0, 0, 311, 311, 8, invalidOperation ]
+            ]
+
+        for rid, (codeLength, maxStack, clauses) in Seq.indexed expected |> Seq.map (fun (i, e) -> i + 1, e) do
+            let rva =
+                (reader.GetMethodDefinition (
+                    System.Reflection.Metadata.Ecma335.MetadataTokens.MethodDefinitionHandle rid
+                ))
+                    .RelativeVirtualAddress
+
+            let block = System.Reflection.Metadata.PEReaderExtensions.GetMethodBody (pe, rva)
+
+            block.GetILBytes().Length |> shouldEqual codeLength
+            block.MaxStack |> shouldEqual maxStack
+
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken (
+                System.Reflection.Metadata.StandaloneSignatureHandle.op_Implicit block.LocalSignature
+                : System.Reflection.Metadata.EntityHandle
+            )
+            |> shouldEqual 0x11000001
+
+            block.ExceptionRegions
+            |> Seq.map (fun r ->
+                let catchOrFilter =
+                    match r.Kind with
+                    | System.Reflection.Metadata.ExceptionRegionKind.Filter -> r.FilterOffset
+                    | System.Reflection.Metadata.ExceptionRegionKind.Catch ->
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken r.CatchType
+                    | _ -> 0
+
+                int r.Kind, r.TryOffset, r.TryLength, r.HandlerOffset, r.HandlerLength, catchOrFilter
+            )
+            |> List.ofSeq
+            |> shouldEqual clauses
+
+        let section (rid : int) : byte list =
+            let body = (EmitScope.methodDefs scope).[rid - 1].Body.Value
+            let codeLength = int (BitConverter.ToUInt32 (body.AsSpan().Slice (4, 4)))
+            // The section starts at the first 4-byte boundary after the code.
+            let start = 12 + ((codeLength + 3) &&& ~~~3)
+            List.ofSeq body |> List.skip start
+
+        // `CorILMethod_Sect_EHTable`, and `CorILMethod_Sect_FatFormat` for `Long`.
+        [ 1..5 ]
+        |> List.map (fun rid -> List.head (section rid))
+        |> shouldEqual [ 0x01uy ; 0x01uy ; 0x01uy ; 0x01uy ; 0x41uy ]
+
+        // A small section of one clause: kind, data size, two reserved bytes, then the flags, try offset,
+        // try length, handler offset, handler length and class token.
+        section 2
+        |> shouldEqual
+            [
+                0x01uy
+                0x10uy
+                0x00uy
+                0x00uy
+                0x02uy
+                0x00uy
+                0x00uy
+                0x00uy
+                0x07uy
+                0x07uy
+                0x00uy
+                0x06uy
+                0x00uy
+                0x00uy
+                0x00uy
+                0x01uy
+            ]
+
     /// `UnlinkReapSeeded.cs` has removed the last name of three inodes: one it
     /// never opened, one it opened and closed, and one it still holds. The first
     /// two must be gone — freed by the `unlink` and by the `close` respectively,
@@ -4862,6 +4959,25 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = Some assertMethodBodies
+            }
+            {
+                // `TypeBuilder_SetMethodIL` for bodies with exception handlers: a typed catch, a
+                // finally, a filter, a fault and a catch too long for a small clause, each invoked;
+                // `assertExceptionSections` reads the bodies back from the module's image. Dynamic-code
+                // switch overridden to true like its siblings; verified by hand to exit 0 on real .NET 10.
+                FileName = "TypeBuilderSetMethodILExceptions.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = Some assertExceptionSections
             }
             {
                 // `TypeBuilder.CreateType` called again after it threw partway, once `SetMethodIL` has
